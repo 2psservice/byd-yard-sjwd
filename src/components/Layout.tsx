@@ -1,5 +1,5 @@
 import {
-  LayoutDashboard, Upload, Truck, ScanLine, Car, Map, List, SlidersHorizontal,
+  LayoutDashboard, Upload, FileSpreadsheet, ScanLine, Car, Map, List, SlidersHorizontal,
   Search, Menu, Zap, Globe, Plug, X, Bell, Smartphone, Radar, MapPin, ChevronDown, Settings, ClipboardList, User, ShieldAlert, LogOut, Layers,
 } from 'lucide-react'
 import { createPortal } from 'react-dom'
@@ -19,7 +19,7 @@ const NAV: { view: View; icon: ReactNode }[] = [
   { view: 'operation', icon: <ClipboardList size={18} /> },
   { view: 'damages',   icon: <ShieldAlert size={18} /> },
   { view: 'grouping',  icon: <Layers size={18} /> },
-  { view: 'trailers', icon: <Truck size={18} /> },
+  { view: 'report', icon: <FileSpreadsheet size={18} /> },
   { view: 'gatein', icon: <ScanLine size={18} /> },
   { view: 'driver', icon: <Car size={18} /> },
   { view: 'import', icon: <Upload size={18} /> },

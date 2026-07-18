@@ -10,6 +10,7 @@ const D: Dict = {
   dashboard: { th: 'ภาพรวม', en: 'Dashboard' },
   import: { th: 'นำเข้าข้อมูล', en: 'Import' },
   trailers: { th: 'หางเทรลเลอร์', en: 'Trailers' },
+  report: { th: 'รายงาน', en: 'Report' },
   gatein: { th: 'Gate In/Out', en: 'Gate In/Out' },
   driver: { th: 'พนักงานขับรถ', en: 'Driver' },
   yard: { th: 'แผนผังลาน', en: 'Yard Plan' },
