@@ -95,39 +95,72 @@ export function Report() {
     if (!scopedRows.length && !scopedUnits.length) { toast('info', 'ยังไม่มีข้อมูลให้ออกรายงาน'); return }
     setExporting(true)
     try {
-      const XLSX = await import('xlsx')
-      const wb = XLSX.utils.book_new()
+      // exceljs (not SheetJS) — the free SheetJS build can't write fonts/fills,
+      // and the report must carry the master file's look: Tahoma 10, sized
+      // columns, fixed row heights, coloured bold header band per sheet.
+      const XJS: any = await import('exceljs')
+      const ExcelJS = XJS.default ?? XJS
+      const wb = new ExcelJS.Workbook()
+      wb.creator = 'SJWD Yard Control'
+
+      const DATA_FONT = { name: 'Tahoma', size: 10 }
+      const thin = { style: 'thin', color: { argb: 'FFD0D5DD' } }
+      const BORDER = { top: thin, left: thin, bottom: thin, right: thin }
+      const HEADER_HEIGHT = 24
+      const ROW_HEIGHT = 18
+
+      /** One styled sheet: frozen coloured header row + bordered Tahoma body. */
+      const addSheet = (name: string, headerArgb: string, headers: string[], widths: number[], rows: (string | number)[][]) => {
+        const ws = wb.addWorksheet(name, {
+          views: [{ state: 'frozen', ySplit: 1 }],
+          properties: { tabColor: { argb: headerArgb }, defaultRowHeight: ROW_HEIGHT },
+        })
+        // column style (font/border/alignment) is inherited by every cell added later
+        ws.columns = headers.map((_, i) => ({
+          width: widths[i],
+          style: { font: DATA_FONT, border: BORDER, alignment: { vertical: 'middle' } },
+        }))
+        const hr = ws.addRow(headers)
+        hr.height = HEADER_HEIGHT
+        hr.eachCell((cell: any) => {
+          cell.font = { ...DATA_FONT, bold: true, color: { argb: 'FFFFFFFF' } }
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: headerArgb } }
+          cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true }
+          cell.border = BORDER
+        })
+        ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: headers.length } }
+        for (const r of rows) ws.addRow(r).height = ROW_HEIGHT
+        return ws
+      }
 
       // ── sheet 1: "Tracking Status" — column layout mirrors the import 100%
       // (headers = the exact sheet header text each cell was imported under,
       //  in the configured column order; 'No' is the running row number)
       const headers = columns.map((c) => c.key)
-      const aoa: (string | number)[][] = [headers]
-      scopedRows.forEach((r, i) => {
-        aoa.push(columns.map((c) =>
-          c.key === 'No' ? i + 1 : c.key === 'Vin' ? r.vin : (r.cells[c.key] ?? '')))
-      })
-      const ws = XLSX.utils.aoa_to_sheet(aoa)
-      ws['!cols'] = columns.map((c) => ({ wch: Math.max(10, Math.min(40, Math.round(c.width / 7))) }))
-      XLSX.utils.book_append_sheet(wb, ws, 'Tracking Status')
+      const widths = columns.map((c) => Math.max(10, Math.min(40, Math.round(c.width / 7))))
+      const body = scopedRows.map((r, i) =>
+        columns.map((c) => (c.key === 'No' ? i + 1 : c.key === 'Vin' ? r.vin : (r.cells[c.key] ?? ''))))
+      addSheet('Tracking Status', 'FF1B4FA8', headers, widths, body) // น้ำเงิน brand
 
       // ── defect sheets — same names/headers the import parser reads back
       const trackByVin = new Map(scopedRows.map((r) => [r.vin, r.cells]))
-      const addDefectSheet = (name: string, hs: string[], rows: DefectExportRow[]) => {
-        const a: (string | number)[][] = [hs]
-        for (const r of rows) a.push(defectRow(hs, r, trackByVin.get(r.unit.vin)))
-        const dws = XLSX.utils.aoa_to_sheet(a)
-        dws['!cols'] = hs.map((h) => ({ wch: h === 'Vin' ? 20 : /defect|remark/i.test(h) ? 32 : 14 }))
-        XLSX.utils.book_append_sheet(wb, dws, name)
-      }
-      addDefectSheet('Defect-Yard', YARD_HEADERS, defectSplit.yard)
-      addDefectSheet('Defect-Factory', FACTORY_HEADERS, defectSplit.factory)
-      addDefectSheet('Defect-Whale 28 rai', WHALE_HEADERS, defectSplit.whale)
+      const defectWidths = (hs: string[]) => hs.map((h) => (h === 'Vin' ? 20 : /defect|remark/i.test(h) ? 32 : 14))
+      const defectBody = (hs: string[], rows: DefectExportRow[]) => rows.map((r) => defectRow(hs, r, trackByVin.get(r.unit.vin)))
+      addSheet('Defect-Yard', 'FFD97706', YARD_HEADERS, defectWidths(YARD_HEADERS), defectBody(YARD_HEADERS, defectSplit.yard))        // ส้มอำพัน
+      addSheet('Defect-Factory', 'FF15803D', FACTORY_HEADERS, defectWidths(FACTORY_HEADERS), defectBody(FACTORY_HEADERS, defectSplit.factory)) // เขียว
+      addSheet('Defect-Whale 28 rai', 'FF0D9488', WHALE_HEADERS, defectWidths(WHALE_HEADERS), defectBody(WHALE_HEADERS, defectSplit.whale))    // teal
 
       const d = new Date()
       const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
       const scopeTag = allYards ? 'All-Yards' : siteName.replace(/[^\w]+/g, '-')
-      XLSX.writeFile(wb, `SJWD-Report-${scopeTag}-${stamp}.xlsx`)
+      const buf = await wb.xlsx.writeBuffer()
+      const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `SJWD-Report-${scopeTag}-${stamp}.xlsx`
+      a.click()
+      URL.revokeObjectURL(url)
       toast('ok', `ออกรายงานแล้ว — ${scopedRows.length.toLocaleString()} คัน`)
     } catch (e) {
       console.error('[report] export', e)
