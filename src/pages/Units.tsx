@@ -1640,8 +1640,14 @@ function ColumnManager({ onClose }: { onClose: () => void }) {
   const lang = useYard((s) => s.lang)
   const { columns, toggleColumn, moveColumn, addColumn, removeColumn, showAll, resetColumns } = useTracking()
   const [newCol, setNewCol] = useState('')
+  const [query, setQuery] = useState('')
   const groups: ColGroup[] = ['vehicle', 'status', 'location', 'movement', 'pm']
   const visCount = columns.filter((c) => c.visible).length
+  // filter the list by label or key (case-insensitive) — moving is disabled while
+  // searching since positions no longer reflect the true column order
+  const q = query.trim().toLowerCase()
+  const matches = (c: Column) => !q || c.label.toLowerCase().includes(q) || c.key.toLowerCase().includes(q)
+  const hitCount = q ? columns.filter(matches).length : 0
 
   return (
     <div className="panel-solid shrink-0 flex flex-col fade-up" style={{ width: 290 }}>
@@ -1649,14 +1655,33 @@ function ColumnManager({ onClose }: { onClose: () => void }) {
         <div className="font-semibold text-[13.5px] flex items-center gap-1.5"><Columns3 size={15} /> จัดการคอลัมน์ <span className="tabular" style={{ color: 'var(--faint)' }}>({visCount})</span></div>
         <button className="btn btn-ghost p-1.5" onClick={onClose}><X size={15} /></button>
       </div>
-      <div className="flex items-center gap-1.5 px-3 py-2 border-b hairline shrink-0 text-[12px]">
-        <button className="btn btn-ghost px-2 py-1" onClick={() => showAll(true)}>แสดงทั้งหมด</button>
-        <button className="btn btn-ghost px-2 py-1" onClick={() => showAll(false)}>ซ่อนทั้งหมด</button>
-        <button className="btn btn-ghost px-2 py-1 ml-auto" onClick={resetColumns}>รีเซ็ต</button>
+      <div className="px-3 pt-2.5 pb-1 border-b hairline shrink-0">
+        <div className="relative">
+          <Search size={13} className="absolute left-2 top-1/2 -translate-y-1/2" style={{ color: 'var(--faint)' }} />
+          <input
+            className="input py-1.5 text-[12.5px] w-full"
+            style={{ paddingLeft: 26, paddingRight: query ? 26 : undefined }}
+            placeholder="ค้นหาคอลัมน์…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Escape') setQuery('') }}
+          />
+          {query && (
+            <button className="btn btn-ghost p-0.5 absolute right-1.5 top-1/2 -translate-y-1/2" title="ล้าง" onClick={() => setQuery('')}><X size={12} /></button>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5 py-2 text-[12px]">
+          <button className="btn btn-ghost px-2 py-1" onClick={() => showAll(true)}>แสดงทั้งหมด</button>
+          <button className="btn btn-ghost px-2 py-1" onClick={() => showAll(false)}>ซ่อนทั้งหมด</button>
+          <button className="btn btn-ghost px-2 py-1 ml-auto" onClick={resetColumns}>รีเซ็ต</button>
+        </div>
       </div>
       <div className="overflow-auto flex-1 p-2">
+        {q && hitCount === 0 && (
+          <div className="text-center text-[12px] py-6" style={{ color: 'var(--faint)' }}>ไม่พบคอลัมน์ที่ตรงกับ “{query}”</div>
+        )}
         {groups.map((g) => {
-          const cols = columns.filter((c) => c.group === g)
+          const cols = columns.filter((c) => c.group === g && matches(c))
           if (!cols.length) return null
           return (
             <div key={g} className="mb-2">
@@ -1665,8 +1690,8 @@ function ColumnManager({ onClose }: { onClose: () => void }) {
                 <div key={c.key} className="flex items-center gap-2 px-1.5 py-1 rounded-md row-hover">
                   <input type="checkbox" checked={c.visible} onChange={() => toggleColumn(c.key)} />
                   <span className="text-[12.5px] flex-1 clip" title={c.key}>{c.label}{c.custom && <span className="ml-1 text-[10px]" style={{ color: 'var(--brand)' }}>•</span>}</span>
-                  <button className="btn btn-ghost p-0.5" title="เลื่อนขึ้น" onClick={() => moveColumn(c.key, -1)}><ChevronUp size={13} /></button>
-                  <button className="btn btn-ghost p-0.5" title="เลื่อนลง" onClick={() => moveColumn(c.key, 1)}><ChevronDown size={13} /></button>
+                  <button className="btn btn-ghost p-0.5" title={q ? 'ล้างการค้นหาก่อนจึงจะจัดเรียงได้' : 'เลื่อนขึ้น'} disabled={!!q} onClick={() => moveColumn(c.key, -1)}><ChevronUp size={13} /></button>
+                  <button className="btn btn-ghost p-0.5" title={q ? 'ล้างการค้นหาก่อนจึงจะจัดเรียงได้' : 'เลื่อนลง'} disabled={!!q} onClick={() => moveColumn(c.key, 1)}><ChevronDown size={13} /></button>
                   {c.custom && <button className="btn btn-ghost p-0.5" title="ลบ" onClick={() => removeColumn(c.key)}><Trash2 size={12} style={{ color: 'var(--st-damage)' }} /></button>}
                 </div>
               ))}
