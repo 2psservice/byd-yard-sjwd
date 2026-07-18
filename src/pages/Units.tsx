@@ -11,7 +11,7 @@ import { printIr, printDn, printIrPaper } from '../lib/dnir'
 import { useYard } from '../store/useYard'
 import { useTracking, useTrackingRows, useVisibleColumns } from '../store/useTracking'
 import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, type ColGroup, type Column } from '../lib/trackingColumns'
-import { CAR_STATUS_META, deriveCarStatus, IN_YARD_STATUSES, PARKED_STATUSES, isWaitingRepair, finalColor } from '../lib/carStatus'
+import { CAR_STATUS_META, deriveCarStatus, IN_YARD_STATUSES, PARKED_STATUSES, isWaitingRepair, finalColor, vinOfStatusColor, taxStatusColor } from '../lib/carStatus'
 import { rowsToCsv, type TrackRow, type RowEvent } from '../lib/excelTracking'
 import { rowInSite } from '../lib/siteScope'
 import { zoneLabel } from '../components/CarDiagramMultiView'
@@ -906,6 +906,12 @@ function Cell({ col, value, dim }: { col: Column; value: string; dim?: boolean }
   } else if (col.key === 'Car Status') {
     const meta = CAR_STATUS_META[value]
     content = meta ? <span className="gbadge" style={{ color: meta.color, background: meta.bg }}>{value}</span> : <span>{value}</span>
+  } else if (col.key === 'Vin Of Status') {
+    const vc = vinOfStatusColor(value)
+    content = vc ? <span className="gbadge" style={{ color: vc.color, background: vc.bg }}>{value}</span> : <span>{value}</span>
+  } else if (col.key === 'Status Tax') {
+    const tc = taxStatusColor(value)
+    content = tc ? <span className="gbadge" style={{ color: tc.color, background: tc.bg }}>{value}</span> : <span>{value}</span>
   } else if (col.key === 'No') content = <span className="tabular whitespace-nowrap text-[11.5px]" style={{ color: '#7c8696' }}>{value}</span>
   else content = <span>{value}</span>
 

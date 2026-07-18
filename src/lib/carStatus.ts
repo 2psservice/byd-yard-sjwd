@@ -158,3 +158,23 @@ export function finalColor(v: string): { color: string; bg: string } | null {
   if (s.includes('wait')) return { color: '#5b4a00', bg: '#facc15' }    // Waiting
   return null
 }
+
+/** Solid badge colours for the "Vin Of Status" column (FIS lifecycle). */
+export function vinOfStatusColor(v: string): { color: string; bg: string } | null {
+  const s = v.toLowerCase()
+  if (/total\s*loss/.test(s)) return { color: '#fff', bg: '#991b1b' }   // write-off — แดงเข้ม
+  if (s.includes('deliver')) return { color: '#fff', bg: '#16a34a' }    // FIS for delivery — เขียว
+  if (s.includes('wait') || s.includes('alloc')) return { color: '#5b4a00', bg: '#facc15' } // FIS Waiting Allocation — เหลือง
+  if (s.includes('fis')) return { color: '#fff', bg: '#0ea5e9' }        // สถานะ FIS อื่น ๆ — ฟ้า
+  return null
+}
+
+/** Solid badge colours for the "Status Tax" column — matches the YardOps tax chip
+ *  (green = paid, red = not paid, yellow = waiting). */
+export function taxStatusColor(v: string): { color: string; bg: string } | null {
+  const s = v.toLowerCase()
+  if (/yes|already|paid|ชำระแล้ว|เสียแล้ว/.test(s)) return { color: '#fff', bg: '#16a34a' } // จ่ายแล้ว — เขียว
+  if (/^no|ยังไม่|not/.test(s)) return { color: '#fff', bg: '#dc2626' }  // ยังไม่จ่าย — แดง
+  if (s.includes('wait') || s.includes('รอ')) return { color: '#5b4a00', bg: '#facc15' } // รอ — เหลือง
+  return null
+}
