@@ -24,6 +24,8 @@ export interface TrackRow {
   updatedAt?: number // last time this row's data changed (import / edit / status update)
   site?: string      // yard/site this vehicle belongs to (Site.id) — for per-yard separation
   history?: RowEvent[] // field-edit audit trail, newest last, capped (see updateCell/bulkUpdate)
+  deletedAt?: number // tombstone: when set, this VIN was deleted — kept so every device
+                     // learns of the deletion and never re-uploads a stale local copy
 }
 
 /** One defect/NG record from the Defect-Yard / Defect-Factory sheets. */

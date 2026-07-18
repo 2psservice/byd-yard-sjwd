@@ -160,29 +160,42 @@ export const useTracking = create<TrackingState>()(
         try { cloud = await db.fetchTrackingRows(since) } catch { return }
         const cloudByVin = new Map(cloud.map((r) => [r.vin, r]))
 
-        // cloud → local: rows missing locally, or newer in the cloud
+        // cloud → local: apply tombstones (remove) and pull rows missing locally
+        // or newer in the cloud. A tombstone (deletedAt set) always wins over a
+        // stale local copy → the delete propagates to every device.
         const merged: Record<string, TrackRow> = { ...local }
         const pull: TrackRow[] = []
+        const drop: string[] = []
         for (const cr of cloud) {
           const lr = local[cr.vin]
-          if (!lr || (cr.updatedAt ?? 0) > (lr.updatedAt ?? 0)) { merged[cr.vin] = cr; pull.push(cr) }
+          if (cr.deletedAt) {
+            if (lr) { delete merged[cr.vin]; drop.push(cr.vin) }
+          } else if (!lr || (cr.updatedAt ?? 0) > (lr.updatedAt ?? 0)) {
+            merged[cr.vin] = cr; pull.push(cr)
+          }
         }
 
         // local → cloud: on a full run, anything the cloud lacks or is older on;
-        // incrementally, just local edits since last sync (covers offline changes)
+        // incrementally, just local edits since last sync (covers offline changes).
+        // Never re-push a VIN the cloud has tombstoned — that was the resurrection bug.
         const push: TrackRow[] = []
         for (const lr of Object.values(local)) {
+          const cr = cloudByVin.get(lr.vin)
+          if (cr?.deletedAt) continue
           if (incremental) {
             if ((lr.updatedAt ?? 0) > lastSync) push.push(lr)
           } else {
-            const cr = cloudByVin.get(lr.vin)
             if (!cr || (lr.updatedAt ?? 0) > (cr.updatedAt ?? 0)) push.push(lr)
           }
         }
 
-        if (pull.length) { set({ rows: merged }); idbBulkPut(pull).catch(() => {}) }
+        if (pull.length || drop.length) { set({ rows: merged }) }
+        if (pull.length) idbBulkPut(pull).catch(() => {})
+        if (drop.length) idbDelete(drop).catch(() => {})
         if (push.length) db.upsertTrackingRows(push).catch(() => {})
         set({ lastSync: startedAt })
+        // occasionally clear tombstones older than 30 days so the table stays lean
+        if (!incremental) db.purgeTrackingTombstones(30 * 24 * 3600_000).catch(() => {})
       },
 
       // Live updates: any device that changes a car's status / cells broadcasts
@@ -203,8 +216,15 @@ export const useTracking = create<TrackingState>()(
                 idbDelete([vin]).catch(() => {})
                 return
               }
-              const r = payload.new as { vin?: string; cells?: Record<string, string> | null; updated_at?: string | null; site?: string | null }
+              const r = payload.new as { vin?: string; cells?: Record<string, string> | null; updated_at?: string | null; site?: string | null; deleted_at?: string | null }
               if (!r?.vin) return
+              // soft-delete arrives here as an UPDATE with deleted_at set → drop locally
+              if (r.deleted_at) {
+                const vin = r.vin
+                set((s) => { if (!s.rows[vin]) return s; const rows = { ...s.rows }; delete rows[vin]; return { rows } })
+                idbDelete([vin]).catch(() => {})
+                return
+              }
               const incoming: TrackRow = {
                 vin: r.vin,
                 cells: r.cells ?? {},

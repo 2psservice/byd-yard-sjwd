@@ -481,13 +481,14 @@ export async function upsertDamages(items: { vin: string; d: Damage }[]): Promis
 
 // ── tracking rows (master vehicle list — flexible JSONB columns) ────────────
 
-type TrackRowRow = { vin: string; cells: Record<string, string> | null; updated_at: string | null; site?: string | null; history?: TrackRow['history'] | null }
+type TrackRowRow = { vin: string; cells: Record<string, string> | null; updated_at: string | null; site?: string | null; history?: TrackRow['history'] | null; deleted_at?: string | null }
 const toTrackRow = (r: TrackRowRow): TrackRow => ({
   vin: r.vin,
   cells: r.cells ?? {},
   updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : undefined,
   site: r.site ?? undefined,
   history: r.history ?? undefined,
+  deletedAt: r.deleted_at ? new Date(r.deleted_at).getTime() : undefined,
 })
 
 /**
@@ -507,7 +508,8 @@ export async function fetchTrackingRows(sinceMs?: number): Promise<TrackRow[]> {
       if (sinceIso) q = q.gt('updated_at', sinceIso)
       return q.range(from, from + PAGE - 1)
     }
-    let res: any = await run('vin, cells, updated_at, site, history')
+    let res: any = await run('vin, cells, updated_at, site, history, deleted_at')
+    if (res.error) res = await run('vin, cells, updated_at, site, history') // `deleted_at` column not migrated yet
     if (res.error) res = await run('vin, cells, updated_at, site') // `history` column not migrated yet
     if (res.error) res = await run('vin, cells, updated_at') // `site` column not migrated yet
     if (res.error) { console.error('[db] fetchTrackingRows', res.error); return [] }
@@ -543,12 +545,14 @@ export async function fetchTrackingRowsForSite(locationYard: string): Promise<Tr
   for (let from = 0; ; from += PAGE) {
     const run = (cols: string) =>
       supabase.from('tracking_rows').select(cols).eq('cells->>Location yard', locationYard).order('vin').range(from, from + PAGE - 1)
-    let res: any = await run('vin, cells, updated_at, site, history')
+    let res: any = await run('vin, cells, updated_at, site, history, deleted_at')
+    if (res.error) res = await run('vin, cells, updated_at, site, history')
     if (res.error) res = await run('vin, cells, updated_at, site')
     if (res.error) res = await run('vin, cells, updated_at')
     if (res.error) { console.error('[db] fetchTrackingRowsForSite', res.error); break }
     const batch = (res.data ?? []) as TrackRowRow[]
-    for (const r of batch) out.push(toTrackRow(r))
+    // skip tombstoned rows — a soft-deleted VIN must not resurface in a yard view
+    for (const r of batch) { const tr = toTrackRow(r); if (!tr.deletedAt) out.push(tr) }
     if (batch.length < PAGE) break
   }
   return out
@@ -560,26 +564,57 @@ export async function upsertTrackingRows(rows: TrackRow[]): Promise<void> {
   const CHUNK = 500
   for (let i = 0; i < rows.length; i += CHUNK) {
     const slice = rows.slice(i, i + CHUNK)
-    const base = (r: TrackRow) => ({
+    // full payload; `deleted_at` is always written (null on a live row) so any
+    // normal edit/import automatically clears an old tombstone → re-importing a
+    // removed VIN brings it back cleanly.
+    const full = (r: TrackRow) => ({
       vin: r.vin, cells: r.cells ?? {},
       updated_at: new Date(r.updatedAt ?? Date.now()).toISOString(),
       site: r.site ?? null,
+      history: r.history ?? null,
+      deleted_at: r.deletedAt ? new Date(r.deletedAt).toISOString() : null,
     })
-    let { error } = await supabase.from('tracking_rows')
-      .upsert(slice.map((r) => ({ ...base(r), history: r.history ?? null })), { onConflict: 'vin' })
-    if (error) {
-      // `history` column not migrated yet — retry without it (same graceful
-      // rollout the `site` column used) so the rest of the write still lands
-      ;({ error } = await supabase.from('tracking_rows').upsert(slice.map(base), { onConflict: 'vin' }))
+    // progressively drop columns that may not be migrated yet, newest-added first
+    const variants = [
+      (r: TrackRow) => full(r),
+      (r: TrackRow) => { const { deleted_at, ...rest } = full(r); return rest }, // no deleted_at
+      (r: TrackRow) => { const { deleted_at, history, ...rest } = full(r); return rest }, // no history
+      (r: TrackRow) => { const { deleted_at, history, site, ...rest } = full(r); return rest }, // no site
+    ]
+    let error: any = null
+    for (const build of variants) {
+      ;({ error } = await supabase.from('tracking_rows').upsert(slice.map(build), { onConflict: 'vin' }))
+      if (!error) break
     }
     if (error) console.error('[db] upsertTrackingRows chunk', i, error)
   }
 }
 
+/** ลบรถออกจาก Unit List — soft-delete (tombstone): เขียน `deleted_at` แทนการลบแถวจริง
+ *  เพื่อให้ทุกเครื่อง (แม้เครื่องที่ยัง cache แถวนี้ไว้ใน IndexedDB) รู้ว่าถูกลบแล้ว
+ *  และจะไม่อัปโหลดกลับขึ้น cloud อีก (ต้นเหตุ "ลบแล้วเด้งกลับมา"). */
 export async function deleteTrackingRows(vins: string[]): Promise<void> {
   if (!isConfigured() || !vins.length) return
-  const { error } = await supabase.from('tracking_rows').delete().in('vin', vins)
-  if (error) console.error('[db] deleteTrackingRows', error)
+  const nowIso = new Date().toISOString()
+  const CHUNK = 500
+  for (let i = 0; i < vins.length; i += CHUNK) {
+    const slice = vins.slice(i, i + CHUNK)
+    const { error } = await supabase.from('tracking_rows')
+      .upsert(slice.map((vin) => ({ vin, deleted_at: nowIso, updated_at: nowIso, cells: {} })), { onConflict: 'vin' })
+    if (error) {
+      // `deleted_at` column not migrated yet → fall back to the old hard delete
+      const { error: dErr } = await supabase.from('tracking_rows').delete().in('vin', slice)
+      if (dErr) console.error('[db] deleteTrackingRows', dErr)
+    }
+  }
+}
+
+/** ล้าง tombstone เก่าทิ้งถาวร (แถวที่ถูก soft-delete นานเกิน `olderThanMs`) เพื่อไม่ให้ตารางบวม */
+export async function purgeTrackingTombstones(olderThanMs: number): Promise<void> {
+  if (!isConfigured()) return
+  const cutoff = new Date(Date.now() - olderThanMs).toISOString()
+  const { error } = await supabase.from('tracking_rows').delete().not('deleted_at', 'is', null).lt('deleted_at', cutoff)
+  if (error && error.code !== '42703') console.error('[db] purgeTrackingTombstones', error) // ignore "column doesn't exist"
 }
 
 export async function clearTrackingRows(): Promise<void> {
