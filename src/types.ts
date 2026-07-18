@@ -18,7 +18,8 @@ export interface AppUser {
 export type View =
   | 'dashboard'
   | 'import'
-  | 'trailers'
+  | 'trailers' // legacy id — kept so a device with a persisted 'trailers' view still lands on Report
+  | 'report'
   | 'gatein'
   | 'driver'
   | 'yard'

@@ -11,7 +11,7 @@ import { useOps } from './store/useOps'
 import { startSyncBus, stopSyncBus } from './lib/syncBus'
 import { Dashboard } from './pages/Dashboard'
 import { ImportPage } from './pages/ImportPage'
-import { Trailers } from './pages/Trailers'
+import { Report } from './pages/Report'
 import { GateIn } from './pages/GateIn'
 import { Driver } from './pages/Driver'
 import { YardPlan } from './pages/YardPlan'
@@ -130,7 +130,8 @@ export default function App() {
   const pages: Record<View, JSX.Element> = {
     dashboard: <Dashboard />,
     import: <ImportPage />,
-    trailers: <Trailers />,
+    trailers: <Report />, // legacy view id — devices with a saved 'trailers' view land here
+    report: <Report />,
     gatein: <GateIn />,
     driver: <Driver />,
     yard: <YardPlan />,
