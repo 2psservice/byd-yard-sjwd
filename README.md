@@ -102,3 +102,19 @@ src/
 - **การ์ดรถ** สไตล์ใบตรวจ BYD + ภาพรถมุมบน, **ไทม์ไลน์** การเคลื่อนไหวต่อคัน
 - **บันทึกอัตโนมัติ** ทุกอย่างลง localStorage — ปิดเปิดใหม่ข้อมูลอยู่ครบ
 - สลับ **ไทย/อังกฤษ** และ **Auto/Semi** ได้จาก topbar
+
+---
+
+## 📸 เก็บรูปตำหนิบน Cloudflare R2
+
+รูปถ่ายตำหนิจะถูกอัปโหลดขึ้น **R2** (ผ่าน Pages Function `functions/api/photos/`)
+แล้วเก็บแค่ URL สั้น ๆ ในฐานข้อมูล — ฐานข้อมูล Supabase ไม่บวมด้วย base64 อีกต่อไป
+ถ้ายังไม่ได้ตั้งค่า R2 ระบบจะ fallback เก็บรูปแบบ data-URL เหมือนเดิมอัตโนมัติ (ไม่มีอะไรพัง)
+
+**ตั้งค่าครั้งเดียวใน Cloudflare dashboard:**
+1. **R2 → Create bucket** ชื่อ `sjwd-photos` (ต้องเปิดใช้ R2 ก่อน — มี free tier 10 GB)
+2. **Workers & Pages → byd-yard-sjwd → Settings → Bindings → Add → R2 bucket**
+   - Variable name: `PHOTOS` · Bucket: `sjwd-photos`
+3. Deploy รอบถัดไป (push ขึ้น main) — รูปใหม่จะขึ้น R2 ทันที
+
+รูปเก่าที่เป็น data-URL ยังแสดงผลได้ปกติ ไม่ต้อง migrate

@@ -49,6 +49,13 @@ export default defineConfig({
             handler: 'CacheFirst',
             options: { cacheName: 'google-fonts', expiration: { maxEntries: 24, maxAgeSeconds: 60 * 60 * 24 * 365 } },
           },
+          {
+            // damage photos on R2 (immutable keys) — cache so previously viewed
+            // photos still show offline, like the old inline data-URLs did
+            urlPattern: /\/api\/photos\/.+/,
+            handler: 'CacheFirst',
+            options: { cacheName: 'damage-photos', expiration: { maxEntries: 600, maxAgeSeconds: 60 * 60 * 24 * 90 } },
+          },
         ],
       },
     }),

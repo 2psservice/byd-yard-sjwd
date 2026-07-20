@@ -24,6 +24,7 @@ import { candidates } from '../lib/parkingEngine'
 import { slotToLatLng } from '../lib/geo'
 import { cx, PhotoLightbox } from '../components/ui'
 import { rowInSite } from '../lib/siteScope'
+import { storePhoto } from '../lib/photoStore'
 import { siteGroupingConfig } from '../lib/groupingImport'
 import type { DamageInput, Unit } from '../types'
 import type { TrackRow } from '../lib/excelTracking'
@@ -1836,7 +1837,7 @@ const FINAL_CHECK_ITEMS = [
 ]
 
 /** Read an image File, downscale to maxW, and return a compressed JPEG dataURL. */
-function compressImage(file: File, maxW = 900): Promise<string> {
+function compressToDataUrl(file: File, maxW = 900): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onerror = reject
@@ -1855,6 +1856,12 @@ function compressImage(file: File, maxW = 900): Promise<string> {
     }
     reader.readAsDataURL(file)
   })
+}
+
+/** Compress, then push to R2 — every photo-capture path funnels through here.
+ *  Returns the short R2 URL, or the data-URL itself when upload isn't possible. */
+async function compressImage(file: File, maxW = 900): Promise<string> {
+  return storePhoto(await compressToDataUrl(file, maxW))
 }
 
 type NgEntry = { item: string; pos: string; remark: string; photo?: string }
