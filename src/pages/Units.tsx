@@ -680,11 +680,19 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
 }
 
 // ── add the SAME manual defect to many VINs at once (Unit List bulk action) ────
+// stacked label + control — TOP-LEVEL (defining it inside the modal remounts the
+// input on every keystroke, which drops focus and closes the datalist dropdown)
+function DField({ label, children }: { label: string; children: React.ReactNode }) {
+  return <div><div className="text-[11px] font-semibold mb-1" style={{ color: 'var(--muted)' }}>{label}</div>{children}</div>
+}
+
 function BulkDefectModal({ vins, onClose, onDone }: { vins: string[]; onClose: () => void; onDone: () => void }) {
   const addManualDamageBulk = useYard((s) => s.addManualDamageBulk)
   const allUnits = useYard((s) => s.units)
   const toast = useYard((s) => s.toast)
   const [form, setForm] = useState(BLANK_DMG_FORM)
+  // which Report sheet this defect belongs to (yardDefect → Defect-Yard, factoryDefect → Defect-Factory)
+  const [source, setSource] = useState<'yardDefect' | 'factoryDefect'>('yardDefect')
   useEffect(() => {
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h)
@@ -705,13 +713,11 @@ function BulkDefectModal({ vins, onClose, onDone }: { vins: string[]; onClose: (
   const set = (patch: Partial<typeof form>) => setForm((f) => ({ ...f, ...patch }))
   const save = () => {
     if (!form.position.trim() && !form.defect.trim()) { toast('err', 'กรุณากรอกอย่างน้อย Position หรือ Defect/NG'); return }
-    const n = addManualDamageBulk(vins, form)
-    toast('ok', `Add Defect ให้ ${n} คันแล้ว`)
+    const n = addManualDamageBulk(vins, { ...form, source })
+    toast('ok', `Add Defect (${source === 'factoryDefect' ? 'Factory' : 'Yard'}) ให้ ${n} คันแล้ว`)
     onDone(); onClose()
   }
-  const Field = ({ label, children }: { label: string; children: React.ReactNode }) => (
-    <div><div className="text-[11px] font-semibold mb-1" style={{ color: 'var(--muted)' }}>{label}</div>{children}</div>
-  )
+  const factory = source === 'factoryDefect'
   return (
     <div className="fixed inset-0 z-[85] flex items-center justify-center p-4" style={{ background: 'rgba(15,23,42,0.5)', backdropFilter: 'blur(3px)' }} onClick={onClose}>
       <div className="panel-solid pop w-full overflow-hidden flex flex-col" style={{ maxWidth: 560, maxHeight: '90vh' }} onClick={(e) => e.stopPropagation()}>
@@ -723,21 +729,32 @@ function BulkDefectModal({ vins, onClose, onDone }: { vins: string[]; onClose: (
           </div>
           <button className="btn btn-ghost p-2" onClick={onClose}><X size={18} /></button>
         </div>
+        {/* sheet selector — decides which Report sheet the defect lands in */}
+        <div className="px-4 pt-3">
+          <div className="text-[11px] font-semibold mb-1" style={{ color: 'var(--muted)' }}>ประเภทตำหนิ (ชีตในรายงาน)</div>
+          <div className="inline-flex p-0.5 rounded-xl gap-0.5 w-full" style={{ background: 'var(--chip)' }}>
+            {([['yardDefect', 'Defect-Yard'], ['factoryDefect', 'Defect-Factory']] as const).map(([k, l]) => (
+              <button key={k} onClick={() => setSource(k)}
+                className="flex-1 py-2 rounded-lg text-[12.5px] font-semibold transition"
+                style={source === k ? { background: '#fff', color: 'var(--brand)', boxShadow: '0 0 0 1px var(--line-strong)' } : { color: 'var(--muted)' }}>{l}</button>
+            ))}
+          </div>
+        </div>
         <div className="p-4 overflow-auto grid grid-cols-2 gap-3">
           {/* every field is type-in + dropdown (native datalist) — needs a unique id */}
-          <Field label="Position"><Combo id="bd-pos" value={form.position} onChange={(v) => set({ position: v })} options={opts.position} placeholder="Position" /></Field>
-          <Field label="Defect/NG"><Combo id="bd-defect" value={form.defect} onChange={(v) => set({ defect: v })} options={opts.defect} placeholder="Defect/NG" /></Field>
-          <Field label="Cat NG"><Combo id="bd-catng" value={form.categoryNG} onChange={(v) => set({ categoryNG: v })} options={opts.catNG} placeholder="Cat NG" /></Field>
-          <Field label="Cat (Repair)"><Combo id="bd-catrep" value={form.categoryRepair} onChange={(v) => set({ categoryRepair: v })} options={opts.catRepair} placeholder="Cat (Repair)" /></Field>
-          <Field label="Incharge"><Combo id="bd-incharge" value={form.incharge} onChange={(v) => set({ incharge: v })} options={opts.incharge} placeholder="Incharge" /></Field>
-          <Field label="From/Stock"><Combo id="bd-note" value={form.note} onChange={(v) => set({ note: v })} options={opts.note} placeholder="From/Stock" /></Field>
-          <Field label="Date"><Combo value={form.date} onChange={(v) => set({ date: v })} type="date" /></Field>
-          <Field label="Status Repair">
+          <DField label="Position"><Combo id="bd-pos" value={form.position} onChange={(v) => set({ position: v })} options={opts.position} placeholder="Position" /></DField>
+          <DField label={factory ? 'Defect/NG' : 'Defect'}><Combo id="bd-defect" value={form.defect} onChange={(v) => set({ defect: v })} options={opts.defect} placeholder="Defect" /></DField>
+          <DField label={factory ? 'Category defect' : 'Category NG'}><Combo id="bd-catng" value={form.categoryNG} onChange={(v) => set({ categoryNG: v })} options={opts.catNG} placeholder="Category" /></DField>
+          {!factory && <DField label="Category (Repair)"><Combo id="bd-catrep" value={form.categoryRepair} onChange={(v) => set({ categoryRepair: v })} options={opts.catRepair} placeholder="Category (Repair)" /></DField>}
+          <DField label="Incharge"><Combo id="bd-incharge" value={form.incharge} onChange={(v) => set({ incharge: v })} options={opts.incharge} placeholder="Incharge" /></DField>
+          <DField label="Stock of Status"><Combo id="bd-note" value={form.note} onChange={(v) => set({ note: v })} options={opts.note} placeholder="Stock of Status" /></DField>
+          <DField label="Date"><Combo value={form.date} onChange={(v) => set({ date: v })} type="date" /></DField>
+          <DField label="Status Repair">
             <select className="input w-full text-[13px] py-2" value={form.statusRepair} onChange={(e) => set({ statusRepair: e.target.value })}>
               {REPAIR_STATUSES.map((st) => <option key={st} value={st}>{st}</option>)}
             </select>
-          </Field>
-          <Field label="Repair Date"><Combo value={form.repairDate} onChange={(v) => set({ repairDate: v })} type="date" /></Field>
+          </DField>
+          <DField label="Repair Date"><Combo value={form.repairDate} onChange={(v) => set({ repairDate: v })} type="date" /></DField>
         </div>
         <div className="flex gap-2 p-4 border-t hairline shrink-0">
           <button className="btn flex-1 py-2.5 text-[13px]" onClick={onClose}>ยกเลิก</button>
