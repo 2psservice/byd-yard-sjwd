@@ -133,6 +133,8 @@ interface YardState {
   updateDamage: (vin: string, id: string, patch: Partial<import('../types').Damage>) => void
   updateRepairStatus: (vin: string, id: string, status: string) => void
   addManualDamage: (vin: string, f: { position?: string; defect?: string; categoryNG?: string; categoryRepair?: string; incharge?: string; note?: string; date?: string; statusRepair?: string; repairDate?: string; severity?: 'minor' | 'major' }) => void
+  /** Add the SAME manual defect to many VINs at once (Unit List bulk action). */
+  addManualDamageBulk: (vins: string[], f: { position?: string; defect?: string; categoryNG?: string; categoryRepair?: string; incharge?: string; note?: string; date?: string; statusRepair?: string; repairDate?: string; severity?: 'minor' | 'major' }) => number
   suggest: (vin: string) => SlotCandidate | null
   assign: (vin: string, slot: { block: string; row: number; slot: number }, driver?: string, mode?: 'AUTO' | 'SEMI') => void
   confirmParked: (vin: string) => void
@@ -554,6 +556,47 @@ export const useYard = create<YardState>()(
         set({ units: { ...s.units, [vin]: u } })
         // FK-safe: parent unit first, then the damage
         db.upsertUnit(u).then(() => db.upsertDamages([{ vin, d: dmg }])).catch((e) => console.error('[db] addManualDamage', e))
+      },
+
+      addManualDamageBulk: (vins, f) => {
+        const s = get()
+        const now = Date.now()
+        const units = { ...s.units }
+        const changedUnits: Unit[] = []
+        const dmgItems: { vin: string; d: Damage }[] = []
+        const severity = f.severity ?? (/heavy/i.test(f.categoryNG ?? '') ? 'major' : 'minor')
+        const at = parseDefDate(f.date) ?? now
+        for (const vin of new Set(vins)) {
+          const dmg: Damage = {
+            id: `man${++tid}_${now.toString(36)}`,
+            area: f.position?.trim() || '—',
+            type: f.defect?.trim() || '—',
+            item: f.defect?.trim() || undefined,
+            severity,
+            at,
+            by: s.currentUser,
+            source: 'manual',
+            note: f.note?.trim() || undefined,
+            categoryNG: (f.categoryNG?.trim() as Damage['categoryNG']) || undefined,
+            categoryRepair: (f.categoryRepair?.trim() as Damage['categoryRepair']) || undefined,
+            incharge: (f.incharge?.trim() as Damage['incharge']) || undefined,
+            statusRepair: (f.statusRepair?.trim() as Damage['statusRepair']) || undefined,
+            repairDate: parseDefDate(f.repairDate),
+            repairHistory: f.statusRepair?.trim() ? [{ status: f.statusRepair.trim(), at: now, by: s.currentUser }] : undefined,
+          }
+          const existing = units[vin]
+          const m = existing ?? {
+            vin, model: '', modelName: '', color: '—', trailer: 0,
+            status: 'GATE_IN' as const, damages: [], importedAt: now, site: s.currentSite ?? undefined,
+          }
+          const u: Unit = { ...m, damages: [...m.damages, dmg] }
+          units[vin] = u; changedUnits.push(u); dmgItems.push({ vin, d: dmg })
+        }
+        if (!changedUnits.length) return 0
+        set({ units })
+        // FK-safe: parent units first (batch), then the damages (batch)
+        db.upsertUnits(changedUnits).then(() => db.upsertDamages(dmgItems)).catch((e) => console.error('[db] addManualDamageBulk', e))
+        return changedUnits.length
       },
 
       updateDamage: (vin, id, patch) =>

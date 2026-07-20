@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { Column } from '../lib/trackingColumns'
-import { defaultColumns, reconcileColumns } from '../lib/trackingColumns'
+import { defaultColumns, reconcileColumns, MAX_FILTERS, DEFAULT_FILTER_COLS } from '../lib/trackingColumns'
 import type { ParseResult, RowEvent, TrackRow } from '../lib/excelTracking'
 import { parseTrackingWorkbook } from '../lib/excelTracking'
 import { idbBulkPut, idbClear, idbDelete, idbGetAllRows, idbPut } from '../lib/idb'
@@ -16,9 +16,23 @@ import type { RealtimeChannel } from '@supabase/supabase-js'
 // live channel (module-scoped — never persisted)
 let trackingChannel: RealtimeChannel | null = null
 
+/** Migrate the filter config from its old standalone localStorage key (pre-store). */
+function initialFilterCols(): string[] {
+  try {
+    const saved = JSON.parse(localStorage.getItem('sjwd-filter-cols') || 'null')
+    if (Array.isArray(saved) && saved.every((k) => typeof k === 'string')) return saved.slice(0, MAX_FILTERS)
+  } catch { /* ignore */ }
+  return DEFAULT_FILTER_COLS
+}
+
+const VIEW_DEFAULT_KEY = 'unit_view_default' // shared cloud config id
+interface ViewDefault { columns?: Column[]; filterCols?: string[] }
+
 interface TrackingState {
   rows: Record<string, TrackRow>   // keyed by VIN (in memory; persisted in IndexedDB)
   columns: Column[]
+  filterCols: string[]             // Unit-List filter bar: which columns are filters (ordered)
+  defaultSeeded: boolean           // once true, this device owns its view config (no auto-seed)
   loaded: boolean
   importing: boolean
   lastImport: { inYard: number; total: number; gatedOut: number; at: number } | null
@@ -46,6 +60,12 @@ interface TrackingState {
   addColumn: (label: string) => void
   removeColumn: (key: string) => void
   resetColumns: () => void
+
+  // filter config + shared "default view" (columns + filters) preset
+  setFilterCols: (cols: string[] | ((c: string[]) => string[])) => void
+  seedViewDefault: () => Promise<void>     // one-time: pull the shared default onto a fresh device
+  saveViewDefault: () => Promise<void>     // admin: publish current columns + filters as the shared default
+  resetToViewDefault: () => Promise<boolean> // pull the shared default on demand (overrides local)
 }
 
 // merge live select-options discovered during import into the column defs
@@ -94,6 +114,8 @@ export const useTracking = create<TrackingState>()(
     (set, get) => ({
       rows: {},
       columns: defaultColumns(),
+      filterCols: initialFilterCols(),
+      defaultSeeded: false,
       loaded: false,
       importing: false,
       lastImport: null,
@@ -512,14 +534,54 @@ export const useTracking = create<TrackingState>()(
           return { columns: s.columns.filter((c) => c.key !== key) }
         }),
       resetColumns: () => set({ columns: defaultColumns() }),
+
+      setFilterCols: (cols) => set((s) => ({ filterCols: typeof cols === 'function' ? cols(s.filterCols) : cols })),
+
+      // one-time seeding: a device that has never adopted a shared default pulls it
+      // (if an admin has published one). After that the device owns its config; a
+      // later default change only reaches brand-new devices (or a manual reset).
+      seedViewDefault: async () => {
+        if (get().defaultSeeded) return
+        const cfg = await db.fetchAppConfig<ViewDefault>(VIEW_DEFAULT_KEY).catch(() => null)
+        if (!cfg || !Array.isArray(cfg.columns)) return // no default yet → stay unseeded, try again next boot
+        set({
+          columns: reconcileColumns(cfg.columns),
+          filterCols: Array.isArray(cfg.filterCols) ? cfg.filterCols.slice(0, MAX_FILTERS) : get().filterCols,
+          defaultSeeded: true,
+        })
+      },
+
+      // publish the current view as the shared default for everyone (admin).
+      // strip merged import options to keep the blob small; reconcile re-adds them.
+      saveViewDefault: async () => {
+        const columns = get().columns.map(({ options, ...c }) => c) as Column[]
+        await db.saveAppConfig(VIEW_DEFAULT_KEY, { columns, filterCols: get().filterCols })
+        set({ defaultSeeded: true })
+      },
+
+      resetToViewDefault: async () => {
+        const cfg = await db.fetchAppConfig<ViewDefault>(VIEW_DEFAULT_KEY).catch(() => null)
+        if (!cfg || !Array.isArray(cfg.columns)) return false
+        set({
+          columns: reconcileColumns(cfg.columns),
+          filterCols: Array.isArray(cfg.filterCols) ? cfg.filterCols.slice(0, MAX_FILTERS) : get().filterCols,
+          defaultSeeded: true,
+        })
+        return true
+      },
     }),
     {
       name: 'sjwd-tracking',
-      // only the (small) column config is persisted to localStorage; rows live in IndexedDB
-      partialize: (s) => ({ columns: s.columns, lastImport: s.lastImport, lastSync: s.lastSync }),
+      // only the (small) column + filter config is persisted to localStorage; rows live in IndexedDB
+      partialize: (s) => ({ columns: s.columns, filterCols: s.filterCols, defaultSeeded: s.defaultSeeded, lastImport: s.lastImport, lastSync: s.lastSync }),
       merge: (persisted, current) => {
         const p = persisted as Partial<TrackingState> | undefined
-        return { ...current, ...p, columns: reconcileColumns(p?.columns) }
+        return {
+          ...current, ...p,
+          columns: reconcileColumns(p?.columns),
+          filterCols: Array.isArray(p?.filterCols) ? p!.filterCols!.slice(0, MAX_FILTERS) : initialFilterCols(),
+          defaultSeeded: p?.defaultSeeded ?? false,
+        }
       },
     },
   ),

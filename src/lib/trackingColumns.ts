@@ -42,6 +42,10 @@ const DEFAULT_VISIBLE = new Set([
  *  e.g. "N-R0905"). Not a sheet cell — resolved from the car's placement. */
 export const LOCATION_KEY = '__location'
 
+/** Configurable-filter model (shared by the Unit List filter bar + the store). */
+export const MAX_FILTERS = 6
+export const DEFAULT_FILTER_COLS = ['Car Status', 'Location yard', 'Model', 'Final Status', 'company']
+
 // curated select columns (options also augmented from live data at import)
 const SELECT_OPTIONS: Record<string, string[]> = {
   'Car Status': [...CAR_STATUS_VALUES],
