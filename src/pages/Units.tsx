@@ -11,7 +11,7 @@ import { CarTopView } from '../components/CarTopView'
 import { printIr, printDn, printIrPaper } from '../lib/dnir'
 import { useYard } from '../store/useYard'
 import { useTracking, useTrackingRows, useVisibleColumns } from '../store/useTracking'
-import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, LOCATION_KEY, MAX_FILTERS, DEFAULT_FILTER_COLS, type ColGroup, type Column } from '../lib/trackingColumns'
+import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, LOCATION_KEY, MAX_FILTERS, DEFAULT_FILTER_COLS, agingPmDays, type ColGroup, type Column } from '../lib/trackingColumns'
 import { siteGroupingConfig, yardLocFull } from '../lib/groupingImport'
 import { CAR_STATUS_META, deriveCarStatus, IN_YARD_STATUSES, PARKED_STATUSES, isWaitingRepair, finalColor, vinOfStatusColor, taxStatusColor } from '../lib/carStatus'
 import { rowsToCsv, type TrackRow, type RowEvent } from '../lib/excelTracking'
@@ -655,7 +655,7 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
                 onContextMenu={(e) => onContextMenu(e, r.vin, idx)}>
                 <div className="gcell" style={{ width: GUTTER }} />
                 {visCols.map((c) => (
-                  <Cell key={c.key} col={c} value={c.key === 'Car Status' ? carStatus : c.key === 'No' ? fmtUpdated(r.updatedAt) : c.key === LOCATION_KEY ? locFor(r) : (r.cells[c.key] ?? '')}
+                  <Cell key={c.key} col={c} value={c.key === 'Car Status' ? carStatus : c.key === 'No' ? fmtUpdated(r.updatedAt) : c.key === LOCATION_KEY ? locFor(r) : c.key === 'Aging PM' ? fmtAgingPm(r.cells) : (r.cells[c.key] ?? '')}
                     dim={c.key === 'Final Status' && carStatus === 'Gate-out'} />
                 ))}
               </div>
@@ -1033,6 +1033,14 @@ function sortRows(rows: TrackRow[], sortKey: string, sortDir: SortDir): TrackRow
 function fmtUpdated(ts?: number): string {
   if (!ts) return ''
   return new Date(ts).toLocaleString('th-TH', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
+
+/** "Aging PM" display: whole days since the last PM (PM1…PM15), e.g. "125 วัน".
+ *  '' when the car has never been PM'd — so the cell shows "—" instead of the
+ *  stray Excel serial (46223) the sheet formula produced. */
+function fmtAgingPm(cells: Record<string, string>): string {
+  const d = agingPmDays(cells)
+  return d === '' ? '' : `${d} วัน`
 }
 
 function EmptyState() {
@@ -1503,6 +1511,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                           // computed yard code; everything else is a raw sheet cell
                           const val = col.key === 'No' ? fmtUpdated(row.updatedAt)
                             : col.key === LOCATION_KEY ? yardLocFull(unit, locPrefix)
+                            : col.key === 'Aging PM' ? fmtAgingPm(c)
                             : (c[col.key] || '')
                           return (
                             <div key={col.key} className="flex items-center justify-between gap-3 text-[12.5px] border-b hairline py-1.5">

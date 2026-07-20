@@ -42,6 +42,59 @@ const DEFAULT_VISIBLE = new Set([
  *  e.g. "N-R0905"). Not a sheet cell — resolved from the car's placement. */
 export const LOCATION_KEY = '__location'
 
+/** The 15 PM date columns, in order (PM1 … PM15). */
+export const PM_KEYS = Array.from({ length: 15 }, (_, i) => `PM${i + 1}`)
+
+const _MONTHS: Record<string, number> = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+}
+
+/** A cell that may hold an Excel serial (1900 system) OR a date-ish string →
+ *  a JS timestamp (ms, at local midnight), or null when it isn't a date. */
+export function parseCellDate(raw: string | undefined): number | null {
+  const s = String(raw ?? '').trim()
+  if (!s || s === '-') return null
+  const num = Number(s)
+  // Excel 1900 serial: 25569 = 1970-01-01. Guard to a sane calendar window.
+  if (Number.isFinite(num) && String(num) === s && num > 20000 && num < 90000) {
+    return Math.round((num - 25569) * 86_400_000)
+  }
+  // ISO: yyyy-mm-dd
+  const iso = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)
+  if (iso) return new Date(+iso[1], +iso[2] - 1, +iso[3]).getTime()
+  // dd-Mon-yy(yy) e.g. "5-Jul-25", "05 Jul 2025"
+  const m = s.match(/(\d{1,2})[-\s/]([A-Za-z]{3,})[-\s/](\d{2,4})/)
+  if (m) {
+    const mon = _MONTHS[m[2].slice(0, 3).toLowerCase()]
+    if (mon) { const y = +m[3]; return new Date(y < 100 ? 2000 + y : y, mon - 1, +m[1]).getTime() }
+  }
+  // dd/mm/yyyy or dd-mm-yyyy (all-numeric)
+  const dmy = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})$/)
+  if (dmy) { const y = +dmy[3]; return new Date(y < 100 ? 2000 + y : y, +dmy[2] - 1, +dmy[1]).getTime() }
+  const t = Date.parse(s)
+  return Number.isFinite(t) ? t : null
+}
+
+/** The most recent PM date (ms) among PM1…PM15, or null when never PM'd. */
+export function lastPmDate(cells: Record<string, string>): number | null {
+  let latest: number | null = null
+  for (const k of PM_KEYS) {
+    const t = parseCellDate(cells[k])
+    if (t != null && (latest == null || t > latest)) latest = t
+  }
+  return latest
+}
+
+/** Aging PM = whole days since the most recent PM (PM1…PM15). '' when the car
+ *  has never had a PM recorded. Replaces the raw imported cell (which held an
+ *  Excel serial like "46223" = the formula's =TODAY() with no PM date). */
+export function agingPmDays(cells: Record<string, string>, now: number = Date.now()): string {
+  const last = lastPmDate(cells)
+  if (last == null) return ''
+  return String(Math.max(0, Math.floor((now - last) / 86_400_000)))
+}
+
 /** Configurable-filter model (shared by the Unit List filter bar + the store). */
 export const MAX_FILTERS = 6
 export const DEFAULT_FILTER_COLS = ['Car Status', 'Location yard', 'Model', 'Final Status', 'company']
