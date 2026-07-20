@@ -317,7 +317,6 @@ export function Units() {
           })}
           {anyFilter && <button className="btn btn-ghost shrink-0" onClick={clearFilters}><X size={14} /> ล้าง</button>}
           <button className={cx('btn btn-ghost shrink-0 ml-auto', filterMgr && 'btn-blue')} title="ปรับแต่งช่องกรอง" onClick={() => setFilterMgr((v) => !v)}><SlidersHorizontal size={14} /></button>
-          {filterMgr && <FilterManager cfg={filterCfg} setCfg={setFilterCfg} onClose={() => setFilterMgr(false)} />}
         </div>
       )}
 
@@ -337,6 +336,7 @@ export function Units() {
             sortKey={sortKey} sortDir={sortDir} toggleSort={toggleSort} optionsFor={optionsFor} />
         )}
 
+        {filterMgr && <FilterManager cfg={filterCfg} setCfg={setFilterCfg} onClose={() => setFilterMgr(false)} />}
         {colMgr && <ColumnManager onClose={() => setColMgr(false)} />}
       </div>
     </div>
@@ -1710,39 +1710,36 @@ function FilterManager({ cfg, setCfg, onClose }: { cfg: FilterItem[]; setCfg: Re
   })
 
   return (
-    <>
-      <div className="fixed inset-0 z-[59]" onClick={onClose} />
-      <div className="absolute top-full right-0 mt-1.5 rounded-xl overflow-hidden z-[60] panel-solid flex flex-col" style={{ width: 270, boxShadow: '0 12px 32px -8px rgba(15,23,42,0.28)' }}>
-        <div className="flex items-center justify-between px-3 py-2.5 border-b hairline shrink-0">
-          <div className="font-semibold text-[13.5px] flex items-center gap-1.5"><SlidersHorizontal size={15} /> ปรับแต่งช่องกรอง <span className="tabular" style={{ color: 'var(--faint)' }}>({visCount})</span></div>
-          <button className="btn btn-ghost p-1" onClick={onClose}><X size={15} /></button>
-        </div>
-        <div className="flex items-center gap-1.5 px-3 py-2 border-b hairline shrink-0 text-[12px]">
-          <button className="btn btn-ghost px-2 py-1" onClick={() => showAll(true)}>แสดงทั้งหมด</button>
-          <button className="btn btn-ghost px-2 py-1" onClick={() => showAll(false)}>ซ่อนทั้งหมด</button>
-          <button className="btn btn-ghost px-2 py-1 ml-auto" onClick={reset}>รีเซ็ต</button>
-        </div>
-        <div className="p-2">
-          {/* pinned filters — always shown, cannot hide/reorder */}
-          {['Unit Nbr', 'Grouping'].map((label) => (
-            <div key={label} className="flex items-center gap-2 px-1.5 py-1 rounded-md" style={{ opacity: 0.75 }}>
-              <Lock size={12} style={{ color: 'var(--faint)' }} />
-              <span className="text-[12.5px] flex-1">{label}</span>
-              <span className="text-[10px]" style={{ color: 'var(--faint)' }}>ตรึงไว้</span>
-            </div>
-          ))}
-          <div className="border-t hairline my-1" />
-          {cfg.map((f) => (
-            <div key={f.key} className="flex items-center gap-2 px-1.5 py-1 rounded-md row-hover">
-              <input type="checkbox" checked={f.visible} onChange={() => toggle(f.key)} />
-              <span className="text-[12.5px] flex-1 clip">{labelOf(f.key)}</span>
-              <button className="btn btn-ghost p-0.5" title="เลื่อนขึ้น" onClick={() => move(f.key, -1)}><ChevronUp size={13} /></button>
-              <button className="btn btn-ghost p-0.5" title="เลื่อนลง" onClick={() => move(f.key, 1)}><ChevronDown size={13} /></button>
-            </div>
-          ))}
-        </div>
+    <div className="panel-solid shrink-0 flex flex-col fade-up" style={{ width: 270 }}>
+      <div className="flex items-center justify-between px-3 py-2.5 border-b hairline shrink-0">
+        <div className="font-semibold text-[13.5px] flex items-center gap-1.5"><SlidersHorizontal size={15} /> ปรับแต่งช่องกรอง <span className="tabular" style={{ color: 'var(--faint)' }}>({visCount})</span></div>
+        <button className="btn btn-ghost p-1.5" onClick={onClose}><X size={15} /></button>
       </div>
-    </>
+      <div className="flex items-center gap-1.5 px-3 py-2 border-b hairline shrink-0 text-[12px]">
+        <button className="btn btn-ghost px-2 py-1" onClick={() => showAll(true)}>แสดงทั้งหมด</button>
+        <button className="btn btn-ghost px-2 py-1" onClick={() => showAll(false)}>ซ่อนทั้งหมด</button>
+        <button className="btn btn-ghost px-2 py-1 ml-auto" onClick={reset}>รีเซ็ต</button>
+      </div>
+      <div className="overflow-auto flex-1 p-2">
+        {/* pinned filters — always shown, cannot hide/reorder */}
+        <div className="text-[10.5px] font-bold uppercase px-1 py-1" style={{ color: 'var(--faint)' }}>ตรึงไว้</div>
+        {['Unit Nbr', 'Grouping'].map((label) => (
+          <div key={label} className="flex items-center gap-2 px-1.5 py-1 rounded-md" style={{ opacity: 0.7 }}>
+            <Lock size={12} style={{ color: 'var(--faint)' }} />
+            <span className="text-[12.5px] flex-1">{label}</span>
+          </div>
+        ))}
+        <div className="text-[10.5px] font-bold uppercase px-1 py-1 mt-2" style={{ color: 'var(--faint)' }}>ปรับแต่งได้</div>
+        {cfg.map((f) => (
+          <div key={f.key} className="flex items-center gap-2 px-1.5 py-1 rounded-md row-hover">
+            <input type="checkbox" checked={f.visible} onChange={() => toggle(f.key)} />
+            <span className="text-[12.5px] flex-1 clip">{labelOf(f.key)}</span>
+            <button className="btn btn-ghost p-0.5" title="เลื่อนขึ้น" onClick={() => move(f.key, -1)}><ChevronUp size={13} /></button>
+            <button className="btn btn-ghost p-0.5" title="เลื่อนลง" onClick={() => move(f.key, 1)}><ChevronDown size={13} /></button>
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }
 
