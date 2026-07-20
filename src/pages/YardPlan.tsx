@@ -2,12 +2,15 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Zap, Layers, MapPin, Pencil, Eye, Plus, Trash2, RotateCw, Square, MousePointer2,
   Copy, X, Maximize2, Upload, Loader2, ImageOff, Grid3x3, ArrowLeftRight, ChevronDown,
+  Search, Printer, Download,
 } from 'lucide-react'
 import { useYard, useUnits, useBlocks } from '../store/useYard'
 import { useTrackingRows } from '../store/useTracking'
 import { deriveCarStatus, IN_YARD_STATUSES, CAR_STATUS_META } from '../lib/carStatus'
 import { rowInSite } from '../lib/siteScope'
 import { rowsToCsv, type TrackRow } from '../lib/excelTracking'
+import { matchVins, toFindListRows } from '../lib/findCar'
+import { printFindList, exportFindListXlsx } from '../lib/groupingPrint'
 import { makeT } from '../i18n'
 import { MODELS, ZONE_COLOR } from '../lib/sampleData'
 import { BlockPopup } from '../components/BlockPopup'
@@ -178,6 +181,16 @@ export function YardPlan() {
     () => (currentSite ? allUnits.filter((u) => u.site === currentSite) : allUnits),
     [allUnits, currentSite],
   )
+
+  // ── find-car (ใบหารถ): Ctrl+F opens a bulk VIN search over this yard ──
+  const [findOpen, setFindOpen] = useState(false)
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) { e.preventDefault(); setFindOpen(true) }
+    }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [])
 
   // ── slot colouring mode: Status (default) / Model / Grouping / Final Status ──
   const [viewMode, setViewMode] = useState<YardViewMode>('status')
@@ -384,6 +397,11 @@ export function YardPlan() {
         sub={edit ? 'โหมดแก้ไขผัง · ลากเพื่อย้าย · ลากมุมขวาล่างเพื่อปรับขนาด · Alt+คลิก เปิดหน้าต่างช่องจอด' : 'คลิกบล็อกเพื่อเปิดหน้าต่างดูช่องจอด (เปิดได้หลายอัน)'}
         right={
           <div className="flex items-center gap-2 flex-wrap">
+            {/* find-car (ใบหารถ) — bulk VIN search over this yard, also opens with Ctrl+F */}
+            <button className="btn" title="ค้นหารถในลาน (Ctrl+F) — วาง VIN เต็มหรือ 5 ตัวท้าย" onClick={() => setFindOpen(true)}>
+              <Search size={14} /> ค้นหารถ
+            </button>
+
             {/* VIEW: colour every occupied slot by Status / Model / Grouping / Final Status */}
             <div className="relative">
               <button onClick={() => setViewOpen((v) => !v)}
@@ -449,6 +467,8 @@ export function YardPlan() {
           </div>
         }
       />
+
+      {findOpen && <FindCarPanel units={units} siteName={siteName ?? ''} onClose={() => setFindOpen(false)} />}
 
       {/* legend for the active VIEW mode — visible on the main board itself, no popup needed */}
       <div className="panel px-3.5 py-2 mb-3">
@@ -728,6 +748,90 @@ function UnplacedModal({ unplaced, offMap, siteName, onClose, toast }: {
           {fUn.map((r, i) => <Row key={r.vin} r={r} n={i + 1} />)}
 
           {fOff.length === 0 && fUn.length === 0 && <div className="text-center py-8 text-[13px]" style={{ color: 'var(--faint)' }}>ไม่พบ VIN</div>}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Yard Plan find-car panel (ใบหารถ): paste VIN full/last-5/many → matches in
+ *  this yard with their location, exportable as Excel/PDF. Opens with Ctrl+F. */
+function FindCarPanel({ units, siteName, onClose }: { units: Unit[]; siteName: string; onClose: () => void }) {
+  const currentSite = useYard((s) => s.currentSite)
+  const sites = useYard((s) => s.sites)
+  const toast = useYard((s) => s.toast)
+  const allRows = useTrackingRows()
+  const [text, setText] = useState('')
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h)
+  }, [onClose])
+
+  const scoped = useMemo(
+    () => (currentSite ? allRows.filter((r) => rowInSite(r, currentSite, sites)) : allRows),
+    [allRows, currentSite, sites],
+  )
+  const unitByVin = useMemo(() => { const m = new Map<string, Unit>(); for (const u of units) m.set(u.vin, u); return m }, [units])
+
+  const { found, notFound, asked } = useMemo(() => matchVins(text, scoped), [text, scoped])
+  const findRows = useMemo(() => toFindListRows(found, (vin) => unitByVin.get(vin), siteName), [found, unitByVin, siteName])
+
+  const today = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' })
+  const doPdf = () => { if (findRows.length) printFindList(findRows, today) }
+  const doXlsx = async () => {
+    if (!findRows.length) return
+    try { await exportFindListXlsx(findRows, today) } catch (e) { console.error('[findlist] xlsx', e); toast('err', 'ออกไฟล์ Excel ไม่สำเร็จ') }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4" style={{ background: 'rgba(15,23,42,0.5)', backdropFilter: 'blur(3px)' }} onClick={onClose}>
+      <div className="panel-solid pop w-full overflow-hidden flex flex-col" style={{ maxWidth: 640, maxHeight: '88vh' }} onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-2.5 px-5 py-4 border-b hairline">
+          <Search size={18} style={{ color: 'var(--brand)' }} />
+          <div className="min-w-0 flex-1">
+            <div className="font-bold text-[16px] leading-tight">ค้นหารถ — ใบหารถ</div>
+            <div className="text-[12px]" style={{ color: 'var(--muted)' }}>{siteName || '—'} · วาง VIN เต็มหรือ 5 ตัวท้าย · ออกใบหารถ Excel/PDF</div>
+          </div>
+          <button className="btn btn-ghost p-2" onClick={onClose}><X size={18} /></button>
+        </div>
+
+        <div className="px-4 py-3 border-b hairline">
+          <textarea className="input w-full" autoFocus style={{ minHeight: 78, fontFamily: 'JetBrains Mono, monospace', fontSize: 12 }}
+            placeholder={'วาง/พิมพ์ VIN — เต็มหรือ 5 ตัวท้าย\nLGXC74C41SG006806\n006806\n06414'} value={text} onChange={(e) => setText(e.target.value)} />
+          <div className="flex items-center gap-3 mt-2 text-[12px] flex-wrap">
+            <span style={{ color: 'var(--muted)' }}>ค้นหา <b className="tabular">{asked}</b> รายการ</span>
+            <span style={{ color: 'var(--st-yard)' }}>พบ <b className="tabular">{found.length}</b> คัน</span>
+            {notFound.length > 0 && <span style={{ color: 'var(--st-damage)' }}>ไม่พบ <b className="tabular">{notFound.length}</b></span>}
+            <div className="ml-auto flex items-center gap-1.5">
+              <button className="btn btn-ghost py-1" disabled={!found.length} onClick={doXlsx}><Download size={13} /> ใบหารถ (Excel)</button>
+              <button className="btn btn-ghost py-1" disabled={!found.length} onClick={doPdf}><Printer size={13} /> ใบหารถ (PDF)</button>
+              {text && <button className="btn btn-ghost py-1" onClick={() => setText('')}><X size={13} /> ล้าง</button>}
+            </div>
+          </div>
+          {notFound.length > 0 && <div className="text-[11px] mt-1 vin clip" style={{ color: 'var(--faint)' }}>ไม่พบ: {notFound.slice(0, 12).join(', ')}{notFound.length > 12 ? ` +${notFound.length - 12}` : ''}</div>}
+        </div>
+
+        <div className="overflow-auto p-2" style={{ background: 'var(--app-bg)' }}>
+          {asked === 0 ? (
+            <div className="text-center py-8 text-[13px]" style={{ color: 'var(--faint)' }}>วาง VIN ด้านบนเพื่อค้นหาตำแหน่งรถในลาน</div>
+          ) : found.length === 0 ? (
+            <div className="text-center py-8 text-[13px]" style={{ color: 'var(--faint)' }}>ไม่พบรถในลานนี้</div>
+          ) : (
+            <>
+              <div className="grid items-center gap-2 px-3 py-1.5 text-[11px] font-bold" style={{ gridTemplateColumns: '30px 1fr 96px 78px 96px', color: 'var(--faint)' }}>
+                <span>No</span><span>VIN</span><span>Model</span><span>Color</span><span>Location</span>
+              </div>
+              {findRows.map((r, i) => (
+                <div key={r.vin} className="grid items-center gap-2 px-3 py-1.5 rounded-lg" style={{ gridTemplateColumns: '30px 1fr 96px 78px 96px', background: '#fff', marginBottom: 3 }}>
+                  <span className="text-[11px] tabular" style={{ color: 'var(--faint)' }}>{i + 1}</span>
+                  <span className="vin text-[12.5px] font-bold clip">{r.vin}</span>
+                  <span className="text-[11.5px] clip" style={{ color: 'var(--muted)' }}>{r.model || '—'}</span>
+                  <span className="text-[11.5px] clip" style={{ color: 'var(--muted)' }}>{r.color || '—'}</span>
+                  <span className="gbadge tabular" style={{ color: r.location ? 'var(--brand)' : '#a16207', background: r.location ? 'var(--brand-soft)' : 'rgba(234,179,8,0.16)', justifySelf: 'start' }}>{r.location || 'ไม่พบตำแหน่ง'}</span>
+                </div>
+              ))}
+            </>
+          )}
         </div>
       </div>
     </div>

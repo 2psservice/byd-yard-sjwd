@@ -13,8 +13,8 @@ import { useTracking, useTrackingRows, useVisibleColumns } from '../store/useTra
 import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, type ColGroup, type Column } from '../lib/trackingColumns'
 import { CAR_STATUS_META, deriveCarStatus, IN_YARD_STATUSES, PARKED_STATUSES, isWaitingRepair, finalColor, vinOfStatusColor, taxStatusColor } from '../lib/carStatus'
 import { rowsToCsv, type TrackRow, type RowEvent } from '../lib/excelTracking'
-import { siteGroupingConfig, yardLocCode } from '../lib/groupingImport'
-import { printFindList, exportFindListXlsx, type FindListRow } from '../lib/groupingPrint'
+import { printFindList, exportFindListXlsx } from '../lib/groupingPrint'
+import { matchVins, toFindListRows } from '../lib/findCar'
 import { rowInSite } from '../lib/siteScope'
 import { zoneLabel } from '../components/CarDiagramMultiView'
 import { cx, PhotoLightbox } from '../components/ui'
@@ -835,41 +835,13 @@ function MylistView({ allRows, visCols, sel, setSel, sortKey, sortDir, toggleSor
   const currentSite = useYard((s) => s.currentSite)
   const toast = useYard((s) => s.toast)
   const siteName = sites.find((s) => s.id === currentSite)?.name ?? ''
-  const byVin = useMemo(() => { const m = new Map<string, TrackRow>(); for (const r of allRows) m.set(r.vin, r); return m }, [allRows])
-
-  const { found, notFound, asked } = useMemo(() => {
-    // accept full VINs AND partials (last-5, etc.) — tokens ≥ 3 alphanumeric chars.
-    // ≥11 chars → exact VIN; shorter → suffix/substring match (like typing "154237")
-    const tokens = (text.toUpperCase().match(/[A-Z0-9]{3,20}/g) ?? [])
-    const uniq = [...new Set(tokens)]
-    const found: TrackRow[] = [], notFound: string[] = []
-    const seen = new Set<string>()
-    for (const tok of uniq) {
-      let hits: TrackRow[]
-      if (tok.length >= 11) { const r = byVin.get(tok); hits = r ? [r] : [] }
-      else hits = allRows.filter((r) => r.vin.endsWith(tok) || r.vin.includes(tok))
-      if (!hits.length) { notFound.push(tok); continue }
-      for (const r of hits) if (!seen.has(r.vin)) { seen.add(r.vin); found.push(r) }
-    }
-    return { found, notFound, asked: uniq.length }
-  }, [text, byVin, allRows])
+  const { found, notFound, asked } = useMemo(() => matchVins(text, allRows), [text, allRows])
 
   // build ใบหารถ rows (yard location code + fallbacks), for print / Excel export
-  const findRows: FindListRow[] = useMemo(() => {
-    const prefix = siteGroupingConfig(siteName).prefix
-    return found.map((r) => {
-      const u = units[r.vin]
-      const loc = yardLocCode(u ? { block: u.block, slot: u.slot } : null, prefix)
-        || r.cells['storage Yard'] || r.cells['Location yard'] || ''
-      return {
-        vin: r.vin,
-        model: r.cells['Model'] || u?.modelName || r.cells['Model name'] || '',
-        color: r.cells['Color'] || u?.color || '',
-        location: loc,
-        remark: r.cells['หมายเหตุ'] || r.cells['Remark'] || '',
-      }
-    })
-  }, [found, units, siteName])
+  const findRows = useMemo(
+    () => toFindListRows(found, (vin) => units[vin], siteName),
+    [found, units, siteName],
+  )
 
   const today = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' })
   const doPdf = () => { if (findRows.length) printFindList(findRows, today) }
