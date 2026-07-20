@@ -523,7 +523,7 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
     nodes.push(...groups)
     // Add Defect: attach the SAME manual defect to all selected VINs at once
     nodes.push({ kind: 'divider' })
-    nodes.push({ kind: 'item', label: n > 1 ? `เพิ่มตำหนิ (${n})…` : 'เพิ่มตำหนิ…', icon: <ShieldCheck size={14} />, onSelect: () => { setBulkDefect(targets); setMenu(null) } })
+    nodes.push({ kind: 'item', label: n > 1 ? `Add Defect (${n})…` : 'Add Defect…', icon: <ShieldCheck size={14} />, onSelect: () => { setBulkDefect(targets); setMenu(null) } })
     // Grouping: type / change the grouping number — writes to the tracking cell
     // (bulkUpdate) so it updates everywhere the group is read (Grouping view etc.).
     nodes.push({ kind: 'divider' })
@@ -706,7 +706,7 @@ function BulkDefectModal({ vins, onClose, onDone }: { vins: string[]; onClose: (
   const save = () => {
     if (!form.position.trim() && !form.defect.trim()) { toast('err', 'กรุณากรอกอย่างน้อย Position หรือ Defect/NG'); return }
     const n = addManualDamageBulk(vins, form)
-    toast('ok', `เพิ่มตำหนิให้ ${n} คันแล้ว`)
+    toast('ok', `Add Defect ให้ ${n} คันแล้ว`)
     onDone(); onClose()
   }
   const Field = ({ label, children }: { label: string; children: React.ReactNode }) => (
@@ -718,18 +718,19 @@ function BulkDefectModal({ vins, onClose, onDone }: { vins: string[]; onClose: (
         <div className="flex items-center gap-2.5 px-5 py-4 border-b hairline shrink-0">
           <ShieldCheck size={18} style={{ color: 'var(--st-damage)' }} />
           <div className="min-w-0 flex-1">
-            <div className="font-bold text-[16px] leading-tight">เพิ่มตำหนิ</div>
+            <div className="font-bold text-[16px] leading-tight">Add Defect</div>
             <div className="text-[12px]" style={{ color: 'var(--muted)' }}>ใส่ตำหนิเดียวกันให้ <b className="tabular" style={{ color: 'var(--brand)' }}>{vins.length}</b> คันที่เลือก</div>
           </div>
           <button className="btn btn-ghost p-2" onClick={onClose}><X size={18} /></button>
         </div>
         <div className="p-4 overflow-auto grid grid-cols-2 gap-3">
-          <Field label="Position"><Combo value={form.position} onChange={(v) => set({ position: v })} options={opts.position} placeholder="Position" /></Field>
-          <Field label="Defect/NG"><Combo value={form.defect} onChange={(v) => set({ defect: v })} options={opts.defect} placeholder="Defect/NG" /></Field>
-          <Field label="Cat NG"><Combo value={form.categoryNG} onChange={(v) => set({ categoryNG: v })} options={opts.catNG} placeholder="Cat NG" /></Field>
-          <Field label="Cat (Repair)"><Combo value={form.categoryRepair} onChange={(v) => set({ categoryRepair: v })} options={opts.catRepair} placeholder="Cat (Repair)" /></Field>
-          <Field label="Incharge"><Combo value={form.incharge} onChange={(v) => set({ incharge: v })} options={opts.incharge} placeholder="Incharge" /></Field>
-          <Field label="From/Stock"><Combo value={form.note} onChange={(v) => set({ note: v })} options={opts.note} placeholder="From/Stock" /></Field>
+          {/* every field is type-in + dropdown (native datalist) — needs a unique id */}
+          <Field label="Position"><Combo id="bd-pos" value={form.position} onChange={(v) => set({ position: v })} options={opts.position} placeholder="Position" /></Field>
+          <Field label="Defect/NG"><Combo id="bd-defect" value={form.defect} onChange={(v) => set({ defect: v })} options={opts.defect} placeholder="Defect/NG" /></Field>
+          <Field label="Cat NG"><Combo id="bd-catng" value={form.categoryNG} onChange={(v) => set({ categoryNG: v })} options={opts.catNG} placeholder="Cat NG" /></Field>
+          <Field label="Cat (Repair)"><Combo id="bd-catrep" value={form.categoryRepair} onChange={(v) => set({ categoryRepair: v })} options={opts.catRepair} placeholder="Cat (Repair)" /></Field>
+          <Field label="Incharge"><Combo id="bd-incharge" value={form.incharge} onChange={(v) => set({ incharge: v })} options={opts.incharge} placeholder="Incharge" /></Field>
+          <Field label="From/Stock"><Combo id="bd-note" value={form.note} onChange={(v) => set({ note: v })} options={opts.note} placeholder="From/Stock" /></Field>
           <Field label="Date"><Combo value={form.date} onChange={(v) => set({ date: v })} type="date" /></Field>
           <Field label="Status Repair">
             <select className="input w-full text-[13px] py-2" value={form.statusRepair} onChange={(e) => set({ statusRepair: e.target.value })}>
@@ -740,7 +741,7 @@ function BulkDefectModal({ vins, onClose, onDone }: { vins: string[]; onClose: (
         </div>
         <div className="flex gap-2 p-4 border-t hairline shrink-0">
           <button className="btn flex-1 py-2.5 text-[13px]" onClick={onClose}>ยกเลิก</button>
-          <button className="btn btn-primary flex-1 py-2.5 text-[13px] font-semibold" onClick={save}><ShieldCheck size={15} /> เพิ่มตำหนิให้ {vins.length} คัน</button>
+          <button className="btn btn-primary flex-1 py-2.5 text-[13px] font-semibold" onClick={save}><ShieldCheck size={15} /> Add Defect · {vins.length} คัน</button>
         </div>
       </div>
     </div>
