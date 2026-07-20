@@ -133,8 +133,10 @@ interface YardState {
   updateDamage: (vin: string, id: string, patch: Partial<import('../types').Damage>) => void
   updateRepairStatus: (vin: string, id: string, status: string) => void
   addManualDamage: (vin: string, f: { position?: string; defect?: string; categoryNG?: string; categoryRepair?: string; incharge?: string; note?: string; date?: string; statusRepair?: string; repairDate?: string; severity?: 'minor' | 'major' }) => void
-  /** Add the SAME manual defect to many VINs at once (Unit List bulk action). */
-  addManualDamageBulk: (vins: string[], f: { position?: string; defect?: string; categoryNG?: string; categoryRepair?: string; incharge?: string; note?: string; date?: string; statusRepair?: string; repairDate?: string; severity?: 'minor' | 'major' }) => number
+  /** Add the SAME manual defect to many VINs at once (Unit List bulk action).
+   *  `source` routes it to the right Report sheet (yardDefect → Defect-Yard,
+   *  factoryDefect → Defect-Factory); defaults to 'manual' (→ Defect-Yard). */
+  addManualDamageBulk: (vins: string[], f: { position?: string; defect?: string; categoryNG?: string; categoryRepair?: string; incharge?: string; note?: string; date?: string; statusRepair?: string; repairDate?: string; severity?: 'minor' | 'major'; source?: import('../types').DamageSource }) => number
   suggest: (vin: string) => SlotCandidate | null
   assign: (vin: string, slot: { block: string; row: number; slot: number }, driver?: string, mode?: 'AUTO' | 'SEMI') => void
   confirmParked: (vin: string) => void
@@ -575,7 +577,7 @@ export const useYard = create<YardState>()(
             severity,
             at,
             by: s.currentUser,
-            source: 'manual',
+            source: f.source ?? 'manual',
             note: f.note?.trim() || undefined,
             categoryNG: (f.categoryNG?.trim() as Damage['categoryNG']) || undefined,
             categoryRepair: (f.categoryRepair?.trim() as Damage['categoryRepair']) || undefined,
