@@ -11,7 +11,7 @@ import { CarTopView } from '../components/CarTopView'
 import { printIr, printDn, printIrPaper } from '../lib/dnir'
 import { useYard } from '../store/useYard'
 import { useTracking, useTrackingRows, useVisibleColumns } from '../store/useTracking'
-import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, LOCATION_KEY, type ColGroup, type Column } from '../lib/trackingColumns'
+import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, LOCATION_KEY, MAX_FILTERS, DEFAULT_FILTER_COLS, type ColGroup, type Column } from '../lib/trackingColumns'
 import { siteGroupingConfig, yardLocFull } from '../lib/groupingImport'
 import { CAR_STATUS_META, deriveCarStatus, IN_YARD_STATUSES, PARKED_STATUSES, isWaitingRepair, finalColor, vinOfStatusColor, taxStatusColor } from '../lib/carStatus'
 import { rowsToCsv, type TrackRow, type RowEvent } from '../lib/excelTracking'
@@ -114,21 +114,9 @@ const COLOR_SW: Record<string, string> = {
 type SortDir = 1 | -1
 type Tab = 'grouping' | 'units' | 'mylist'
 
-// ── customisable filter bar ────────────────────────────────────────────────
-// Unit Nbr + Grouping are pinned (always shown). Every other filter is a
-// COLUMN chosen from the column manager — up to MAX_FILTERS at once, ordered.
-// Config (the list of column keys) persists in localStorage.
-const FILTER_CFG_KEY = 'sjwd-filter-cols'
-const MAX_FILTERS = 6
-const DEFAULT_FILTER_COLS = ['Car Status', 'Location yard', 'Model', 'Final Status', 'company']
-
-function loadFilterCols(): string[] {
-  try {
-    const saved = JSON.parse(localStorage.getItem(FILTER_CFG_KEY) || 'null')
-    if (Array.isArray(saved) && saved.every((k) => typeof k === 'string')) return saved.slice(0, MAX_FILTERS)
-    return DEFAULT_FILTER_COLS
-  } catch { return DEFAULT_FILTER_COLS }
-}
+// Filter bar: Unit Nbr + Grouping are pinned; every other filter is a COLUMN
+// chosen from the column manager (up to MAX_FILTERS). The config now lives in
+// the tracking store (persisted + part of the shared "default view" preset).
 
 export function Units() {
   const { focus, setFocus } = useYard()
@@ -158,9 +146,9 @@ export function Units() {
   const [colFilters, setColFilters] = useState<Record<string, string>>({})
   const setColFilter = (key: string, v: string) => setColFilters((m) => ({ ...m, [key]: v }))
   const [filtersOpen, setFiltersOpen] = useState(true)
-  const [filterCols, setFilterCols] = useState<string[]>(loadFilterCols)
+  const filterCols = useTracking((s) => s.filterCols)
+  const setFilterCols = useTracking((s) => s.setFilterCols)
   const [filterMgr, setFilterMgr] = useState(false)
-  useEffect(() => { try { localStorage.setItem(FILTER_CFG_KEY, JSON.stringify(filterCols)) } catch { /* quota */ } }, [filterCols])
   // only apply filters whose column is currently visible in the table
   const visColKeys = useMemo(() => new Set(visCols.map((c) => c.key)), [visCols])
   const colByKey = useMemo(() => new Map(visCols.map((c) => [c.key, c])), [visCols])
@@ -1793,6 +1781,42 @@ function FilterManager({ cols, filterCols, setFilterCols, onClose }: {
         ))}
         {available.length === 0 && q && <div className="text-center text-[12px] py-3" style={{ color: 'var(--faint)' }}>ไม่พบคอลัมน์</div>}
       </div>
+      <ViewDefaultButtons />
+    </div>
+  )
+}
+
+// shared "default view" controls — admins publish the current columns + filters
+// as everyone's starting default; anyone can pull the latest default on demand
+function ViewDefaultButtons() {
+  const isAdmin = useYard((s) => s.appUsers.find((u) => u.id === s.loggedInUserId)?.role === 'admin')
+  const toast = useYard((s) => s.toast)
+  const saveViewDefault = useTracking((s) => s.saveViewDefault)
+  const resetToViewDefault = useTracking((s) => s.resetToViewDefault)
+  const [busy, setBusy] = useState(false)
+  const save = async () => {
+    if (!window.confirm('ตั้งค่าคอลัมน์ + ช่องกรองปัจจุบัน เป็นค่าเริ่มต้นของทุกคน?\n(ผู้ใช้ใหม่/เครื่องใหม่จะเริ่มด้วยค่านี้ · คนที่ปรับเองไว้แล้วไม่ถูกเปลี่ยน)')) return
+    setBusy(true)
+    try { await saveViewDefault(); toast('ok', 'ตั้งเป็นค่าเริ่มต้นของทุกคนแล้ว') }
+    catch { toast('err', 'บันทึกไม่สำเร็จ — ต้องมีตาราง app_config ใน Supabase') }
+    setBusy(false)
+  }
+  const load = async () => {
+    setBusy(true)
+    try { const ok = await resetToViewDefault(); toast(ok ? 'ok' : 'info', ok ? 'โหลดค่าเริ่มต้นแล้ว' : 'ยังไม่มีค่าเริ่มต้นที่ตั้งไว้') }
+    catch { toast('err', 'โหลดไม่สำเร็จ') }
+    setBusy(false)
+  }
+  return (
+    <div className="p-2 border-t hairline shrink-0 space-y-1">
+      {isAdmin && (
+        <button className="btn btn-ghost w-full justify-center text-[12px] py-1.5" disabled={busy} onClick={save} title="เผยแพร่คอลัมน์+ช่องกรองปัจจุบันเป็นค่าเริ่มต้นของทุกคน">
+          <Check size={13} /> ตั้งเป็นค่าเริ่มต้นของทุกคน
+        </button>
+      )}
+      <button className="btn btn-ghost w-full justify-center text-[12px] py-1.5" disabled={busy} onClick={load} title="โหลดค่าเริ่มต้นที่แอดมินตั้งไว้ (แทนที่ค่าปัจจุบันของเครื่องนี้)">
+        <RefreshCw size={13} /> โหลดค่าเริ่มต้น
+      </button>
     </div>
   )
 }
@@ -1875,6 +1899,7 @@ function ColumnManager({ onClose }: { onClose: () => void }) {
           onKeyDown={(e) => { if (e.key === 'Enter' && newCol.trim()) { addColumn(newCol); setNewCol('') } }} />
         <button className="btn btn-primary px-2.5" onClick={() => { if (newCol.trim()) { addColumn(newCol); setNewCol('') } }}><Plus size={15} /></button>
       </div>
+      <ViewDefaultButtons />
     </div>
   )
 }

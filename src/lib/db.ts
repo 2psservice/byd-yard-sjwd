@@ -384,6 +384,21 @@ export async function deleteAppUser(id: string): Promise<void> {
   await withRetry(() => supabase.from('app_users').delete().eq('id', id))
 }
 
+// ── shared app config (key/value jsonb) — e.g. the default Unit-List view ────
+/** Read a shared config blob by id. null when unset, table missing, or offline. */
+export async function fetchAppConfig<T = unknown>(id: string): Promise<T | null> {
+  if (!isConfigured()) return null
+  const { data, error } = await supabase.from('app_config').select('value').eq('id', id).maybeSingle()
+  if (error) { if (error.code !== '42P01') console.error('[db] fetchAppConfig', error); return null } // 42P01 = table not migrated
+  return (data?.value ?? null) as T | null
+}
+/** Upsert a shared config blob (admin action). Throws so the caller can toast. */
+export async function saveAppConfig(id: string, value: unknown): Promise<void> {
+  if (!isConfigured()) throw new Error('cloud not configured')
+  const { error } = await supabase.from('app_config').upsert({ id, value, updated_at: new Date().toISOString() }, { onConflict: 'id' })
+  if (error) throw error
+}
+
 // ── yard-plan blocks (layout sync across devices) ───────────────────────────
 
 function blockToRow(siteId: string, b: Block) {
