@@ -11,7 +11,8 @@ import { CarTopView } from '../components/CarTopView'
 import { printIr, printDn, printIrPaper } from '../lib/dnir'
 import { useYard } from '../store/useYard'
 import { useTracking, useTrackingRows, useVisibleColumns } from '../store/useTracking'
-import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, type ColGroup, type Column } from '../lib/trackingColumns'
+import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, LOCATION_KEY, type ColGroup, type Column } from '../lib/trackingColumns'
+import { siteGroupingConfig, yardLocFull } from '../lib/groupingImport'
 import { CAR_STATUS_META, deriveCarStatus, IN_YARD_STATUSES, PARKED_STATUSES, isWaitingRepair, finalColor, vinOfStatusColor, taxStatusColor } from '../lib/carStatus'
 import { rowsToCsv, type TrackRow, type RowEvent } from '../lib/excelTracking'
 import { printFindList, exportFindListXlsx } from '../lib/groupingPrint'
@@ -143,6 +144,10 @@ export function Units() {
   )
   const visCols = useVisibleColumns()
   const { lastImport, loadFromIdb } = useTracking()
+  // computed yard-location code (prefix-block+row+slot), for the Location column
+  const allUnits = useYard((s) => s.units)
+  const locPrefix = siteGroupingConfig(sites.find((x) => x.id === currentSite)?.name ?? '').prefix
+  const locOf = (r: TrackRow) => yardLocFull(allUnits[r.vin], locPrefix) || r.cells['storage Yard'] || r.cells['Location yard'] || ''
 
   const [tab, setTab] = useState<Tab>('units')
   const [q, setQ] = useState('')
@@ -186,6 +191,11 @@ export function Units() {
       const present = new Set(rows.map((r) => deriveCarStatus(r.cells)))
       return CAR_STATUS_VALUES.filter((v) => present.has(v))
     }
+    if (key === LOCATION_KEY) {
+      const set = new Set<string>()
+      for (const r of rows) { const v = locOf(r); if (v) set.add(v) }
+      return [...set].sort()
+    }
     return grabDistinct(key)
   }
   const filterOptions = useMemo(() => {
@@ -220,7 +230,7 @@ export function Units() {
       for (const key of activeFilterCols) {
         const val = colFilters[key]
         if (!val || val === 'ALL') continue
-        const cell = key === 'Car Status' ? deriveCarStatus(r.cells) : (r.cells[key] ?? '')
+        const cell = key === 'Car Status' ? deriveCarStatus(r.cells) : key === LOCATION_KEY ? locOf(r) : (r.cells[key] ?? '')
         if (cell !== val) return false
       }
       if (unitPreset && !presetMatch(unitPreset, r)) return false
@@ -231,11 +241,12 @@ export function Units() {
         const d = (a.updatedAt ?? 0) - (b.updatedAt ?? 0)
         return (d || (Number(a.cells['No']) || 0) - (Number(b.cells['No']) || 0)) * sortDir
       }
-      const av = a.cells[sortKey] ?? '', bv = b.cells[sortKey] ?? ''
+      const av = sortKey === LOCATION_KEY ? locOf(a) : (a.cells[sortKey] ?? '')
+      const bv = sortKey === LOCATION_KEY ? locOf(b) : (b.cells[sortKey] ?? '')
       return av < bv ? -sortDir : av > bv ? sortDir : 0
     })
     return arr
-  }, [rows, searchIndex, q, fGroup, colFilters, activeFilterCols, unitPreset, sortKey, sortDir])
+  }, [rows, searchIndex, q, fGroup, colFilters, activeFilterCols, allUnits, locPrefix, unitPreset, sortKey, sortDir])
 
   const toggleSort = (key: string) => {
     if (sortKey === key) setSortDir((d) => (d * -1) as SortDir)
@@ -255,7 +266,13 @@ export function Units() {
   const anyFilter = !!q || !!fGroup || !!unitPreset
     || activeFilterCols.some((k) => colFilters[k] && colFilters[k] !== 'ALL')
 
-  const doExport = () => rowsToCsv(`SJWD_tracking_${Date.now()}.csv`, visCols.map((c) => ({ key: c.key, label: c.label })), filtered)
+  const doExport = () => {
+    // inject the computed Location cell so the CSV column isn't blank
+    const out = visCols.some((c) => c.key === LOCATION_KEY)
+      ? filtered.map((r) => ({ ...r, cells: { ...r.cells, [LOCATION_KEY]: locOf(r) } }))
+      : filtered
+    rowsToCsv(`SJWD_tracking_${Date.now()}.csv`, visCols.map((c) => ({ key: c.key, label: c.label })), out)
+  }
 
   const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: 'grouping', label: 'Grouping No.', icon: <FileText size={14} /> },
@@ -349,6 +366,13 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
   const columns = useTracking((s) => s.columns)
   const reorderColumn = useTracking((s) => s.reorderColumn)
   const toast = useYard((s) => s.toast)
+  // computed "Location" column: prefix-block+row+slot from the car's placement,
+  // falling back to the storage / Location-yard cell when the car isn't placed
+  const units = useYard((s) => s.units)
+  const sites = useYard((s) => s.sites)
+  const currentSite = useYard((s) => s.currentSite)
+  const locPrefix = siteGroupingConfig(sites.find((x) => x.id === currentSite)?.name ?? '').prefix
+  const locFor = (r: TrackRow) => yardLocFull(units[r.vin], locPrefix) || r.cells['storage Yard'] || r.cells['Location yard'] || ''
   const [dragCol, setDragCol] = useState<string | null>(null)
   const [overCol, setOverCol] = useState<string | null>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
@@ -637,7 +661,7 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
                 onContextMenu={(e) => onContextMenu(e, r.vin, idx)}>
                 <div className="gcell" style={{ width: GUTTER }} />
                 {visCols.map((c) => (
-                  <Cell key={c.key} col={c} value={c.key === 'Car Status' ? carStatus : c.key === 'No' ? fmtUpdated(r.updatedAt) : (r.cells[c.key] ?? '')}
+                  <Cell key={c.key} col={c} value={c.key === 'Car Status' ? carStatus : c.key === 'No' ? fmtUpdated(r.updatedAt) : c.key === LOCATION_KEY ? locFor(r) : (r.cells[c.key] ?? '')}
                     dim={c.key === 'Final Status' && carStatus === 'Gate-out'} />
                 ))}
               </div>
@@ -1197,6 +1221,9 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
   const columns = useTracking((s) => s.columns)
   const lang = useYard((s) => s.lang)
   const unit = useYard((s) => s.units[vin])
+  const sites = useYard((s) => s.sites)
+  const currentSite = useYard((s) => s.currentSite)
+  const locPrefix = siteGroupingConfig(sites.find((x) => x.id === currentSite)?.name ?? '').prefix
   const damages = unit?.damages ?? []
   const updateRepairStatus = useYard((s) => s.updateRepairStatus)
   const updateDamage = useYard((s) => s.updateDamage)
@@ -1391,9 +1418,11 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                       <div className="text-[11px] font-bold uppercase mb-2" style={{ color: 'var(--faint)' }}>{GROUP_LABEL[g][lang]}</div>
                       <div className="grid sm:grid-cols-2 gap-x-7 gap-y-0">
                         {cols.map((col) => {
-                          // "No" → "Last update": show the row's real update timestamp
-                          // (same as the Unit List grid), not the raw sheet "No" cell
-                          const val = col.key === 'No' ? fmtUpdated(row.updatedAt) : (c[col.key] || '')
+                          // "No" → "Last update" (timestamp), "__location" → the
+                          // computed yard code; everything else is a raw sheet cell
+                          const val = col.key === 'No' ? fmtUpdated(row.updatedAt)
+                            : col.key === LOCATION_KEY ? (yardLocFull(unit, locPrefix) || c['storage Yard'] || c['Location yard'] || '')
+                            : (c[col.key] || '')
                           return (
                             <div key={col.key} className="flex items-center justify-between gap-3 text-[12.5px] border-b hairline py-1.5">
                               <span style={{ color: 'var(--muted)' }}>{col.label}</span>
