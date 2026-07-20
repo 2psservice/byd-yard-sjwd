@@ -10,10 +10,27 @@ import * as db from '../lib/db'
 import { onSync, sendSync } from '../lib/syncBus'
 import { useYard } from './useYard'
 import { useTracking } from './useTracking' // one-way: tracking never imports ops
+import { PM_KEYS } from '../lib/trackingColumns'
 
 /** Process stage of one vehicle within a station queue (PDI / PM / Wash …).
  *  queued → (driver delivers) at-station → (staff records) checked → (driver returns) done. */
 export type QueueStage = 'queued' | 'at-station' | 'checked'
+
+/** Work category of a queue — drives the icon and, more importantly, WHERE a
+ *  completed car's date is stamped back into the tracking sheet (its Overview):
+ *   PM → the next empty PM1…PM15 slot · PDI → the "PDI" date ·
+ *   FINAL → "Final check date" (+ Final Status) · WASH / SPECIAL → no cell,
+ *   the completion is only recorded in the car's Event log. */
+export type QueueType = 'PDI' | 'PM' | 'FINAL' | 'WASH' | 'SPECIAL'
+
+/** Preset work types offered on the Operation page (order = button order). */
+export const QUEUE_TYPES: { type: QueueType; name: string; th: string }[] = [
+  { type: 'PM', name: 'PM', th: 'PM' },
+  { type: 'PDI', name: 'PDI', th: 'PDI' },
+  { type: 'FINAL', name: 'FINAL CHECK', th: 'FINAL CHECK' },
+  { type: 'WASH', name: 'Wash for sale', th: 'Wash for sale' },
+  { type: 'SPECIAL', name: 'งานพิเศษ', th: 'งานพิเศษ' },
+]
 
 export interface QueueItem {
   vin: string
@@ -23,6 +40,7 @@ export interface QueueItem {
   doneBy?: string
   stage?: QueueStage       // undefined === 'queued'
   result?: 'OK' | 'NG'     // station inspection outcome
+  stamped?: boolean        // overview write-back already applied (stamp once per item)
   fromSlot?: string        // slot the car was at before going to the station (e.g. "A1.1")
   // per-station people history
   deliveredBy?: string     // driver who drove the car TO the station
@@ -45,17 +63,70 @@ export interface WorkQueue {
   createdAt: number
   createdBy?: string
   items: QueueItem[]
-  site?: string // Site.id the queue was created under (tagged for future per-yard scoping)
+  site?: string // Site.id the queue was created under (queues are scoped per yard)
+  type?: QueueType  // work category (PM / PDI / FINAL / WASH / SPECIAL) — drives write-back
   kind?: 'sequence' // 'sequence' = a Grouping-to-Dealer delivery run (drives Wash → lane → gate-out)
 }
 
 export const PRESET_QUEUES = ['PM', 'Wash for sale', 'PDI', 'FINAL CHECK'] as const
+
+/** Resolve a queue's work category — explicit `type` on new queues, else inferred
+ *  from the name so legacy queues (created before `type` existed) still classify. */
+export function queueTypeOf(q: WorkQueue): QueueType {
+  if (q.type) return q.type
+  const n = q.name.toLowerCase()
+  if (n.includes('final')) return 'FINAL'
+  if (n.includes('pdi')) return 'PDI'
+  if (n.includes('wash')) return 'WASH'
+  if (/\bpm\b|^pm|pm[\s·-]/.test(n) || n.startsWith('pm')) return 'PM'
+  return 'SPECIAL'
+}
+
+/** Today as "DD/MM/YYYY" — the date format the yard stations write into the sheet. */
+function todayCell(): string {
+  const n = new Date()
+  return `${String(n.getDate()).padStart(2, '0')}/${String(n.getMonth() + 1).padStart(2, '0')}/${n.getFullYear()}`
+}
+
+/**
+ * Stamp a finished queue car's date back into the tracking sheet (its Overview),
+ * so a PM/PDI/FINAL recorded on the field shows up on the master row. Side-effect
+ * only (writes through useTracking.updateCell → syncs + logs history). Returns
+ * true if it wrote a cell, so the caller can flip the item's `stamped` flag and
+ * never double-write (which would eat a second PM slot on a re-toggle).
+ */
+function stampOverview(q: WorkQueue, vin: string, result?: 'OK' | 'NG'): boolean {
+  const type = queueTypeOf(q)
+  if (type === 'WASH' || type === 'SPECIAL') return false // event-log only, no cell
+  const tr = useTracking.getState()
+  const row = tr.rows[vin]
+  if (!row) return false
+  const d = todayCell()
+  if (type === 'PM') {
+    const slot = PM_KEYS.find((k) => !(row.cells[k] || '').trim())
+    if (!slot) return false // all 15 PM slots already used
+    tr.updateCell(vin, slot, d)
+    return true
+  }
+  if (type === 'PDI') {
+    tr.updateCell(vin, 'PDI', d)
+    return true
+  }
+  // FINAL
+  tr.updateCell(vin, 'Final check date', d)
+  tr.updateCell(vin, 'Final Status', result === 'NG' ? 'Waiting Repair' : 'OK-Accept')
+  return true
+}
 
 let qid = 0
 
 interface OpsState {
   queues: WorkQueue[]
   createQueue: (name: string, by?: string, site?: string) => string
+  /** Create a NEW typed queue (PM / PDI / FINAL / WASH / SPECIAL), auto-uniquing
+   *  its display name within the site so the same type can be created many times
+   *  (e.g. one PM queue per lot). Always makes a fresh queue — never dedups. */
+  createTypedQueue: (type: QueueType, name: string, by?: string, site?: string) => string
   removeQueue: (id: string) => void
   renameQueue: (id: string, name: string) => void
   addVins: (id: string, vins: string[]) => { added: number; dup: number }
@@ -102,6 +173,21 @@ export const useOps = create<OpsState>()(
         return id
       },
 
+      createTypedQueue: (type, name, by, site) => {
+        const siteTag = site ?? useYard.getState().currentSite ?? undefined
+        const base = (name || '').trim() || (QUEUE_TYPES.find((t) => t.type === type)?.name ?? type)
+        // unique display name within this yard: "PM", "PM 2", "PM 3" …
+        const taken = new Set(
+          get().queues.filter((q) => (q.site ?? null) === (siteTag ?? null)).map((q) => q.name.toLowerCase()),
+        )
+        let n = base
+        for (let k = 2; taken.has(n.toLowerCase()); k++) n = `${base} ${k}`
+        const id = `q${++qid}${Date.now()}`
+        set((s) => ({ queues: [...s.queues, { id, name: n, type, createdAt: Date.now(), createdBy: by, items: [], site: siteTag }] }))
+        pushQueue(get, id)
+        return id
+      },
+
       removeQueue: (id) => {
         set((s) => ({ queues: s.queues.filter((q) => q.id !== id) }))
         db.deleteOpsQueue(id).then(() => sendSync('ops')).catch((e) => console.error('[db] removeQueue', e))
@@ -140,20 +226,27 @@ export const useOps = create<OpsState>()(
       },
 
       toggleDone: (id, vin, by) => {
+        const q = get().queues.find((x) => x.id === id)
+        const it = q?.items.find((i) => i.vin === vin)
+        // becoming done for the first time → stamp its date into the Overview
+        const wrote = q && it && !it.done && !it.stamped ? stampOverview(q, vin, it.result) : false
         set((s) => ({
-          queues: s.queues.map((q) =>
-            q.id === id
-              ? { ...q, items: q.items.map((i) => (i.vin === vin ? { ...i, done: !i.done, doneAt: !i.done ? Date.now() : undefined, doneBy: !i.done ? by : undefined } : i)) }
-              : q,
+          queues: s.queues.map((qq) =>
+            qq.id === id
+              ? { ...qq, items: qq.items.map((i) => (i.vin === vin ? { ...i, done: !i.done, doneAt: !i.done ? Date.now() : undefined, doneBy: !i.done ? by : undefined, stamped: i.stamped || wrote } : i)) }
+              : qq,
           ),
         }))
         pushQueue(get, id)
       },
 
       setAllDone: (id, done, by) => {
+        const q = get().queues.find((x) => x.id === id)
+        // stamp every car that is finishing now (and hasn't been stamped before)
+        if (q && done) for (const i of q.items) if (!i.done && !i.stamped) { if (stampOverview(q, i.vin, i.result)) i.stamped = true }
         set((s) => ({
-          queues: s.queues.map((q) =>
-            q.id === id ? { ...q, items: q.items.map((i) => ({ ...i, done, doneAt: done ? Date.now() : undefined, doneBy: done ? by : undefined })) } : q,
+          queues: s.queues.map((qq) =>
+            qq.id === id ? { ...qq, items: qq.items.map((i) => ({ ...i, done, doneAt: done ? Date.now() : undefined, doneBy: done ? by : undefined })) } : qq,
           ),
         }))
         pushQueue(get, id)
@@ -188,11 +281,14 @@ export const useOps = create<OpsState>()(
       },
 
       returnToSlot: (id, vin, by) => {
+        const q = get().queues.find((x) => x.id === id)
+        const it = q?.items.find((i) => i.vin === vin)
+        const wrote = q && it && !it.stamped ? stampOverview(q, vin, it.result) : false
         set((s) => ({
-          queues: s.queues.map((q) =>
-            q.id === id
-              ? { ...q, items: q.items.map((i) => (i.vin === vin ? { ...i, done: true, doneAt: Date.now(), doneBy: by ?? i.doneBy, returnedBy: by, returnedAt: Date.now() } : i)) }
-              : q,
+          queues: s.queues.map((qq) =>
+            qq.id === id
+              ? { ...qq, items: qq.items.map((i) => (i.vin === vin ? { ...i, done: true, doneAt: Date.now(), doneBy: by ?? i.doneBy, returnedBy: by, returnedAt: Date.now(), stamped: i.stamped || wrote } : i)) }
+              : qq,
           ),
         }))
         pushQueue(get, id)

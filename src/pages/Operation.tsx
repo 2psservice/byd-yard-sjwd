@@ -6,38 +6,73 @@
 import { useMemo, useRef, useState } from 'react'
 import {
   ClipboardList, Plus, X, Search, Trash2, Check, Car, Wrench, Sparkles,
-  ShieldCheck, ClipboardCheck, Layers, QrCode, ChevronRight, ListChecks, CheckCircle2,
+  ShieldCheck, ClipboardCheck, Layers, QrCode, ListChecks, CheckCircle2, MapPin,
 } from 'lucide-react'
-import { useOps, useActiveQueues, useOpsTotals, queueProgress, PRESET_QUEUES, type WorkQueue } from '../store/useOps'
+import { useOps, useActiveQueues, queueProgress, isSequenceQueue, queueTypeOf, QUEUE_TYPES, type QueueType, type WorkQueue } from '../store/useOps'
 import { useTrackingRows } from '../store/useTracking'
 import { useYard, useUnits } from '../store/useYard'
 import { siteGroupingConfig, yardLocCode, byYardLocation } from '../lib/groupingImport'
 import { PageHead, cx } from '../components/ui'
 
-const queueIcon = (name: string, size = 18) => {
-  const n = name.toLowerCase()
-  if (n.includes('pm')) return <Wrench size={size} />
-  if (n.includes('wash')) return <Sparkles size={size} />
-  if (n.includes('pdi')) return <ShieldCheck size={size} />
-  if (n.includes('final')) return <ClipboardCheck size={size} />
-  return <Layers size={size} />
+const typeIcon = (type: QueueType, size = 18) => {
+  switch (type) {
+    case 'PM': return <Wrench size={size} />
+    case 'WASH': return <Sparkles size={size} />
+    case 'PDI': return <ShieldCheck size={size} />
+    case 'FINAL': return <ClipboardCheck size={size} />
+    default: return <Layers size={size} />
+  }
+}
+const queueIcon = (q: WorkQueue, size = 18) => typeIcon(queueTypeOf(q), size)
+
+/** What each queue type stamps back into a finished car's Overview. */
+const TYPE_WRITEBACK: Record<QueueType, string> = {
+  PM: 'ลงวันที่ในช่อง PM ถัดไป',
+  PDI: 'ลงวันที่ในช่อง PDI',
+  FINAL: 'ลงวันที่ Final check + Final Status',
+  WASH: 'บันทึกใน Event log',
+  SPECIAL: 'บันทึกใน Event log',
 }
 
+// queues auto-created by import ("(M-D-N)" pre-gate-in) don't belong on this board
+const isPreGateInQueue = (name: string) => name.trim().startsWith('(')
+
 export function Operation() {
-  const queues = useActiveQueues() // gated-out cars filtered out of every queue view
-  const totals = useOpsTotals()
-  const { createQueue } = useOps()
+  const all = useActiveQueues() // gated-out cars filtered out of every queue view
+  const { createTypedQueue } = useOps()
   const toast = useYard((s) => s.toast)
   const currentUser = useYard((s) => s.currentUser)
-  const [name, setName] = useState('')
+  const currentSite = useYard((s) => s.currentSite)
+  const sites = useYard((s) => s.sites)
+  const [type, setType] = useState<QueueType>('PM')
+  const [label, setLabel] = useState('')
   const [openId, setOpenId] = useState<string | null>(null)
 
-  const make = (n: string) => {
-    const before = useOps.getState().queues.length
-    createQueue(n, currentUser)
-    const after = useOps.getState().queues
-    if (after.length > before) { setName(''); toast('ok', `สร้างคิวงาน "${n}"`) }
-    else toast('err', `มีคิว "${n}" อยู่แล้ว`)
+  const siteName = sites.find((s) => s.id === currentSite)?.name ?? ''
+
+  // ── per-site scope: work queues are separated by yard, never combined ──
+  const queues = useMemo(
+    () => all.filter((q) =>
+      !isSequenceQueue(q) && !isPreGateInQueue(q.name) &&
+      (!currentSite || !q.site || q.site === currentSite),
+    ),
+    [all, currentSite],
+  )
+
+  const totals = useMemo(() => {
+    let vehicles = 0, done = 0
+    for (const q of queues) { vehicles += q.items.length; done += q.items.reduce((n, i) => n + (i.done ? 1 : 0), 0) }
+    return { queues: queues.length, vehicles, done, remaining: vehicles - done }
+  }, [queues])
+
+  const make = () => {
+    const l = label.trim()
+    if (type === 'SPECIAL' && !l) { toast('err', 'ใส่ชื่องานพิเศษก่อน'); return }
+    const typeName = QUEUE_TYPES.find((t) => t.type === type)?.name ?? type
+    const name = type === 'SPECIAL' ? l : (l ? `${typeName} · ${l}` : typeName)
+    createTypedQueue(type, name, currentUser)
+    setLabel('')
+    toast('ok', `สร้างคิวงาน "${name}"`)
   }
 
   const openQueue = openId ? queues.find((q) => q.id === openId) ?? null : null
@@ -46,7 +81,7 @@ export function Operation() {
     <div className="max-w-[1200px] mx-auto">
       <PageHead
         title={<span className="flex items-center gap-2"><ClipboardList size={20} style={{ color: 'var(--brand)' }} /> Operation · คิวงาน</span>}
-        sub="สร้างคิวงาน · ใส่เลข VIN · ติดตามความคืบหน้าและนับถอยหลังแต่ละคัน"
+        sub={<span className="flex items-center gap-1.5">สร้างคิวงาน PDI / PM / FINAL CHECK หรืองานพิเศษ · บันทึกเสร็จแล้วข้อมูลเข้า Overview{siteName && <><span style={{ color: 'var(--line-strong)' }}>·</span><MapPin size={12} style={{ color: 'var(--brand)' }} /><b style={{ color: 'var(--brand)' }}>{siteName}</b></>}</span>}
       />
 
       {/* totals */}
@@ -60,26 +95,31 @@ export function Operation() {
       {/* create */}
       <div className="panel p-4 mb-4">
         <div className="text-[11px] font-bold uppercase tracking-wider mb-2.5" style={{ color: 'var(--muted)' }}>สร้างคิวงานใหม่</div>
+        {/* type picker */}
         <div className="flex flex-wrap items-center gap-2 mb-3">
-          {PRESET_QUEUES.map((p) => {
-            const exists = queues.some((q) => q.name.toLowerCase() === p.toLowerCase())
+          {QUEUE_TYPES.map((t) => {
+            const on = type === t.type
             return (
-              <button key={p} onClick={() => make(p)} disabled={exists}
+              <button key={t.type} onClick={() => setType(t.type)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[13px] font-semibold transition-all active:scale-95"
-                style={exists
-                  ? { background: 'var(--chip)', color: 'var(--faint)', cursor: 'not-allowed' }
+                style={on
+                  ? { background: 'var(--brand)', color: '#fff', border: '1px solid var(--brand)' }
                   : { background: 'var(--brand-soft, #eef4ff)', color: 'var(--brand)', border: '1px solid rgba(37,99,235,0.2)' }}>
-                {queueIcon(p, 14)} {p}{exists && ' ✓'}
+                {typeIcon(t.type, 14)} {t.th}
               </button>
             )
           })}
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <input className="input py-2 text-[13.5px] flex-1" style={{ minWidth: 220 }} placeholder="ชื่อคิวงานใหม่ (เช่น Wash, Re-PDI, รถย้าย Block A)…"
-            value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && name.trim()) make(name) }} />
-          <button className="btn btn-primary px-4 py-2" onClick={() => name.trim() && make(name)} disabled={!name.trim()}>
+          <input className="input py-2 text-[13.5px] flex-1" style={{ minWidth: 220 }}
+            placeholder={type === 'SPECIAL' ? 'ชื่องานพิเศษ (เช่น เปลี่ยนล้อ Lot 5, ตรวจกระจก)…' : 'ระบุ Lot / รายละเอียด (ไม่ใส่ก็ได้ เช่น Lot 3)…'}
+            value={label} onChange={(e) => setLabel(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') make() }} />
+          <button className="btn btn-primary px-4 py-2" onClick={make}>
             <Plus size={16} /> สร้างคิว
           </button>
+        </div>
+        <div className="text-[11.5px] mt-2 flex items-center gap-1.5" style={{ color: 'var(--faint)' }}>
+          <CheckCircle2 size={12} /> เมื่อกด “เสร็จ” ระบบจะ{TYPE_WRITEBACK[type]} · สร้างคิวเดิมซ้ำได้หลายครั้ง (หลาย lot)
         </div>
       </div>
 
@@ -87,8 +127,8 @@ export function Operation() {
       {queues.length === 0 ? (
         <div className="panel p-12 text-center" style={{ color: 'var(--faint)' }}>
           <ClipboardList size={36} className="mx-auto mb-3" style={{ color: 'var(--line-strong)' }} />
-          <div className="text-[15px] font-semibold" style={{ color: 'var(--muted)' }}>ยังไม่มีคิวงาน</div>
-          <div className="text-[13px] mt-1">กดปุ่มด้านบน (PM / Wash for sale / PDI / FINAL CHECK) หรือตั้งชื่อใหม่เพื่อสร้างคิว</div>
+          <div className="text-[15px] font-semibold" style={{ color: 'var(--muted)' }}>ยังไม่มีคิวงาน{siteName && ` ใน ${siteName}`}</div>
+          <div className="text-[13px] mt-1">เลือกประเภทด้านบน (PM / PDI / FINAL CHECK / งานพิเศษ) แล้วกดสร้างคิว</div>
         </div>
       ) : (
         <div className="panel overflow-hidden">
@@ -96,7 +136,7 @@ export function Operation() {
             <table className="w-full text-[13px]">
               <thead>
                 <tr className="border-b hairline" style={{ background: 'var(--chip)' }}>
-                  {['คิวงาน', 'รถทั้งหมด', 'เสร็จ', 'ความคืบหน้า', 'สถานะ', ''].map((h) => (
+                  {['คิวงาน', 'ประเภท', 'รถทั้งหมด', 'เสร็จ', 'ความคืบหน้า', 'สถานะ', ''].map((h) => (
                     <th key={h} className="text-left px-4 py-2.5 text-[11.5px] font-bold whitespace-nowrap" style={{ color: 'var(--muted)' }}>{h}</th>
                   ))}
                 </tr>
@@ -112,6 +152,14 @@ export function Operation() {
       {openQueue && <QueueDetail q={openQueue} onClose={() => setOpenId(null)} />}
     </div>
   )
+}
+
+const TYPE_BADGE: Record<QueueType, { th: string; color: string; bg: string }> = {
+  PM: { th: 'PM', color: '#c2680b', bg: 'rgba(194,104,11,0.12)' },
+  PDI: { th: 'PDI', color: '#7c3aed', bg: 'rgba(124,58,237,0.12)' },
+  FINAL: { th: 'FINAL CHECK', color: '#0891b2', bg: 'rgba(8,145,178,0.12)' },
+  WASH: { th: 'Wash', color: '#2563eb', bg: 'rgba(37,99,235,0.12)' },
+  SPECIAL: { th: 'งานพิเศษ', color: '#64748b', bg: 'rgba(100,116,139,0.12)' },
 }
 
 function Stat({ label, value, accent, icon }: { label: string; value: number; accent: string; icon: React.ReactNode }) {
@@ -131,6 +179,7 @@ function QueueRow({ q, onOpen }: { q: WorkQueue; onOpen: () => void }) {
   const { total, done, remaining, pct } = queueProgress(q)
   const complete = total > 0 && remaining === 0
   const empty = total === 0 // no cars left (e.g. all gated out) — nothing to do
+  const badge = TYPE_BADGE[queueTypeOf(q)]
 
   return (
     <tr className="hover:bg-chip transition-colors cursor-pointer" onClick={onOpen}>
@@ -139,10 +188,16 @@ function QueueRow({ q, onOpen }: { q: WorkQueue; onOpen: () => void }) {
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
             style={{ background: complete ? 'rgba(34,197,94,0.14)' : 'var(--brand-soft, #eef4ff)', color: complete ? 'var(--st-yard)' : 'var(--brand)' }}>
-            {complete ? <Check size={16} /> : queueIcon(q.name, 15)}
+            {complete ? <Check size={16} /> : queueIcon(q, 15)}
           </div>
           <span className="font-bold clip" style={{ color: 'var(--brand)' }}>{q.name}</span>
         </div>
+      </td>
+      {/* type */}
+      <td className="px-4 py-3">
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold whitespace-nowrap" style={{ color: badge.color, background: badge.bg }}>
+          {badge.th}
+        </span>
       </td>
       {/* total */}
       <td className="px-4 py-3 tabular whitespace-nowrap">{total.toLocaleString()} คัน</td>
@@ -243,7 +298,7 @@ function QueueDetail({ q, onClose }: { q: WorkQueue; onClose: () => void }) {
         <div className="px-5 py-4 shrink-0" style={{ background: 'linear-gradient(135deg,#0d1726,#1b2c45)' }}>
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: 'rgba(255,255,255,0.1)', color: '#fff' }}>
-              {queueIcon(q.name, 20)}
+              {queueIcon(q, 20)}
             </div>
             <div className="min-w-0 flex-1">
               <div className="font-bold text-[17px] text-white leading-tight clip">{q.name}</div>

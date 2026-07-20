@@ -6,6 +6,7 @@ import { rowInSite } from '../lib/siteScope'
 import { PageHead } from '../components/ui'
 import type { Damage, Unit } from '../types'
 import type { TrackRow } from '../lib/excelTracking'
+import { agingPmDays } from '../lib/trackingColumns'
 
 // ── formatting ────────────────────────────────────────────────────────────
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -280,7 +281,9 @@ export function Report() {
         scopedRows.forEach((r, i) => {
           const row = ws.addRow(TRACKING_COLS.map((c) => {
             const key = c.h.trim()
-            return key === 'No' ? i + 1 : key === 'Vin' ? r.vin : (r.cells[key] ?? '')
+            return key === 'No' ? i + 1 : key === 'Vin' ? r.vin
+              : key === 'Aging PM' ? agingPmDays(r.cells)
+              : (r.cells[key] ?? '')
           }))
           row.height = 18.6
           TRACKING_COLS.forEach((c, ci) => { if (c.dFill) row.getCell(ci + 1).fill = fill(c.dFill) })
