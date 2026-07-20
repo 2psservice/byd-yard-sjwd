@@ -144,10 +144,12 @@ export function Units() {
   )
   const visCols = useVisibleColumns()
   const { lastImport, loadFromIdb } = useTracking()
-  // computed yard-location code (prefix-block+row+slot), for the Location column
+  // computed yard-location code (prefix-block+row+slot), for the Location column.
+  // ONLY the real placement code — no cell fallback (storage Yard / Location yard
+  // are junk / the site name, not a position → they showed stray numbers).
   const allUnits = useYard((s) => s.units)
   const locPrefix = siteGroupingConfig(sites.find((x) => x.id === currentSite)?.name ?? '').prefix
-  const locOf = (r: TrackRow) => yardLocFull(allUnits[r.vin], locPrefix) || r.cells['storage Yard'] || r.cells['Location yard'] || ''
+  const locOf = (r: TrackRow) => yardLocFull(allUnits[r.vin], locPrefix)
 
   const [tab, setTab] = useState<Tab>('units')
   const [q, setQ] = useState('')
@@ -372,7 +374,7 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
   const sites = useYard((s) => s.sites)
   const currentSite = useYard((s) => s.currentSite)
   const locPrefix = siteGroupingConfig(sites.find((x) => x.id === currentSite)?.name ?? '').prefix
-  const locFor = (r: TrackRow) => yardLocFull(units[r.vin], locPrefix) || r.cells['storage Yard'] || r.cells['Location yard'] || ''
+  const locFor = (r: TrackRow) => yardLocFull(units[r.vin], locPrefix)
   const [dragCol, setDragCol] = useState<string | null>(null)
   const [overCol, setOverCol] = useState<string | null>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
@@ -1421,7 +1423,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                           // "No" → "Last update" (timestamp), "__location" → the
                           // computed yard code; everything else is a raw sheet cell
                           const val = col.key === 'No' ? fmtUpdated(row.updatedAt)
-                            : col.key === LOCATION_KEY ? (yardLocFull(unit, locPrefix) || c['storage Yard'] || c['Location yard'] || '')
+                            : col.key === LOCATION_KEY ? yardLocFull(unit, locPrefix)
                             : (c[col.key] || '')
                           return (
                             <div key={col.key} className="flex items-center justify-between gap-3 text-[12.5px] border-b hairline py-1.5">
