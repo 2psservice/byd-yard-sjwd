@@ -16,7 +16,7 @@ const cell = (r: TrackRow, ...keys: string[]): string => {
 // ── Inspector Report (IR) — real form image + data overlay (coords in PDF points) ──
 function irSheetHtml(r: TrackRow): string {
   const eng = cell(r, 'Engine No.', 'Model Code')
-  const motor = cell(r, 'Motor no.')
+  const motor = cell(r, 'Front Motor no.', 'Rear Motor no.')
   const engMotor = [eng, motor].filter(Boolean).join(' ')
   // F(left, top, size, value, wrapWidth?) — absolute overlay field in pt
   const F = (left: number, top: number, size: number, val: string, w?: number) =>
@@ -36,7 +36,7 @@ function irSheetHtml(r: TrackRow): string {
 // ── IR "paper" overlay — data only, to print onto pre-printed IR forms ──
 // 1:1 with the AMS export: US Letter, TH Sarabun New 12pt, exact coordinates.
 function irPaperSheetHtml(r: TrackRow): string {
-  const engMotor = [cell(r, 'Engine No.', 'Model Code'), cell(r, 'Motor no.')].filter(Boolean).join(' ')
+  const engMotor = [cell(r, 'Engine No.', 'Model Code'), cell(r, 'Front Motor no.', 'Rear Motor no.')].filter(Boolean).join(' ')
   const P = (left: number, top: number, val: string, wrap = false) =>
     val ? `<div class="irpf${wrap ? ' wrap' : ''}" style="left:${left}pt;top:${top}pt">${esc(val)}</div>` : ''
   return `<section class="irp-sheet">

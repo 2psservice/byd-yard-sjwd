@@ -418,7 +418,7 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
     const MENU_TREE: { label: string; subs: { label: string; keys: string[] }[] }[] = [
       { label: '🚗 Vehicle Info', subs: [
         { label: 'Identity', keys: ['Match Tax/Shuttle', 'Vin Of Status'] },
-        { label: 'Specification', keys: ['Model name', 'Model', 'Model Code', 'Motor no.', 'Engine No.', 'Color'] },
+        { label: 'Specification', keys: ['Model name', 'Model', 'Model Code', 'Front Motor no.', 'Rear Motor no.', 'Engine No.', 'Color'] },
         { label: 'Battery / Company', keys: ['battery', 'company'] },
       ] },
       { label: '🏭 Yard Operations', subs: [
@@ -1338,12 +1338,17 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                     <section key={g} className="panel-solid p-4">
                       <div className="text-[11px] font-bold uppercase mb-2" style={{ color: 'var(--faint)' }}>{GROUP_LABEL[g][lang]}</div>
                       <div className="grid sm:grid-cols-2 gap-x-7 gap-y-0">
-                        {cols.map((col) => (
-                          <div key={col.key} className="flex items-center justify-between gap-3 text-[12.5px] border-b hairline py-1.5">
-                            <span style={{ color: 'var(--muted)' }}>{col.label}</span>
-                            <span className="font-medium text-right clip" style={{ color: c[col.key] ? 'var(--text)' : 'var(--faint)' }}>{c[col.key] || '—'}</span>
-                          </div>
-                        ))}
+                        {cols.map((col) => {
+                          // "No" → "Last update": show the row's real update timestamp
+                          // (same as the Unit List grid), not the raw sheet "No" cell
+                          const val = col.key === 'No' ? fmtUpdated(row.updatedAt) : (c[col.key] || '')
+                          return (
+                            <div key={col.key} className="flex items-center justify-between gap-3 text-[12.5px] border-b hairline py-1.5">
+                              <span style={{ color: 'var(--muted)' }}>{col.label}</span>
+                              <span className="font-medium text-right clip" style={{ color: val ? 'var(--text)' : 'var(--faint)' }}>{val || '—'}</span>
+                            </div>
+                          )
+                        })}
                       </div>
                     </section>
                   )
