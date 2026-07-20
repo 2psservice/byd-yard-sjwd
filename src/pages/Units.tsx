@@ -13,6 +13,8 @@ import { useTracking, useTrackingRows, useVisibleColumns } from '../store/useTra
 import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, type ColGroup, type Column } from '../lib/trackingColumns'
 import { CAR_STATUS_META, deriveCarStatus, IN_YARD_STATUSES, PARKED_STATUSES, isWaitingRepair, finalColor, vinOfStatusColor, taxStatusColor } from '../lib/carStatus'
 import { rowsToCsv, type TrackRow, type RowEvent } from '../lib/excelTracking'
+import { siteGroupingConfig, yardLocCode } from '../lib/groupingImport'
+import { printFindList, exportFindListXlsx, type FindListRow } from '../lib/groupingPrint'
 import { rowInSite } from '../lib/siteScope'
 import { zoneLabel } from '../components/CarDiagramMultiView'
 import { cx, PhotoLightbox } from '../components/ui'
@@ -828,35 +830,77 @@ function GroupingView({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort
 // ============================ Units Mylist (paste VINs) ============================
 function MylistView({ allRows, visCols, sel, setSel, sortKey, sortDir, toggleSort, optionsFor }: Omit<GridProps, 'rows'> & { allRows: TrackRow[] }) {
   const [text, setText] = useState('')
+  const units = useYard((s) => s.units)
+  const sites = useYard((s) => s.sites)
+  const currentSite = useYard((s) => s.currentSite)
+  const toast = useYard((s) => s.toast)
+  const siteName = sites.find((s) => s.id === currentSite)?.name ?? ''
   const byVin = useMemo(() => { const m = new Map<string, TrackRow>(); for (const r of allRows) m.set(r.vin, r); return m }, [allRows])
 
   const { found, notFound, asked } = useMemo(() => {
-    const tokens = (text.toUpperCase().match(/[A-Z0-9]{11,20}/g) ?? [])
+    // accept full VINs AND partials (last-5, etc.) — tokens ≥ 3 alphanumeric chars.
+    // ≥11 chars → exact VIN; shorter → suffix/substring match (like typing "154237")
+    const tokens = (text.toUpperCase().match(/[A-Z0-9]{3,20}/g) ?? [])
     const uniq = [...new Set(tokens)]
     const found: TrackRow[] = [], notFound: string[] = []
-    for (const v of uniq) { const r = byVin.get(v); if (r) found.push(r); else notFound.push(v) }
+    const seen = new Set<string>()
+    for (const tok of uniq) {
+      let hits: TrackRow[]
+      if (tok.length >= 11) { const r = byVin.get(tok); hits = r ? [r] : [] }
+      else hits = allRows.filter((r) => r.vin.endsWith(tok) || r.vin.includes(tok))
+      if (!hits.length) { notFound.push(tok); continue }
+      for (const r of hits) if (!seen.has(r.vin)) { seen.add(r.vin); found.push(r) }
+    }
     return { found, notFound, asked: uniq.length }
-  }, [text, byVin])
+  }, [text, byVin, allRows])
+
+  // build ใบหารถ rows (yard location code + fallbacks), for print / Excel export
+  const findRows: FindListRow[] = useMemo(() => {
+    const prefix = siteGroupingConfig(siteName).prefix
+    return found.map((r) => {
+      const u = units[r.vin]
+      const loc = yardLocCode(u ? { block: u.block, slot: u.slot } : null, prefix)
+        || r.cells['storage Yard'] || r.cells['Location yard'] || ''
+      return {
+        vin: r.vin,
+        model: r.cells['Model'] || u?.modelName || r.cells['Model name'] || '',
+        color: r.cells['Color'] || u?.color || '',
+        location: loc,
+        remark: r.cells['หมายเหตุ'] || r.cells['Remark'] || '',
+      }
+    })
+  }, [found, units, siteName])
+
+  const today = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' })
+  const doPdf = () => { if (findRows.length) printFindList(findRows, today) }
+  const doXlsx = async () => {
+    if (!findRows.length) return
+    try { await exportFindListXlsx(findRows, today) } catch (e) { console.error('[findlist] xlsx', e); toast('err', 'ออกไฟล์ Excel ไม่สำเร็จ') }
+  }
 
   return (
     <div className="flex flex-col flex-1 min-w-0 gap-2">
       <div className="panel p-2.5 shrink-0">
-        <div className="text-[12px] font-semibold mb-1.5" style={{ color: 'var(--muted)' }}>วาง/พิมพ์ VIN (รองรับเว้นวรรค ขึ้นบรรทัด หรือก็อปจาก Excel/อีเมล)</div>
+        <div className="text-[12px] font-semibold mb-1.5" style={{ color: 'var(--muted)' }}>วาง/พิมพ์ VIN เต็ม หรือ 5 ตัวท้าย (รองรับเว้นวรรค ขึ้นบรรทัด หรือก็อปจาก Excel/อีเมล)</div>
         <textarea className="input" style={{ minHeight: 92, fontFamily: 'JetBrains Mono, monospace', fontSize: 12 }}
-          placeholder={'LGXCE4CB5TG015112\nLGXCE4CB3TG014413\nLGXCE4CB3TG019563'} value={text} onChange={(e) => setText(e.target.value)} />
-        <div className="flex items-center gap-3 mt-1.5 text-[12px]">
-          <span style={{ color: 'var(--muted)' }}>วาง <b className="tabular">{asked}</b> VIN</span>
-          <span style={{ color: 'var(--st-yard)' }}>พบ <b className="tabular">{found.length}</b></span>
+          placeholder={'LGXCE4CB5TG015112\n015112\n14413'} value={text} onChange={(e) => setText(e.target.value)} />
+        <div className="flex items-center gap-3 mt-1.5 text-[12px] flex-wrap">
+          <span style={{ color: 'var(--muted)' }}>ค้นหา <b className="tabular">{asked}</b> รายการ</span>
+          <span style={{ color: 'var(--st-yard)' }}>พบ <b className="tabular">{found.length}</b> คัน</span>
           {notFound.length > 0 && <span style={{ color: 'var(--st-damage)' }}>ไม่พบ <b className="tabular">{notFound.length}</b></span>}
-          {text && <button className="btn btn-ghost py-1 ml-auto" onClick={() => setText('')}><X size={13} /> ล้าง</button>}
+          <div className="ml-auto flex items-center gap-1.5">
+            <button className="btn btn-ghost py-1" disabled={!found.length} onClick={doXlsx}><Download size={13} /> ใบหารถ (Excel)</button>
+            <button className="btn btn-ghost py-1" disabled={!found.length} onClick={doPdf}><Printer size={13} /> ใบหารถ (PDF)</button>
+            {text && <button className="btn btn-ghost py-1" onClick={() => setText('')}><X size={13} /> ล้าง</button>}
+          </div>
         </div>
         {notFound.length > 0 && <div className="text-[11px] mt-1 vin clip" style={{ color: 'var(--faint)' }}>ไม่พบ: {notFound.slice(0, 12).join(', ')}{notFound.length > 12 ? ` +${notFound.length - 12}` : ''}</div>}
       </div>
       {asked === 0
-        ? <div className="panel-solid flex-1 flex items-center justify-center text-[13px]" style={{ color: 'var(--faint)' }}>วาง VIN ในกล่องด้านบนเพื่อค้นหา</div>
+        ? <div className="panel-solid flex-1 flex items-center justify-center text-[13px]" style={{ color: 'var(--faint)' }}>วาง VIN เต็มหรือ 5 ตัวท้ายในกล่องด้านบนเพื่อค้นหา แล้วออก "ใบหารถ" เป็น Excel/PDF ได้</div>
         : <DataGrid rows={sortRows(found, sortKey, sortDir)} visCols={visCols} sel={sel} setSel={setSel}
             sortKey={sortKey} sortDir={sortDir} toggleSort={toggleSort} optionsFor={optionsFor}
-            footer={<div className="px-3 py-1.5 border-t hairline text-[11.5px] shrink-0" style={{ color: 'var(--muted)' }}>พบ <b className="tabular" style={{ color: 'var(--st-yard)' }}>{found.length}</b> จาก {asked} VIN ที่วาง</div>} />}
+            footer={<div className="px-3 py-1.5 border-t hairline text-[11.5px] shrink-0" style={{ color: 'var(--muted)' }}>พบ <b className="tabular" style={{ color: 'var(--st-yard)' }}>{found.length}</b> คัน จาก {asked} รายการที่ค้นหา</div>} />}
     </div>
   )
 }
