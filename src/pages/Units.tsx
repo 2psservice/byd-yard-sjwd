@@ -377,6 +377,7 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
   const lastSelIdxRef = useRef(-1)
   const [menu, setMenu] = useState<{ x: number; y: number; targets: string[]; vin: string } | null>(null)
   const [detailVin, setDetailVin] = useState<string | null>(null)
+  const [bulkDefect, setBulkDefect] = useState<string[] | null>(null) // VINs to add the same defect to
   // custom in-app editor for text/date cells (replaces the native window.prompt)
   const [editInput, setEditInput] = useState<{ key: string; label: string; initial: string; targets: string[]; history: RowEvent[] } | null>(null)
   const submitEditInput = (value: string) => {
@@ -520,6 +521,9 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
     nodes.push({ kind: 'item', label: `Copy VIN (${n})`, icon: <Copy size={14} />, onSelect: () => { navigator.clipboard?.writeText(targets.join('\n')); toast('ok', `คัดลอก ${n} VIN`); setMenu(null) } })
     nodes.push({ kind: 'divider' })
     nodes.push(...groups)
+    // Add Defect: attach the SAME manual defect to all selected VINs at once
+    nodes.push({ kind: 'divider' })
+    nodes.push({ kind: 'item', label: n > 1 ? `เพิ่มตำหนิ (${n})…` : 'เพิ่มตำหนิ…', icon: <ShieldCheck size={14} />, onSelect: () => { setBulkDefect(targets); setMenu(null) } })
     // Grouping: type / change the grouping number — writes to the tracking cell
     // (bulkUpdate) so it updates everywhere the group is read (Grouping view etc.).
     nodes.push({ kind: 'divider' })
@@ -669,7 +673,76 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
           items={menuModel} onClose={() => setMenu(null)} />
       )}
       {detailVin && <RowDetail vin={detailVin} onClose={() => setDetailVin(null)} />}
+      {bulkDefect && <BulkDefectModal vins={bulkDefect} onClose={() => setBulkDefect(null)} onDone={() => setSel(new Set())} />}
       <InputPromptModal input={editInput} onSubmit={submitEditInput} onClose={() => setEditInput(null)} />
+    </div>
+  )
+}
+
+// ── add the SAME manual defect to many VINs at once (Unit List bulk action) ────
+function BulkDefectModal({ vins, onClose, onDone }: { vins: string[]; onClose: () => void; onDone: () => void }) {
+  const addManualDamageBulk = useYard((s) => s.addManualDamageBulk)
+  const allUnits = useYard((s) => s.units)
+  const toast = useYard((s) => s.toast)
+  const [form, setForm] = useState(BLANK_DMG_FORM)
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h)
+  }, [onClose])
+  const opts = useMemo(() => {
+    const S = { position: new Set<string>(), defect: new Set<string>(), catNG: new Set<string>(), catRepair: new Set<string>(), incharge: new Set<string>(), note: new Set<string>() }
+    for (const u of Object.values(allUnits)) for (const d of u.damages) {
+      if (d.area && d.area !== '—') S.position.add(zoneLabel(d.area))
+      const df = d.item ?? d.type; if (df && df !== '—') S.defect.add(df)
+      if (d.categoryNG) S.catNG.add(d.categoryNG)
+      if (d.categoryRepair) S.catRepair.add(d.categoryRepair)
+      if (d.incharge) S.incharge.add(d.incharge)
+      if (d.note) S.note.add(d.note)
+    }
+    const arr = (s: Set<string>) => [...s].sort((a, b) => a.localeCompare(b))
+    return { position: arr(S.position), defect: arr(S.defect), catNG: arr(S.catNG), catRepair: arr(S.catRepair), incharge: arr(S.incharge), note: arr(S.note) }
+  }, [allUnits])
+  const set = (patch: Partial<typeof form>) => setForm((f) => ({ ...f, ...patch }))
+  const save = () => {
+    if (!form.position.trim() && !form.defect.trim()) { toast('err', 'กรุณากรอกอย่างน้อย Position หรือ Defect/NG'); return }
+    const n = addManualDamageBulk(vins, form)
+    toast('ok', `เพิ่มตำหนิให้ ${n} คันแล้ว`)
+    onDone(); onClose()
+  }
+  const Field = ({ label, children }: { label: string; children: React.ReactNode }) => (
+    <div><div className="text-[11px] font-semibold mb-1" style={{ color: 'var(--muted)' }}>{label}</div>{children}</div>
+  )
+  return (
+    <div className="fixed inset-0 z-[85] flex items-center justify-center p-4" style={{ background: 'rgba(15,23,42,0.5)', backdropFilter: 'blur(3px)' }} onClick={onClose}>
+      <div className="panel-solid pop w-full overflow-hidden flex flex-col" style={{ maxWidth: 560, maxHeight: '90vh' }} onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-2.5 px-5 py-4 border-b hairline shrink-0">
+          <ShieldCheck size={18} style={{ color: 'var(--st-damage)' }} />
+          <div className="min-w-0 flex-1">
+            <div className="font-bold text-[16px] leading-tight">เพิ่มตำหนิ</div>
+            <div className="text-[12px]" style={{ color: 'var(--muted)' }}>ใส่ตำหนิเดียวกันให้ <b className="tabular" style={{ color: 'var(--brand)' }}>{vins.length}</b> คันที่เลือก</div>
+          </div>
+          <button className="btn btn-ghost p-2" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="p-4 overflow-auto grid grid-cols-2 gap-3">
+          <Field label="Position"><Combo value={form.position} onChange={(v) => set({ position: v })} options={opts.position} placeholder="Position" /></Field>
+          <Field label="Defect/NG"><Combo value={form.defect} onChange={(v) => set({ defect: v })} options={opts.defect} placeholder="Defect/NG" /></Field>
+          <Field label="Cat NG"><Combo value={form.categoryNG} onChange={(v) => set({ categoryNG: v })} options={opts.catNG} placeholder="Cat NG" /></Field>
+          <Field label="Cat (Repair)"><Combo value={form.categoryRepair} onChange={(v) => set({ categoryRepair: v })} options={opts.catRepair} placeholder="Cat (Repair)" /></Field>
+          <Field label="Incharge"><Combo value={form.incharge} onChange={(v) => set({ incharge: v })} options={opts.incharge} placeholder="Incharge" /></Field>
+          <Field label="From/Stock"><Combo value={form.note} onChange={(v) => set({ note: v })} options={opts.note} placeholder="From/Stock" /></Field>
+          <Field label="Date"><Combo value={form.date} onChange={(v) => set({ date: v })} type="date" /></Field>
+          <Field label="Status Repair">
+            <select className="input w-full text-[13px] py-2" value={form.statusRepair} onChange={(e) => set({ statusRepair: e.target.value })}>
+              {REPAIR_STATUSES.map((st) => <option key={st} value={st}>{st}</option>)}
+            </select>
+          </Field>
+          <Field label="Repair Date"><Combo value={form.repairDate} onChange={(v) => set({ repairDate: v })} type="date" /></Field>
+        </div>
+        <div className="flex gap-2 p-4 border-t hairline shrink-0">
+          <button className="btn flex-1 py-2.5 text-[13px]" onClick={onClose}>ยกเลิก</button>
+          <button className="btn btn-primary flex-1 py-2.5 text-[13px] font-semibold" onClick={save}><ShieldCheck size={15} /> เพิ่มตำหนิให้ {vins.length} คัน</button>
+        </div>
+      </div>
     </div>
   )
 }
