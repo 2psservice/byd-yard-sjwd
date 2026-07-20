@@ -142,6 +142,98 @@ export function buildFindCarHtml(rows: GroupPrintRow[], meta: GroupPrintMeta): s
   return htmlDoc(`หารถ ${titleLine(meta)}`, `<div class="title">${titleLine(meta)}</div>${table}`, CSS_PORTRAIT)
 }
 
+// ── "ใบหารถ" (car-finding list) — arbitrary VIN set, no grouping/lane ────────
+// Columns: No · Vin · Model · Color · Location · หมายเหตุ. Sorted by yard
+// location so a driver walks the yard in order. Title "ใบหารถ N คัน".
+export interface FindListRow {
+  vin: string
+  model: string
+  color: string
+  location: string  // yard code "N-N12" (or the raw cell fallback), '' when unknown
+  remark: string
+}
+
+const findListTitle = (count: number, date: string): string =>
+  `ใบหารถ ${count} คัน${date ? ` · ${date}` : ''}`
+
+function findListTableHtml(rows: FindListRow[]): string {
+  const sorted = [...rows].sort((a, b) => byYardLocation(a.location, b.location))
+  const body = sorted.map((r, i) => `<tr>
+    <td class="c">${i + 1}</td>
+    <td class="vin">${esc(r.vin)}</td>
+    <td class="c">${esc(r.model)}</td>
+    <td class="c">${esc(r.color)}</td>
+    <td class="c"><b>${esc(r.location || '—')}</b></td>
+    <td>${esc(r.remark)}</td>
+  </tr>`).join('')
+  return `<table>
+    <thead><tr>
+      <th>No</th><th>Vin</th><th>Model</th><th>Color</th><th>Location</th><th>หมายเหตุ</th>
+    </tr></thead>
+    <tbody>${body}</tbody>
+  </table>`
+}
+
+export function buildFindListHtml(rows: FindListRow[], date: string): string {
+  const title = findListTitle(rows.length, date)
+  return htmlDoc(title, `<div class="title">${esc(title)}</div>${findListTableHtml(rows)}`, CSS_PORTRAIT)
+}
+
+export const printFindList = (rows: FindListRow[], date: string): void => {
+  if (rows.length) printHtml(buildFindListHtml(rows, date))
+}
+
+/** Export the ใบหารถ list as a styled .xlsx (yellow header like the master sheets). */
+export async function exportFindListXlsx(rows: FindListRow[], date: string): Promise<void> {
+  const XJS: any = await import('exceljs')
+  const ExcelJS = XJS.default ?? XJS
+  const wb = new ExcelJS.Workbook()
+  wb.creator = 'SJWD Yard Control'
+  const ws = wb.addWorksheet('ใบหารถ', { views: [{ state: 'frozen', ySplit: 2 }] })
+
+  const headers = ['No', 'Vin', 'Model', 'Color', 'Location', 'หมายเหตุ']
+  const widths = [6, 22, 14, 12, 14, 24]
+  ws.columns = widths.map((w) => ({ width: w, style: { font: { name: 'Tahoma', size: 10 } } }))
+
+  // title row (merged across all columns)
+  const titleRow = ws.addRow([findListTitle(rows.length, date)])
+  ws.mergeCells(1, 1, 1, headers.length)
+  titleRow.height = 22
+  titleRow.getCell(1).font = { name: 'Tahoma', size: 12, bold: true }
+  titleRow.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' }
+
+  const thin = { style: 'thin', color: { argb: 'FF000000' } }
+  const border = { top: thin, left: thin, bottom: thin, right: thin }
+  const hr = ws.addRow(headers)
+  hr.height = 18
+  hr.eachCell((c: any) => {
+    c.font = { name: 'Tahoma', size: 10, bold: true }
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF00' } } // เหลืองเหมือนไฟล์ต้นฉบับ
+    c.alignment = { horizontal: 'center', vertical: 'middle' }
+    c.border = border
+  })
+
+  const sorted = [...rows].sort((a, b) => byYardLocation(a.location, b.location))
+  sorted.forEach((r, i) => {
+    const row = ws.addRow([i + 1, r.vin, r.model, r.color, r.location || '—', r.remark])
+    row.height = 16
+    row.eachCell((c: any, col: number) => {
+      c.border = border
+      c.alignment = { horizontal: col === 6 ? 'left' : 'center', vertical: 'middle' }
+    })
+  })
+
+  const stamp = new Date().toISOString().slice(0, 10)
+  const buf = await wb.xlsx.writeBuffer()
+  const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `SJWD-ใบหารถ-${rows.length}คัน-${stamp}.xlsx`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 /** Render HTML in a hidden iframe, wait a beat, then open the print dialog. */
 function printHtml(html: string): void {
   const iframe = document.createElement('iframe')
