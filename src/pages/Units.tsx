@@ -114,30 +114,19 @@ type SortDir = 1 | -1
 type Tab = 'grouping' | 'units' | 'mylist'
 
 // ── customisable filter bar ────────────────────────────────────────────────
-// Unit Nbr + Grouping are pinned (always shown); the rest can be hidden /
-// reordered, like the column manager. Config persists in localStorage.
-type FilterKey = 'carStatus' | 'loc' | 'model' | 'final' | 'company'
-const OPTIONAL_FILTERS: { key: FilterKey; label: string }[] = [
-  { key: 'carStatus', label: 'Car Status' },
-  { key: 'loc', label: 'Yard Section' },
-  { key: 'model', label: 'Model' },
-  { key: 'final', label: 'Final Status' },
-  { key: 'company', label: 'Company' },
-]
-interface FilterItem { key: FilterKey; visible: boolean }
-const FILTER_CFG_KEY = 'sjwd-filter-cfg'
-const defaultFilterCfg = (): FilterItem[] => OPTIONAL_FILTERS.map((f) => ({ key: f.key, visible: true }))
+// Unit Nbr + Grouping are pinned (always shown). Every other filter is a
+// COLUMN chosen from the column manager — up to MAX_FILTERS at once, ordered.
+// Config (the list of column keys) persists in localStorage.
+const FILTER_CFG_KEY = 'sjwd-filter-cols'
+const MAX_FILTERS = 6
+const DEFAULT_FILTER_COLS = ['Car Status', 'Location yard', 'Model', 'Final Status', 'company']
 
-function loadFilterCfg(): FilterItem[] {
+function loadFilterCols(): string[] {
   try {
-    const saved = JSON.parse(localStorage.getItem(FILTER_CFG_KEY) || 'null') as FilterItem[] | null
-    if (!Array.isArray(saved)) return defaultFilterCfg()
-    const known = new Set(OPTIONAL_FILTERS.map((f) => f.key))
-    const out = saved.filter((s) => s && known.has(s.key)).map((s) => ({ key: s.key, visible: s.visible !== false }))
-    const seen = new Set(out.map((s) => s.key))
-    for (const f of OPTIONAL_FILTERS) if (!seen.has(f.key)) out.push({ key: f.key, visible: true }) // new filters appear
-    return out.length ? out : defaultFilterCfg()
-  } catch { return defaultFilterCfg() }
+    const saved = JSON.parse(localStorage.getItem(FILTER_CFG_KEY) || 'null')
+    if (Array.isArray(saved) && saved.every((k) => typeof k === 'string')) return saved.slice(0, MAX_FILTERS)
+    return DEFAULT_FILTER_COLS
+  } catch { return DEFAULT_FILTER_COLS }
 }
 
 export function Units() {
@@ -158,16 +147,17 @@ export function Units() {
   const [tab, setTab] = useState<Tab>('units')
   const [q, setQ] = useState('')
   const [fGroup, setFGroup] = useState('')
-  const [fLoc, setFLoc] = useState('ALL')
-  const [fModel, setFModel] = useState('ALL')
-  const [fFinal, setFFinal] = useState('ALL')
-  const [fCompany, setFCompany] = useState('ALL')
-  const [fCarStatus, setFCarStatus] = useState('ALL')
+  // generic per-column filters: column key → selected value ('ALL'/'' = off)
+  const [colFilters, setColFilters] = useState<Record<string, string>>({})
+  const setColFilter = (key: string, v: string) => setColFilters((m) => ({ ...m, [key]: v }))
   const [filtersOpen, setFiltersOpen] = useState(true)
-  const [filterCfg, setFilterCfg] = useState<FilterItem[]>(loadFilterCfg)
+  const [filterCols, setFilterCols] = useState<string[]>(loadFilterCols)
   const [filterMgr, setFilterMgr] = useState(false)
-  useEffect(() => { try { localStorage.setItem(FILTER_CFG_KEY, JSON.stringify(filterCfg)) } catch { /* quota */ } }, [filterCfg])
-  const visF = useMemo(() => new Set(filterCfg.filter((f) => f.visible).map((f) => f.key)), [filterCfg])
+  useEffect(() => { try { localStorage.setItem(FILTER_CFG_KEY, JSON.stringify(filterCols)) } catch { /* quota */ } }, [filterCols])
+  // only apply filters whose column is currently visible in the table
+  const visColKeys = useMemo(() => new Set(visCols.map((c) => c.key)), [visCols])
+  const colByKey = useMemo(() => new Map(visCols.map((c) => [c.key, c])), [visCols])
+  const activeFilterCols = useMemo(() => filterCols.filter((k) => visColKeys.has(k)), [filterCols, visColKeys])
   const [sortKey, setSortKey] = useState('No')
   // "Last update" sorts NEWEST-FIRST by default: editing a cell bumps the row's
   // updatedAt, and with ascending order the edited row silently teleported to
@@ -189,11 +179,21 @@ export function Units() {
     for (const r of rows) { const v = r.cells[key]; if (v) set.add(v) }
     return [...set].sort()
   }
-  const distinct = useMemo(() => ({
-    Loc: grabDistinct('Location yard'), Model: grabDistinct('Model'),
-    Final: grabDistinct('Final Status'), Company: grabDistinct('company'),
+  // distinct value list for a filter column ('Car Status' uses the derived
+  // lifecycle status, not the raw cell, so gate-out logic stays consistent)
+  const distinctFor = (key: string): string[] => {
+    if (key === 'Car Status') {
+      const present = new Set(rows.map((r) => deriveCarStatus(r.cells)))
+      return CAR_STATUS_VALUES.filter((v) => present.has(v))
+    }
+    return grabDistinct(key)
+  }
+  const filterOptions = useMemo(() => {
+    const o: Record<string, string[]> = {}
+    for (const key of activeFilterCols) o[key] = distinctFor(key)
+    return o
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [rows])
+  }, [rows, activeFilterCols])
 
   const liveOpts = useMemo(() => {
     const o: Record<string, string[]> = {}
@@ -216,12 +216,13 @@ export function Units() {
     let arr = rows.filter((r, i) => {
       if (query && !searchIndex[i].includes(query)) return false
       if (g && !normKey(r.cells[GROUPING_KEY] || '').includes(g)) return false
-      // hidden filters are not applied (their control is off) — re-showing restores them
-      if (visF.has('loc') && fLoc !== 'ALL' && r.cells['Location yard'] !== fLoc) return false
-      if (visF.has('model') && fModel !== 'ALL' && r.cells['Model'] !== fModel) return false
-      if (visF.has('final') && fFinal !== 'ALL' && r.cells['Final Status'] !== fFinal) return false
-      if (visF.has('company') && fCompany !== 'ALL' && r.cells['company'] !== fCompany) return false
-      if (visF.has('carStatus') && fCarStatus !== 'ALL' && deriveCarStatus(r.cells) !== fCarStatus) return false
+      // per-column filters — only those whose column is currently visible
+      for (const key of activeFilterCols) {
+        const val = colFilters[key]
+        if (!val || val === 'ALL') continue
+        const cell = key === 'Car Status' ? deriveCarStatus(r.cells) : (r.cells[key] ?? '')
+        if (cell !== val) return false
+      }
       if (unitPreset && !presetMatch(unitPreset, r)) return false
       return true
     })
@@ -234,7 +235,7 @@ export function Units() {
       return av < bv ? -sortDir : av > bv ? sortDir : 0
     })
     return arr
-  }, [rows, searchIndex, q, fGroup, fLoc, fModel, fFinal, fCompany, fCarStatus, visF, unitPreset, sortKey, sortDir])
+  }, [rows, searchIndex, q, fGroup, colFilters, activeFilterCols, unitPreset, sortKey, sortDir])
 
   const toggleSort = (key: string) => {
     if (sortKey === key) setSortDir((d) => (d * -1) as SortDir)
@@ -250,11 +251,9 @@ export function Units() {
     return { ok, wait }
   }, [rows])
 
-  const clearFilters = () => { setQ(''); setFGroup(''); setFLoc('ALL'); setFModel('ALL'); setFFinal('ALL'); setFCompany('ALL'); setFCarStatus('ALL'); setUnitPreset(null) }
+  const clearFilters = () => { setQ(''); setFGroup(''); setColFilters({}); setUnitPreset(null) }
   const anyFilter = !!q || !!fGroup || !!unitPreset
-    || (visF.has('loc') && fLoc !== 'ALL') || (visF.has('model') && fModel !== 'ALL')
-    || (visF.has('final') && fFinal !== 'ALL') || (visF.has('company') && fCompany !== 'ALL')
-    || (visF.has('carStatus') && fCarStatus !== 'ALL')
+    || activeFilterCols.some((k) => colFilters[k] && colFilters[k] !== 'ALL')
 
   const doExport = () => rowsToCsv(`SJWD_tracking_${Date.now()}.csv`, visCols.map((c) => ({ key: c.key, label: c.label })), filtered)
 
@@ -305,16 +304,10 @@ export function Units() {
         <div className="panel px-2.5 py-1.5 mb-1.5 flex flex-nowrap items-center gap-x-3 overflow-x-auto fade-up shrink-0 relative">
           <FInput label="Unit Nbr" value={q} onChange={setQ} placeholder="VIN / รุ่น / ที่จอด / บริษัท" wide />
           <FInput label="Grouping" value={fGroup} onChange={setFGroup} placeholder="B/L / Grouping" />
-          {filterCfg.filter((f) => f.visible).map((f) => {
-            switch (f.key) {
-              case 'carStatus': return <FSel key={f.key} label="Car Status" value={fCarStatus} onChange={setFCarStatus} options={[['ALL', 'All'], ...CAR_STATUS_VALUES.map((m) => [m, m] as [string, string])]} />
-              case 'loc': return <FSel key={f.key} label="Yard Section" value={fLoc} onChange={setFLoc} options={[['ALL', 'All'], ...distinct.Loc.map((m) => [m, m] as [string, string])]} />
-              case 'model': return <FSel key={f.key} label="Model" value={fModel} onChange={setFModel} options={[['ALL', 'All'], ...distinct.Model.map((m) => [m, m] as [string, string])]} />
-              case 'final': return <FSel key={f.key} label="Final Status" value={fFinal} onChange={setFFinal} options={[['ALL', 'All'], ...distinct.Final.map((m) => [m, m] as [string, string])]} />
-              case 'company': return <FSel key={f.key} label="Company" value={fCompany} onChange={setFCompany} options={[['ALL', 'All'], ...distinct.Company.map((m) => [m, m] as [string, string])]} />
-              default: return null
-            }
-          })}
+          {activeFilterCols.map((key) => (
+            <FSel key={key} label={colByKey.get(key)?.label ?? key} value={colFilters[key] ?? 'ALL'} onChange={(v) => setColFilter(key, v)}
+              options={[['ALL', 'All'], ...(filterOptions[key] ?? []).map((m) => [m, m] as [string, string])]} />
+          ))}
           {anyFilter && <button className="btn btn-ghost shrink-0" onClick={clearFilters}><X size={14} /> ล้าง</button>}
           <button className={cx('btn btn-ghost shrink-0 ml-auto', filterMgr && 'btn-blue')} title="ปรับแต่งช่องกรอง" onClick={() => setFilterMgr((v) => !v)}><SlidersHorizontal size={14} /></button>
         </div>
@@ -336,7 +329,7 @@ export function Units() {
             sortKey={sortKey} sortDir={sortDir} toggleSort={toggleSort} optionsFor={optionsFor} />
         )}
 
-        {filterMgr && <FilterManager cfg={filterCfg} setCfg={setFilterCfg} onClose={() => setFilterMgr(false)} />}
+        {filterMgr && <FilterManager cols={visCols} filterCols={filterCols} setFilterCols={setFilterCols} onClose={() => setFilterMgr(false)} />}
         {colMgr && <ColumnManager onClose={() => setColMgr(false)} />}
       </div>
     </div>
@@ -1696,32 +1689,43 @@ function Empty({ children }: { children: React.ReactNode }) {
   return <div className="text-center py-10 text-[13px]" style={{ color: 'var(--faint)' }}>— {children} —</div>
 }
 
-// ============================ filter manager (show/hide/reorder filters) ============================
-function FilterManager({ cfg, setCfg, onClose }: { cfg: FilterItem[]; setCfg: React.Dispatch<React.SetStateAction<FilterItem[]>>; onClose: () => void }) {
-  const labelOf = (k: FilterKey) => OPTIONAL_FILTERS.find((f) => f.key === k)?.label ?? k
-  const visCount = cfg.filter((f) => f.visible).length
-  const toggle = (k: FilterKey) => setCfg((c) => c.map((f) => (f.key === k ? { ...f, visible: !f.visible } : f)))
-  const showAll = (v: boolean) => setCfg((c) => c.map((f) => ({ ...f, visible: v })))
-  const reset = () => setCfg(defaultFilterCfg())
-  const move = (k: FilterKey, dir: -1 | 1) => setCfg((c) => {
-    const i = c.findIndex((f) => f.key === k); const j = i + dir
-    if (i < 0 || j < 0 || j >= c.length) return c
-    const next = [...c];[next[i], next[j]] = [next[j], next[i]]; return next
+// ============================ filter manager (choose filters from columns) ============================
+// Filters are picked FROM the (visible) columns — up to MAX_FILTERS at once,
+// orderable. Unit Nbr + Grouping are pinned separately.
+function FilterManager({ cols, filterCols, setFilterCols, onClose }: {
+  cols: Column[]; filterCols: string[]; setFilterCols: React.Dispatch<React.SetStateAction<string[]>>; onClose: () => void
+}) {
+  const [query, setQuery] = useState('')
+  // only columns that still exist / are visible can be chosen; keep chosen order
+  const chosen = filterCols.filter((k) => cols.some((c) => c.key === k))
+  const chosenSet = new Set(chosen)
+  const labelOf = (k: string) => cols.find((c) => c.key === k)?.label ?? k
+  const q = query.trim().toLowerCase()
+  const available = cols.filter((c) => !chosenSet.has(c.key) && (!q || c.label.toLowerCase().includes(q) || c.key.toLowerCase().includes(q)))
+  const full = chosen.length >= MAX_FILTERS
+
+  const add = (k: string) => setFilterCols((f) => (f.includes(k) || f.length >= MAX_FILTERS ? f : [...f, k]))
+  const remove = (k: string) => setFilterCols((f) => f.filter((x) => x !== k))
+  const move = (k: string, dir: -1 | 1) => setFilterCols((f) => {
+    const i = f.indexOf(k); const j = i + dir
+    if (i < 0 || j < 0 || j >= f.length) return f
+    const next = [...f];[next[i], next[j]] = [next[j], next[i]]; return next
   })
+  const reset = () => setFilterCols(DEFAULT_FILTER_COLS.filter((k) => cols.some((c) => c.key === k)))
+  const clear = () => setFilterCols([])
 
   return (
-    <div className="panel-solid shrink-0 flex flex-col fade-up" style={{ width: 270 }}>
+    <div className="panel-solid shrink-0 flex flex-col fade-up" style={{ width: 278 }}>
       <div className="flex items-center justify-between px-3 py-2.5 border-b hairline shrink-0">
-        <div className="font-semibold text-[13.5px] flex items-center gap-1.5"><SlidersHorizontal size={15} /> ปรับแต่งช่องกรอง <span className="tabular" style={{ color: 'var(--faint)' }}>({visCount})</span></div>
+        <div className="font-semibold text-[13.5px] flex items-center gap-1.5"><SlidersHorizontal size={15} /> ปรับแต่งช่องกรอง <span className="tabular" style={{ color: chosen.length >= MAX_FILTERS ? 'var(--st-damage)' : 'var(--faint)' }}>({chosen.length}/{MAX_FILTERS})</span></div>
         <button className="btn btn-ghost p-1.5" onClick={onClose}><X size={15} /></button>
       </div>
       <div className="flex items-center gap-1.5 px-3 py-2 border-b hairline shrink-0 text-[12px]">
-        <button className="btn btn-ghost px-2 py-1" onClick={() => showAll(true)}>แสดงทั้งหมด</button>
-        <button className="btn btn-ghost px-2 py-1" onClick={() => showAll(false)}>ซ่อนทั้งหมด</button>
-        <button className="btn btn-ghost px-2 py-1 ml-auto" onClick={reset}>รีเซ็ต</button>
+        <button className="btn btn-ghost px-2 py-1" onClick={reset}>ค่าเริ่มต้น</button>
+        <button className="btn btn-ghost px-2 py-1" onClick={clear}>ล้างทั้งหมด</button>
       </div>
       <div className="overflow-auto flex-1 p-2">
-        {/* pinned filters — always shown, cannot hide/reorder */}
+        {/* pinned */}
         <div className="text-[10.5px] font-bold uppercase px-1 py-1" style={{ color: 'var(--faint)' }}>ตรึงไว้</div>
         {['Unit Nbr', 'Grouping'].map((label) => (
           <div key={label} className="flex items-center gap-2 px-1.5 py-1 rounded-md" style={{ opacity: 0.7 }}>
@@ -1729,15 +1733,34 @@ function FilterManager({ cfg, setCfg, onClose }: { cfg: FilterItem[]; setCfg: Re
             <span className="text-[12.5px] flex-1">{label}</span>
           </div>
         ))}
-        <div className="text-[10.5px] font-bold uppercase px-1 py-1 mt-2" style={{ color: 'var(--faint)' }}>ปรับแต่งได้</div>
-        {cfg.map((f) => (
-          <div key={f.key} className="flex items-center gap-2 px-1.5 py-1 rounded-md row-hover">
-            <input type="checkbox" checked={f.visible} onChange={() => toggle(f.key)} />
-            <span className="text-[12.5px] flex-1 clip">{labelOf(f.key)}</span>
-            <button className="btn btn-ghost p-0.5" title="เลื่อนขึ้น" onClick={() => move(f.key, -1)}><ChevronUp size={13} /></button>
-            <button className="btn btn-ghost p-0.5" title="เลื่อนลง" onClick={() => move(f.key, 1)}><ChevronDown size={13} /></button>
+
+        {/* chosen filters (ordered) */}
+        <div className="text-[10.5px] font-bold uppercase px-1 py-1 mt-2" style={{ color: 'var(--faint)' }}>ช่องกรองที่เลือก</div>
+        {chosen.length === 0 && <div className="text-[11.5px] px-1.5 py-1" style={{ color: 'var(--faint)' }}>ยังไม่ได้เลือก — ติ๊กคอลัมน์ด้านล่างเพื่อเพิ่ม</div>}
+        {chosen.map((k) => (
+          <div key={k} className="flex items-center gap-2 px-1.5 py-1 rounded-md row-hover">
+            <input type="checkbox" checked onChange={() => remove(k)} />
+            <span className="text-[12.5px] flex-1 clip" title={k}>{labelOf(k)}</span>
+            <button className="btn btn-ghost p-0.5" title="เลื่อนขึ้น" onClick={() => move(k, -1)}><ChevronUp size={13} /></button>
+            <button className="btn btn-ghost p-0.5" title="เลื่อนลง" onClick={() => move(k, 1)}><ChevronDown size={13} /></button>
           </div>
         ))}
+
+        {/* available columns to add (from the column manager set) */}
+        <div className="text-[10.5px] font-bold uppercase px-1 py-1 mt-2 flex items-center gap-1.5" style={{ color: 'var(--faint)' }}>
+          เพิ่มจากคอลัมน์ {full && <span style={{ color: 'var(--st-damage)' }}>· ครบ {MAX_FILTERS} แล้ว</span>}
+        </div>
+        <div className="relative mb-1">
+          <Search size={13} className="absolute left-2 top-1/2 -translate-y-1/2" style={{ color: 'var(--faint)' }} />
+          <input className="input py-1.5 text-[12.5px] w-full" style={{ paddingLeft: 26 }} placeholder="ค้นหาคอลัมน์…" value={query} onChange={(e) => setQuery(e.target.value)} />
+        </div>
+        {available.map((c) => (
+          <label key={c.key} className="flex items-center gap-2 px-1.5 py-1 rounded-md row-hover" style={full ? { opacity: 0.4, cursor: 'not-allowed' } : { cursor: 'pointer' }}>
+            <input type="checkbox" checked={false} disabled={full} onChange={() => add(c.key)} />
+            <span className="text-[12.5px] flex-1 clip" title={c.key}>{c.label}</span>
+          </label>
+        ))}
+        {available.length === 0 && q && <div className="text-center text-[12px] py-3" style={{ color: 'var(--faint)' }}>ไม่พบคอลัมน์</div>}
       </div>
     </div>
   )
