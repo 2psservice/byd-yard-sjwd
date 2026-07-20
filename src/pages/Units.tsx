@@ -5,6 +5,7 @@ import {
   ArrowUpDown, ChevronUp, ChevronDown, ChevronRight, Plus, Database,
   FileText, List as ListIcon, ClipboardList, Eye, Copy, MapPin,
   Car, Clock, ShieldCheck, Route, Printer, CheckSquare, Check, History, Pencil,
+  SlidersHorizontal, Lock,
 } from 'lucide-react'
 import { CarTopView } from '../components/CarTopView'
 import { printIr, printDn, printIrPaper } from '../lib/dnir'
@@ -112,6 +113,33 @@ const COLOR_SW: Record<string, string> = {
 type SortDir = 1 | -1
 type Tab = 'grouping' | 'units' | 'mylist'
 
+// ── customisable filter bar ────────────────────────────────────────────────
+// Unit Nbr + Grouping are pinned (always shown); the rest can be hidden /
+// reordered, like the column manager. Config persists in localStorage.
+type FilterKey = 'carStatus' | 'loc' | 'model' | 'final' | 'company'
+const OPTIONAL_FILTERS: { key: FilterKey; label: string }[] = [
+  { key: 'carStatus', label: 'Car Status' },
+  { key: 'loc', label: 'Yard Section' },
+  { key: 'model', label: 'Model' },
+  { key: 'final', label: 'Final Status' },
+  { key: 'company', label: 'Company' },
+]
+interface FilterItem { key: FilterKey; visible: boolean }
+const FILTER_CFG_KEY = 'sjwd-filter-cfg'
+const defaultFilterCfg = (): FilterItem[] => OPTIONAL_FILTERS.map((f) => ({ key: f.key, visible: true }))
+
+function loadFilterCfg(): FilterItem[] {
+  try {
+    const saved = JSON.parse(localStorage.getItem(FILTER_CFG_KEY) || 'null') as FilterItem[] | null
+    if (!Array.isArray(saved)) return defaultFilterCfg()
+    const known = new Set(OPTIONAL_FILTERS.map((f) => f.key))
+    const out = saved.filter((s) => s && known.has(s.key)).map((s) => ({ key: s.key, visible: s.visible !== false }))
+    const seen = new Set(out.map((s) => s.key))
+    for (const f of OPTIONAL_FILTERS) if (!seen.has(f.key)) out.push({ key: f.key, visible: true }) // new filters appear
+    return out.length ? out : defaultFilterCfg()
+  } catch { return defaultFilterCfg() }
+}
+
 export function Units() {
   const { focus, setFocus } = useYard()
   const unitPreset = useYard((s) => s.unitPreset)
@@ -136,6 +164,10 @@ export function Units() {
   const [fCompany, setFCompany] = useState('ALL')
   const [fCarStatus, setFCarStatus] = useState('ALL')
   const [filtersOpen, setFiltersOpen] = useState(true)
+  const [filterCfg, setFilterCfg] = useState<FilterItem[]>(loadFilterCfg)
+  const [filterMgr, setFilterMgr] = useState(false)
+  useEffect(() => { try { localStorage.setItem(FILTER_CFG_KEY, JSON.stringify(filterCfg)) } catch { /* quota */ } }, [filterCfg])
+  const visF = useMemo(() => new Set(filterCfg.filter((f) => f.visible).map((f) => f.key)), [filterCfg])
   const [sortKey, setSortKey] = useState('No')
   // "Last update" sorts NEWEST-FIRST by default: editing a cell bumps the row's
   // updatedAt, and with ascending order the edited row silently teleported to
@@ -184,11 +216,12 @@ export function Units() {
     let arr = rows.filter((r, i) => {
       if (query && !searchIndex[i].includes(query)) return false
       if (g && !normKey(r.cells[GROUPING_KEY] || '').includes(g)) return false
-      if (fLoc !== 'ALL' && r.cells['Location yard'] !== fLoc) return false
-      if (fModel !== 'ALL' && r.cells['Model'] !== fModel) return false
-      if (fFinal !== 'ALL' && r.cells['Final Status'] !== fFinal) return false
-      if (fCompany !== 'ALL' && r.cells['company'] !== fCompany) return false
-      if (fCarStatus !== 'ALL' && deriveCarStatus(r.cells) !== fCarStatus) return false
+      // hidden filters are not applied (their control is off) — re-showing restores them
+      if (visF.has('loc') && fLoc !== 'ALL' && r.cells['Location yard'] !== fLoc) return false
+      if (visF.has('model') && fModel !== 'ALL' && r.cells['Model'] !== fModel) return false
+      if (visF.has('final') && fFinal !== 'ALL' && r.cells['Final Status'] !== fFinal) return false
+      if (visF.has('company') && fCompany !== 'ALL' && r.cells['company'] !== fCompany) return false
+      if (visF.has('carStatus') && fCarStatus !== 'ALL' && deriveCarStatus(r.cells) !== fCarStatus) return false
       if (unitPreset && !presetMatch(unitPreset, r)) return false
       return true
     })
@@ -201,7 +234,7 @@ export function Units() {
       return av < bv ? -sortDir : av > bv ? sortDir : 0
     })
     return arr
-  }, [rows, searchIndex, q, fGroup, fLoc, fModel, fFinal, fCompany, fCarStatus, unitPreset, sortKey, sortDir])
+  }, [rows, searchIndex, q, fGroup, fLoc, fModel, fFinal, fCompany, fCarStatus, visF, unitPreset, sortKey, sortDir])
 
   const toggleSort = (key: string) => {
     if (sortKey === key) setSortDir((d) => (d * -1) as SortDir)
@@ -218,7 +251,10 @@ export function Units() {
   }, [rows])
 
   const clearFilters = () => { setQ(''); setFGroup(''); setFLoc('ALL'); setFModel('ALL'); setFFinal('ALL'); setFCompany('ALL'); setFCarStatus('ALL'); setUnitPreset(null) }
-  const anyFilter = q || fGroup || fLoc !== 'ALL' || fModel !== 'ALL' || fFinal !== 'ALL' || fCompany !== 'ALL' || fCarStatus !== 'ALL' || !!unitPreset
+  const anyFilter = !!q || !!fGroup || !!unitPreset
+    || (visF.has('loc') && fLoc !== 'ALL') || (visF.has('model') && fModel !== 'ALL')
+    || (visF.has('final') && fFinal !== 'ALL') || (visF.has('company') && fCompany !== 'ALL')
+    || (visF.has('carStatus') && fCarStatus !== 'ALL')
 
   const doExport = () => rowsToCsv(`SJWD_tracking_${Date.now()}.csv`, visCols.map((c) => ({ key: c.key, label: c.label })), filtered)
 
@@ -264,17 +300,24 @@ export function Units() {
         </div>
       </div>
 
-      {/* filter bar */}
+      {/* filter bar — Unit Nbr + Grouping pinned, the rest configurable */}
       {filtersOpen && (
-        <div className="panel px-2.5 py-1.5 mb-1.5 flex flex-nowrap items-center gap-x-3 overflow-x-auto fade-up shrink-0">
+        <div className="panel px-2.5 py-1.5 mb-1.5 flex flex-nowrap items-center gap-x-3 overflow-x-auto fade-up shrink-0 relative">
           <FInput label="Unit Nbr" value={q} onChange={setQ} placeholder="VIN / รุ่น / ที่จอด / บริษัท" wide />
           <FInput label="Grouping" value={fGroup} onChange={setFGroup} placeholder="B/L / Grouping" />
-          <FSel label="Car Status" value={fCarStatus} onChange={setFCarStatus} options={[['ALL', 'All'], ...CAR_STATUS_VALUES.map((m) => [m, m] as [string, string])]} />
-          <FSel label="Yard Section" value={fLoc} onChange={setFLoc} options={[['ALL', 'All'], ...distinct.Loc.map((m) => [m, m] as [string, string])]} />
-          <FSel label="Model" value={fModel} onChange={setFModel} options={[['ALL', 'All'], ...distinct.Model.map((m) => [m, m] as [string, string])]} />
-          <FSel label="Final Status" value={fFinal} onChange={setFFinal} options={[['ALL', 'All'], ...distinct.Final.map((m) => [m, m] as [string, string])]} />
-          <FSel label="Company" value={fCompany} onChange={setFCompany} options={[['ALL', 'All'], ...distinct.Company.map((m) => [m, m] as [string, string])]} />
+          {filterCfg.filter((f) => f.visible).map((f) => {
+            switch (f.key) {
+              case 'carStatus': return <FSel key={f.key} label="Car Status" value={fCarStatus} onChange={setFCarStatus} options={[['ALL', 'All'], ...CAR_STATUS_VALUES.map((m) => [m, m] as [string, string])]} />
+              case 'loc': return <FSel key={f.key} label="Yard Section" value={fLoc} onChange={setFLoc} options={[['ALL', 'All'], ...distinct.Loc.map((m) => [m, m] as [string, string])]} />
+              case 'model': return <FSel key={f.key} label="Model" value={fModel} onChange={setFModel} options={[['ALL', 'All'], ...distinct.Model.map((m) => [m, m] as [string, string])]} />
+              case 'final': return <FSel key={f.key} label="Final Status" value={fFinal} onChange={setFFinal} options={[['ALL', 'All'], ...distinct.Final.map((m) => [m, m] as [string, string])]} />
+              case 'company': return <FSel key={f.key} label="Company" value={fCompany} onChange={setFCompany} options={[['ALL', 'All'], ...distinct.Company.map((m) => [m, m] as [string, string])]} />
+              default: return null
+            }
+          })}
           {anyFilter && <button className="btn btn-ghost shrink-0" onClick={clearFilters}><X size={14} /> ล้าง</button>}
+          <button className={cx('btn btn-ghost shrink-0 ml-auto', filterMgr && 'btn-blue')} title="ปรับแต่งช่องกรอง" onClick={() => setFilterMgr((v) => !v)}><SlidersHorizontal size={14} /></button>
+          {filterMgr && <FilterManager cfg={filterCfg} setCfg={setFilterCfg} onClose={() => setFilterMgr(false)} />}
         </div>
       )}
 
@@ -1651,6 +1694,56 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
 
 function Empty({ children }: { children: React.ReactNode }) {
   return <div className="text-center py-10 text-[13px]" style={{ color: 'var(--faint)' }}>— {children} —</div>
+}
+
+// ============================ filter manager (show/hide/reorder filters) ============================
+function FilterManager({ cfg, setCfg, onClose }: { cfg: FilterItem[]; setCfg: React.Dispatch<React.SetStateAction<FilterItem[]>>; onClose: () => void }) {
+  const labelOf = (k: FilterKey) => OPTIONAL_FILTERS.find((f) => f.key === k)?.label ?? k
+  const visCount = cfg.filter((f) => f.visible).length
+  const toggle = (k: FilterKey) => setCfg((c) => c.map((f) => (f.key === k ? { ...f, visible: !f.visible } : f)))
+  const showAll = (v: boolean) => setCfg((c) => c.map((f) => ({ ...f, visible: v })))
+  const reset = () => setCfg(defaultFilterCfg())
+  const move = (k: FilterKey, dir: -1 | 1) => setCfg((c) => {
+    const i = c.findIndex((f) => f.key === k); const j = i + dir
+    if (i < 0 || j < 0 || j >= c.length) return c
+    const next = [...c];[next[i], next[j]] = [next[j], next[i]]; return next
+  })
+
+  return (
+    <>
+      <div className="fixed inset-0 z-[59]" onClick={onClose} />
+      <div className="absolute top-full right-0 mt-1.5 rounded-xl overflow-hidden z-[60] panel-solid flex flex-col" style={{ width: 270, boxShadow: '0 12px 32px -8px rgba(15,23,42,0.28)' }}>
+        <div className="flex items-center justify-between px-3 py-2.5 border-b hairline shrink-0">
+          <div className="font-semibold text-[13.5px] flex items-center gap-1.5"><SlidersHorizontal size={15} /> ปรับแต่งช่องกรอง <span className="tabular" style={{ color: 'var(--faint)' }}>({visCount})</span></div>
+          <button className="btn btn-ghost p-1" onClick={onClose}><X size={15} /></button>
+        </div>
+        <div className="flex items-center gap-1.5 px-3 py-2 border-b hairline shrink-0 text-[12px]">
+          <button className="btn btn-ghost px-2 py-1" onClick={() => showAll(true)}>แสดงทั้งหมด</button>
+          <button className="btn btn-ghost px-2 py-1" onClick={() => showAll(false)}>ซ่อนทั้งหมด</button>
+          <button className="btn btn-ghost px-2 py-1 ml-auto" onClick={reset}>รีเซ็ต</button>
+        </div>
+        <div className="p-2">
+          {/* pinned filters — always shown, cannot hide/reorder */}
+          {['Unit Nbr', 'Grouping'].map((label) => (
+            <div key={label} className="flex items-center gap-2 px-1.5 py-1 rounded-md" style={{ opacity: 0.75 }}>
+              <Lock size={12} style={{ color: 'var(--faint)' }} />
+              <span className="text-[12.5px] flex-1">{label}</span>
+              <span className="text-[10px]" style={{ color: 'var(--faint)' }}>ตรึงไว้</span>
+            </div>
+          ))}
+          <div className="border-t hairline my-1" />
+          {cfg.map((f) => (
+            <div key={f.key} className="flex items-center gap-2 px-1.5 py-1 rounded-md row-hover">
+              <input type="checkbox" checked={f.visible} onChange={() => toggle(f.key)} />
+              <span className="text-[12.5px] flex-1 clip">{labelOf(f.key)}</span>
+              <button className="btn btn-ghost p-0.5" title="เลื่อนขึ้น" onClick={() => move(f.key, -1)}><ChevronUp size={13} /></button>
+              <button className="btn btn-ghost p-0.5" title="เลื่อนลง" onClick={() => move(f.key, 1)}><ChevronDown size={13} /></button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </>
+  )
 }
 
 function DefRow({ label, value, color }: { label: string; value: string; color?: string }) {
