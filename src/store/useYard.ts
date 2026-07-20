@@ -733,12 +733,24 @@ export const useYard = create<YardState>()(
         const next = newId.trim().toUpperCase()
         if (!next) return null
         if (next === id) return next
-        const s = get(); const key = siteKey(s.currentSite); const cur = s.blocksBySite[key] ?? []
+        const s = get()
+        // locate the bucket that actually holds this block — usually the current
+        // site, but fall back to any bucket (e.g. '_global', or a layout loaded
+        // under a different key) so the rename never silently no-ops.
+        let key = siteKey(s.currentSite)
+        if (!(s.blocksBySite[key] ?? []).some((b) => b.id === id)) {
+          const hit = Object.keys(s.blocksBySite).find((k) => (s.blocksBySite[k] ?? []).some((b) => b.id === id))
+          if (hit) key = hit
+        }
+        const cur = s.blocksBySite[key] ?? []
         if (!cur.some((b) => b.id === id) || cur.some((b) => b.id === next)) return null
+        // re-tag parked units: scope to the bucket's site (the real site id; the
+        // '_global' bucket has no site so re-tag any unit parked under the old id)
+        const bucketSite = key === '_global' ? null : key
         const units = { ...s.units }
         const changed: Unit[] = []
         for (const [vin, u] of Object.entries(units)) {
-          if (u.block === id && (!s.currentSite || u.site === s.currentSite)) {
+          if (u.block === id && (!bucketSite || u.site === bucketSite)) {
             const nu = { ...u, block: next }
             units[vin] = nu; changed.push(nu)
           }

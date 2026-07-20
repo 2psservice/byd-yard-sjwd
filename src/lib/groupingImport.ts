@@ -53,6 +53,14 @@ export function yardLocCode(u: { block?: string; slot?: number } | undefined | n
   return `${prefix}-${blockCode(u.block)}${String(u.slot).padStart(2, '0')}`
 }
 
+/** Full yard location: site prefix + block + 2-digit row + 2-digit slot —
+ *  e.g. "N-R0905" (block R, row 09, slot 05), "20-B1005". Empty when unplaced.
+ *  Used by the Unit List "Location" column; a car is one of ≤8 in its row. */
+export function yardLocFull(u: { block?: string; row?: number; slot?: number } | undefined | null, prefix: string): string {
+  if (!u || !u.block || !u.row || !u.slot) return ''
+  return `${prefix}-${blockCode(u.block)}${String(u.row).padStart(2, '0')}${String(u.slot).padStart(2, '0')}`
+}
+
 /** Sort key for a yard location code ("20-A28" → ["A", 28], "N-O15" → ["O", 15]).
  *  The yard prefix is ALPHANUMERIC ("N-", "R-", "20-", "38-"), so it must be stripped
  *  with [A-Za-z0-9]+ — a letters-only strip leaves "20-A28" untouched and every key

@@ -34,9 +34,13 @@ export const CAR_STATUS_VALUES = ['Pre Gate-in', 'Gate-in', 'In Yard', 'Moving',
 // columns shown by default (a focused TOS-style working set)
 const DEFAULT_VISIBLE = new Set([
   'No', 'Lot transfer', 'moving date', 'Vin', 'Car Status', 'Model', 'Color', 'company', 'Status', 'Final Status',
-  'Location yard', 'storage Yard', 'Grouping  Number', 'Gate In (Rayong yard)',
+  '__location', 'Location yard', 'storage Yard', 'Grouping  Number', 'Gate In (Rayong yard)',
   'Status Tax', 'PIC (PDI)', 'หมายเหตุ',
 ])
+
+/** Synthetic column key for the computed yard-location code (prefix-block+row+slot,
+ *  e.g. "N-R0905"). Not a sheet cell — resolved from the car's placement. */
+export const LOCATION_KEY = '__location'
 
 // curated select columns (options also augmented from live data at import)
 const SELECT_OPTIONS: Record<string, string[]> = {
@@ -50,7 +54,7 @@ const SELECT_OPTIONS: Record<string, string[]> = {
 // columns that become 'select' with options derived from live distinct values
 const SELECT_FROM_DATA = new Set(['Model', 'Location yard', 'PIC (PDI)', 'Stock of Status', 'Vin Of Status'])
 
-const NON_EDITABLE = new Set(['No', 'Vin'])
+const NON_EDITABLE = new Set(['No', 'Vin', '__location'])
 
 interface Spec { key: string; label?: string; group: ColGroup; width?: number }
 
@@ -90,6 +94,7 @@ const SPECS: Spec[] = [
   { key: 'Gate In (Rayong yard)', label: 'Gate In', group: 'location', width: 110 },
   { key: 'Final check date', group: 'status', width: 110 },
   { key: 'Final Status', group: 'status', width: 120 },
+  { key: '__location', label: 'Location', group: 'location', width: 110 }, // computed: prefix-block+row+slot
   { key: 'Location yard', group: 'location', width: 130 },
   { key: 'Status Tax', group: 'location', width: 150 },
   { key: 'Stock of Status', group: 'location', width: 170 },
