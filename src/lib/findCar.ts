@@ -11,7 +11,7 @@
  */
 import type { TrackRow } from './excelTracking'
 import type { FindListRow } from './groupingPrint'
-import { siteGroupingConfig, yardLocCode } from './groupingImport'
+import { siteGroupingConfig, yardLocFull } from './groupingImport'
 
 export interface MatchResult {
   found: TrackRow[]
@@ -37,7 +37,7 @@ export function matchVins(text: string, allRows: TrackRow[]): MatchResult {
 }
 
 /** unit placement needed to resolve a yard-location code */
-export interface UnitLite { block?: string; slot?: number; modelName?: string; color?: string }
+export interface UnitLite { block?: string; row?: number; slot?: number; modelName?: string; color?: string }
 
 /** Build ใบหารถ rows: yard-location code (with cell fallbacks) + display fields. */
 export function toFindListRows(
@@ -48,8 +48,9 @@ export function toFindListRows(
   const prefix = siteGroupingConfig(siteName).prefix
   return found.map((r) => {
     const u = unitByVin(r.vin)
-    const loc = yardLocCode(u ? { block: u.block, slot: u.slot } : null, prefix)
-      || r.cells['storage Yard'] || r.cells['Location yard'] || ''
+    // real placement code only (prefix-block+row+slot, same as the Location
+    // column) — no cell fallback (storage Yard / Location yard aren't a position)
+    const loc = yardLocFull(u ? { block: u.block, row: u.row, slot: u.slot } : null, prefix)
     return {
       vin: r.vin,
       model: r.cells['Model'] || u?.modelName || r.cells['Model name'] || '',
