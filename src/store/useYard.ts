@@ -41,9 +41,17 @@ function parseDefDate(s?: string): number | undefined {
   if (m) { const mo = DEF_MONTHS[m[2].toLowerCase()]; if (mo != null) { const y = +m[3] < 100 ? 2000 + +m[3] : +m[3]; return new Date(y, mo, +m[1]).getTime() } }
   return undefined
 }
-/** Map a defect-sheet row to a Damage. Deterministic id → re-import replaces, no dupes. */
+/** Map a defect-sheet row to a Damage. Deterministic id → re-import replaces, no
+ *  dupes. The id hashes EVERY field so two rows that differ in any column (e.g.
+ *  category / incharge / status) stay distinct — only byte-identical rows share a
+ *  base id, and importDefects then suffixes those so none are lost. */
 function defectToDamage(def: DefectRow): Damage {
-  const id = `df_${def.source}_${defHash([def.vin, def.position ?? '', def.defect ?? '', def.date ?? ''].join('|'))}`
+  const id = `df_${def.source}_${defHash([
+    def.vin, def.position ?? '', def.defect ?? '', def.date ?? '',
+    def.categoryNG ?? '', def.categoryRepair ?? '', def.incharge ?? '',
+    def.statusRepair ?? '', def.repairDate ?? '', def.from ?? '',
+    def.stockOfStatus ?? '', def.model ?? '', def.remark ?? '',
+  ].join('|'))}`
   return {
     id,
     area: def.position || '—',
@@ -1048,7 +1056,19 @@ export const useYard = create<YardState>()(
           // the audit trail for defects that carry over (same id, or a healed twin).
           const dayKey = (src: string | undefined, area: string, at: number) => `${src}|${area}|${new Date(at).toDateString()}`
           const fileById = new Map<string, Damage>()
-          for (const def of defs) { const d = defectToDamage(def); fileById.set(d.id, d) }
+          // A VIN can legitimately carry many identical-looking defect rows (same
+          // position/defect/date). Their base id collides, so suffix repeats by
+          // occurrence order (deterministic → re-import of the same file is still
+          // idempotent). Without this, N identical rows collapsed into ONE and the
+          // rest silently vanished from the export.
+          const seenBase = new Map<string, number>()
+          for (const def of defs) {
+            const d = defectToDamage(def)
+            const k = seenBase.get(d.id) ?? 0
+            seenBase.set(d.id, k + 1)
+            if (k > 0) d.id = `${d.id}~${k}`
+            fileById.set(d.id, d)
+          }
           const newIds = new Set(fileById.keys())
 
           const inApp: Damage[] = []              // in-app damages — always preserved
