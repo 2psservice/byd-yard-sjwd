@@ -76,7 +76,10 @@ const presetMatch = (preset: string, r: TrackRow): boolean => {
     case 'expected':   return cs === 'Pre Gate-in'
     case 'preGateOut': return cs === 'Pre Gate-out'
     case 'preload':    return cs === 'Preload'
-    case 'damage':     return isWaitingRepair(r.cells)
+    // match the Dashboard "Damage" KPI exactly: waiting-repair cars that are
+    // still IN YARD (a gated-out / preload / pre-gate-in car waiting repair is
+    // counted by neither — otherwise the drill-down over-counts by those).
+    case 'damage':     return IN_YARD_STATUSES.has(cs) && isWaitingRepair(r.cells)
     default:           return true
   }
 }
