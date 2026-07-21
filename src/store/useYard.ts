@@ -74,6 +74,7 @@ interface YardState {
   appUsers: AppUser[]
   view: View
   unitPreset: string | null // dashboard → Unit List quick filter ('inYard'|'parked'|'gatein'|'expected'|'damage')
+  unitVinFilter: { label: string; vins: string[] } | null // drill-down → Unit List filtered to an explicit VIN set (e.g. a PM-plan cell)
 
   // --- sites ---
   sites: Site[]
@@ -96,6 +97,7 @@ interface YardState {
   setLang: (l: Lang) => void
   setView: (v: View) => void
   setUnitPreset: (p: string | null) => void
+  setUnitVinFilter: (f: { label: string; vins: string[] } | null) => void
   setPlanMode: (m: 'AUTO' | 'SEMI') => void
   setUser: (u: string) => void
   setDriver: (d: string) => void
@@ -252,6 +254,7 @@ export const useYard = create<YardState>()(
       ],
       view: 'dashboard',
       unitPreset: null,
+      unitVinFilter: null,
 
       sites: [
         { id: 'a5', name: 'A5', createdAt: 0 },
@@ -276,8 +279,9 @@ export const useYard = create<YardState>()(
       setLang: (lang) => set({ lang }),
       // changing view clears any dashboard quick-filter; the dashboard re-sets it
       // right after navigating (StrictMode-safe — no mount-effect consumption).
-      setView: (view) => set({ view, unitPreset: null }),
+      setView: (view) => set({ view, unitPreset: null, unitVinFilter: null }),
       setUnitPreset: (unitPreset) => set({ unitPreset }),
+      setUnitVinFilter: (unitVinFilter) => set({ unitVinFilter }),
       setPlanMode: (planMode) => set({ planMode }),
       setUser: (currentUser) => set({ currentUser }),
       setDriver: (currentDriver) => set({ currentDriver }),
