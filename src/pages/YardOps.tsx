@@ -2230,7 +2230,7 @@ function PdiView() {
                     {d.note ? <span style={{ color: 'var(--muted)' }}> · {d.note}</span> : null}
                   </div>
                   <span className="badge text-[10px] shrink-0" style={{ color: d.severity === 'major' ? '#dc2626' : '#d97706', background: d.severity === 'major' ? 'rgba(220,38,38,0.1)' : 'rgba(217,119,6,0.1)' }}>
-                    {d.severity === 'major' ? 'รุนแรง' : 'เล็กน้อย'}
+                    {d.severity === 'major' ? 'Heavy NG' : 'NG'}
                   </span>
                   <button onClick={() => doReleaseNg(d.id)} className="px-2.5 py-1 rounded-lg text-[11px] font-bold shrink-0" style={{ background: 'var(--st-yard)', color: '#fff' }}>ปลด</button>
                 </div>
@@ -2263,7 +2263,7 @@ function PdiView() {
                   <div className="flex-1 min-w-0 text-[12.5px]">
                     <div className="font-semibold">{zoneLabel(d.area)} · {d.item ?? TYPES.find(t => t.id === d.type)?.th ?? d.type}</div>
                     <div style={{ color: d.severity === 'major' ? '#dc2626' : '#d97706' }}>
-                      {d.severity === 'major' ? 'รุนแรง' : 'เล็กน้อย'}{d.note ? ` · ${d.note}` : ''}
+                      {d.severity === 'major' ? 'Heavy NG' : 'NG'}{d.note ? ` · ${d.note}` : ''}
                     </div>
                   </div>
                   <button onClick={() => doReleaseNg(d.id)}
@@ -2345,7 +2345,7 @@ function MechanicView() {
                       {zoneLabel(d.area)} · {TYPES.find(t => t.id === d.type)?.th}
                     </div>
                     <div className="text-[11.5px] mt-0.5" style={{ color: d.severity === 'major' ? '#dc2626' : '#d97706' }}>
-                      {d.severity === 'major' ? 'รุนแรง' : 'เล็กน้อย'}{d.note ? ` · ${d.note}` : ''}
+                      {d.severity === 'major' ? 'Heavy NG' : 'NG'}{d.note ? ` · ${d.note}` : ''}
                     </div>
                   </div>
                   <button onClick={() => doRelease(d.id)}
@@ -2955,7 +2955,7 @@ function CheckView() {
                   : <AlertTriangle size={13} style={{ color: '#dc2626', flexShrink: 0, marginTop: 2 }} />}
                 <div className="flex-1 text-[12px]">
                   <div className="font-semibold">{zoneLabel(d.area)}</div>
-                  <div style={{ color: 'var(--muted)' }}>{d.note || d.type}{d.severity === 'major' ? ' · รุนแรง' : ''}</div>
+                  <div style={{ color: 'var(--muted)' }}>{d.note || d.type}{d.severity === 'major' ? ' · Heavy NG' : ''}</div>
                   {d.photo && <div className="text-[10.5px] mt-0.5" style={{ color: 'var(--brand)' }}>แตะเพื่อดูรูปเต็ม</div>}
                 </div>
                 <span className="text-[10.5px]" style={{ color: 'var(--faint)' }}>#{i+1}</span>
