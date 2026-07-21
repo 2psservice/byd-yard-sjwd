@@ -8,6 +8,7 @@ import { parseTrackingWorkbook } from '../lib/excelTracking'
 import { idbBulkPut, idbClear, idbDelete, idbGetAllRows, idbPut } from '../lib/idb'
 import * as db from '../lib/db'
 import { supabase } from '../lib/supabase'
+import { onSync, sendSync } from '../lib/syncBus'
 import { useYard } from './useYard'
 import { siteForRow, siteIdForLocation, coInspectionAccepts } from '../lib/siteScope'
 import { CAR_STATUS_ORDER, deriveCarStatus, isGateOutStamp } from '../lib/carStatus'
@@ -567,6 +568,8 @@ export const useTracking = create<TrackingState>()(
         const updatedAt = Date.now()
         await db.saveAppConfig(VIEW_DEFAULT_KEY, { columns, filterCols: get().filterCols, updatedAt })
         set({ defaultSeeded: true, viewDefaultVersion: updatedAt })
+        // tell every OTHER open client to adopt it immediately (no re-login needed)
+        sendSync('viewdefault')
       },
 
       resetToViewDefault: async () => {
@@ -598,6 +601,10 @@ export const useTracking = create<TrackingState>()(
     },
   ),
 )
+
+// admin published a new shared default → adopt it live on every other open
+// client (version-checked inside seedViewDefault, so it only pulls when newer).
+onSync('viewdefault', () => { useTracking.getState().seedViewDefault().catch((e) => console.error('[viewdefault] sync pull', e)) })
 
 // memoized array of rows to avoid new-reference selector loops
 export function useTrackingRows(): TrackRow[] {

@@ -1912,27 +1912,27 @@ function ViewDefaultButtons() {
   const resetToViewDefault = useTracking((s) => s.resetToViewDefault)
   const [busy, setBusy] = useState(false)
   const save = async () => {
-    if (!window.confirm('ตั้งลำดับคอลัมน์ + ช่องกรองปัจจุบัน เป็นค่าเริ่มต้นของทุกคน?\n(ทุก user และทุก yard จะได้ลำดับนี้ในการเข้าใช้งานครั้งถัดไป — แทนที่การปรับแต่งเดิม)')) return
+    if (!window.confirm('ตั้งลำดับคอลัมน์ + ช่องกรองปัจจุบัน เป็นค่าเริ่มต้นของทุกคน?\n\nทุก user และทุก yard จะได้ลำดับนี้อัตโนมัติ ไม่ต้องดาวน์โหลดหรือกดโหลดเอง\n(เครื่องที่เปิดอยู่เห็นทันที · ที่เหลือเห็นตอนเข้าใช้งานครั้งถัดไป) — แล้วแต่ละคนปรับแต่งของตัวเองได้ภายหลัง')) return
     setBusy(true)
-    try { await saveViewDefault(); toast('ok', 'ตั้งเป็นค่าเริ่มต้นของทุกคนแล้ว — ทุกคนจะได้ลำดับนี้เมื่อเข้าใช้งานครั้งถัดไป') }
-    catch { toast('err', 'บันทึกไม่สำเร็จ — ต้องมีตาราง app_config ใน Supabase') }
+    try { await saveViewDefault(); toast('ok', 'ตั้งเป็นค่าเริ่มต้นของทุกคนแล้ว — ส่งให้ทุกคนอัตโนมัติ') }
+    catch { toast('err', 'บันทึกไม่สำเร็จ — ต้องสร้างตาราง app_config ใน Supabase ก่อน') }
     setBusy(false)
   }
   const load = async () => {
     setBusy(true)
-    try { const ok = await resetToViewDefault(); toast(ok ? 'ok' : 'info', ok ? 'โหลดค่าเริ่มต้นแล้ว' : 'ยังไม่มีค่าเริ่มต้นที่ตั้งไว้') }
-    catch { toast('err', 'โหลดไม่สำเร็จ') }
+    try { const ok = await resetToViewDefault(); toast(ok ? 'ok' : 'info', ok ? 'ใช้ค่าเริ่มต้นที่แอดมินตั้งไว้แล้ว' : 'ยังไม่มีค่าเริ่มต้นที่ตั้งไว้') }
+    catch { toast('err', 'ดึงค่าเริ่มต้นไม่สำเร็จ') }
     setBusy(false)
   }
   return (
     <div className="p-2 border-t hairline shrink-0 space-y-1">
       {isAdmin && (
-        <button className="btn btn-ghost w-full justify-center text-[12px] py-1.5" disabled={busy} onClick={save} title="เผยแพร่คอลัมน์+ช่องกรองปัจจุบันเป็นค่าเริ่มต้นของทุกคน">
+        <button className="btn btn-ghost w-full justify-center text-[12px] py-1.5" disabled={busy} onClick={save} title="ตั้งคอลัมน์+ช่องกรองปัจจุบันเป็นค่าเริ่มต้นของทุกคน — ส่งให้อัตโนมัติ ไม่ต้องดาวน์โหลด">
           <Check size={13} /> ตั้งเป็นค่าเริ่มต้นของทุกคน
         </button>
       )}
-      <button className="btn btn-ghost w-full justify-center text-[12px] py-1.5" disabled={busy} onClick={load} title="โหลดค่าเริ่มต้นที่แอดมินตั้งไว้ (แทนที่ค่าปัจจุบันของเครื่องนี้)">
-        <RefreshCw size={13} /> โหลดค่าเริ่มต้น
+      <button className="btn btn-ghost w-full justify-center text-[12px] py-1.5" disabled={busy} onClick={load} title="ดึงค่าเริ่มต้นที่แอดมินตั้งไว้มาใช้กับเครื่องนี้ทันที (ปกติได้อัตโนมัติอยู่แล้ว)">
+        <RefreshCw size={13} /> ใช้ค่าเริ่มต้นของแอดมิน
       </button>
     </div>
   )
