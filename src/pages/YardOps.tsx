@@ -2113,6 +2113,10 @@ function PdiView() {
 
   return (
     <div className="space-y-4">
+      {/* VIN input sits ABOVE the queues (same order as the Gate-in station) */}
+      <VinInput onScan={onScan} accent="#7c3aed" />
+      {gateModal}
+
       {/* ── process queues (PDI / FINAL PM / Wash …) — vertical stacked cards
              that expand into their car list, same shape as the Gate-out runs ── */}
       {procQueues.length > 0 && !unit && (
@@ -2167,9 +2171,6 @@ function PdiView() {
           })}
         </div>
       )}
-
-      <VinInput onScan={onScan} accent="#7c3aed" />
-      {gateModal}
 
       {unit && (
         <div className="space-y-3 fade-up">
