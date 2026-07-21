@@ -1912,9 +1912,9 @@ function ViewDefaultButtons() {
   const resetToViewDefault = useTracking((s) => s.resetToViewDefault)
   const [busy, setBusy] = useState(false)
   const save = async () => {
-    if (!window.confirm('ตั้งค่าคอลัมน์ + ช่องกรองปัจจุบัน เป็นค่าเริ่มต้นของทุกคน?\n(ผู้ใช้ใหม่/เครื่องใหม่จะเริ่มด้วยค่านี้ · คนที่ปรับเองไว้แล้วไม่ถูกเปลี่ยน)')) return
+    if (!window.confirm('ตั้งลำดับคอลัมน์ + ช่องกรองปัจจุบัน เป็นค่าเริ่มต้นของทุกคน?\n(ทุก user และทุก yard จะได้ลำดับนี้ในการเข้าใช้งานครั้งถัดไป — แทนที่การปรับแต่งเดิม)')) return
     setBusy(true)
-    try { await saveViewDefault(); toast('ok', 'ตั้งเป็นค่าเริ่มต้นของทุกคนแล้ว') }
+    try { await saveViewDefault(); toast('ok', 'ตั้งเป็นค่าเริ่มต้นของทุกคนแล้ว — ทุกคนจะได้ลำดับนี้เมื่อเข้าใช้งานครั้งถัดไป') }
     catch { toast('err', 'บันทึกไม่สำเร็จ — ต้องมีตาราง app_config ใน Supabase') }
     setBusy(false)
   }

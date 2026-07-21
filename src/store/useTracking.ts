@@ -26,13 +26,14 @@ function initialFilterCols(): string[] {
 }
 
 const VIEW_DEFAULT_KEY = 'unit_view_default' // shared cloud config id
-interface ViewDefault { columns?: Column[]; filterCols?: string[] }
+interface ViewDefault { columns?: Column[]; filterCols?: string[]; updatedAt?: number }
 
 interface TrackingState {
   rows: Record<string, TrackRow>   // keyed by VIN (in memory; persisted in IndexedDB)
   columns: Column[]
   filterCols: string[]             // Unit-List filter bar: which columns are filters (ordered)
-  defaultSeeded: boolean           // once true, this device owns its view config (no auto-seed)
+  defaultSeeded: boolean           // has this device ever adopted a shared default?
+  viewDefaultVersion: number       // updatedAt of the last shared default this device adopted (0 = none)
   loaded: boolean
   importing: boolean
   lastImport: { inYard: number; total: number; gatedOut: number; at: number } | null
@@ -116,6 +117,7 @@ export const useTracking = create<TrackingState>()(
       columns: defaultColumns(),
       filterCols: initialFilterCols(),
       defaultSeeded: false,
+      viewDefaultVersion: 0,
       loaded: false,
       importing: false,
       lastImport: null,
@@ -537,26 +539,34 @@ export const useTracking = create<TrackingState>()(
 
       setFilterCols: (cols) => set((s) => ({ filterCols: typeof cols === 'function' ? cols(s.filterCols) : cols })),
 
-      // one-time seeding: a device that has never adopted a shared default pulls it
-      // (if an admin has published one). After that the device owns its config; a
-      // later default change only reaches brand-new devices (or a manual reset).
+      // shared-default sync (runs on every login). A device adopts the shared
+      // default the FIRST time it sees one, AND again whenever the admin has
+      // published a NEWER one (updatedAt greater than what this device last
+      // adopted) — so re-saving the default propagates the column order + filters
+      // to EVERY user and EVERY yard, not just brand-new devices. Between
+      // publishes a user's own tweaks are left untouched.
       seedViewDefault: async () => {
-        if (get().defaultSeeded) return
         const cfg = await db.fetchAppConfig<ViewDefault>(VIEW_DEFAULT_KEY).catch(() => null)
-        if (!cfg || !Array.isArray(cfg.columns)) return // no default yet → stay unseeded, try again next boot
+        if (!cfg || !Array.isArray(cfg.columns)) return // no default yet → try again next boot
+        const remoteV = cfg.updatedAt ?? 0
+        const localV = get().viewDefaultVersion ?? 0
+        if (get().defaultSeeded && remoteV <= localV) return // already on the latest
         set({
           columns: reconcileColumns(cfg.columns),
           filterCols: Array.isArray(cfg.filterCols) ? cfg.filterCols.slice(0, MAX_FILTERS) : get().filterCols,
           defaultSeeded: true,
+          viewDefaultVersion: remoteV,
         })
       },
 
       // publish the current view as the shared default for everyone (admin).
       // strip merged import options to keep the blob small; reconcile re-adds them.
+      // stamps updatedAt so every other device re-adopts it on their next login.
       saveViewDefault: async () => {
         const columns = get().columns.map(({ options, ...c }) => c) as Column[]
-        await db.saveAppConfig(VIEW_DEFAULT_KEY, { columns, filterCols: get().filterCols })
-        set({ defaultSeeded: true })
+        const updatedAt = Date.now()
+        await db.saveAppConfig(VIEW_DEFAULT_KEY, { columns, filterCols: get().filterCols, updatedAt })
+        set({ defaultSeeded: true, viewDefaultVersion: updatedAt })
       },
 
       resetToViewDefault: async () => {
@@ -566,6 +576,7 @@ export const useTracking = create<TrackingState>()(
           columns: reconcileColumns(cfg.columns),
           filterCols: Array.isArray(cfg.filterCols) ? cfg.filterCols.slice(0, MAX_FILTERS) : get().filterCols,
           defaultSeeded: true,
+          viewDefaultVersion: cfg.updatedAt ?? get().viewDefaultVersion ?? 0,
         })
         return true
       },
@@ -573,7 +584,7 @@ export const useTracking = create<TrackingState>()(
     {
       name: 'sjwd-tracking',
       // only the (small) column + filter config is persisted to localStorage; rows live in IndexedDB
-      partialize: (s) => ({ columns: s.columns, filterCols: s.filterCols, defaultSeeded: s.defaultSeeded, lastImport: s.lastImport, lastSync: s.lastSync }),
+      partialize: (s) => ({ columns: s.columns, filterCols: s.filterCols, defaultSeeded: s.defaultSeeded, viewDefaultVersion: s.viewDefaultVersion, lastImport: s.lastImport, lastSync: s.lastSync }),
       merge: (persisted, current) => {
         const p = persisted as Partial<TrackingState> | undefined
         return {
@@ -581,6 +592,7 @@ export const useTracking = create<TrackingState>()(
           columns: reconcileColumns(p?.columns),
           filterCols: Array.isArray(p?.filterCols) ? p!.filterCols!.slice(0, MAX_FILTERS) : initialFilterCols(),
           defaultSeeded: p?.defaultSeeded ?? false,
+          viewDefaultVersion: p?.viewDefaultVersion ?? 0,
         }
       },
     },
