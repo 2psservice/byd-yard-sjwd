@@ -4,19 +4,10 @@ import { useYard, useUnits } from '../store/useYard'
 import { useTrackingRows } from '../store/useTracking'
 import { rowInSite } from '../lib/siteScope'
 import { PageHead } from '../components/ui'
-import type { Damage, Unit } from '../types'
+import type { Unit } from '../types'
 import type { TrackRow } from '../lib/excelTracking'
 import { agingPmDays } from '../lib/trackingColumns'
-
-// ── formatting ────────────────────────────────────────────────────────────
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-/** timestamp → "5-Jun-26" — the date shape the Defect sheets use, and the one
- *  the import parser (parseDefDate) reads back, so a re-import round-trips. */
-const defDate = (ts?: number) => {
-  if (!ts) return ''
-  const d = new Date(ts)
-  return `${d.getDate()}-${MONTHS[d.getMonth()]}-${String(d.getFullYear()).slice(2)}`
-}
+import { YARD_SHEET, FACTORY_SHEET, WHALE_SHEET, buildDefectSheet, type DefectExportRow } from '../lib/defectReport'
 
 // ═══ master workbook format — every value below was measured 1:1 from the ═══
 // ═══ real master file (Defect_list_Coinspection_Update), so the exported ═══
@@ -107,97 +98,6 @@ const TRACKING_COLS: TCol[] = [
   { h: 'หมายเหตุ', w: 17.75, noBorder: true },
 ]
 
-/** Per-column alignment override for the defect sheets ('c'=center, 'l'=left). */
-interface DCol { h: string; w: number; align?: 'c' | 'l' }
-
-interface DefectSheetSpec {
-  name: string
-  tab: object          // sheet tab colour
-  fontSize: number
-  headerH: number
-  rowH: number
-  defaultColWidth: number
-  zoom: number
-  cols: DCol[]
-}
-
-const YARD_SHEET: DefectSheetSpec = {
-  name: 'Defect-Yard', tab: { theme: 5, tint: 0.7999816888943144 }, fontSize: 11,
-  headerH: 21, rowH: 21, defaultColWidth: 10.5, zoom: 80,
-  cols: [
-    { h: 'No', w: 7.5 },
-    { h: 'VIN', w: 19.88 },
-    { h: 'Model', w: 10.88 },
-    { h: 'From', w: 14.88 },
-    { h: 'Stock of Status ', w: 22.38 },
-    { h: 'Category NG', w: 14.88 },
-    { h: 'Category (Repair)', w: 18.88 },
-    { h: 'Incharge', w: 11.88 },
-    { h: 'Date', w: 8.88 },
-    { h: 'Position', w: 60.5 },
-    { h: 'Defect', w: 49.88, align: 'l' },
-    { h: 'Status Repair', w: 15.38 },
-    { h: 'Repair Date', w: 14.13 },
-  ],
-}
-
-const FACTORY_SHEET: DefectSheetSpec = {
-  name: 'Defect-Factory', tab: { argb: 'FFFFC000' }, fontSize: 8,
-  headerH: 14.45, rowH: 13.5, defaultColWidth: 8.25, zoom: 100,
-  cols: [
-    { h: 'no.', w: 6.38 },
-    { h: 'Vin', w: 14.25 },
-    { h: 'Model', w: 11.75 },
-    { h: 'Stock of Status ', w: 11.75 },
-    { h: 'Category defect', w: 19 },
-    { h: 'Incharge', w: 19 },
-    { h: 'Date', w: 11.75 },
-    { h: 'Position', w: 19, align: 'l' },
-    { h: 'Defect/NG', w: 19, align: 'l' },
-    { h: 'Status Repair', w: 11.75, align: 'l' },
-    { h: 'Repair Date', w: 11.75 },
-  ],
-}
-
-const WHALE_SHEET: DefectSheetSpec = {
-  ...FACTORY_SHEET,
-  name: 'Defect-Whale 28 rai', tab: { theme: 7, tint: 0.5999938962981048 }, defaultColWidth: 6.25,
-  cols: [
-    { h: 'no.', w: 6.38 },
-    { h: 'Vin', w: 13.13 },
-    { h: 'Model', w: 8.25 },
-    { h: 'Stock of Status ', w: 12.75 },
-    { h: 'Category defect', w: 14.63 },
-    { h: 'Incharge', w: 9.38 },
-    { h: 'Date', w: 7.25 },
-    { h: 'Position', w: 20.75, align: 'l' },
-    { h: 'Defect/NG', w: 33.88, align: 'l' },
-    { h: 'Status Repair', w: 14.88, align: 'l' },
-    { h: 'Repair Date', w: 10.75 },
-  ],
-}
-
-interface DefectExportRow { unit: Unit; dmg: Damage }
-
-/** One defect record → master-sheet cell values, keyed by (trimmed) header. */
-function defectValue(header: string, seq: number, { unit, dmg }: DefectExportRow, cells: Record<string, string> | undefined): string | number {
-  switch (header.trim()) {
-    case 'No': case 'no.': return seq
-    case 'VIN': case 'Vin': return unit.vin
-    case 'Model': return cells?.['Model'] || unit.modelName || unit.model || ''
-    case 'From': return ''
-    case 'Stock of Status': return cells?.['Stock of Status'] || ''
-    case 'Category NG': case 'Category defect': return dmg.categoryNG ?? ''
-    case 'Category (Repair)': return dmg.categoryRepair ?? ''
-    case 'Incharge': return dmg.incharge ?? ''
-    case 'Date': return defDate(dmg.at)
-    case 'Position': return dmg.area === '—' ? '' : dmg.area
-    case 'Defect': case 'Defect/NG': return dmg.item ?? (dmg.type === '—' ? '' : dmg.type)
-    case 'Status Repair': return dmg.statusRepair ?? (dmg.repairDate ? 'Repaired' : 'Waiting Repair')
-    case 'Repair Date': return defDate(dmg.repairDate)
-    default: return ''
-  }
-}
 
 export function Report() {
   const lang = useYard((s) => s.lang)
@@ -293,34 +193,9 @@ export function Report() {
 
       // ── defect sheets — Yard (Tahoma 11 / 21), Factory + Whale (Tahoma 8 / 13.5)
       const trackByVin = new Map(scopedRows.map((r) => [r.vin, r.cells]))
-      const addDefectSheet = (spec: DefectSheetSpec, rows: DefectExportRow[]) => {
-        const ws = wb.addWorksheet(spec.name, {
-          views: [{ state: 'frozen', ySplit: 1, zoomScale: spec.zoom, zoomScaleNormal: spec.zoom }],
-          properties: { tabColor: spec.tab, defaultRowHeight: spec.rowH, defaultColWidth: spec.defaultColWidth },
-        })
-        ws.columns = spec.cols.map((c) => ({
-          width: c.w,
-          style: {
-            font: { name: 'Tahoma', size: spec.fontSize },
-            alignment: c.align === 'l' ? { horizontal: 'left', vertical: 'middle' } : { horizontal: 'center', vertical: 'middle' },
-            border: thinBorder,
-          },
-        }))
-        const hr = ws.addRow(spec.cols.map((c) => c.h))
-        hr.height = spec.headerH
-        hr.eachCell({ includeEmpty: true }, (cell: any) => {
-          cell.font = { name: 'Tahoma', size: spec.fontSize, bold: true }
-          cell.alignment = { horizontal: 'center', vertical: 'middle' }
-          cell.border = thinBorder
-        })
-        ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: spec.cols.length } }
-        rows.forEach((r, i) => {
-          ws.addRow(spec.cols.map((c) => defectValue(c.h, i + 1, r, trackByVin.get(r.unit.vin)))).height = spec.rowH
-        })
-      }
-      addDefectSheet(YARD_SHEET, defectSplit.yard)
-      addDefectSheet(FACTORY_SHEET, defectSplit.factory)
-      addDefectSheet(WHALE_SHEET, defectSplit.whale)
+      buildDefectSheet(wb, YARD_SHEET, defectSplit.yard, trackByVin)
+      buildDefectSheet(wb, FACTORY_SHEET, defectSplit.factory, trackByVin)
+      buildDefectSheet(wb, WHALE_SHEET, defectSplit.whale, trackByVin)
 
       const d = new Date()
       const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
