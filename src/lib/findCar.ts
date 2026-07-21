@@ -19,8 +19,37 @@ export interface MatchResult {
   asked: number
 }
 
+// Thai (Kedmanee) keyboard → the Latin key at the same physical position, so a
+// VIN typed while the keyboard was still on Thai ("ควๅ…") is recovered to
+// "LGX…". Letters + the number-row keys; '/' and '-' (Thai keys 2 and 3) are
+// handled separately since they're also plain ASCII separators.
+const TH_TO_EN: Record<string, string> = {
+  'ๆ': 'Q', 'ไ': 'W', 'ำ': 'E', 'พ': 'R', 'ะ': 'T', 'ั': 'Y', 'ี': 'U', 'ร': 'I', 'น': 'O', 'ย': 'P',
+  'ฟ': 'A', 'ห': 'S', 'ก': 'D', 'ด': 'F', 'เ': 'G', '้': 'H', '่': 'J', 'า': 'K', 'ส': 'L',
+  'ผ': 'Z', 'ป': 'X', 'แ': 'C', 'อ': 'V', 'ิ': 'B', 'ื': 'N', 'ท': 'M',
+  'ๅ': '1', 'ภ': '4', 'ถ': '5', 'ุ': '6', 'ึ': '7', 'ค': '8', 'ต': '9', 'จ': '0',
+}
+// only fold these ASCII chars to digits when the text actually contains Thai —
+// otherwise a hyphen / slash separator in normal input would be corrupted
+const TH_AMBIG: Record<string, string> = { '/': '2', '-': '3' }
+const hasThai = (s: string) => /[฀-๿]/.test(s)
+
+/** Convert a Thai-keyboard-typed string to what the same keystrokes are in the
+ *  Latin layout. Leaves ordinary Latin/ digits untouched. */
+export function thaiKbToLatin(s: string): string {
+  if (!hasThai(s)) return s
+  let out = ''
+  for (const ch of s) out += TH_TO_EN[ch] ?? TH_AMBIG[ch] ?? ch
+  return out
+}
+
 export function matchVins(text: string, allRows: TrackRow[]): MatchResult {
-  const tokens = text.toUpperCase().match(/[A-Z0-9]{3,20}/g) ?? []
+  // accept VINs typed on a Thai keyboard too: tokenize the raw text AND its
+  // Thai→Latin transliteration, then match the union (Latin input is unchanged
+  // by the transliteration, so normal searches behave exactly as before).
+  const latin = thaiKbToLatin(text)
+  const grab = (t: string) => t.toUpperCase().match(/[A-Z0-9]{3,20}/g) ?? []
+  const tokens = latin === text ? grab(text) : [...grab(text), ...grab(latin)]
   const uniq = [...new Set(tokens)]
   const byVin = new Map(allRows.map((r) => [r.vin, r]))
   const found: TrackRow[] = []

@@ -790,7 +790,7 @@ function FindCarPanel({ units, siteName, onClose }: { units: Unit[]; siteName: s
           <Search size={18} style={{ color: 'var(--brand)' }} />
           <div className="min-w-0 flex-1">
             <div className="font-bold text-[16px] leading-tight">ค้นหารถ — ใบหารถ</div>
-            <div className="text-[12px]" style={{ color: 'var(--muted)' }}>{siteName || '—'} · วาง VIN เต็มหรือ 5 ตัวท้าย · ออกใบหารถ Excel/PDF</div>
+            <div className="text-[12px]" style={{ color: 'var(--muted)' }}>{siteName || '—'} · วาง VIN เต็มหรือ 5 ตัวท้าย · พิมพ์แป้นไทยก็ได้ · ออกใบหารถ Excel/PDF</div>
           </div>
           <button className="btn btn-ghost p-2" onClick={onClose}><X size={18} /></button>
         </div>
