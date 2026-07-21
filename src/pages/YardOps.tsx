@@ -2113,79 +2113,58 @@ function PdiView() {
 
   return (
     <div className="space-y-4">
-      {/* ── process queue selector (PDI / FINAL PM / Wash …) ── */}
+      {/* ── process queues (PDI / FINAL PM / Wash …) — vertical stacked cards
+             that expand into their car list, same shape as the Gate-out runs ── */}
       {procQueues.length > 0 && !unit && (
-        <div className="panel overflow-hidden fade-up">
-          <div className="px-4 py-2.5 border-b hairline flex items-center gap-2">
-            <ClipboardList size={14} style={{ color: '#7c3aed' }} />
-            <span className="text-[12.5px] font-bold">คิวงาน</span>
-            {(() => {
-              const rem = procQueues.reduce((n, q) => n + q.items.filter(i => !i.done).length, 0)
-              const tot = procQueues.reduce((n, q) => n + q.items.length, 0)
-              return (
-                <span className="ml-auto flex items-center gap-1.5 text-[11px] font-bold">
-                  <span className="badge" style={{ background: 'var(--chip)', color: 'var(--muted)' }}>ทั้งหมด {tot}</span>
-                  <span className="badge" style={{ background: rem > 0 ? 'rgba(217,119,6,0.12)' : 'rgba(22,163,74,0.12)', color: rem > 0 ? '#d97706' : '#16a34a' }}>เหลือ {rem}</span>
-                </span>
-              )
-            })()}
-          </div>
-          <div className="flex gap-2 p-3 overflow-x-auto">
-            {procQueues.map(q => {
-              const done = q.items.filter(i => i.done).length
-              const total = q.items.length
-              const remaining = total - done
-              const pct = total ? Math.round((done / total) * 100) : 0
-              const active = q.id === selectedQueueId
-              return (
-                <button key={q.id} onClick={() => setSelectedQueueId(active ? null : q.id)}
-                  className="flex-none text-left rounded-2xl px-3.5 py-2.5 border transition active:scale-95" style={{ minWidth: 132,
-                    ...(active ? { background: '#7c3aed', color: '#fff', borderColor: '#7c3aed' } : { background: 'var(--chip)', borderColor: 'var(--line-strong)' }) }}>
-                  <div className="text-[13px] font-bold truncate">{q.name}</div>
-                  <div className="text-[11px] mt-0.5 flex items-center gap-1.5" style={{ opacity: active ? 0.9 : 1 }}>
-                    <span style={{ color: active ? '#fff' : 'var(--muted)' }}>ทั้งหมด {total}</span>
-                    <span style={{ color: remaining > 0 ? (active ? '#fde68a' : '#d97706') : (active ? '#bbf7d0' : '#16a34a'), fontWeight: 700 }}>· เหลือ {remaining}</span>
+        <div className="space-y-2.5 fade-up">
+          {procQueues.map(q => {
+            const done = q.items.filter(i => i.done).length
+            const total = q.items.length
+            const remaining = total - done
+            const isOpen = q.id === selectedQueueId
+            return (
+              <div key={q.id} className="panel overflow-hidden">
+                <button className="w-full px-4 py-3 flex items-center gap-3 text-left" onClick={() => setSelectedQueueId(isOpen ? null : q.id)}>
+                  <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: 'var(--brand-soft,#eef4ff)', color: '#7c3aed' }}>
+                    <ClipboardList size={17} />
                   </div>
-                  <div className="h-1 rounded-full mt-1.5 overflow-hidden" style={{ background: active ? 'rgba(255,255,255,0.25)' : 'var(--line)' }}>
-                    <div className="h-full rounded-full" style={{ width: `${pct}%`, background: active ? '#fff' : '#7c3aed' }} />
+                  <div className="min-w-0 flex-1">
+                    <div className="font-bold text-[12.5px] clip">{q.name}</div>
+                    <div className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
+                      <b style={{ color: 'var(--text)' }}>{done}/{total}</b> คัน · เหลือ <b style={{ color: remaining > 0 ? '#d97706' : '#16a34a' }}>{remaining}</b>
+                    </div>
                   </div>
+                  <ChevronLeft size={16} style={{ color: 'var(--muted)', transform: isOpen ? 'rotate(90deg)' : 'rotate(-90deg)', transition: 'transform .15s' }} />
                 </button>
-              )
-            })}
-          </div>
-          {selectedQueue && (
-            <>
-              <div className="px-4 py-2 border-t hairline">
-                <span className="text-[11.5px] font-semibold" style={{ color: 'var(--muted)' }}>
-                  {queueCars.length > 0 ? `รอตรวจ: ${queueCars.length} คัน` : <span style={{ color: '#16a34a' }}>✓ เสร็จครบแล้ว!</span>}
-                </span>
-              </div>
-              {queueCars.length > 0 && (
-                <div className="border-t hairline max-h-56 overflow-y-auto divide-y">
-                  {queueCars.map(item => (
-                    <button key={item.vin} onClick={() => { setVin(item.vin); setJustOk(false) }}
-                      className="flex items-center gap-3 px-4 py-2.5 w-full text-left transition active:bg-chip">
-                      <div className="flex-1 min-w-0">
-                        <div className="vin text-[12px] font-bold truncate">{item.vin}</div>
-                        <div className="text-[11px] flex flex-wrap gap-x-2 gap-y-0.5" style={{ color: 'var(--muted)' }}>
-                          <span>{item.model}</span><span>· {item.color}</span><span>· {item.grouping}</span>
+                {isOpen && (queueCars.length > 0 ? (
+                  <div className="border-t hairline max-h-72 overflow-y-auto divide-y" style={{ borderColor: 'var(--line)' }}>
+                    {queueCars.map(item => (
+                      <button key={item.vin} onClick={() => { setVin(item.vin); setJustOk(false) }}
+                        className="flex items-center gap-3 px-4 py-2.5 w-full text-left transition active:bg-chip">
+                        <div className="flex-1 min-w-0">
+                          <div className="vin text-[12.5px] font-bold clip">{item.vin}</div>
+                          <div className="text-[11px] mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5" style={{ color: 'var(--muted)' }}>
+                            <span>{item.model}</span><span>· {item.color}</span><span>· {item.grouping}</span>
+                          </div>
                         </div>
-                      </div>
-                      <div className="text-right shrink-0">
-                        <div className="tabular text-[12px] font-bold">{item.location}</div>
-                        <span className="badge text-[10px] mt-0.5 inline-block" style={item.stage === 'at-station'
-                          ? { background: 'rgba(14,165,233,0.12)', color: '#0ea5e9' }
-                          : item.stage === 'checked' ? { background: 'rgba(22,163,74,0.12)', color: '#16a34a' }
-                          : { background: 'var(--chip)', color: 'var(--muted)' }}>
-                          {item.stage === 'at-station' ? 'พร้อมตรวจ' : item.stage === 'checked' ? 'ตรวจแล้ว' : 'รอส่ง'}
-                        </span>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </>
-          )}
+                        <div className="text-right shrink-0">
+                          <div className="tabular text-[12px] font-bold">{item.location}</div>
+                          <span className="badge text-[10px] mt-0.5 inline-block" style={item.stage === 'at-station'
+                            ? { background: 'rgba(14,165,233,0.12)', color: '#0ea5e9' }
+                            : item.stage === 'checked' ? { background: 'rgba(22,163,74,0.12)', color: '#16a34a' }
+                            : { background: 'var(--chip)', color: 'var(--muted)' }}>
+                            {item.stage === 'at-station' ? 'พร้อมตรวจ' : item.stage === 'checked' ? 'ตรวจแล้ว' : 'รอส่ง'}
+                          </span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="px-4 py-3 border-t hairline text-[12px] font-semibold" style={{ color: '#16a34a' }}>✓ เสร็จครบแล้ว!</div>
+                ))}
+              </div>
+            )
+          })}
         </div>
       )}
 
