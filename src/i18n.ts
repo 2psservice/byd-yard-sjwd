@@ -19,6 +19,7 @@ const D: Dict = {
   yardops: { th: 'Yard Ops (มือถือ)', en: 'Yard Ops' },
   tracking: { th: 'ติดตาม GPS', en: 'GPS Tracking' },
   operation: { th: 'Operation', en: 'Operation' },
+  pm: { th: 'แผน PM', en: 'PM Plan' },
   damages:   { th: 'Damages', en: 'Damages' },
   grouping: { th: 'Grouping', en: 'Grouping' },
   settings: { th: 'ตั้งค่า', en: 'Settings' },
