@@ -122,6 +122,10 @@ export function Units() {
   const { focus, setFocus } = useYard()
   const unitPreset = useYard((s) => s.unitPreset)
   const setUnitPreset = useYard((s) => s.setUnitPreset)
+  const unitVinFilter = useYard((s) => s.unitVinFilter)
+  const setUnitVinFilter = useYard((s) => s.setUnitVinFilter)
+  // explicit VIN set from a drill-down (e.g. a PM-plan cell) — O(1) membership
+  const vinFilterSet = useMemo(() => (unitVinFilter ? new Set(unitVinFilter.vins) : null), [unitVinFilter])
   const currentSite = useYard((s) => s.currentSite)
   const sites = useYard((s) => s.sites)
   const allRows = useTrackingRows()
@@ -166,8 +170,9 @@ export function Units() {
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
   useEffect(() => { if (import.meta.env.DEV) (window as any).__tracking = useTracking }, [])
   useEffect(() => { if (focus) { setQ(focus); setTab('units'); setFocus(null) } }, [focus, setFocus])
-  // a dashboard card opened us with a quick-filter → show the Units list
+  // a dashboard card / PM-plan cell opened us with a quick-filter → show the list
   useEffect(() => { if (unitPreset) setTab('units') }, [unitPreset])
+  useEffect(() => { if (unitVinFilter) setTab('units') }, [unitVinFilter])
 
   const grabDistinct = (key: string) => {
     const set = new Set<string>()
@@ -224,6 +229,7 @@ export function Units() {
         if (cell !== val) return false
       }
       if (unitPreset && !presetMatch(unitPreset, r)) return false
+      if (vinFilterSet && !vinFilterSet.has(r.vin)) return false
       return true
     })
     arr = [...arr].sort((a, b) => {
@@ -236,7 +242,7 @@ export function Units() {
       return av < bv ? -sortDir : av > bv ? sortDir : 0
     })
     return arr
-  }, [rows, searchIndex, q, fGroup, colFilters, activeFilterCols, allUnits, locPrefix, unitPreset, sortKey, sortDir])
+  }, [rows, searchIndex, q, fGroup, colFilters, activeFilterCols, allUnits, locPrefix, unitPreset, vinFilterSet, sortKey, sortDir])
 
   const toggleSort = (key: string) => {
     if (sortKey === key) setSortDir((d) => (d * -1) as SortDir)
@@ -252,8 +258,8 @@ export function Units() {
     return { ok, wait }
   }, [rows])
 
-  const clearFilters = () => { setQ(''); setFGroup(''); setColFilters({}); setUnitPreset(null) }
-  const anyFilter = !!q || !!fGroup || !!unitPreset
+  const clearFilters = () => { setQ(''); setFGroup(''); setColFilters({}); setUnitPreset(null); setUnitVinFilter(null) }
+  const anyFilter = !!q || !!fGroup || !!unitPreset || !!unitVinFilter
     || activeFilterCols.some((k) => colFilters[k] && colFilters[k] !== 'ALL')
 
   const doExport = () => {
@@ -288,6 +294,14 @@ export function Units() {
             <Filter size={12} /> {presetChipLabel(unitPreset)}
             <span style={{ opacity: 0.7 }}>· {filtered.length.toLocaleString()}</span>
             <button onClick={() => setUnitPreset(null)} title="ล้างตัวกรอง" className="ml-0.5 -mr-0.5 flex"><X size={13} /></button>
+          </div>
+        )}
+        {unitVinFilter && (
+          <div className="flex items-center gap-1.5 ml-2 self-center px-2.5 py-1 rounded-lg text-[12px] font-semibold"
+            style={{ background: 'rgba(37,99,235,0.1)', color: 'var(--brand)', border: '1px solid rgba(37,99,235,0.25)' }}>
+            <Filter size={12} /> {unitVinFilter.label}
+            <span style={{ opacity: 0.7 }}>· {filtered.length.toLocaleString()}</span>
+            <button onClick={() => setUnitVinFilter(null)} title="ล้างตัวกรอง" className="ml-0.5 -mr-0.5 flex"><X size={13} /></button>
           </div>
         )}
         <div className="ml-auto flex items-center gap-2 py-1">

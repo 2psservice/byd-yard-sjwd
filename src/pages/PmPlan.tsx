@@ -8,8 +8,9 @@
  *
  * The table estimates, for the selected month, how many cars in each yard fall
  * due on each calendar day (rows = yards, columns = days 1…31, right column =
- * per-yard sum, bottom row = per-day totals). Sundays are tinted; today's column
- * is ringed. "ส่ง LINE" shares the per-yard summary via LINE.
+ * per-yard sum, bottom row = per-day totals). Pick one yard or all yards. Click
+ * any day-cell to jump to the Unit List filtered to exactly those cars (like a
+ * Dashboard card drill-down). "ส่ง LINE" shares the per-yard summary via LINE.
  */
 import { useMemo, useState } from 'react'
 import { CalendarClock, Send } from 'lucide-react'
@@ -18,7 +19,7 @@ import { useYard } from '../store/useYard'
 import { parseCellDate, lastPmDate } from '../lib/trackingColumns'
 import { deriveCarStatus } from '../lib/carStatus'
 import { siteIdForLocation } from '../lib/siteScope'
-import { PageHead, cx } from '../components/ui'
+import { PageHead } from '../components/ui'
 
 const DAY_MS = 86_400_000
 
@@ -47,8 +48,15 @@ function ymNow(): string {
 export function PmPlan() {
   const rows = useTrackingRows() // ALL yards — this board is cross-site by design
   const sites = useYard((s) => s.sites)
+  const currentSite = useYard((s) => s.currentSite)
   const toast = useYard((s) => s.toast)
+  const setView = useYard((s) => s.setView)
+  const setCurrentSite = useYard((s) => s.setCurrentSite)
+  const setUnitVinFilter = useYard((s) => s.setUnitVinFilter)
+
   const [ym, setYm] = useState<string>(ymNow)
+  // which yard to show — the active site by default, or every yard
+  const [siteSel, setSiteSel] = useState<string>(() => currentSite ?? 'all')
 
   const [year, month] = ym.split('-').map(Number) // month is 1-12
   const daysInMonth = new Date(year, month, 0).getDate()
@@ -58,7 +66,10 @@ export function PmPlan() {
     const monthEnd = new Date(year, month - 1, daysInMonth, 23, 59, 59, 999).getTime()
 
     const siteList = sites.map((s) => ({ id: s.id, name: s.name, short: shortSite(s.name), interval: pmInterval(s.name) }))
-    const grid = new Map<string, number[]>(siteList.map((s) => [s.id, new Array(daysInMonth + 1).fill(0)]))
+    // per site: day (1…daysInMonth) → the VINs falling due that day
+    const grid = new Map<string, string[][]>(
+      siteList.map((s) => [s.id, Array.from({ length: daysInMonth + 1 }, () => [] as string[])]),
+    )
     const intervalOf = new Map(siteList.map((s) => [s.id, s.interval]))
 
     for (const row of rows) {
@@ -78,37 +89,52 @@ export function PmPlan() {
       let n = Math.max(1, Math.ceil((monthStart - base) / step))
       for (let due = base + n * step; due <= monthEnd; due += step) {
         if (due < monthStart) continue
-        grid.get(siteId)![new Date(due).getDate()]++
+        grid.get(siteId)![new Date(due).getDate()].push(row.vin)
       }
     }
 
     const siteRows = siteList.map((s) => {
-      const cells = grid.get(s.id)!
+      const dayVins = grid.get(s.id)!
+      const cells = dayVins.map((v) => v.length)
       const sum = cells.reduce((a, b) => a + b, 0)
-      return { ...s, cells, sum }
+      return { ...s, dayVins, cells, sum }
     })
-    const colTotals = new Array(daysInMonth + 1).fill(0)
-    for (const r of siteRows) for (let d = 1; d <= daysInMonth; d++) colTotals[d] += r.cells[d]
-    const grand = siteRows.reduce((a, r) => a + r.sum, 0)
-    return { siteRows, colTotals, grand }
+    return { siteRows }
   }, [rows, sites, year, month, daysInMonth])
+
+  // narrow to one yard or show them all
+  const shownRows = siteSel === 'all' ? plan.siteRows : plan.siteRows.filter((r) => r.id === siteSel)
+  const colTotals = useMemo(() => {
+    const t = new Array(daysInMonth + 1).fill(0)
+    for (const r of shownRows) for (let d = 1; d <= daysInMonth; d++) t[d] += r.cells[d]
+    return t
+  }, [shownRows, daysInMonth])
+  const grand = shownRows.reduce((a, r) => a + r.sum, 0)
 
   const now = new Date()
   const todayDay = now.getFullYear() === year && now.getMonth() + 1 === month ? now.getDate() : -1
   const days = Array.from({ length: daysInMonth }, (_, i) => i + 1)
   const isSunday = (d: number) => new Date(year, month - 1, d).getDay() === 0
 
+  // click a day-cell → open the Unit List filtered to exactly those cars
+  const openCell = (siteId: string, short: string, day: number, vins: string[]) => {
+    if (!vins.length) return
+    if (siteId !== currentSite) setCurrentSite(siteId) // Unit List is per-yard → switch first
+    setView('units')
+    setUnitVinFilter({ label: `PM ${short} ${day}/${month}`, vins })
+    toast('ok', `กรอง ${vins.length} คัน — PM ${short} วันที่ ${day}`)
+  }
+
   const sendLine = () => {
     const lines = [
-      `แผน PM ประจำเดือน ${ym}`,
-      ...plan.siteRows.map((r) => `${r.short}: ${r.sum.toLocaleString()}`),
-      `รวม: ${plan.grand.toLocaleString()} คัน`,
+      `แผน PM ประจำเดือน ${ym}${siteSel !== 'all' ? ` · ${shownRows[0]?.short ?? ''}` : ''}`,
+      ...shownRows.map((r) => `${r.short}: ${r.sum.toLocaleString()}`),
+      `รวม: ${grand.toLocaleString()} คัน`,
     ]
     window.open(`https://line.me/R/msg/text/?${encodeURIComponent(lines.join('\n'))}`, '_blank')
     toast('ok', 'เปิด LINE เพื่อส่งสรุปแผน PM')
   }
 
-  // shared cell styling helpers
   const colBg = (d: number) => (d === todayDay ? 'rgba(16,185,129,0.10)' : isSunday(d) ? 'rgba(239,68,68,0.06)' : undefined)
   const numColor = (v: number, d: number) => (v === 0 ? (isSunday(d) ? '#f87171' : 'var(--faint)') : 'var(--text)')
 
@@ -118,9 +144,17 @@ export function PmPlan() {
         <div className="flex-1 min-w-[240px]">
           <PageHead
             title={<span className="flex items-center gap-2"><CalendarClock size={20} style={{ color: 'var(--brand)' }} /> แผน PM ประจำเดือน</span>}
-            sub="PM รอบแรกเมื่ออยู่ในลานครบกำหนด แล้วนับต่อไปทุกรอบ (30 วันทุก site · 38 ไร่ ทุก 90 วัน) — รถที่ allocate แล้วหรือ gate out แล้วจะไม่นับ"
+            sub="PM รอบแรกเมื่ออยู่ในลานครบกำหนด แล้วนับต่อไปทุกรอบ (30 วันทุก site · 38 ไร่ ทุก 90 วัน) — คลิกตัวเลขในแต่ละวันเพื่อดูรายคัน"
           />
         </div>
+        {/* yard selector — own site or all */}
+        <label className="flex items-center gap-2 px-3 py-2 rounded-xl" style={{ background: 'var(--chip)' }}>
+          <span className="text-[12.5px] font-semibold" style={{ color: 'var(--muted)' }}>Site:</span>
+          <select className="bg-transparent outline-none text-[13px] font-bold" style={{ color: 'var(--brand)' }} value={siteSel} onChange={(e) => setSiteSel(e.target.value)}>
+            <option value="all">ทุก site งาน</option>
+            {plan.siteRows.map((r) => <option key={r.id} value={r.id}>{r.short}</option>)}
+          </select>
+        </label>
         <label className="flex items-center gap-2 px-3 py-2 rounded-xl" style={{ background: 'var(--chip)' }}>
           <span className="text-[12.5px] font-semibold" style={{ color: 'var(--muted)' }}>เดือน:</span>
           <input type="month" className="bg-transparent outline-none text-[13px] font-bold tabular" style={{ color: 'var(--brand)' }} value={ym} onChange={(e) => e.target.value && setYm(e.target.value)} />
@@ -147,15 +181,23 @@ export function PmPlan() {
               </tr>
             </thead>
             <tbody>
-              {plan.siteRows.map((r) => (
+              {shownRows.map((r) => (
                 <tr key={r.id} className="hover:bg-chip">
                   <td className="sticky left-0 z-10 px-3 py-2 font-bold whitespace-nowrap"
                     style={{ background: 'var(--panel, #fff)', color: 'var(--text)', borderBottom: '1px solid var(--line)' }}>{r.short}</td>
-                  {days.map((d) => (
-                    <td key={d} className="px-1.5 py-2 text-center" style={{ color: numColor(r.cells[d], d), background: colBg(d), borderBottom: '1px solid var(--line)', fontWeight: r.cells[d] ? 600 : 400 }}>
-                      {r.cells[d]}
-                    </td>
-                  ))}
+                  {days.map((d) => {
+                    const v = r.cells[d]
+                    return (
+                      <td key={d} onClick={() => openCell(r.id, r.short, d, r.dayVins[d])}
+                        className="px-1.5 py-2 text-center transition-colors"
+                        title={v ? `คลิกเพื่อดู ${v} คัน` : undefined}
+                        style={{ color: numColor(v, d), background: colBg(d), borderBottom: '1px solid var(--line)', fontWeight: v ? 700 : 400, cursor: v ? 'pointer' : 'default' }}
+                        onMouseEnter={(e) => { if (v) (e.currentTarget.style.background = 'rgba(37,99,235,0.12)') }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = colBg(d) ?? '' }}>
+                        {v}
+                      </td>
+                    )
+                  })}
                   <td className="px-3 py-2 text-center font-black" style={{ color: 'var(--brand)', background: 'var(--brand-soft, #eef4ff)', borderBottom: '1px solid var(--line)' }}>{r.sum.toLocaleString()}</td>
                 </tr>
               ))}
@@ -163,20 +205,20 @@ export function PmPlan() {
               <tr style={{ background: 'var(--chip)' }}>
                 <td className="sticky left-0 z-10 px-3 py-2.5 font-black whitespace-nowrap" style={{ background: 'var(--chip)', color: 'var(--text)' }}>Total</td>
                 {days.map((d) => (
-                  <td key={d} className={cx('px-1.5 py-2.5 text-center font-bold')} style={{ color: numColor(plan.colTotals[d], d), background: colBg(d), ...(d === todayDay ? { boxShadow: 'inset 0 0 0 2px #10b981' } : {}) }}>
-                    {plan.colTotals[d]}
+                  <td key={d} className="px-1.5 py-2.5 text-center font-bold" style={{ color: numColor(colTotals[d], d), background: colBg(d), ...(d === todayDay ? { boxShadow: 'inset 0 0 0 2px #10b981' } : {}) }}>
+                    {colTotals[d]}
                   </td>
                 ))}
-                <td className="px-3 py-2.5 text-center font-black text-white" style={{ background: 'var(--brand)' }}>{plan.grand.toLocaleString()}</td>
+                <td className="px-3 py-2.5 text-center font-black text-white" style={{ background: 'var(--brand)' }}>{grand.toLocaleString()}</td>
               </tr>
             </tbody>
           </table>
         </div>
       </div>
 
-      {plan.grand === 0 && (
+      {grand === 0 && (
         <div className="text-center text-[13px] mt-4" style={{ color: 'var(--faint)' }}>
-          ไม่มีรถที่ถึงกำหนด PM ในเดือนนี้ — ลองเลือกเดือนอื่น หรือตรวจสอบวันที่ Gate In / PM ในข้อมูล
+          ไม่มีรถที่ถึงกำหนด PM ในเดือนนี้ — ลองเลือกเดือนอื่น/site อื่น หรือตรวจสอบวันที่ Gate In / PM ในข้อมูล
         </div>
       )}
     </div>
