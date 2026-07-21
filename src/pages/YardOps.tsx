@@ -1899,8 +1899,12 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved }: {
     setBusy(false)
   }
   const addNg = () => {
-    if (!ngItem || !ngPos) { toast('err', 'เลือกรายการตรวจสอบและตำแหน่ง'); return }
-    setNgList(l => [...l, { item: ngItem, pos: ngPos, remark: ngRemark.trim(), photo: ngPhoto }])
+    const item = ngItem.trim(), posRaw = ngPos.trim()
+    if (!item || !posRaw) { toast('err', 'เลือกรายการตรวจสอบและตำแหน่ง'); return }
+    // dropdown shows Thai zone labels — map a matched label back to its zone id
+    // (so it pins on the car diagram); a free-typed value passes through as-is.
+    const pos = POSITION_OPTS.find(p => p.th === posRaw)?.id ?? posRaw
+    setNgList(l => [...l, { item, pos, remark: ngRemark.trim(), photo: ngPhoto }])
     setNgItem(''); setNgPos(''); setNgRemark(''); setNgPhoto(undefined)
   }
   const removeNg = (i: number) => setNgList(l => l.filter((_, idx) => idx !== i))
@@ -1959,17 +1963,13 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved }: {
         <div className="badge text-[11px] w-fit" style={{ background: 'rgba(124,58,237,0.1)', color: '#7c3aed' }}>NG · เพิ่มรายการตรวจพบ</div>
         <div>
           <div className="text-[11px] font-semibold mb-1" style={{ color: 'var(--muted)' }}>รายการตรวจสอบ</div>
-          <select className="input w-full text-[13px]" value={ngItem} onChange={e => setNgItem(e.target.value)}>
-            <option value="">เลือก…</option>
-            {FINAL_CHECK_ITEMS.map(it => <option key={it} value={it}>{it}</option>)}
-          </select>
+          <input list="fc-check-items" className="input w-full text-[13px]" placeholder="พิมพ์หรือเลือก…" value={ngItem} onChange={e => setNgItem(e.target.value)} />
+          <datalist id="fc-check-items">{FINAL_CHECK_ITEMS.map(it => <option key={it} value={it} />)}</datalist>
         </div>
         <div>
           <div className="text-[11px] font-semibold mb-1" style={{ color: 'var(--muted)' }}>ตำแหน่ง</div>
-          <select className="input w-full text-[13px]" value={ngPos} onChange={e => setNgPos(e.target.value)}>
-            <option value="">เลือก…</option>
-            {POSITION_OPTS.map(p => <option key={p.id} value={p.id}>{p.th}</option>)}
-          </select>
+          <input list="fc-check-pos" className="input w-full text-[13px]" placeholder="พิมพ์หรือเลือก…" value={ngPos} onChange={e => setNgPos(e.target.value)} />
+          <datalist id="fc-check-pos">{POSITION_OPTS.map(p => <option key={p.id} value={p.th} />)}</datalist>
         </div>
         <div>
           <div className="text-[11px] font-semibold mb-1" style={{ color: 'var(--muted)' }}>หมายเหตุ (Remark)</div>
