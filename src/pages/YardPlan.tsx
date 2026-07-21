@@ -186,7 +186,9 @@ export function YardPlan() {
   const [findOpen, setFindOpen] = useState(false)
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) { e.preventDefault(); setFindOpen(true) }
+      // match by physical key (e.code) so it fires even when the keyboard is on
+      // Thai (Ctrl+F then produces e.key='ด'); keep e.key as a fallback
+      if ((e.ctrlKey || e.metaKey) && (e.code === 'KeyF' || e.key === 'f' || e.key === 'F' || e.key === 'ด')) { e.preventDefault(); setFindOpen(true) }
     }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)

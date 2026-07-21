@@ -1409,7 +1409,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
       const station = d.station || DAMAGE_STATION_FALLBACK[d.source ?? ''] || 'Gate-in'
       log.push({
         at: d.at, by: d.by, station,
-        text: `บันทึกตำหนิ ${zoneLabel(d.area)} · ${d.item ?? d.type}${d.severity === 'major' ? ' (รุนแรง)' : ''}`,
+        text: `บันทึกตำหนิ ${zoneLabel(d.area)} · ${d.item ?? d.type}${d.severity === 'major' ? ' (Heavy NG)' : ''}`,
         accent: '#dc2626',
       })
       for (const h of d.repairHistory ?? []) {

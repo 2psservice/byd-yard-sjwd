@@ -311,7 +311,7 @@ function DamagesTab({ unit, lang }: { unit: Unit; lang: 'th' | 'en' }) {
               </div>
               <div className="p-2 flex flex-col items-end gap-1.5 shrink-0">
                 <span className="badge" style={repaired ? { color: '#16a34a', background: '#dcfce7' } : { color: '#dc2626', background: '#fee2e2' }}>{repaired ? (lang === 'th' ? 'ซ่อมแล้ว' : 'Repaired') : 'NG'}</span>
-                <span className="badge" style={d.severity === 'major' ? { color: '#b91c1c', background: '#fee2e2' } : { color: '#a16207', background: '#fef9c3' }}>{d.severity === 'major' ? (lang === 'th' ? 'รุนแรง' : 'Major') : (lang === 'th' ? 'เล็กน้อย' : 'Minor')}</span>
+                <span className="badge" style={d.severity === 'major' ? { color: '#b91c1c', background: '#fee2e2' } : { color: '#a16207', background: '#fef9c3' }}>{d.severity === 'major' ? 'Heavy NG' : 'NG'}</span>
                 {d.source && <span className="text-[10px]" style={{ color: 'var(--faint)' }}>{SOURCE_LABEL[d.source] ?? d.source}</span>}
               </div>
             </div>
