@@ -88,6 +88,10 @@ function todayCell(): string {
   return `${String(n.getDate()).padStart(2, '0')}/${String(n.getMonth() + 1).padStart(2, '0')}/${n.getFullYear()}`
 }
 
+/** PDI ladder: the 1st PDI fills "PDI", the 2nd fills the first RE-PDI slot, and
+ *  so on down the eight re-PDI columns (header spelling has two spaces). */
+const PDI_KEYS = ['PDI', ...Array.from({ length: 8 }, (_, i) => `RE PDI  Date #${i + 1}`)]
+
 /**
  * Stamp a finished queue car's date back into the tracking sheet (its Overview),
  * so a PM/PDI/FINAL recorded on the field shows up on the master row. Side-effect
@@ -109,12 +113,14 @@ function stampOverview(q: WorkQueue, vin: string, result?: 'OK' | 'NG'): boolean
     return true
   }
   if (type === 'PDI') {
-    tr.updateCell(vin, 'PDI', d)
+    // 1st PDI → "PDI"; each redo → next empty RE-PDI slot (Re-PDI 1…8)
+    const slot = PDI_KEYS.find((k) => !(row.cells[k] || '').trim())
+    if (!slot) return false // PDI + all 8 re-PDI slots already used
+    tr.updateCell(vin, slot, d)
     return true
   }
-  // FINAL
+  // FINAL — stamp the done-date into "Final check date"
   tr.updateCell(vin, 'Final check date', d)
-  tr.updateCell(vin, 'Final Status', result === 'NG' ? 'Waiting Repair' : 'OK-Accept')
   return true
 }
 

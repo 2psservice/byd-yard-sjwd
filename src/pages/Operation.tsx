@@ -27,9 +27,9 @@ const queueIcon = (q: WorkQueue, size = 18) => typeIcon(queueTypeOf(q), size)
 
 /** What each queue type stamps back into a finished car's Overview. */
 const TYPE_WRITEBACK: Record<QueueType, string> = {
-  PM: 'ลงวันที่ในช่อง PM ถัดไป',
-  PDI: 'ลงวันที่ในช่อง PDI',
-  FINAL: 'ลงวันที่ Final check + Final Status',
+  PM: 'ลงวันที่ในช่อง PM ถัดไป (PM1→PM15)',
+  PDI: 'ลงวันที่ PDI ครั้งแรก · ครั้งถัดไปลง RE-PDI',
+  FINAL: 'ลงวันที่ในช่อง Final check date',
   WASH: 'บันทึกใน Event log',
   SPECIAL: 'บันทึกใน Event log',
 }
