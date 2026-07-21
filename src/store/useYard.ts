@@ -250,7 +250,7 @@ function debouncedLocalStorage<S>(delay = 500): PersistStorage<S> {
 export const useYard = create<YardState>()(
   persist(
     (set, get) => ({
-      lang: 'th',
+      lang: 'en', // default UI language — English (users can switch to TH in the top bar)
       planMode: 'AUTO',
       currentUser: 'สมชาย ป.',
       currentDriver: 'ก้องภพ',
@@ -1115,7 +1115,7 @@ export const useYard = create<YardState>()(
     }),
     {
       name: 'byd-yard-control',
-      version: 5,
+      version: 6,
       storage: debouncedLocalStorage(),
       migrate: (state: any, fromVersion: number) => {
         let s = state
@@ -1147,6 +1147,12 @@ export const useYard = create<YardState>()(
         if (fromVersion < 5) {
           // site is no longer remembered across sessions — every entry re-picks
           s = { ...s, currentSite: null, loginAt: null }
+        }
+        if (fromVersion < 6) {
+          // default UI language is now English — flip the stale persisted 'th'
+          // (the OLD default, not a deliberate choice) to English once. Users can
+          // switch back to TH any time in the top bar; the choice then persists.
+          s = { ...s, lang: 'en' }
         }
         return s
       },
