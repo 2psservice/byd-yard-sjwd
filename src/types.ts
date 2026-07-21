@@ -28,6 +28,7 @@ export type View =
   | 'yardops'
   | 'tracking'
   | 'operation'
+  | 'pm'
   | 'damages'
   | 'grouping'
   | 'settings'
