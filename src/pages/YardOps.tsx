@@ -25,7 +25,7 @@ import { slotToLatLng } from '../lib/geo'
 import { cx, PhotoLightbox } from '../components/ui'
 import { rowInSite } from '../lib/siteScope'
 import { storePhoto } from '../lib/photoStore'
-import { siteGroupingConfig } from '../lib/groupingImport'
+import { siteGroupingConfig, yardLocCode, byYardLocation } from '../lib/groupingImport'
 import type { DamageInput, Unit } from '../types'
 import type { TrackRow } from '../lib/excelTracking'
 import { SeqQueuePicker } from '../components/SeqQueueList'
@@ -674,6 +674,9 @@ function WalkView() {
   const { loadFromIdb, updateCell } = useTracking()
   const { toggleDone } = useOps()
   const queues = useSiteQueues()
+  const sites = useYard(s => s.sites)
+  const currentSite = useYard(s => s.currentSite)
+  const locPrefix = siteGroupingConfig(sites.find(s => s.id === currentSite)?.name ?? '').prefix
   const [vin, setVin] = useState<string | null>(null)
   const [trackingVin, setTrackingVin] = useState<string | null>(null)
   const [selectedQueueId, setSelectedQueueId] = useState<string | null>(null)
@@ -705,7 +708,7 @@ function WalkView() {
     return s
   }, [allUnits])
   const queueCars = useMemo(() => {
-    if (!selectedQueue) return [] as { vin: string; model: string; color: string; grouping: string; done: boolean; ng: boolean }[]
+    if (!selectedQueue) return [] as { vin: string; model: string; color: string; grouping: string; location: string; done: boolean; ng: boolean }[]
     return selectedQueue.items.map(i => {
       const row = trackingRows.find(r => r.vin === i.vin)
       const u = allUnits.find(x => x.vin === i.vin)
@@ -714,11 +717,12 @@ function WalkView() {
         model: row?.cells['Model'] ?? row?.cells['Model name'] ?? u?.modelName ?? '—',
         color: row?.cells['Color'] ?? u?.color ?? '—',
         grouping: row?.cells['Grouping  Number'] || '—',
+        location: yardLocCode(u, locPrefix) || '—',
         done: i.done,
         ng: ngVins.has(i.vin),
       }
     }).sort((a, b) => Number(a.done) - Number(b.done)) // ยังไม่สแกน ขึ้นก่อน
-  }, [selectedQueue, trackingRows, allUnits, ngVins])
+  }, [selectedQueue, trackingRows, allUnits, ngVins, locPrefix])
 
   const unit = vin ? units.find(u => u.vin === vin) ?? null : null
   const trackRow = trackingVin ? (trackingRows.find(r => r.vin === trackingVin) ?? null) : null
@@ -914,13 +918,16 @@ function WalkView() {
                             <span>{c.model}</span><span>· {c.color}</span><span>· {c.grouping}</span>
                           </div>
                         </div>
-                        <span className="badge shrink-0" style={{ fontSize: 10, ...(!c.done
-                          ? { background: '#fef9c3', color: '#854d0e' }
-                          : c.ng
-                            ? { background: 'rgba(255,59,48,0.12)', color: 'var(--st-damage)' }
-                            : { background: 'rgba(22,163,74,0.12)', color: '#16a34a' }) }}>
-                          {!c.done ? 'รอ' : c.ng ? 'NG' : 'OK'}
-                        </span>
+                        <div className="text-right shrink-0">
+                          <div className="tabular text-[12px] font-bold">{c.location}</div>
+                          <span className="badge mt-0.5 inline-block" style={{ fontSize: 10, ...(!c.done
+                            ? { background: '#fef9c3', color: '#854d0e' }
+                            : c.ng
+                              ? { background: 'rgba(255,59,48,0.12)', color: 'var(--st-damage)' }
+                              : { background: 'rgba(22,163,74,0.12)', color: '#16a34a' }) }}>
+                            {!c.done ? 'รอ' : c.ng ? 'NG' : 'OK'}
+                          </span>
+                        </div>
                       </button>
                     ))}
                   </div>
@@ -2028,6 +2035,9 @@ function PdiView() {
   const trackingRows = useSiteRows()
   const wrongSite = useWrongSiteHint()
   const queues = useSiteQueues()
+  const sites = useYard(s => s.sites)
+  const currentSite = useYard(s => s.currentSite)
+  const locPrefix = siteGroupingConfig(sites.find(s => s.id === currentSite)?.name ?? '').prefix
   const { loadFromIdb } = useTracking()
   const { setInspected, removeDamage, toast } = useYard()
   const { block: blockGate, modal: gateModal } = useNotGatedIn()
@@ -2042,13 +2052,20 @@ function PdiView() {
   const procQueues = useMemo(() => queues.filter(q => !isPreGateInQueue(q.name) && q.items.length > 0), [queues])
   const selectedQueue = selectedQueueId ? queues.find(q => q.id === selectedQueueId) ?? null : null
   const queueCars = useMemo(() => {
-    if (!selectedQueue) return [] as { vin: string; model: string; stage: string }[]
+    if (!selectedQueue) return [] as { vin: string; model: string; color: string; grouping: string; location: string; stage: string }[]
     return selectedQueue.items.filter(i => !i.done).map(i => {
       const u = units.find(x => x.vin === i.vin)
       const row = trackingRows.find(r => r.vin === i.vin)
-      return { vin: i.vin, model: u?.modelName ?? row?.cells['Model name'] ?? row?.cells['Model'] ?? '—', stage: stageOf(i) }
-    })
-  }, [selectedQueue, units, trackingRows])
+      return {
+        vin: i.vin,
+        model: u?.modelName ?? row?.cells['Model name'] ?? row?.cells['Model'] ?? '—',
+        color: row?.cells['Color'] ?? u?.color ?? '—',
+        grouping: row?.cells['Grouping  Number'] || '—',
+        location: yardLocCode(u, locPrefix) || '—',
+        stage: stageOf(i),
+      }
+    }).sort((a, b) => byYardLocation(a.location, b.location))
+  }, [selectedQueue, units, trackingRows, locPrefix])
 
   const unit = vin ? units.find(u => u.vin === vin) ?? null : null
   // the station task this car is currently in (PDI / FINAL PM / Wash …)
@@ -2150,15 +2167,19 @@ function PdiView() {
                       className="flex items-center gap-3 px-4 py-2.5 w-full text-left transition active:bg-chip">
                       <div className="flex-1 min-w-0">
                         <div className="vin text-[12px] font-bold truncate">{item.vin}</div>
-                        <div className="text-[11px] truncate" style={{ color: 'var(--muted)' }}>{item.model}</div>
+                        <div className="text-[11px] flex flex-wrap gap-x-2 gap-y-0.5" style={{ color: 'var(--muted)' }}>
+                          <span>{item.model}</span><span>· {item.color}</span><span>· {item.grouping}</span>
+                        </div>
                       </div>
-                      <span className="badge text-[10px] shrink-0" style={item.stage === 'at-station'
-                        ? { background: 'rgba(14,165,233,0.12)', color: '#0ea5e9' }
-                        : item.stage === 'checked' ? { background: 'rgba(22,163,74,0.12)', color: '#16a34a' }
-                        : { background: 'var(--chip)', color: 'var(--muted)' }}>
-                        {item.stage === 'at-station' ? 'พร้อมตรวจ' : item.stage === 'checked' ? 'ตรวจแล้ว' : 'รอส่ง'}
-                      </span>
-                      <ArrowRight size={13} style={{ color: 'var(--faint)' }} />
+                      <div className="text-right shrink-0">
+                        <div className="tabular text-[12px] font-bold">{item.location}</div>
+                        <span className="badge text-[10px] mt-0.5 inline-block" style={item.stage === 'at-station'
+                          ? { background: 'rgba(14,165,233,0.12)', color: '#0ea5e9' }
+                          : item.stage === 'checked' ? { background: 'rgba(22,163,74,0.12)', color: '#16a34a' }
+                          : { background: 'var(--chip)', color: 'var(--muted)' }}>
+                          {item.stage === 'at-station' ? 'พร้อมตรวจ' : item.stage === 'checked' ? 'ตรวจแล้ว' : 'รอส่ง'}
+                        </span>
+                      </div>
                     </button>
                   ))}
                 </div>
@@ -2289,11 +2310,32 @@ function MechanicView() {
   const { loadFromIdb } = useTracking()
   const { addDamage, removeDamage, setInspected, toast } = useYard()
   const { block: blockGate, modal: gateModal } = useNotGatedIn()
+  const sites = useYard(s => s.sites)
+  const currentSite = useYard(s => s.currentSite)
+  const locPrefix = siteGroupingConfig(sites.find(s => s.id === currentSite)?.name ?? '').prefix
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
   const [vin, setVin] = useState<string | null>(null)
   const [showForm, setShowForm] = useState(false)
+  const [listOpen, setListOpen] = useState(true)
 
   const unit = vin ? units.find(u => u.vin === vin) ?? null : null
+
+  // repair queue — every car in this yard with an unrepaired NG, so the mechanic
+  // can browse the outstanding list (same card style as the other stations) and
+  // tap one to work on it, instead of only scanning one at a time
+  const ngCars = useMemo(() => units
+    .map(u => ({ u, open: u.damages.filter(d => !d.repairDate).length }))
+    .filter(x => x.open > 0)
+    .map(({ u, open }) => ({
+      vin: u.vin,
+      model: u.modelName || '—',
+      color: u.color || '—',
+      grouping: trackingRows.find(r => r.vin === u.vin)?.cells['Grouping  Number'] || '—',
+      location: yardLocCode(u, locPrefix) || '—',
+      open,
+    }))
+    .sort((a, b) => byYardLocation(a.location, b.location)),
+    [units, trackingRows, locPrefix])
 
   const onScan = (v: string) => {
     const res = resolveForUnit(v, units, trackingRows)
@@ -2316,6 +2358,43 @@ function MechanicView() {
     <div className="space-y-4">
       <VinInput onScan={onScan} accent="#c2680b" />
       {gateModal}
+
+      {/* repair queue — cars in this yard with unrepaired NG (card + list, tap to fix) */}
+      {!unit && ngCars.length > 0 && (
+        <div className="panel overflow-hidden fade-up">
+          <button className="w-full px-4 py-3 flex items-center gap-3 text-left" onClick={() => setListOpen(v => !v)}>
+            <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: '#fff3e0', color: '#c2680b' }}>
+              <Wrench size={17} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="font-bold text-[12.5px] clip">คิวงานซ่อม (NG)</div>
+              <div className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
+                รอซ่อม <b style={{ color: '#c2680b' }}>{ngCars.length}</b> คัน · NG รวม <b style={{ color: 'var(--st-damage)' }}>{ngCars.reduce((n, c) => n + c.open, 0)}</b>
+              </div>
+            </div>
+            <ChevronLeft size={16} style={{ color: 'var(--muted)', transform: listOpen ? 'rotate(90deg)' : 'rotate(-90deg)', transition: 'transform .15s' }} />
+          </button>
+          {listOpen && (
+            <div className="border-t hairline max-h-72 overflow-y-auto divide-y" style={{ borderColor: 'var(--line)' }}>
+              {ngCars.map(c => (
+                <button key={c.vin} onClick={() => { setVin(c.vin); setShowForm(false) }}
+                  className="w-full px-4 py-2.5 flex items-center gap-3 text-left transition active:bg-chip">
+                  <div className="min-w-0 flex-1">
+                    <div className="vin text-[12.5px] font-bold clip">{c.vin}</div>
+                    <div className="text-[11px] mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5" style={{ color: 'var(--muted)' }}>
+                      <span>{c.model}</span><span>· {c.color}</span><span>· {c.grouping}</span>
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className="tabular text-[12px] font-bold">{c.location}</div>
+                    <span className="badge mt-0.5 inline-block" style={{ fontSize: 10, background: 'rgba(255,59,48,0.12)', color: 'var(--st-damage)' }}>NG {c.open}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {unit && (
         <div className="space-y-3 fade-up">
