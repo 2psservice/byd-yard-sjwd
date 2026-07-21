@@ -11,7 +11,7 @@ import { CarTopView } from '../components/CarTopView'
 import { printIr, printDn, printIrPaper } from '../lib/dnir'
 import { useYard } from '../store/useYard'
 import { useTracking, useTrackingRows, useVisibleColumns } from '../store/useTracking'
-import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, LOCATION_KEY, MAX_FILTERS, DEFAULT_FILTER_COLS, agingPmDays, type ColGroup, type Column } from '../lib/trackingColumns'
+import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, LOCATION_KEY, MAX_FILTERS, DEFAULT_FILTER_COLS, agingPmDays, cleanStorage, type ColGroup, type Column } from '../lib/trackingColumns'
 import { siteGroupingConfig, yardLocFull } from '../lib/groupingImport'
 import { CAR_STATUS_META, deriveCarStatus, IN_YARD_STATUSES, PARKED_STATUSES, isWaitingRepair, finalColor, vinOfStatusColor, taxStatusColor } from '../lib/carStatus'
 import { rowsToCsv, type TrackRow, type RowEvent } from '../lib/excelTracking'
@@ -672,7 +672,7 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
                 onContextMenu={(e) => onContextMenu(e, r.vin, idx)}>
                 <div className="gcell" style={{ width: GUTTER }} />
                 {visCols.map((c) => (
-                  <Cell key={c.key} col={c} value={c.key === 'Car Status' ? carStatus : c.key === 'No' ? fmtUpdated(r.updatedAt) : c.key === LOCATION_KEY ? locFor(r) : c.key === 'Aging PM' ? fmtAgingPm(r.cells) : (r.cells[c.key] ?? '')}
+                  <Cell key={c.key} col={c} value={c.key === 'Car Status' ? carStatus : c.key === 'No' ? fmtUpdated(r.updatedAt) : c.key === LOCATION_KEY ? locFor(r) : c.key === 'Aging PM' ? fmtAgingPm(r.cells) : c.key === 'storage Yard' ? cleanStorage(r.cells[c.key]) : (r.cells[c.key] ?? '')}
                     dim={c.key === 'Final Status' && carStatus === 'Gate-out'} />
                 ))}
               </div>
@@ -1374,7 +1374,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
   const finalStatus = c['Final Status'] || c['Status'] || '—'
   const pill = darkStatusPill(finalStatus)
   const carColor = COLOR_SW[(c['Color'] || '').toUpperCase().replace(/\s/g, '')] || '#cfd6dd'
-  const pos = [c['Location yard'], c['storage Yard']].filter(Boolean).join(' · ') || '—'
+  const pos = [c['Location yard'], cleanStorage(c['storage Yard'])].filter(Boolean).join(' · ') || '—'
 
   // timeline from dated columns
   const events = TIMELINE_KEYS
@@ -1435,7 +1435,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
     ['MODEL', head, '#ffffff'],
     ['COLOR', c['Color'] || '—', '#ffffff'],
     ['LOCATION', c['Location yard'] || '—', '#fbbf24'],
-    ['STORAGE', c['storage Yard'] || '—', '#7dd3fc'],
+    ['STORAGE', cleanStorage(c['storage Yard']) || '—', '#7dd3fc'],
     ['GROUPING', c['Grouping  Number'] || '—', '#7dd3fc'],
     ['COMPANY', c['company'] || '—', '#ffffff'],
     ['STATUS (PDI)', c['Status'] || '—', '#fbbf24'],
@@ -1529,6 +1529,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                           const val = col.key === 'No' ? fmtUpdated(row.updatedAt)
                             : col.key === LOCATION_KEY ? yardLocFull(unit, locPrefix)
                             : col.key === 'Aging PM' ? fmtAgingPm(c)
+                            : col.key === 'storage Yard' ? cleanStorage(c[col.key])
                             : (c[col.key] || '')
                           return (
                             <div key={col.key} className="flex items-center justify-between gap-3 text-[12.5px] border-b hairline py-1.5">

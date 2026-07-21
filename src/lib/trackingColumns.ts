@@ -95,6 +95,16 @@ export function agingPmDays(cells: Record<string, string>, now: number = Date.no
   return String(Math.max(0, Math.floor((now - last) / 86_400_000)))
 }
 
+/** A "storage Yard" cell should be a location; when the master imports a stray
+ *  Excel date-serial there (e.g. "46224" from a =TODAY() formula) it's junk, so
+ *  hide it. A real storage code / name passes through untouched. */
+export function cleanStorage(v: string | undefined): string {
+  const s = String(v ?? '').trim()
+  const num = Number(s)
+  if (Number.isFinite(num) && String(num) === s && num > 20000 && num < 90000) return ''
+  return s
+}
+
 /** Configurable-filter model (shared by the Unit List filter bar + the store). */
 export const MAX_FILTERS = 6
 export const DEFAULT_FILTER_COLS = ['Car Status', 'Location yard', 'Model', 'Final Status', 'company']
