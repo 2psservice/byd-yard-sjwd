@@ -5,6 +5,7 @@ import { useTrackingRows } from '../store/useTracking'
 import { zoneLabel } from '../components/CarDiagramMultiView'
 import { PageHead } from '../components/ui'
 import { YARD_SHEET, FACTORY_SHEET, exportDefectExcel, printDefectReport, type DefectExportRow } from '../lib/defectReport'
+import { thaiKbToLatin } from '../lib/findCar'
 import type { Damage, Unit } from '../types'
 
 const PAGE_SIZE = 10
@@ -96,7 +97,9 @@ function DamageReportModal({ units, onClose }: { units: Unit[]; onClose: () => v
 
   // match each pasted token to a unit by full VIN or last-5+ suffix; keep found ones
   const { yard, factory, matched, notFound } = useMemo(() => {
-    const tokens = [...new Set((text.toUpperCase().match(/[A-Z0-9]{4,20}/g) ?? []))]
+    // accept VINs typed on a Thai keyboard too (forgot to switch language)
+    const norm = thaiKbToLatin(text)
+    const tokens = [...new Set(((text + '\n' + norm).toUpperCase().match(/[A-Z0-9]{4,20}/g) ?? []))]
     const seen = new Set<string>()
     const matchedUnits: Unit[] = []
     const notFound: string[] = []
