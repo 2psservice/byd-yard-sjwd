@@ -105,6 +105,25 @@ export function cleanStorage(v: string | undefined): string {
   return s
 }
 
+/** A date-labelled column (key or label contains the word "date"). */
+export function isDateColumn(key: string, label?: string): boolean {
+  return /\bdate\b/i.test(key) || /\bdate\b/i.test(label ?? '')
+}
+
+/** Render a bare Excel date-serial as "D-Mon-YY"; anything else is returned
+ *  unchanged. Fixes date columns that imported a serial (e.g. a Tax payment date
+ *  showing "46223" instead of the actual date). */
+export function fmtSerialToDate(v: string | undefined): string {
+  const s = String(v ?? '').trim()
+  const num = Number(s)
+  if (Number.isFinite(num) && String(num) === s && num > 20000 && num < 90000) {
+    const d = new Date(Math.round((num - 25569) * 86_400_000))
+    return `${d.getDate()}-${_MONTHS3[d.getMonth()]}-${String(d.getFullYear()).slice(2)}`
+  }
+  return s
+}
+const _MONTHS3 = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
 /** Configurable-filter model (shared by the Unit List filter bar + the store). */
 export const MAX_FILTERS = 6
 export const DEFAULT_FILTER_COLS = ['Car Status', 'Location yard', 'Model', 'Final Status', 'company']

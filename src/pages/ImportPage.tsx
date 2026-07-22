@@ -10,6 +10,7 @@ import { downloadTemplate } from '../lib/excel'
 import { parseTrackingWorkbook, parseImportWorkbook, type ParseResult } from '../lib/excelTracking'
 import { parseLane, resolveBlock, parseLaneWorkbook, type LaneParseResult, type LaneRow } from '../lib/laneImport'
 import { coInspectionAccepts, rowInSite, siteForRow } from '../lib/siteScope'
+import { deriveCarStatus } from '../lib/carStatus'
 import { pos } from '../lib/format'
 import { PageHead } from '../components/ui'
 
@@ -46,7 +47,7 @@ export function ImportPage() {
     () => new Set([...Object.keys(existing), ...Object.keys(yardUnits)]).size,
     [existing, yardUnits],
   )
-  const { createQueue, addVins: addQueueVins, clearQueues } = useOps()
+  const { createGateInQueue, clearQueues } = useOps()
 
   // wipe every store so the system returns to a clean, empty state
   const clearEverything = () => {
@@ -251,8 +252,14 @@ export function ImportPage() {
     // aren't dragged back into a Pre Gate-in queue and no duplicate work is made.
     // Different yards never share a queue; each is tagged to its own yard's site
     // so that yard's YardOps sees it. Name MUST start with "(" (isPreGateInQueue).
+    // build from every row for the picked date that STILL needs gate-in: brand-new
+    // rows, plus existing rows whose current status is still Pre Gate-in (so a
+    // re-import repopulates a queue whose VINs were lost) — but never a car that
+    // has already gated in.
     const groups = new Map<string, { site?: string; yard: string; date: string; vins: string[] }>()
-    for (const r of newRows) {
+    for (const r of selRows) {
+      const ex = existing[r.vin]
+      if (ex && deriveCarStatus(ex.cells) !== 'Pre Gate-in') continue
       const dk = dateKey(r.cells)
       if (dk === '(ไม่ระบุ)') continue
       const yard = (r.cells['Location yard'] || '').trim() || '—'
@@ -265,8 +272,7 @@ export function ImportPage() {
       const sv = dateSortVal(g.date)
       const datePart = sv > 0 ? `${Math.floor((sv % 10000) / 100)}-${sv % 100}` : g.date
       const qName = `(${g.yard} · ${datePart} · ${g.vins.length})`
-      const qid = createQueue(qName, undefined, g.site)
-      if (qid) addQueueVins(qid, g.vins)
+      createGateInQueue(qName, g.vins, undefined, g.site)
     }
 
     setParsed(null); setFileName(''); setSelectedDate('')
