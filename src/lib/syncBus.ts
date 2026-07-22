@@ -10,12 +10,12 @@
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase, isConfigured } from './supabase'
 
-export type SyncEvent = 'blocks' | 'ops' | 'trailers' | 'viewdefault'
+export type SyncEvent = 'blocks' | 'ops' | 'trailers' | 'viewdefault' | 'policies'
 type Handler = (payload: any) => void
 
 let channel: RealtimeChannel | null = null
 const handlers = new Map<SyncEvent, Handler[]>()
-const EVENTS: SyncEvent[] = ['blocks', 'ops', 'trailers', 'viewdefault']
+const EVENTS: SyncEvent[] = ['blocks', 'ops', 'trailers', 'viewdefault', 'policies']
 
 /** Register a listener (module-scope, survives channel restarts). */
 export function onSync(event: SyncEvent, h: Handler): void {
