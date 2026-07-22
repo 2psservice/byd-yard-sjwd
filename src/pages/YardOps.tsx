@@ -1403,14 +1403,17 @@ function DriverView() {
   const procStage = activeProc ? stageOf(activeProc.item) : null
   // a slot proposal is needed both for the gate-in first-park AND for returning a checked car
   const needsSlot = !!unit && (unit.status === 'GATE_IN' || (unit.status === 'PARKED' && procStage === 'checked'))
-  // resolve the model the parking policy is keyed by — a unit whose model was
-  // left empty (placeholder created pre-gate-in) would otherwise fall back to
-  // the "any block" default and ignore its configured allowed blocks.
+  // Resolve the model the parking policy is keyed by. ALWAYS run it through
+  // matchModel (the same way the Rules page keys each policy) — trusting the
+  // stored unit.model is unreliable: it can be empty (placeholder unit) OR a
+  // non-canonical value ("BYD ATTO 2" instead of the id "ATTO2"), which makes
+  // getPolicy fall back to "any block" and offer disallowed blocks.
   const unitForSlot = useMemo(() => {
     if (!unit) return null
-    if (unit.model) return unit
-    const nm = unit.modelName || trackingRows.find(r => r.vin === unit.vin)?.cells['Model name'] || trackingRows.find(r => r.vin === unit.vin)?.cells['Model'] || ''
-    return { ...unit, model: matchModel(nm).id }
+    const cells = trackingRows.find(r => r.vin === unit.vin)?.cells
+    const nm = unit.modelName || cells?.['Model name'] || cells?.['Model'] || unit.model || ''
+    const model = matchModel(nm).id
+    return model === unit.model ? unit : { ...unit, model }
   }, [unit, trackingRows])
   const cands = useMemo(
     () => (needsSlot && unitForSlot ? candidates(unitForSlot, blocks, policies, units, groupModelsInRow) : []),
