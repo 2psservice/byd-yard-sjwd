@@ -26,6 +26,7 @@ import { cx, PhotoLightbox } from '../components/ui'
 import { rowInSite } from '../lib/siteScope'
 import { storePhoto } from '../lib/photoStore'
 import { siteGroupingConfig, yardLocCode, byYardLocation } from '../lib/groupingImport'
+import { fmtSerialToDate } from '../lib/trackingColumns'
 import type { DamageInput, Unit } from '../types'
 import type { TrackRow } from '../lib/excelTracking'
 import { SeqQueuePicker } from '../components/SeqQueueList'
@@ -991,22 +992,20 @@ function WalkView() {
                   <div className="font-semibold">{trackRow.cells['Remark'] ?? '—'}</div>
                 </div>
                 <div>
-                  <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>Tax</div>
+                  <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>Tax Payment Date</div>
+                  <div className="font-semibold">{fmtSerialToDate(trackRow.cells['Tax Payment Date']) || '—'}</div>
+                </div>
+                <div>
+                  <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>Tax Payment (STATUS)</div>
                   {(() => {
                     const st = (trackRow.cells['Tax Payment (STATUS)'] ?? trackRow.cells['Status Tax'] ?? '').trim()
-                    const date = (trackRow.cells['Tax Payment Date'] ?? '').trim()
-                    if (!st && !date) return <div className="font-semibold">—</div>
+                    if (!st) return <div className="font-semibold">—</div>
                     const t = st.toLowerCase()
                     const paid = /yes|already|paid|ชำระแล้ว|เสียแล้ว/.test(t)
                     const no   = /^no|ยังไม่|not/.test(t)
                     const color = paid ? '#16a34a' : no ? '#dc2626' : '#d97706'
                     const bg    = paid ? 'rgba(22,163,74,0.12)' : no ? 'rgba(220,38,38,0.1)' : 'rgba(217,119,6,0.12)'
-                    return (
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        {st && <span className="badge font-bold" style={{ fontSize: 10.5, background: bg, color }}>{st}</span>}
-                        {date && <span className="text-[11px]" style={{ color: 'var(--muted)' }}>{date}</span>}
-                      </div>
-                    )
+                    return <span className="badge font-bold" style={{ fontSize: 10.5, background: bg, color }}>{st}</span>
                   })()}
                 </div>
               </div>
