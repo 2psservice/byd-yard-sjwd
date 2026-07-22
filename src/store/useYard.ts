@@ -164,6 +164,7 @@ interface YardState {
   updateLocations: (items: { vin: string; block: string; row: number; slot: number; modelName?: string; color?: string; gateInAt?: number }[]) => number
   autoParkAll: () => number
   setPolicy: (model: string, patch: Partial<ParkingPolicy>) => void
+  loadPolicies: () => Promise<void>
   // --- yard layout editor ---
   addBlock: (b?: Partial<Block>) => string
   updateBlock: (id: string, patch: Partial<Block>) => void
@@ -762,12 +763,24 @@ export const useYard = create<YardState>()(
         return n
       },
 
-      setPolicy: (model, patch) =>
+      setPolicy: (model, patch) => {
         set((s) => ({
           policies: s.policies.some((p) => p.model === model)
             ? s.policies.map((p) => (p.model === model ? { ...p, ...patch } : p))
             : [...s.policies, { model, enabled: true, allowedBlocks: 'ALL', exclusiveRow: false, ...patch }],
-        })),
+        }))
+        // parking rules are shared across devices — persist to the cloud AND
+        // broadcast so every open phone/tablet applies the new rule immediately
+        // (previously rules lived only in the device where they were set).
+        const policies = get().policies
+        db.saveAppConfig('parking_policies', policies).catch((e) => console.error('[db] savePolicies', e))
+        sendSync('policies', { policies })
+      },
+
+      loadPolicies: async () => {
+        const cloud = await db.fetchAppConfig<ParkingPolicy[]>('parking_policies').catch(() => null)
+        if (Array.isArray(cloud) && cloud.length) set({ policies: cloud })
+      },
 
       // ── yard layout editor ─────────────────────────────────────────────────
       addBlock: (b) => {
@@ -1191,6 +1204,13 @@ onSync('trailers', async (p: { siteId?: string }) => {
   if (!siteId || useYard.getState().currentSite !== siteId) return
   const trailers = await db.fetchTrailers(siteId)
   useYard.setState({ trailers })
+})
+// another device changed a parking rule → adopt it. The broadcast carries the
+// full policy list so online devices update instantly even without app_config;
+// loadPolicies() (from the cloud) is the fallback for devices that reconnect.
+onSync('policies', (p: { policies?: ParkingPolicy[] }) => {
+  if (Array.isArray(p?.policies) && p.policies.length) useYard.setState({ policies: p.policies })
+  else useYard.getState().loadPolicies().catch(() => {})
 })
 
 // ---------- demo GPS seeding ----------

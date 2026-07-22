@@ -87,6 +87,7 @@ export default function App() {
     // a brief beat; it also lifts as soon as trackingLoaded flips (local-first).
     loadFromSupabase().catch((e) => console.error('[App] background units load', e))
     useOps.getState().loadFromCloud().catch((e) => console.error('[App] ops queues load', e))
+    useYard.getState().loadPolicies().catch((e) => console.error('[App] parking policies load', e))
     const t = setTimeout(() => { if (!cancelled) setBooting(false) }, 600)
     return () => { cancelled = true; clearTimeout(t) }
   }, [loggedInUserId, loadFromSupabase])
