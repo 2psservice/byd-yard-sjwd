@@ -129,6 +129,10 @@ let qid = 0
 interface OpsState {
   queues: WorkQueue[]
   createQueue: (name: string, by?: string, site?: string) => string
+  /** Find-or-create a Pre Gate-in queue by name and add these VINs in ONE atomic
+   *  state update + ONE cloud push. Avoids the create(empty)+addVins(full) race
+   *  that could leave the queue persisted with 0 items. */
+  createGateInQueue: (name: string, vins: string[], by?: string, site?: string) => string
   /** Create a NEW typed queue (PM / PDI / FINAL / WASH / SPECIAL), auto-uniquing
    *  its display name within the site so the same type can be created many times
    *  (e.g. one PM queue per lot). Always makes a fresh queue — never dedups. */
@@ -176,6 +180,36 @@ export const useOps = create<OpsState>()(
         const siteTag = site ?? useYard.getState().currentSite ?? undefined
         set((s) => ({ queues: [...s.queues, { id, name: n, createdAt: Date.now(), createdBy: by, items: [], site: siteTag }] }))
         pushQueue(get, id)
+        return id
+      },
+
+      createGateInQueue: (name, vins, by, site) => {
+        const n = name.trim()
+        if (!n) return ''
+        const siteTag = site ?? useYard.getState().currentSite ?? undefined
+        const now = Date.now()
+        let id = get().queues.find((q) => q.name.toLowerCase() === n.toLowerCase())?.id ?? ''
+        if (!id) id = `q${++qid}${now}`
+        set((s) => {
+          const base = s.queues.some((q) => q.id === id)
+            ? s.queues
+            : [...s.queues, { id, name: n, createdAt: now, createdBy: by, items: [] as QueueItem[], site: siteTag }]
+          return {
+            queues: base.map((q) => {
+              if (q.id !== id) return q
+              const have = new Set(q.items.map((i) => i.vin))
+              const items = [...q.items]
+              for (const raw of vins) {
+                const v = raw.trim().toUpperCase()
+                if (!v || have.has(v)) continue
+                have.add(v)
+                items.push({ vin: v, addedAt: now, done: false })
+              }
+              return { ...q, items }
+            }),
+          }
+        })
+        pushQueue(get, id) // single push, WITH items → no empty-then-full race
         return id
       },
 
