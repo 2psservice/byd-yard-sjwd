@@ -405,25 +405,39 @@ export const useOps = create<OpsState>()(
 // another client changed a queue → refetch (cloud is authoritative on broadcast)
 onSync('ops', () => { useOps.getState().loadFromCloud(true).catch((e) => console.error('[ops] sync pull', e)) })
 
-// ── keep queues honest about gate-outs (data-level, one place) ───────────────
-// A car whose LIVE Car Status says Gate-out is finished work in EVERY queue,
-// no matter how it left (ops-scan, co-inspection import, re-import): mark its
-// items gatedOut+done. Ordinary queues then hide the row entirely (filter
-// below); a delivery sequence keeps it — grey "gate out" — so the run counts
-// 1/17 → 17/17. Runs debounced whenever tracking data changes.
+// ── keep queues honest about the live Car Status (data-level, one place) ─────
+// Two reconciliations run debounced whenever tracking data changes, so a queue
+// reflects reality no matter HOW a car moved (ops-scan, Gate In/Out page, import):
+//  • Gate-out: a car whose LIVE Car Status is Gate-out is finished work in EVERY
+//    queue → mark its items gatedOut+done.
+//  • Gate-in: a car in a PRE GATE-IN queue "(yard·date·N)" whose status is no
+//    longer 'Pre Gate-in' has entered the yard → mark that item done, so the
+//    "0/117" progress updates as cars gate in (regardless of the scan path).
 let reconcileTimer: ReturnType<typeof setTimeout> | null = null
 function reconcileGateOuts() {
   const rows = useTracking.getState().rows
   const gone = new Set<string>()
-  for (const vin in rows) if (isGoneStatus(rows[vin].cells['Car Status'])) gone.add(vin)
-  if (!gone.size) return
+  const gatedIn = new Set<string>() // no longer Pre Gate-in → has entered the yard
+  for (const vin in rows) {
+    const cs = (rows[vin].cells['Car Status'] || '').trim()
+    if (isGoneStatus(cs)) gone.add(vin)
+    else if (cs && cs.toLowerCase() !== 'pre gate-in') gatedIn.add(vin)
+  }
+  if (!gone.size && !gatedIn.size) return
   const dirty: string[] = []
   const next = useOps.getState().queues.map((q) => {
+    const isPreGateIn = q.name.trim().startsWith('(')
     let changed = false
     const items = q.items.map((i) => {
-      if (!gone.has(i.vin) || (i.done && i.gatedOut)) return i
-      changed = true
-      return { ...i, gatedOut: true, done: true, doneAt: i.doneAt ?? Date.now() }
+      if (gone.has(i.vin) && !(i.done && i.gatedOut)) {
+        changed = true
+        return { ...i, gatedOut: true, done: true, doneAt: i.doneAt ?? Date.now() }
+      }
+      if (isPreGateIn && gatedIn.has(i.vin) && !i.done) {
+        changed = true
+        return { ...i, done: true, doneAt: i.doneAt ?? Date.now() }
+      }
+      return i
     })
     if (!changed) return q
     dirty.push(q.id)
