@@ -56,9 +56,9 @@ export function Rules() {
         </div>
         <div className="panel p-4 flex items-start gap-3">
           <div className="flex-1">
-            <div className="text-[13.5px] font-semibold flex items-center gap-2"><Layers size={15} style={{ color: 'var(--brand)' }} /> {lang === 'th' ? 'จัดรุ่นเดียวกันต่อแถว' : 'Group one model per row'}</div>
+            <div className="text-[13.5px] font-semibold flex items-center gap-2"><Layers size={15} style={{ color: 'var(--brand)' }} /> {lang === 'th' ? 'จัดรุ่นเดียวกันต่อช่อง (เลน)' : 'Group one model per lane'}</div>
             <p className="text-[12px] mt-1.5" style={{ color: 'var(--faint)' }}>
-              {lang === 'th' ? 'เครื่องจะพยายามไม่ปนรุ่นในแถวเดียวกัน (เปิดแถวใหม่ก่อนแทรกรุ่นอื่น)' : 'Engine avoids mixing models in a row when possible.'}
+              {lang === 'th' ? 'เปิด = แต่ละช่อง (เลน) มีรุ่นเดียว เจอรุ่นอื่นจะข้ามไปเปิดช่องถัดไป · ปิด = จอดคละรุ่นในช่องเดียวกันได้' : 'On = one model per lane (skip to the next lane for a different model). Off = mixed models may share a lane.'}
             </p>
           </div>
           <Toggle checked={groupModelsInRow} onChange={setGroupModels} />
