@@ -27,6 +27,7 @@ import { rowInSite } from '../lib/siteScope'
 import { storePhoto } from '../lib/photoStore'
 import { siteGroupingConfig, yardLocCode, byYardLocation } from '../lib/groupingImport'
 import { fmtSerialToDate } from '../lib/trackingColumns'
+import { matchModel } from '../lib/sampleData'
 import type { DamageInput, Unit } from '../types'
 import type { TrackRow } from '../lib/excelTracking'
 import { SeqQueuePicker } from '../components/SeqQueueList'
@@ -794,16 +795,18 @@ function WalkView() {
     updateCell(trackRow.vin, 'Gate In (Rayong yard)', d)
     updateCell(trackRow.vin, 'Gate In Inspector', currentUser)
     updateCell(trackRow.vin, 'Gate In Time', String(now.getTime()))
-    // register as yard unit so Driver can find it for parking assignment
-    if (!units.find(u => u.vin === trackRow.vin)) {
-      importUnits([{
-        vin:     trackRow.vin,
-        model:   trackRow.cells['Model name'] ?? trackRow.cells['Model'] ?? '',
-        color:   trackRow.cells['Color'] ?? '',
-        lot:     trackRow.cells['Lot transfer'] ?? undefined,
-        trailer: parseInt(trackRow.cells['Grouping  Number'] ?? '0') || 0,
-      }])
-    }
+    // register as yard unit so Driver can find it for parking assignment. ALWAYS
+    // (re)register — a car that had a placeholder unit (e.g. a manual defect added
+    // pre-gate-in, model '') would otherwise keep an empty model, and the parking
+    // policy is keyed by model, so it would be allowed in ANY block instead of its
+    // configured ones. importUnits refreshes model/modelName from the sheet.
+    importUnits([{
+      vin:     trackRow.vin,
+      model:   trackRow.cells['Model name'] ?? trackRow.cells['Model'] ?? '',
+      color:   trackRow.cells['Color'] ?? '',
+      lot:     trackRow.cells['Lot transfer'] ?? undefined,
+      trailer: parseInt(trackRow.cells['Grouping  Number'] ?? '0') || 0,
+    }])
     gateIn(trackRow.vin)
     // NG walk-around damages captured during the gate-in inspection
     if (damages?.length) {
@@ -1400,9 +1403,18 @@ function DriverView() {
   const procStage = activeProc ? stageOf(activeProc.item) : null
   // a slot proposal is needed both for the gate-in first-park AND for returning a checked car
   const needsSlot = !!unit && (unit.status === 'GATE_IN' || (unit.status === 'PARKED' && procStage === 'checked'))
+  // resolve the model the parking policy is keyed by — a unit whose model was
+  // left empty (placeholder created pre-gate-in) would otherwise fall back to
+  // the "any block" default and ignore its configured allowed blocks.
+  const unitForSlot = useMemo(() => {
+    if (!unit) return null
+    if (unit.model) return unit
+    const nm = unit.modelName || trackingRows.find(r => r.vin === unit.vin)?.cells['Model name'] || trackingRows.find(r => r.vin === unit.vin)?.cells['Model'] || ''
+    return { ...unit, model: matchModel(nm).id }
+  }, [unit, trackingRows])
   const cands = useMemo(
-    () => (needsSlot && unit ? candidates(unit, blocks, policies, units, groupModelsInRow) : []),
-    [needsSlot, unit, blocks, policies, units, groupModelsInRow],
+    () => (needsSlot && unitForSlot ? candidates(unitForSlot, blocks, policies, units, groupModelsInRow) : []),
+    [needsSlot, unitForSlot, blocks, policies, units, groupModelsInRow],
   )
   const proposal = cands[Math.min(altIdx, Math.max(0, cands.length - 1))] ?? null
 
