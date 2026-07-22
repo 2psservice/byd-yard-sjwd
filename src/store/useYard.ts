@@ -23,11 +23,13 @@ let tid = 0
 let unitsChannel: RealtimeChannel | null = null
 const unitTs = new Map<string, number>()
 
-/** A unit whose `model` id is guaranteed non-empty — a placeholder unit created
- *  before gate-in can have model '', which makes the parking policy fall back to
- *  "any block". Re-derive it from the model name so the allowed-blocks rule holds. */
+/** A unit whose `model` is the CANONICAL policy id. The stored model can be
+ *  empty (placeholder unit) or non-canonical ("BYD ATTO 2" vs "ATTO2"), which
+ *  makes the parking policy fall back to "any block". Always re-derive it via
+ *  matchModel (the same keying the Rules page uses) so allowed-blocks holds. */
 function withModelId(u: Unit): Unit {
-  return u.model ? u : { ...u, model: matchModel(u.modelName || '').id }
+  const model = matchModel(u.modelName || u.model || '').id
+  return model === u.model ? u : { ...u, model }
 }
 
 // ── Defect import helpers (Defect-Yard / Defect-Factory → Damage) ───────────
