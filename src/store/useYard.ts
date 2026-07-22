@@ -23,6 +23,13 @@ let tid = 0
 let unitsChannel: RealtimeChannel | null = null
 const unitTs = new Map<string, number>()
 
+/** A unit whose `model` id is guaranteed non-empty — a placeholder unit created
+ *  before gate-in can have model '', which makes the parking policy fall back to
+ *  "any block". Re-derive it from the model name so the allowed-blocks rule holds. */
+function withModelId(u: Unit): Unit {
+  return u.model ? u : { ...u, model: matchModel(u.modelName || '').id }
+}
+
 // ── Defect import helpers (Defect-Yard / Defect-Factory → Damage) ───────────
 function defHash(s: string): string {
   let h = 5381
@@ -654,7 +661,7 @@ export const useYard = create<YardState>()(
       suggest: (vin) => {
         const u = get().units[vin]
         if (!u) return null
-        return autoAssign(u, curBlocks(get()), get().policies, Object.values(get().units), get().groupModelsInRow)
+        return autoAssign(withModelId(u), curBlocks(get()), get().policies, Object.values(get().units), get().groupModelsInRow)
       },
 
       assign: (vin, slot, driver, mode) =>
@@ -737,7 +744,7 @@ export const useYard = create<YardState>()(
         const changed: Unit[] = []
         for (const u of Object.values(units)) {
           if (u.status !== 'GATE_IN') continue
-          const a = autoAssign(u, blocks, policies, Object.values(units), groupModelsInRow)
+          const a = autoAssign(withModelId(u), blocks, policies, Object.values(units), groupModelsInRow)
           if (!a) continue
           const now = Date.now()
           const updated: Unit = {
