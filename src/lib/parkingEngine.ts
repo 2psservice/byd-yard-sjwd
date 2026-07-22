@@ -39,6 +39,11 @@ export function buildOccupancy(units: Unit[]): Map<string, RowInfo> {
   return rows
 }
 
+interface LaneInfo {
+  rows: Set<number> // occupied depths (แถว) in this lane
+  models: Set<string> // distinct models parked in this lane
+}
+
 /**
  * Rank every legal slot for a unit, best first.
  *
@@ -50,20 +55,40 @@ export function buildOccupancy(units: Unit[]): Map<string, RowInfo> {
  * set on the Parking Rules page — leave it at 7–8 for the SS block.
  *
  *  - hard rules: allowedBlocks, rowFrom/rowTo (lane depth), exclusiveRow
- *  - mixed models are allowed in a lane; a mild bonus keeps a lane single-model
- *    when that doesn't fight the left-to-right lane order.
+ *  - `groupModelsInRow` = keep one model per LANE (ช่อง): when ON, a lane that
+ *    already holds a different model is skipped (open the next lane instead);
+ *    when OFF, models may be mixed within a lane and it fills purely by lane
+ *    order. Either way a mild bonus keeps a lane single-model when it can.
  */
 export function candidates(
   unit: Unit,
   blocks: Block[],
   policies: ParkingPolicy[],
   units: Unit[],
-  _groupModelsInRow: boolean,
+  groupModelsInRow: boolean,
 ): SlotCandidate[] {
   const policy = getPolicy(unit.model, policies)
   if (!policy.enabled) return []
 
-  const occ = buildOccupancy(units.filter((u) => u.vin !== unit.vin))
+  const others = units.filter(
+    (u) => u.vin !== unit.vin && u.block && u.row && u.slot && OCCUPYING.includes(u.status),
+  )
+  // lane view (`${block}#${slot}` → depths + models) drives column-major fill;
+  // row view (`${block}#${row}` → models) drives the row-level exclusiveRow rule.
+  const lanes = new Map<string, LaneInfo>()
+  const rowModels = new Map<string, Set<string>>()
+  for (const u of others) {
+    const lk = `${u.block}#${u.slot}`
+    let li = lanes.get(lk)
+    if (!li) { li = { rows: new Set(), models: new Set() }; lanes.set(lk, li) }
+    li.rows.add(u.row!)
+    li.models.add(u.model)
+    const rk = `${u.block}#${u.row}`
+    let rm = rowModels.get(rk)
+    if (!rm) { rm = new Set(); rowModels.set(rk, rm) }
+    rm.add(u.model)
+  }
+
   const allowed =
     policy.allowedBlocks === 'ALL'
       ? blocks
@@ -79,28 +104,36 @@ export function candidates(
     // admissible) depth, then stop — one proposal per lane so cycling the
     // alternatives walks lane 1, lane 2, lane 3 … in order.
     for (let slot = 1; slot <= b.cols; slot++) {
+      const lane = lanes.get(`${b.id}#${slot}`)
+      const laneModels = lane?.models ?? new Set<string>()
+      const laneEmpty = !lane || lane.rows.size === 0
+      const laneOnlyThis = !laneEmpty && laneModels.size === 1 && laneModels.has(unit.model)
+      const laneHasOther = [...laneModels].some((m) => m !== unit.model)
+
+      // one model per lane: this lane belongs to another model → open the next
+      if (groupModelsInRow && laneHasOther) continue
+      // a lane already claimed by an exclusive-row model is off-limits to others
+      if (laneHasOther && [...laneModels].some((m) => m !== unit.model && exclusiveOf(m)) && !laneOnlyThis) continue
+
       for (let row = rFrom; row <= rTo; row++) {
-        const ri = occ.get(`${b.id}#${row}`)
-        if (ri?.filled.has(slot)) continue // this depth in the lane is taken
+        if (lane?.rows.has(row)) continue // this depth in the lane is taken
 
-        const occupants = ri?.occupants ?? []
-        const models = ri?.models ?? new Set<string>()
-        const isEmpty = occupants.length === 0
-        const onlyThis = !isEmpty && models.size === 1 && models.has(unit.model)
-
-        // ---- hard constraints (row-level) ----
-        if (!isEmpty) {
-          if (policy.exclusiveRow && !onlyThis) continue // I demand exclusivity
-          if ([...models].some((m) => m !== unit.model && exclusiveOf(m))) continue // row claimed by another exclusive model
+        // ---- row-level exclusiveRow (แถว reserved for a single model) ----
+        const rowMs = rowModels.get(`${b.id}#${row}`) ?? new Set<string>()
+        const rowEmpty = rowMs.size === 0
+        const rowOnlyThis = !rowEmpty && rowMs.size === 1 && rowMs.has(unit.model)
+        if (!rowEmpty) {
+          if (policy.exclusiveRow && !rowOnlyThis) continue // I demand an exclusive row
+          if ([...rowMs].some((m) => m !== unit.model && exclusiveOf(m))) continue // row claimed by another exclusive model
         }
 
         // lane order dominates (slot × 10), then depth (row); a same-model lane
         // gets +5 — never enough to jump ahead of a lower-numbered lane.
         let score = 1000 - (bi * 1000 + slot * 10 + row)
-        if (onlyThis) score += 5
-        const reason = isEmpty
+        if (laneOnlyThis) score += 5
+        const reason = laneEmpty
           ? `เลนว่าง · ${b.id} ช่อง ${slot}`
-          : onlyThis
+          : laneOnlyThis
             ? `ต่อเลนรุ่นเดียวกัน · ${b.id} ช่อง ${slot}`
             : `จอดคละรุ่น · ${b.id} ช่อง ${slot}`
 
