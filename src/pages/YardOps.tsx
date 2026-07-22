@@ -1432,7 +1432,7 @@ function DriverView() {
     if (!unit) return
     assign(unit.vin, slot, driverName, planMode)
     startTrip(unit.vin, driverName, 'Gate', `${slot.block}${slot.slot}.${slot.row}`)
-    toast('ok', `${unit.vin.slice(-6)} → ${slot.block}-${slot.row}-${slot.slot}`)
+    toast('ok', `${unit.vin.slice(-6)} → ${slot.block}${slot.slot}.${slot.row}`)
   }
   const doPark = () => {
     if (!unit) return
@@ -1513,9 +1513,9 @@ function DriverView() {
         <div className="panel p-4 text-center">
           <div className="text-[10.5px] font-bold uppercase tracking-wider" style={{ color: 'var(--muted)' }}>ตำแหน่งจอด</div>
           <div className="display text-[36px] font-black leading-none mt-1" style={{ color: 'var(--brand)' }}>
-            {unit.block}{unit.row}.{unit.slot}
+            {unit.block}{unit.slot}.{unit.row}
           </div>
-          <div className="text-[11px] mt-1.5" style={{ color: 'var(--faint)' }}>Block {unit.block} · Row {unit.row} · Slot {unit.slot}</div>
+          <div className="text-[11px] mt-1.5" style={{ color: 'var(--faint)' }}>Block {unit.block} · ช่อง {unit.slot} · แถว {unit.row}</div>
         </div>
 
         {/* driving summary */}
@@ -1524,7 +1524,7 @@ function DriverView() {
             <Gauge size={15} style={{ color: 'var(--st-yard)' }} />
             <span className="font-semibold text-[13.5px]">สรุปการขับขี่</span>
             <span className="ml-auto text-[11px] flex items-center gap-1" style={{ color: 'var(--muted)' }}>
-              <Navigation size={11} /> Gate → {unit.block}{unit.row}.{unit.slot}
+              <Navigation size={11} /> Gate → {unit.block}{unit.slot}.{unit.row}
             </span>
           </div>
           <div className="grid grid-cols-4 divide-x" style={{ borderColor: 'var(--line)' }}>
@@ -1757,9 +1757,9 @@ function DriverView() {
                   <div className="text-center">
                     <div className="text-[10.5px] font-bold uppercase mb-1" style={{ color: 'rgba(255,255,255,0.45)' }}>TO</div>
                     <div className="text-[28px] font-black leading-none" style={{ color: '#4ade80' }}>
-                      {proposal.block}{proposal.row}.{proposal.slot}
+                      {proposal.block}{proposal.slot}.{proposal.row}
                     </div>
-                    <div className="text-[11px] mt-0.5" style={{ color: 'rgba(255,255,255,0.45)' }}>Block {proposal.block} · Row {proposal.row} · Slot {proposal.slot}</div>
+                    <div className="text-[11px] mt-0.5" style={{ color: 'rgba(255,255,255,0.45)' }}>Block {proposal.block} · ช่อง {proposal.slot} · แถว {proposal.row}</div>
                   </div>
                 </div>
                 {proposal.reason && (
@@ -1770,7 +1770,7 @@ function DriverView() {
                 <button onClick={() => doAssign(proposal)}
                   className="w-full h-14 rounded-2xl text-[16px] font-bold flex items-center justify-center gap-2 transition-all active:scale-95"
                   style={{ background: 'var(--st-yard)', color: '#fff', boxShadow: '0 6px 20px -4px rgba(22,163,74,0.5)' }}>
-                  <Navigation size={20} /> เริ่มขับ → {proposal.block}{proposal.row}.{proposal.slot}
+                  <Navigation size={20} /> เริ่มขับ → {proposal.block}{proposal.slot}.{proposal.row}
                 </button>
                 <button onClick={() => setAltIdx(i => (i + 1) % Math.max(1, cands.length))}
                   disabled={cands.length < 2}
