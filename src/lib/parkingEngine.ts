@@ -66,6 +66,7 @@ export function candidates(
   policies: ParkingPolicy[],
   units: Unit[],
   groupModelsInRow: boolean,
+  laneDepth = 7,
 ): SlotCandidate[] {
   const policy = getPolicy(unit.model, policies)
   if (!policy.enabled) return []
@@ -99,7 +100,10 @@ export function candidates(
 
   allowed.forEach((b, bi) => {
     const rFrom = Math.max(1, policy.rowFrom ?? 1)
-    const rTo = Math.min(b.rows, policy.rowTo ?? b.rows)
+    // depth cap = per-model Row-window (advanced override) or the global lane
+    // depth (default 7). Once a lane is full to this depth the loop finds no
+    // free row and the scan advances to the next lane — including empty lanes.
+    const rTo = Math.min(b.rows, policy.rowTo ?? laneDepth)
     // Scan lanes left → right; within each lane take the shallowest free (and
     // admissible) depth, then stop — one proposal per lane so cycling the
     // alternatives walks lane 1, lane 2, lane 3 … in order.
@@ -153,8 +157,9 @@ export function autoAssign(
   policies: ParkingPolicy[],
   units: Unit[],
   groupModelsInRow: boolean,
+  laneDepth = 7,
 ): SlotCandidate | null {
-  return candidates(unit, blocks, policies, units, groupModelsInRow)[0] ?? null
+  return candidates(unit, blocks, policies, units, groupModelsInRow, laneDepth)[0] ?? null
 }
 
 /** Distinct (block,row) options for the Semi-plan picker, best first, with free count. */
@@ -164,8 +169,9 @@ export function rowOptions(
   policies: ParkingPolicy[],
   units: Unit[],
   groupModelsInRow: boolean,
+  laneDepth = 7,
 ): { block: string; row: number; free: number; slot: number; reason: string }[] {
-  const cs = candidates(unit, blocks, policies, units, groupModelsInRow)
+  const cs = candidates(unit, blocks, policies, units, groupModelsInRow, laneDepth)
   const occ = buildOccupancy(units.filter((u) => u.vin !== unit.vin))
   const seen = new Set<string>()
   const res: { block: string; row: number; free: number; slot: number; reason: string }[] = []

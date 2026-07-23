@@ -1346,7 +1346,7 @@ function DriverView() {
   const wrongSite = useWrongSiteHint()
   const queues = useSiteQueues()
   const { loadFromIdb, updateCell } = useTracking()
-  const { assign, confirmParked, resetParking, toast, currentUser, policies, groupModelsInRow, planMode, startTrip, endTrip, sites, currentSite } = useYard()
+  const { assign, confirmParked, resetParking, toast, currentUser, policies, groupModelsInRow, laneDepth, planMode, startTrip, endTrip, sites, currentSite } = useYard()
   const blocks = useBlocks()
   const { deliverToStation, returnToSlot, markAtWash, markAtLane } = useOps()
   const { block: blockGate, modal: gateModal } = useNotGatedIn()
@@ -1416,8 +1416,8 @@ function DriverView() {
     return model === unit.model ? unit : { ...unit, model }
   }, [unit, trackingRows])
   const cands = useMemo(
-    () => (needsSlot && unitForSlot ? candidates(unitForSlot, blocks, policies, units, groupModelsInRow) : []),
-    [needsSlot, unitForSlot, blocks, policies, units, groupModelsInRow],
+    () => (needsSlot && unitForSlot ? candidates(unitForSlot, blocks, policies, units, groupModelsInRow, laneDepth) : []),
+    [needsSlot, unitForSlot, blocks, policies, units, groupModelsInRow, laneDepth],
   )
   const proposal = cands[Math.min(altIdx, Math.max(0, cands.length - 1))] ?? null
 

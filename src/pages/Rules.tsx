@@ -12,7 +12,7 @@ export function Rules() {
   const lang = useYard((s) => s.lang)
   const blocks = useBlocks()
   const policies = useYard((s) => s.policies)
-  const { planMode, setPlanMode, groupModelsInRow, setGroupModels, setPolicy } = useYard()
+  const { planMode, setPlanMode, groupModelsInRow, setGroupModels, laneDepth, setLaneDepth, setPolicy } = useYard()
   const allRows = useTrackingRows()
 
   // Build model list from actual imported data, deduplicated by matched model ID
@@ -62,6 +62,21 @@ export function Rules() {
             </p>
           </div>
           <Toggle checked={groupModelsInRow} onChange={setGroupModels} />
+        </div>
+        <div className="panel p-4 flex items-start gap-3">
+          <div className="flex-1">
+            <div className="text-[13.5px] font-semibold flex items-center gap-2"><Layers size={15} style={{ color: 'var(--brand)' }} /> {lang === 'th' ? 'ความลึกต่อช่อง (เลน)' : 'Cars per lane (depth)'}</div>
+            <p className="text-[12px] mt-1.5" style={{ color: 'var(--faint)' }}>
+              {lang === 'th' ? 'จอดได้ลึกสุดกี่คันต่อ 1 ช่อง ก่อนที่ระบบจะข้ามไปช่องว่างถัดไป · ใช้กับทุกบล็อก' : 'Max cars stacked per lane before the engine opens the next lane. Applies to every block.'}
+            </p>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button onClick={() => setLaneDepth(laneDepth - 1)} disabled={laneDepth <= 1}
+              className="w-9 h-9 rounded-xl btn text-[18px] font-bold disabled:opacity-40">−</button>
+            <div className="w-12 text-center text-[20px] font-black tabular-nums" style={{ color: 'var(--brand)' }}>{laneDepth}</div>
+            <button onClick={() => setLaneDepth(laneDepth + 1)} disabled={laneDepth >= 8}
+              className="w-9 h-9 rounded-xl btn text-[18px] font-bold disabled:opacity-40">+</button>
+          </div>
         </div>
       </div>
 
