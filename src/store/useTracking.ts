@@ -101,6 +101,13 @@ function mergeImportedColumns(columns: Column[], headers: string[] | undefined):
 // bulkUpdate — logging there gives the RowDetail "Event" tab full coverage for
 // free, with no per-caller wiring. Capped so a long-lived VIN's history can't
 // grow unbounded.
+// A legitimate tracking row always carries its VIN in cells['Vin'] (every create
+// path sets it). A row with a blank Vin cell is a phantom — a malformed insert
+// that shows as an empty line in the Unit List. Drop these on ingest and purge
+// them from the cloud so they disappear on every device.
+const hasVin = (r: { cells?: Record<string, string> | null } | null | undefined) =>
+  !!(r?.cells?.['Vin'] ?? '').trim()
+
 const MAX_ROW_HISTORY = 100
 function withHistoryEntry(r: TrackRow, key: string, value: string, columns: Column[], by: string): TrackRow {
   const from = r.cells[key] ?? ''
@@ -132,11 +139,17 @@ export const useTracking = create<TrackingState>()(
           // backfill rows imported before "Last update" existed → use the import time
           const fallback = get().lastImport?.at ?? Date.now()
           const fixed: TrackRow[] = []
+          const phantom: string[] = [] // blank-Vin rows → purge locally + in the cloud
           for (const r of all) {
+            if (!hasVin(r)) { phantom.push(r.vin); continue }
             if (r.updatedAt == null) { r.updatedAt = fallback; fixed.push(r) }
             rows[r.vin] = r
           }
           if (fixed.length) idbBulkPut(fixed).catch(() => {})
+          if (phantom.length) {
+            idbDelete(phantom).catch(() => {})
+            db.deleteTrackingRows(phantom).catch(() => {}) // soft-delete → propagates to every device
+          }
         } catch { /* IndexedDB unavailable — fall through with empty rows */ }
 
         const hasLocal = Object.keys(rows).length > 0
@@ -154,9 +167,9 @@ export const useTracking = create<TrackingState>()(
               const siteRows = await db.fetchTrackingRowsForSite(siteName)
               if (siteRows.length) {
                 const rec: Record<string, TrackRow> = {}
-                for (const r of siteRows) rec[r.vin] = r
+                for (const r of siteRows) if (hasVin(r)) rec[r.vin] = r
                 set({ rows: rec })
-                idbBulkPut(siteRows).catch(() => {})
+                idbBulkPut(siteRows.filter(hasVin)).catch(() => {})
               }
             } catch { /* fall through to the full sync below */ }
           }
@@ -191,20 +204,28 @@ export const useTracking = create<TrackingState>()(
         const merged: Record<string, TrackRow> = { ...local }
         const pull: TrackRow[] = []
         const drop: string[] = []
+        const phantom: string[] = [] // blank-Vin rows in the cloud → tombstone them
         for (const cr of cloud) {
           const lr = local[cr.vin]
           if (cr.deletedAt) {
             if (lr) { delete merged[cr.vin]; drop.push(cr.vin) }
+          } else if (!hasVin(cr)) {
+            if (lr) { delete merged[cr.vin]; drop.push(cr.vin) }
+            phantom.push(cr.vin)
           } else if (!lr || (cr.updatedAt ?? 0) > (lr.updatedAt ?? 0)) {
             merged[cr.vin] = cr; pull.push(cr)
           }
         }
+        // also sweep any blank-Vin rows already sitting in local state
+        for (const lr of Object.values(local)) if (!hasVin(lr) && !drop.includes(lr.vin)) { delete merged[lr.vin]; drop.push(lr.vin) }
+        if (phantom.length) db.deleteTrackingRows(phantom).catch(() => {})
 
         // local → cloud: on a full run, anything the cloud lacks or is older on;
         // incrementally, just local edits since last sync (covers offline changes).
         // Never re-push a VIN the cloud has tombstoned — that was the resurrection bug.
         const push: TrackRow[] = []
         for (const lr of Object.values(local)) {
+          if (!hasVin(lr)) continue // never re-push phantom rows
           const cr = cloudByVin.get(lr.vin)
           if (cr?.deletedAt) continue
           if (incremental) {
@@ -250,6 +271,7 @@ export const useTracking = create<TrackingState>()(
                 idbDelete([vin]).catch(() => {})
                 return
               }
+              if (!(r.cells?.['Vin'] ?? '').trim()) return // ignore phantom blank-Vin inserts
               const incoming: TrackRow = {
                 vin: r.vin,
                 cells: r.cells ?? {},
