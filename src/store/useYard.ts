@@ -88,6 +88,7 @@ interface YardState {
   currentUser: string
   currentDriver: string
   groupModelsInRow: boolean
+  laneDepth: number // max cars stacked per lane (ช่อง) before the engine opens the next lane
   appUsers: AppUser[]
   view: View
   unitPreset: string | null // dashboard → Unit List quick filter ('inYard'|'parked'|'gatein'|'expected'|'damage')
@@ -127,6 +128,7 @@ interface YardState {
   login: (username: string, password: string) => boolean
   logout: () => void
   setGroupModels: (b: boolean) => void
+  setLaneDepth: (n: number) => void
   toast: (kind: Toast['kind'], msg: string) => void
   dismissToast: (id: number) => void
   setFocus: (vin: string | null) => void
@@ -265,6 +267,7 @@ export const useYard = create<YardState>()(
       currentUser: 'สมชาย ป.',
       currentDriver: 'ก้องภพ',
       groupModelsInRow: true,
+      laneDepth: 7,
       loggedInUserId: null,
       loginAt: null,
       appUsers: [
@@ -367,6 +370,14 @@ export const useYard = create<YardState>()(
       },
       logout: () => set({ loggedInUserId: null, loginAt: null, currentSite: null, siteModalOpen: false }),
       setGroupModels: (groupModelsInRow) => set({ groupModelsInRow }),
+      setLaneDepth: (n) => {
+        const laneDepth = Math.max(1, Math.min(8, Math.round(n || 0)))
+        set({ laneDepth })
+        // lane depth is shared across every device/yard — persist to the cloud
+        // and broadcast so open phones/tablets reload it right away.
+        db.saveAppConfig('lane_depth', { laneDepth }).catch((e) => console.error('[db] saveLaneDepth', e))
+        sendSync('policies', {})
+      },
 
       // ── sites ──────────────────────────────────────────────────────────────
       addSite: (name, code) => {
@@ -664,7 +675,7 @@ export const useYard = create<YardState>()(
       suggest: (vin) => {
         const u = get().units[vin]
         if (!u) return null
-        return autoAssign(withModelId(u), curBlocks(get()), get().policies, Object.values(get().units), get().groupModelsInRow)
+        return autoAssign(withModelId(u), curBlocks(get()), get().policies, Object.values(get().units), get().groupModelsInRow, get().laneDepth)
       },
 
       assign: (vin, slot, driver, mode) =>
@@ -740,14 +751,14 @@ export const useYard = create<YardState>()(
       },
 
       autoParkAll: () => {
-        const { policies, groupModelsInRow, currentDriver } = get()
+        const { policies, groupModelsInRow, laneDepth, currentDriver } = get()
         const blocks = curBlocks(get())
         const units = { ...get().units }
         let n = 0
         const changed: Unit[] = []
         for (const u of Object.values(units)) {
           if (u.status !== 'GATE_IN') continue
-          const a = autoAssign(withModelId(u), blocks, policies, Object.values(units), groupModelsInRow)
+          const a = autoAssign(withModelId(u), blocks, policies, Object.values(units), groupModelsInRow, laneDepth)
           if (!a) continue
           const now = Date.now()
           const updated: Unit = {
@@ -780,6 +791,8 @@ export const useYard = create<YardState>()(
       loadPolicies: async () => {
         const cloud = await db.fetchAppConfig<ParkingPolicy[]>('parking_policies').catch(() => null)
         if (Array.isArray(cloud) && cloud.length) set({ policies: cloud })
+        const depth = await db.fetchAppConfig<{ laneDepth?: number }>('lane_depth').catch(() => null)
+        if (depth && typeof depth.laneDepth === 'number') set({ laneDepth: Math.max(1, Math.min(8, depth.laneDepth)) })
       },
 
       // ── yard layout editor ─────────────────────────────────────────────────
@@ -1183,7 +1196,7 @@ export const useYard = create<YardState>()(
       // recorded into a site left selected by the previous shift.
       partialize: (s) => ({
         lang: s.lang, planMode: s.planMode, currentUser: s.currentUser, currentDriver: s.currentDriver,
-        groupModelsInRow: s.groupModelsInRow, view: s.view, appUsers: s.appUsers, loggedInUserId: s.loggedInUserId,
+        groupModelsInRow: s.groupModelsInRow, laneDepth: s.laneDepth, view: s.view, appUsers: s.appUsers, loggedInUserId: s.loggedInUserId,
         loginAt: s.loginAt,
         units: s.units, trailers: s.trailers, policies: s.policies, blocksBySite: s.blocksBySite, models: s.models,
         trips: s.trips, sites: s.sites,
