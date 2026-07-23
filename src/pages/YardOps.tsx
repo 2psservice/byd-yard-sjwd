@@ -1440,7 +1440,10 @@ function DriverView() {
     const elapsed = since ? Math.floor((Date.now() - since) / 1000) : 0
     endTrip(unit.vin)
     confirmParked(unit.vin)
-    updateCell(unit.vin, 'Car Status', `${unit.block}${unit.slot}.${unit.row}`)
+    // parked in a lane ⇒ the car is now In Yard. The physical slot shows in the
+    // Location column (derived from block/slot/row) — Car Status must stay a
+    // lifecycle status, not the slot code.
+    updateCell(unit.vin, 'Car Status', 'In Yard')
     setJustParked({ vin: unit.vin, sec: elapsed })
     toast('ok', `จอดสำเร็จ · ${unit.vin}`)
   }
