@@ -710,10 +710,13 @@ function WalkView() {
     return s
   }, [allUnits])
   const queueCars = useMemo(() => {
-    if (!selectedQueue) return [] as { vin: string; model: string; color: string; grouping: string; location: string; done: boolean; ng: boolean }[]
+    if (!selectedQueue) return [] as { vin: string; model: string; color: string; grouping: string; location: string; done: boolean; ng: boolean; doneAt?: number; doneBy?: string }[]
     return selectedQueue.items.map(i => {
       const row = trackingRows.find(r => r.vin === i.vin)
       const u = allUnits.find(x => x.vin === i.vin)
+      // when the car was gate-in scanned: the queue item's doneAt, or the
+      // "Gate In Time" cell that doTrackingGateIn stamps on the tracking row
+      const gitCell = row?.cells['Gate In Time']
       return {
         vin: i.vin,
         model: row?.cells['Model'] ?? row?.cells['Model name'] ?? u?.modelName ?? '—',
@@ -722,6 +725,8 @@ function WalkView() {
         location: yardLocCode(u, locPrefix) || '—',
         done: i.done,
         ng: ngVins.has(i.vin),
+        doneAt: i.doneAt ?? (gitCell ? parseInt(gitCell) || undefined : undefined),
+        doneBy: i.doneBy ?? row?.cells['Gate In Inspector'] ?? '',
       }
     }).sort((a, b) => Number(a.done) - Number(b.done)) // ยังไม่สแกน ขึ้นก่อน
   }, [selectedQueue, trackingRows, allUnits, ngVins, locPrefix])
@@ -921,6 +926,13 @@ function WalkView() {
                           <div className="text-[11px] mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5" style={{ color: 'var(--muted)' }}>
                             <span>{c.model}</span><span>· {c.color}</span><span>· {c.grouping}</span>
                           </div>
+                          {c.done && c.doneAt && (
+                            <div className="text-[10.5px] mt-0.5 flex items-center gap-1" style={{ color: 'var(--faint)' }}>
+                              <Clock size={10} />
+                              <span>ตรวจ {new Date(c.doneAt).toLocaleString('th-TH', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
+                              {c.doneBy && <span>· {c.doneBy}</span>}
+                            </div>
+                          )}
                         </div>
                         <div className="text-right shrink-0">
                           <div className="tabular text-[12px] font-bold">{c.location}</div>
