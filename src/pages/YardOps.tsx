@@ -11,7 +11,7 @@ import {
   ArrowRight, Zap, Hand, X, Camera, Pencil, Gauge, Route, Crosshair,
   LogOut, MapPin, ClipboardList, ListChecks,
 } from 'lucide-react'
-import { useYard, useUnits, useTrips, useBlocks } from '../store/useYard'
+import { useYard, useUnits, useTrips, useBlocks, useMe } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { isDamaged } from '../lib/carStatus'
 import { useOps, useActiveQueues, activeProcess, stageOf, isSequenceQueue, seqStageOf, isQueueComplete } from '../store/useOps'
@@ -2801,6 +2801,8 @@ function UpdateDamageView() {
   const wrongSite = useWrongSiteHint()
   const { loadFromIdb } = useTracking()
   const { addDamage, removeDamage, updateRepairStatus, toast } = useYard()
+  const me = useMe()
+  const isAdmin = me?.role === 'admin'
   const { block: blockGate, modal: gateModal } = useNotGatedIn()
   const [vin, setVin] = useState<string | null>(null)
   const [showAdd, setShowAdd] = useState(false)
@@ -2867,10 +2869,18 @@ function UpdateDamageView() {
                 <DefectCard key={d.id} d={d} right={
                   <div className="flex items-center gap-1.5">
                     <DefectStatusSelect d={d} onChange={s => updateRepairStatus(vin, d.id, s)} />
-                    <button onClick={() => { if (confirm('ลบรายการนี้?')) removeDamage(vin, d.id) }}
-                      className="btn p-1" style={{ color: '#dc2626' }}>
-                      <Trash2 size={13} />
-                    </button>
+                    {isAdmin ? (
+                      <button onClick={() => { if (confirm('ลบรายการนี้?')) removeDamage(vin, d.id) }}
+                        className="btn p-1" style={{ color: '#dc2626' }}>
+                        <Trash2 size={13} />
+                      </button>
+                    ) : (
+                      <button onClick={() => toast('err', 'ต้องเป็นแอดมินเท่านั้นถึงจะลบได้')}
+                        title="ต้องเป็นแอดมินเท่านั้นถึงจะลบได้"
+                        className="btn p-1" style={{ color: 'var(--faint)', cursor: 'not-allowed' }}>
+                        <Trash2 size={13} />
+                      </button>
+                    )}
                   </div>
                 } />
               ))}
