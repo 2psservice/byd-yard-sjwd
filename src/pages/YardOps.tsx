@@ -100,21 +100,56 @@ const defectStatusStyle = (s?: string): { color: string; background: string } =>
     ? { color: '#16a34a', background: '#dcfce7' } // any resolved status → green
     : { color: '#b45309', background: '#fef3c7' } // Waiting Repair (default)
 
-/** Colour-coded repair-status badge for one Defect — tap to advance to the next
- *  status (Waiting Repair → Accept → Acc byd → OK Accept → OK Repaired → Repaired
- *  → back). Not a dropdown — just the status. */
-function DefectStatusSelect({ value, onChange }: { value?: string; onChange: (s: string) => void }) {
-  const v = value || 'Waiting Repair'
-  const next = () => {
-    const i = DEFECT_STATUSES.indexOf(v as typeof DEFECT_STATUSES[number])
-    onChange(DEFECT_STATUSES[(i + 1) % DEFECT_STATUSES.length])
-  }
+/** Colour-coded repair-status badge for one Defect. The status itself is
+ *  read-only (prevents accidental taps); the ✏️ pencil opens a picker with the
+ *  status options AND the change history (who changed it, from → to, when). */
+function DefectStatusSelect({ d, onChange }: { d: Damage; onChange: (s: string) => void }) {
+  const [open, setOpen] = useState(false)
+  const v = d.statusRepair || 'Waiting Repair'
+  const hist = d.repairHistory ?? []
   return (
-    <button type="button" onClick={next} title="แตะเพื่อเปลี่ยนสถานะ"
-      className="font-bold rounded-lg px-2.5 py-1.5 shrink-0 transition active:scale-95 whitespace-nowrap"
-      style={{ ...defectStatusStyle(v), border: 'none', fontSize: 11.5 }}>
-      {v}
-    </button>
+    <div className="flex items-center gap-1 shrink-0">
+      <span className="font-bold rounded-lg px-2.5 py-1.5 whitespace-nowrap" style={{ ...defectStatusStyle(v), fontSize: 11.5 }}>{v}</span>
+      <button type="button" onClick={() => setOpen(true)} title="แก้ไขสถานะ"
+        className="w-7 h-7 rounded-md flex items-center justify-center shrink-0" style={{ background: 'var(--chip)', color: 'var(--muted)' }}>
+        <Pencil size={12} />
+      </button>
+      {open && createPortal(
+        <div className="fixed inset-0 z-[95] flex items-end sm:items-center justify-center p-3" style={{ background: 'rgba(15,23,42,0.5)', backdropFilter: 'blur(3px)' }} onClick={() => setOpen(false)}>
+          <div className="panel-solid w-full pop overflow-hidden flex flex-col" style={{ maxWidth: 420, maxHeight: '82vh' }} onClick={e => e.stopPropagation()}>
+            <div className="px-4 py-3 border-b hairline flex items-center gap-2">
+              <span className="font-bold text-[14px]">เปลี่ยนสถานะ Defect</span>
+              <button className="ml-auto p-1.5 rounded-lg" style={{ color: 'var(--muted)' }} onClick={() => setOpen(false)}><X size={17} /></button>
+            </div>
+            <div className="p-3 grid grid-cols-2 gap-2">
+              {DEFECT_STATUSES.map(st => (
+                <button key={st} onClick={() => { onChange(st); setOpen(false) }}
+                  className="py-2.5 rounded-xl text-[12.5px] font-bold transition active:scale-95"
+                  style={{ ...defectStatusStyle(st), boxShadow: st === v ? '0 0 0 2px currentColor inset' : 'none' }}>
+                  {st}
+                </button>
+              ))}
+            </div>
+            {hist.length > 0 && (
+              <div className="border-t hairline p-3 overflow-auto">
+                <div className="text-[11px] font-bold uppercase mb-1.5" style={{ color: 'var(--muted)' }}>ประวัติการเปลี่ยนสถานะ</div>
+                <div className="space-y-1.5">
+                  {[...hist].reverse().map((h, i) => (
+                    <div key={i} className="text-[11.5px] flex items-start gap-1.5">
+                      <Clock size={11} style={{ color: 'var(--faint)', marginTop: 2 }} />
+                      <span className="flex-1">
+                        {h.from ? <span style={{ color: 'var(--muted)' }}>{h.from} → </span> : null}<b style={{ color: 'var(--text)' }}>{h.status}</b>
+                        <span style={{ color: 'var(--muted)' }}> · {h.by} · {new Date(h.at).toLocaleString('th-TH', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>, document.body)
+      }
+    </div>
   )
 }
 
@@ -2032,73 +2067,11 @@ async function compressImage(file: File, maxW = 900): Promise<string> {
 
 type NgEntry = { item: string; pos: string; remark: string; photo?: string }
 
-function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved }: {
-  unit: Unit
-  row: TrackRow | null
-  activeProc: { queue: WorkQueue; item: QueueItem } | null
-  canRecord: boolean
-  onSaved: (label: string, result: 'OK' | 'NG') => void
-}) {
-  const { addDamage, setInspected, currentUser, toast } = useYard()
-  const { updateCell } = useTracking()
-  const { recordCheck } = useOps()
-  const [soc, setSoc] = useState('')
-  const [mileage, setMileage] = useState('')
-  const [voltage, setVoltage] = useState('')
-  const [ngItem, setNgItem] = useState('')
-  const [ngPos, setNgPos] = useState('')
-  const [ngRemark, setNgRemark] = useState('')
-  const [ngPhoto, setNgPhoto] = useState<string | undefined>(undefined)
-  const [ngList, setNgList] = useState<NgEntry[]>([])
-  const [busy, setBusy] = useState(false)
-  const fileRef = useRef<HTMLInputElement>(null)
-
-  const last = (k: string) => (row?.cells[k]?.trim() ? row.cells[k] : '—')
-  const stationName = activeProc?.queue.name ?? 'PDI'
-
-  const pickPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0]
-    e.target.value = ''
-    if (!f) return
-    setBusy(true)
-    try { setNgPhoto(await compressImage(f)) } catch { toast('err', 'อ่านรูปไม่สำเร็จ') }
-    setBusy(false)
-  }
-  const addNg = () => {
-    const item = ngItem.trim(), posRaw = ngPos.trim()
-    if (!item || !posRaw) { toast('err', 'เลือกรายการตรวจสอบและตำแหน่ง'); return }
-    // dropdown shows Thai zone labels — map a matched label back to its zone id
-    // (so it pins on the car diagram); a free-typed value passes through as-is.
-    const pos = POSITION_OPTS.find(p => p.th === posRaw)?.id ?? posRaw
-    setNgList(l => [...l, { item, pos, remark: ngRemark.trim(), photo: ngPhoto }])
-    setNgItem(''); setNgPos(''); setNgRemark(''); setNgPhoto(undefined)
-  }
-  const removeNg = (i: number) => setNgList(l => l.filter((_, idx) => idx !== i))
-  const clearAll = () => {
-    setSoc(''); setMileage(''); setVoltage('')
-    setNgItem(''); setNgPos(''); setNgRemark(''); setNgPhoto(undefined); setNgList([])
-  }
-
-  const save = () => {
-    // measurements → tracking cells
-    if (row) {
-      if (soc.trim())     updateCell(row.vin, '% SOC', soc.trim())
-      if (mileage.trim()) updateCell(row.vin, 'Mileage', mileage.trim())
-      if (voltage.trim()) updateCell(row.vin, 'Voltage of 12V', voltage.trim())
-    }
-    // NG findings → damages (with photo + inspection item)
-    ngList.forEach(n => addDamage(unit.vin, {
-      area: n.pos, type: 'inspection', severity: 'major',
-      note: n.remark || undefined, photo: n.photo, item: n.item, source: 'pdi', station: stationName,
-    }))
-    const result: 'OK' | 'NG' = ngList.length > 0 ? 'NG' : 'OK'
-    if (canRecord && activeProc) recordCheck(activeProc.queue.id, unit.vin, result, currentUser)
-    else setInspected(unit.vin, result === 'OK')
-    if (row) updateCell(row.vin, 'Car Status', stationResultStatus(stationName, result))
-    onSaved(stationResultStatus(stationName, result), result)
-  }
-
-  const Meas = ({ label, value, onChange, unit: u, lastVal }: { label: string; value: string; onChange: (v: string) => void; unit?: string; lastVal: string }) => (
+/** One measurement input (SOC / Mileage / Voltage). Defined at module scope —
+ *  NOT inside FinalCheckPanel — so it doesn't remount and drop focus on every
+ *  keystroke (that let you type only one digit at a time). */
+function Meas({ label, value, onChange, unit: u, lastVal }: { label: string; value: string; onChange: (v: string) => void; unit?: string; lastVal: string }) {
+  return (
     <div>
       <div className="text-[11px] font-semibold mb-1" style={{ color: 'var(--muted)' }}>{label}</div>
       <div className="flex items-center gap-2">
@@ -2108,6 +2081,43 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved }: {
       </div>
     </div>
   )
+}
+
+function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved }: {
+  unit: Unit
+  row: TrackRow | null
+  activeProc: { queue: WorkQueue; item: QueueItem } | null
+  canRecord: boolean
+  onSaved: (label: string, result: 'OK' | 'NG') => void
+}) {
+  const { addDamage, updateRepairStatus, setInspected, currentUser, toast } = useYard()
+  const { updateCell } = useTracking()
+  const { recordCheck } = useOps()
+  const [soc, setSoc] = useState('')
+  const [mileage, setMileage] = useState('')
+  const [voltage, setVoltage] = useState('')
+  const [showNgForm, setShowNgForm] = useState(false)
+
+  const last = (k: string) => (row?.cells[k]?.trim() ? row.cells[k] : '—')
+  const stationName = activeProc?.queue.name ?? 'PDI'
+  // NG found at THIS station (added via the shared DamageForm below)
+  const stationDmgs = unit.damages.filter(d => d.source === 'pdi' && d.station === stationName)
+
+  const clearAll = () => { setSoc(''); setMileage(''); setVoltage(''); setShowNgForm(false) }
+
+  const save = () => {
+    // measurements → tracking cells
+    if (row) {
+      if (soc.trim())     updateCell(row.vin, '% SOC', soc.trim())
+      if (mileage.trim()) updateCell(row.vin, 'Mileage', mileage.trim())
+      if (voltage.trim()) updateCell(row.vin, 'Voltage of 12V', voltage.trim())
+    }
+    const result: 'OK' | 'NG' = stationDmgs.length > 0 ? 'NG' : 'OK'
+    if (canRecord && activeProc) recordCheck(activeProc.queue.id, unit.vin, result, currentUser)
+    else setInspected(unit.vin, result === 'OK')
+    if (row) updateCell(row.vin, 'Car Status', stationResultStatus(stationName, result))
+    onSaved(stationResultStatus(stationName, result), result)
+  }
 
   return (
     <div className="panel overflow-hidden">
@@ -2124,64 +2134,37 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved }: {
         <Meas label="Voltage of 12V" value={voltage} onChange={setVoltage} unit="V" lastVal={last('Voltage of 12V')} />
       </div>
 
-      {/* NG entry */}
+      {/* NG entry — same Defect form as Gate-in (bilingual dropdowns / photos / remark) */}
       <div className="p-4 space-y-2.5 border-b hairline" style={{ background: '#fbfaff' }}>
-        <div className="badge text-[11px] w-fit" style={{ background: 'rgba(124,58,237,0.1)', color: '#7c3aed' }}>NG · เพิ่มรายการตรวจพบ</div>
-        <div>
-          <div className="text-[11px] font-semibold mb-1" style={{ color: 'var(--muted)' }}>รายการตรวจสอบ</div>
-          <input list="fc-check-items" className="input w-full text-[13px]" placeholder="พิมพ์หรือเลือก…" value={ngItem} onChange={e => setNgItem(e.target.value)} />
-          <datalist id="fc-check-items">{FINAL_CHECK_ITEMS.map(it => <option key={it} value={it} />)}</datalist>
-        </div>
-        <div>
-          <div className="text-[11px] font-semibold mb-1" style={{ color: 'var(--muted)' }}>ตำแหน่ง</div>
-          <input list="fc-check-pos" className="input w-full text-[13px]" placeholder="พิมพ์หรือเลือก…" value={ngPos} onChange={e => setNgPos(e.target.value)} />
-          <datalist id="fc-check-pos">{POSITION_OPTS.map(p => <option key={p.id} value={p.th} />)}</datalist>
-        </div>
-        <div>
-          <div className="text-[11px] font-semibold mb-1" style={{ color: 'var(--muted)' }}>หมายเหตุ (Remark)</div>
-          <input className="input w-full text-[13px]" placeholder="รายละเอียด…" value={ngRemark} onChange={e => setNgRemark(e.target.value)} />
-        </div>
-        <div className="flex items-center gap-2.5">
-          <input ref={fileRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={pickPhoto} />
-          <button onClick={() => fileRef.current?.click()} disabled={busy}
-            className="btn px-3 py-2 text-[12.5px] font-semibold" style={{ background: 'var(--chip)' }}>
-            <Camera size={15} /> {busy ? 'กำลังอ่าน…' : ngPhoto ? 'เปลี่ยนรูป' : 'เพิ่มรูปภาพ'}
+        <div className="flex items-center justify-between">
+          <div className="badge text-[11px]" style={{ background: 'rgba(124,58,237,0.1)', color: '#7c3aed' }}>NG · เพิ่มรายการตรวจพบ{stationDmgs.length ? ` (${stationDmgs.length})` : ''}</div>
+          <button onClick={() => setShowNgForm(v => !v)} className="btn btn-ghost text-[12px] py-1 px-2.5" style={{ color: '#dc2626' }}>
+            <Plus size={13} /> เพิ่ม NG
           </button>
-          {ngPhoto && <img src={ngPhoto} alt="" className="w-10 h-10 rounded-lg object-cover" style={{ border: '1px solid var(--line)' }} />}
-          <button onClick={addNg} className="btn btn-primary px-4 py-2 text-[13px] ml-auto"><Plus size={15} /> Add</button>
         </div>
-      </div>
-
-      {/* NG table */}
-      <div className="border-b hairline">
-        {ngList.length === 0 ? (
-          <div className="py-8 text-center text-[12.5px]" style={{ color: 'var(--faint)' }}>— ยังไม่มีรายการ NG —</div>
-        ) : (
-          <div className="divide-y">
-            {ngList.map((n, i) => (
-              <div key={i} className="flex items-center gap-3 px-4 py-2.5">
-                <span className="text-[11px] font-bold shrink-0 w-5 text-center" style={{ color: 'var(--muted)' }}>{i + 1}</span>
-                {n.photo
-                  ? <img src={n.photo} alt="" className="w-9 h-9 rounded-lg object-cover shrink-0" />
-                  : <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'var(--chip)' }}><Camera size={14} style={{ color: 'var(--faint)' }} /></div>}
-                <div className="flex-1 min-w-0 text-[12px]">
-                  <div className="font-semibold truncate">{n.item} · {zoneLabel(n.pos)}</div>
-                  <div style={{ color: 'var(--muted)' }} className="truncate">
-                    <span style={{ color: '#dc2626', fontWeight: 700 }}>NG</span>{n.remark ? ` · ${n.remark}` : ''}
-                  </div>
-                </div>
-                <button onClick={() => removeNg(i)} className="btn p-1.5 shrink-0" style={{ color: '#dc2626', background: 'rgba(220,38,38,0.08)' }}><Trash2 size={13} /></button>
-              </div>
-            ))}
-          </div>
+        {showNgForm && (
+          <DamageForm
+            onSaveAll={dmgs => {
+              dmgs.forEach(dg => addDamage(unit.vin, { ...dg, source: 'pdi', station: stationName }))
+              setShowNgForm(false)
+              toast('ok', dmgs.length > 1 ? `บันทึก Defect ${dmgs.length} รายการ` : 'บันทึก Defect แล้ว')
+            }}
+            onCancel={() => setShowNgForm(false)}
+          />
         )}
+        {stationDmgs.length === 0 && !showNgForm
+          ? <div className="py-6 text-center text-[12.5px]" style={{ color: 'var(--faint)' }}>— ยังไม่มีรายการ NG —</div>
+          : stationDmgs.map(d => (
+              <DefectCard key={d.id} d={d}
+                right={<DefectStatusSelect d={d} onChange={s => updateRepairStatus(unit.vin, d.id, s)} />} />
+            ))}
       </div>
 
       {/* actions */}
       <div className="p-3 grid grid-cols-2 gap-2">
         <button onClick={clearAll} className="btn py-3 text-[13.5px]">Clear</button>
-        <button onClick={save} className="btn py-3 text-[13.5px] font-bold" style={{ background: ngList.length ? '#dc2626' : 'var(--st-yard)', color: '#fff', border: 'none' }}>
-          <CheckCircle2 size={16} /> Save {ngList.length ? `· NG (${ngList.length})` : '· OK'}
+        <button onClick={save} className="btn py-3 text-[13.5px] font-bold" style={{ background: stationDmgs.length ? '#dc2626' : 'var(--st-yard)', color: '#fff', border: 'none' }}>
+          <CheckCircle2 size={16} /> Save {stationDmgs.length ? `· NG (${stationDmgs.length})` : '· OK'}
         </button>
       </div>
     </div>
@@ -2208,7 +2191,8 @@ function PdiView() {
   const [selectedQueueId, setSelectedQueueId] = useState<string | null>(null)
 
   // admin process queues (PDI / FINAL PM / Wash …) — NOT the Pre Gate-in ones
-  const procQueues = useMemo(() => queues.filter(q => !isPreGateInQueue(q.name) && q.items.length > 0), [queues])
+  // completed queues drop off the live PDI/PM/FC list (they've filed under their day)
+  const procQueues = useMemo(() => queues.filter(q => !isPreGateInQueue(q.name) && q.items.length > 0 && !isQueueComplete(q)), [queues])
   const selectedQueue = selectedQueueId ? queues.find(q => q.id === selectedQueueId) ?? null : null
   const queueCars = useMemo(() => {
     if (!selectedQueue) return [] as { vin: string; model: string; color: string; grouping: string; location: string; stage: string }[]
@@ -2384,7 +2368,7 @@ function PdiView() {
               <div className="p-3 space-y-2">
                 {walkDmgs.map(d => (
                   <DefectCard key={d.id} d={d}
-                    right={<DefectStatusSelect value={d.statusRepair} onChange={s => updateRepairStatus(unit.vin, d.id, s)} />} />
+                    right={<DefectStatusSelect d={d} onChange={s => updateRepairStatus(unit.vin, d.id, s)} />} />
                 ))}
               </div>
             </div>
@@ -2409,7 +2393,7 @@ function PdiView() {
               <div className="p-3 space-y-2">
                 {otherDmgs.map(d => (
                   <DefectCard key={d.id} d={d}
-                    right={<DefectStatusSelect value={d.statusRepair} onChange={s => updateRepairStatus(unit.vin, d.id, s)} />} />
+                    right={<DefectStatusSelect d={d} onChange={s => updateRepairStatus(unit.vin, d.id, s)} />} />
                 ))}
               </div>
             </div>
@@ -2534,7 +2518,7 @@ function MechanicView() {
               <div className="p-3 space-y-2">
                 {unit.damages.map(d => (
                   <DefectCard key={d.id} d={d}
-                    right={<DefectStatusSelect value={d.statusRepair} onChange={s => updateRepairStatus(unit.vin, d.id, s)} />} />
+                    right={<DefectStatusSelect d={d} onChange={s => updateRepairStatus(unit.vin, d.id, s)} />} />
                 ))}
               </div>
             </div>
@@ -2856,7 +2840,7 @@ function UpdateDamageView() {
               {damages.map(d => (
                 <DefectCard key={d.id} d={d} right={
                   <div className="flex items-center gap-1.5">
-                    <DefectStatusSelect value={d.statusRepair} onChange={s => updateRepairStatus(vin, d.id, s)} />
+                    <DefectStatusSelect d={d} onChange={s => updateRepairStatus(vin, d.id, s)} />
                     <button onClick={() => { if (confirm('ลบรายการนี้?')) removeDamage(vin, d.id) }}
                       className="btn p-1" style={{ color: '#dc2626' }}>
                       <Trash2 size={13} />
