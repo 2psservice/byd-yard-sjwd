@@ -1426,7 +1426,13 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
       if (item.deliveredAt) log.push({ at: item.deliveredAt, by: item.deliveredBy || '—', station: q.name, text: `นำรถเข้าสถานี ${q.name}${item.fromSlot ? ` (จาก ${item.fromSlot})` : ''}` })
       if (item.checkedAt) log.push({ at: item.checkedAt, by: item.checkedBy || '—', station: q.name, text: `ตรวจสอบที่ ${q.name} · ผล ${item.result ?? '—'}`, accent: item.result === 'NG' ? '#dc2626' : '#16a34a' })
       if (item.returnedAt) log.push({ at: item.returnedAt, by: item.returnedBy || '—', station: q.name, text: 'นำรถกลับเข้าจอด' })
-      else if (item.doneAt && !item.checkedAt) log.push({ at: item.doneAt, by: item.doneBy || '—', station: q.name, text: `ทำรายการเสร็จที่ ${q.name}` })
+      else if (item.doneAt && !item.checkedAt) {
+        // Pre Gate-in queues rarely carry the item's doneBy (auto-reconciled) —
+        // fall back to the Gate In Inspector stamped on the tracking row.
+        const isGateIn = q.name.trim().startsWith('(')
+        const by = item.doneBy || (isGateIn ? c['Gate In Inspector'] : '') || '—'
+        log.push({ at: item.doneAt, by, station: q.name, text: isGateIn ? `Gate-in เสร็จ · ${q.name}` : `ทำรายการเสร็จที่ ${q.name}` })
+      }
     }
     return log.sort((a, b) => b.at - a.at)
   })()
