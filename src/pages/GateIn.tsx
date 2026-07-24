@@ -3,7 +3,8 @@ import { ScanLine, LogOut, ChevronDown, ChevronRight, CheckCircle2, Clock, Calen
 import { useYard, useUnits } from '../store/useYard'
 import { PageHead, cx } from '../components/ui'
 import { useTracking, useTrackingRows } from '../store/useTracking'
-import { useActiveQueues, queueProgress, isSequenceQueue } from '../store/useOps'
+import { useActiveQueues, queueProgress, isSequenceQueue, isQueueComplete } from '../store/useOps'
+import type { WorkQueue } from '../store/useOps'
 import { isGateOutStamp } from '../lib/carStatus'
 import { rowInSite } from '../lib/siteScope'
 import { siteGroupingConfig } from '../lib/groupingImport'
@@ -80,6 +81,31 @@ const todayKey = () => dateKey(new Date())
 const fmtDateTh = (key: string) => {
   const [y, m, d] = key.split('-').map(Number)
   return new Date(y, m - 1, d).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' })
+}
+
+/** The day a work queue belongs to — parsed from its name (the batch's own date),
+ *  falling back to when it was created:
+ *   - Pre Gate-in   "(yard · M-D · count)"  → M-D
+ *   - Grouping-Dealer "… Date 09 July 2026" → that date */
+function queueDateKey(q: WorkQueue): string {
+  let m = q.name.match(/·\s*(\d{1,2})-(\d{1,2})\s*·/)
+  if (m) return dateKey(new Date(new Date(q.createdAt).getFullYear(), +m[1] - 1, +m[2]))
+  m = q.name.match(/Date\s+(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{4})/)
+  if (m) { const mon = MONTH_ABBR[m[2].slice(0, 3).toLowerCase()]; if (mon !== undefined) return dateKey(new Date(+m[3], mon, +m[1])) }
+  return dateKey(new Date(q.createdAt))
+}
+
+/** Which day's board does a work queue belong to?
+ *  - Latest overview (null) or today: unfinished queues carry forward day to day;
+ *    a finished queue drops off — unless its own date is today (today's work).
+ *  - A past date: the queue is filed under its own date, done or not.
+ *  Applies to every queue (Pre Gate-in, Grouping-to-Dealer, Ops Scan). */
+function queueOnDate(q: WorkQueue, filterDate: string | null): boolean {
+  const qKey = queueDateKey(q)
+  const complete = isQueueComplete(q)
+  const today = todayKey()
+  if (filterDate == null || filterDate === today) return !complete || qKey === today
+  return qKey === filterDate
 }
 
 /** Gate-in day: prefer the exact epoch the Ops Scan station stamps at the
@@ -270,7 +296,7 @@ function GroupCard({ group, mode, dateFilter }: { group: Group; mode: 'in' | 'ou
 
 // ── Pre Gate-in work queues (the "(yard · date · N)" import batches) — same view
 //    as YardOps: name · done/total · waiting VIN list. Scoped to the active site. ──
-function PreGateInQueues() {
+function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
   const all = useActiveQueues()
   const currentSite = useYard((s) => s.currentSite)
   const rows = useTrackingRows()
@@ -288,8 +314,8 @@ function PreGateInQueues() {
     return m
   }, [rows])
   const queues = useMemo(
-    () => all.filter((q) => q.name.trim().startsWith('(') && (!q.site || q.site === currentSite)),
-    [all, currentSite],
+    () => all.filter((q) => q.name.trim().startsWith('(') && (!q.site || q.site === currentSite) && queueOnDate(q, filterDate)),
+    [all, currentSite, filterDate],
   )
   if (queues.length === 0) return null
   return (
@@ -369,15 +395,15 @@ function PreGateInQueues() {
 // the Ops-Scan gate-out station drives. Surfaced on the Gate Out side here as
 // clickable cards (identical look) so the office can watch each dispatch run.
 // Scoped to the active site.
-function SeqQueues() {
+function SeqQueues({ filterDate }: { filterDate: string | null }) {
   const all = useActiveQueues()
   const currentSite = useYard((s) => s.currentSite)
   const sites = useYard((s) => s.sites)
   const allUnits = useUnits()
   const allRows = useTrackingRows()
   const queues = useMemo(
-    () => all.filter((q) => isSequenceQueue(q) && (!q.site || q.site === currentSite)),
-    [all, currentSite],
+    () => all.filter((q) => isSequenceQueue(q) && (!q.site || q.site === currentSite) && queueOnDate(q, filterDate)),
+    [all, currentSite, filterDate],
   )
   const units = useMemo(
     () => (currentSite ? allUnits.filter((u) => !u.site || u.site === currentSite) : allUnits),
@@ -473,10 +499,10 @@ function SidePanel({ mode, groups, dateFilter }: { mode: 'in' | 'out'; groups: G
       </div>
 
       {/* Pre Gate-in work queues (import batches) — the primary gate-in view */}
-      {mode === 'in' && <PreGateInQueues />}
+      {mode === 'in' && <PreGateInQueues filterDate={dateFilter} />}
 
       {/* Delivery-sequence (Grouping-to-Dealer) runs — the primary gate-out view */}
-      {mode === 'out' && <SeqQueues />}
+      {mode === 'out' && <SeqQueues filterDate={dateFilter} />}
 
       {/* cards */}
       {dateFilter ? (

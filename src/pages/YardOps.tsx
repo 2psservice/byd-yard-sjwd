@@ -13,7 +13,7 @@ import {
 import { useYard, useUnits, useTrips, useBlocks } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { isDamaged } from '../lib/carStatus'
-import { useOps, useActiveQueues, activeProcess, stageOf, isSequenceQueue, seqStageOf } from '../store/useOps'
+import { useOps, useActiveQueues, activeProcess, stageOf, isSequenceQueue, seqStageOf, isQueueComplete } from '../store/useOps'
 import type { WorkQueue, QueueItem } from '../store/useOps'
 import { CarTopView } from '../components/CarTopView'
 import { LogoMark } from '../components/Logo'
@@ -698,7 +698,8 @@ function WalkView() {
   // PDI role, not here. Completed queues stay listed so the station can still read
   // its own progress ("17/17 · เหลือ 0"), same as the Driver's delivery-run cards.
   const gateInQueues = useMemo(() =>
-    queues.filter(q => isPreGateInQueue(q.name)),
+    // completed queues drop off the live Ops-Scan list (they've filed under their day)
+    queues.filter(q => isPreGateInQueue(q.name) && !isQueueComplete(q)),
     [queues],
   )
   const selectedQueue = selectedQueueId ? queues.find(q => q.id === selectedQueueId) ?? null : null
@@ -1408,7 +1409,7 @@ function DriverView() {
   }
 
   // ── delivery-sequence queues visible to the driver (browse + progress) ──
-  const seqQueues = useMemo(() => queues.filter(isSequenceQueue), [queues])
+  const seqQueues = useMemo(() => queues.filter(q => isSequenceQueue(q) && !isQueueComplete(q)), [queues])
 
   // the car's current station task (PDI / PM / Wash …), if any
   const activeProc = useMemo(() => (unit ? activeProcess(unit.vin, queues) : null), [unit, queues])
@@ -2486,7 +2487,7 @@ function GateOutView() {
 
   const siteName = sites.find((s) => s.id === currentSite)?.name ?? ''
   const locPrefix = siteGroupingConfig(siteName).prefix
-  const seqQueues = useMemo(() => queues.filter(isSequenceQueue), [queues])
+  const seqQueues = useMemo(() => queues.filter(q => isSequenceQueue(q) && !isQueueComplete(q)), [queues])
   const row = vin ? (trackingRows.find(r => r.vin === vin) ?? null) : null
   const seqHit = useMemo(() => findSeqItem(vin, queues), [vin, queues])
 

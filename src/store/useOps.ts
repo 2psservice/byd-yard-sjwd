@@ -517,6 +517,12 @@ export function queueProgress(q: WorkQueue) {
   return { total, done, remaining: total - done, pct: total ? Math.round((done / total) * 100) : 0 }
 }
 
+/** A queue is "complete" once every car in it is done (gated-in / gated-out).
+ *  Complete queues drop off the live views and file under their creation day. */
+export function isQueueComplete(q: WorkQueue): boolean {
+  return q.items.length > 0 && q.items.every((i) => i.done)
+}
+
 /** Aggregate across all queues — gated-out cars excluded so the stat cards
  *  match the queue rows below them. */
 export function useOpsTotals() {
