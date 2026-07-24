@@ -385,6 +385,9 @@ function UnitCard({ unit, accent = 'var(--brand)' }: { unit: Unit; accent?: stri
   const walkStatus = (unit.inspected || walkDmgs.length > 0)
     ? (walkDmgs.length > 0 ? { text: 'NG', color: 'var(--st-damage)' } : { text: 'OK ✓', color: 'var(--st-yard)' })
     : null
+  const hasWalkNG = walkDmgs.length > 0
+  const [walkOpen, setWalkOpen] = useState(false)
+  const [lightbox, setLightbox] = useState<{ photos: string[]; index: number } | null>(null)
   const carColor = unit.colorHex ?? '#cfd6dd'
   const statusLabel: Record<string, string> = {
     EXPECTED: 'รอเข้า Yard', GATE_IN: 'อยู่ที่ Gate in', ASSIGNED: 'กำลังนำจอด',
@@ -436,10 +439,13 @@ function UnitCard({ unit, accent = 'var(--brand)' }: { unit: Unit; accent?: stri
             </div>
           )}
           {walkStatus && (
-            <div className="flex-1 p-3 text-center">
+            <button type="button" disabled={!hasWalkNG} onClick={() => setWalkOpen(true)}
+              className="flex-1 p-3 text-center transition active:scale-95 disabled:cursor-default">
               <div className="text-[10px] font-bold uppercase" style={{ color: 'var(--muted)' }}>Walk around</div>
-              <div className="font-bold mt-0.5" style={{ color: walkStatus.color }}>{walkStatus.text}</div>
-            </div>
+              <div className="font-bold mt-0.5 flex items-center justify-center gap-1" style={{ color: walkStatus.color }}>
+                {walkStatus.text}{hasWalkNG && <span className="text-[11px]">· ดู Defect ›</span>}
+              </div>
+            </button>
           )}
           {stationStatus && (
             <div className="flex-1 p-3 text-center">
@@ -449,6 +455,36 @@ function UnitCard({ unit, accent = 'var(--brand)' }: { unit: Unit; accent?: stri
           )}
         </div>
       )}
+
+      {/* walk-around Defect popup — so the driver sees what's wrong with the car */}
+      {walkOpen && createPortal(
+        <div className="fixed inset-0 z-[95] flex items-end sm:items-center justify-center p-3" style={{ background: 'rgba(15,23,42,0.55)', backdropFilter: 'blur(3px)' }} onClick={() => setWalkOpen(false)}>
+          <div className="panel-solid w-full pop overflow-hidden flex flex-col" style={{ maxWidth: 460, maxHeight: '85vh' }} onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-2 px-4 py-3 border-b hairline shrink-0" style={{ background: '#fff8f8' }}>
+              <AlertTriangle size={16} style={{ color: 'var(--st-damage)' }} />
+              <span className="font-bold text-[14px]" style={{ color: 'var(--st-damage)' }}>Walk around · Defect ({walkDmgs.length})</span>
+              <button className="ml-auto p-1.5 rounded-lg" style={{ color: 'var(--muted)' }} onClick={() => setWalkOpen(false)}><X size={17} /></button>
+            </div>
+            <div className="overflow-auto p-3 space-y-2.5">
+              {walkDmgs.map(d => {
+                const photos = d.photos?.length ? d.photos : (d.photo ? [d.photo] : [])
+                return (
+                  <div key={d.id} className="rounded-xl p-3" style={{ background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.14)' }}>
+                    <div className="text-[13px] font-bold" style={{ color: 'var(--st-damage)' }}>
+                      {partLabel(d, 'th')} <span style={{ color: 'var(--text)' }}>// {defectLabel(d, 'th') || '—'}</span>
+                      {d.severity === 'major' && <span className="badge ml-1.5" style={{ fontSize: 10, background: '#fee2e2', color: '#b91c1c' }}>HEAVY NG</span>}
+                    </div>
+                    {d.remark && <div className="text-[11.5px] mt-0.5" style={{ color: 'var(--muted)' }}>หมายเหตุ: {d.remark}</div>}
+                    <div className="text-[11px] mt-0.5" style={{ color: 'var(--faint)' }}>{d.by || '—'} · {new Date(d.at).toLocaleString('th-TH', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</div>
+                    {photos.length > 0 && <div className="mt-2"><DamagePhotoThumbs photos={photos} onOpen={i => setLightbox({ photos, index: i })} /></div>}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </div>, document.body)
+      }
+      {lightbox && <PhotoLightbox photos={lightbox.photos} index={lightbox.index} onClose={() => setLightbox(null)} />}
     </div>
   )
 }
@@ -1816,8 +1852,7 @@ function DriverView() {
 
       {unit && !seqHit && (
         <div className="space-y-3 fade-up">
-          <UnitCard unit={unit} accent="var(--st-yard)" />
-
+          {/* AUTO PLAN card first (top) — car detail card below it */}
           {unit.status === 'GATE_IN' && proposal && (
             <div className="panel overflow-hidden">
               {/* FROM → TO */}
@@ -1858,6 +1893,8 @@ function DriverView() {
               </div>
             </div>
           )}
+
+          <UnitCard unit={unit} accent="var(--st-yard)" />
 
           {unit.status === 'GATE_IN' && !proposal && (
             <div className="panel p-6 text-center" style={{ color: 'var(--st-damage)' }}>
