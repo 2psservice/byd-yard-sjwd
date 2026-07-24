@@ -69,6 +69,7 @@ export interface Damage {
   type: string // damage type id
   severity: 'minor' | 'major'
   note?: string
+  remark?: string // free-text remark (e.g. "Move From Main yard")
   photo?: string // dataURL (compressed) — first photo, kept for back-compat with single-photo displays
   photos?: string[] // all photos (dataURL, compressed); photo === photos[0] when present
   at: number
@@ -215,6 +216,7 @@ export interface DamageInput {
   type: string
   severity: 'minor' | 'major'
   note?: string
+  remark?: string
   photo?: string
   photos?: string[]
   source?: DamageSource

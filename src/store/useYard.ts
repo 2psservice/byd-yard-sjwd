@@ -19,6 +19,15 @@ import type { RealtimeChannel } from '@supabase/supabase-js'
 export interface Toast { id: number; kind: 'ok' | 'err' | 'info'; msg: string }
 let tid = 0
 
+/** Append a damage audit line to the car's tracking-row history so it shows in
+ *  the admin Unit → Event tab and survives the damage being deleted. Loaded
+ *  lazily to avoid a static import cycle with useTracking (which reads useYard). */
+function logDamageEvent(vin: string, text: string, by: string): void {
+  import('./useTracking')
+    .then((m) => m.useTracking.getState().appendHistory(vin, { at: Date.now(), by, field: '__damage', from: '', to: text }))
+    .catch(() => {})
+}
+
 // live channel + per-vin last-applied timestamp (echo / stale-write guard)
 let unitsChannel: RealtimeChannel | null = null
 const unitTs = new Map<string, number>()
@@ -556,7 +565,13 @@ export const useYard = create<YardState>()(
         set((s) => {
           const u = s.units[vin]
           if (!u) return s
+          const gone = u.damages.find((x) => x.id === id)
           db.deleteDamage(id).catch((e) => console.error('[db] removeDamage', e))
+          // permanent audit line in the admin Event tab (survives the delete)
+          if (gone) {
+            const what = gone.item || gone.note || gone.type || 'ตำหนิ'
+            logDamageEvent(vin, `ลบตำหนิ · ${gone.area || '—'} · ${what}`, s.currentUser)
+          }
           return { units: { ...s.units, [vin]: { ...u, damages: u.damages.filter((x) => x.id !== id) } } }
         }),
 

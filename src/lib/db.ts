@@ -92,6 +92,9 @@ function damageToRow(vin: string, d: Damage): DbDamage {
     type:           d.type,
     severity:       d.severity,
     note:           d.note           ?? null,
+    // only include the remark key when set — keeps bulk imports off a column
+    // that may not be migrated yet (insertDamage retries without it on error).
+    ...(d.remark ? { remark: d.remark } : {}),
     photo_url:      d.photo          ?? d.photos?.[0] ?? null,
     photo_urls:     d.photos?.length  ? d.photos : null,
     recorded_at:    new Date(d.at).toISOString(),
@@ -118,6 +121,7 @@ export function rowToDamage(r: DbDamage): Damage {
     type:           r.type           ?? '',
     severity:       (r.severity      as Damage['severity']) ?? 'minor',
     note:           r.note           ?? undefined,
+    remark:         r.remark         ?? undefined,
     photo:          r.photo_url      ?? r.photo_urls?.[0] ?? undefined,
     photos:         r.photo_urls     ?? undefined,
     at:             r.recorded_at    ? new Date(r.recorded_at).getTime() : 0,
@@ -233,11 +237,25 @@ export async function deleteAllUnits(): Promise<void> {
 
 // ── damage operations ─────────────────────────────────────────────────────
 
+/** Detect PostgREST "column does not exist" (schema not yet migrated). */
+function isMissingColumn(e: unknown, col: string): boolean {
+  const s = JSON.stringify(e ?? '')
+  return s.includes(col) && (s.includes('PGRST204') || s.includes('42703') || s.includes('schema cache') || s.includes('does not exist'))
+}
+
 export async function insertDamage(vin: string, d: Damage): Promise<void> {
   if (!isConfigured()) return
+  const row = damageToRow(vin, d)
   try {
-    await withRetry(() => supabase.from('damages').insert(damageToRow(vin, d)))
+    await withRetry(() => supabase.from('damages').insert(row))
   } catch (error) {
+    // remark column may not be migrated yet — retry without it so the damage
+    // still saves (the remark stays on this device until the column exists).
+    if (isMissingColumn(error, 'remark')) {
+      const { remark, ...rest } = row
+      const { error: e2 } = await supabase.from('damages').insert(rest)
+      if (!e2) return
+    }
     console.error('[db] insertDamage', vin, error)
     throw error
   }

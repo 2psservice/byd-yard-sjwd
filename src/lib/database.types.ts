@@ -38,6 +38,7 @@ export interface DbDamage {
   type: string | null
   severity: string | null
   note: string | null
+  remark?: string | null         // free-text remark (optional column; only written when set, degrades gracefully if absent)
   photo_url: string | null       // base64 dataURL (Phase 3 → Storage URL) — first photo, back-compat
   photo_urls: string[] | null    // all photos (base64 dataURL, compressed)
   recorded_at: string | null
