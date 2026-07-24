@@ -2349,33 +2349,33 @@ function PdiView({ types, accent }: { types: QueueType[]; accent: string }) {
         <div className="space-y-3 fade-up">
           <UnitCard unit={unit} accent={accent} />
 
-          {/* station context — which queue this scan records into */}
+          {/* station context — which queue this scan records into (one compact card:
+              label · queue name that wraps normally · status pill on the right) */}
           {activeProc && (
-            <div className="panel p-3 flex items-center gap-2.5" style={{ borderLeft: '4px solid #7c3aed' }}>
-              <ClipboardList size={16} style={{ color: '#7c3aed' }} />
-              <div className="flex-1 min-w-0">
-                <div className="font-bold text-[13.5px]">สถานี: {activeProc.queue.name}</div>
-                <div className="text-[11.5px]" style={{ color: 'var(--muted)' }}>
-                  {procStage === 'checked'
-                    ? <>บันทึกแล้ว · ผล <b style={{ color: activeProc.item.result === 'NG' ? '#dc2626' : 'var(--st-yard)' }}>{activeProc.item.result}</b></>
-                    : procStage === 'at-station' ? 'รถถึงสถานีแล้ว · พร้อมบันทึก OK / NG' : 'ยังไม่ได้นำรถเข้าสถานี (บันทึกได้)'}
+            <div className="panel p-3" style={{ borderLeft: '4px solid #7c3aed' }}>
+              <div className="flex items-start gap-2.5">
+                <ClipboardList size={16} className="shrink-0" style={{ color: '#7c3aed', marginTop: 2 }} />
+                <div className="flex-1 min-w-0">
+                  <div className="text-[10.5px] font-bold uppercase tracking-wide" style={{ color: '#7c3aed' }}>สถานี</div>
+                  <div className="font-bold text-[13px] leading-snug break-words mt-0.5">{activeProc.queue.name}</div>
                 </div>
+                {procStage === 'checked' ? (
+                  <span className="badge shrink-0 font-bold text-[11px] flex items-center gap-1"
+                    style={{ background: activeProc.item.result === 'NG' ? 'rgba(220,38,38,0.1)' : 'rgba(22,163,74,0.12)', color: activeProc.item.result === 'NG' ? 'var(--st-damage)' : 'var(--st-yard)' }}>
+                    {activeProc.item.result === 'NG' ? <XCircle size={13} /> : <ShieldCheck size={13} />}{activeProc.item.result}
+                  </span>
+                ) : (
+                  <span className="badge shrink-0 font-bold text-[11px] flex items-center gap-1"
+                    style={{ background: 'rgba(217,119,6,0.12)', color: '#d97706' }}>
+                    <Clock size={12} />Waiting
+                  </span>
+                )}
               </div>
-              <span className="badge text-[11px]" style={{ background: 'rgba(124,58,237,0.1)', color: '#7c3aed' }}>{activeProc.queue.name}</span>
-            </div>
-          )}
-
-          {/* PDI status — reflects the station queue, not the gate-in flag */}
-          {activeProc && procStage !== 'checked' && (
-            <div className="panel p-3 flex items-center gap-2 font-semibold text-[13.5px]" style={{ color: '#d97706' }}>
-              <Clock size={17} /> รอตรวจ {activeProc.queue.name} (Waiting)
-            </div>
-          )}
-          {activeProc && procStage === 'checked' && (
-            <div className="panel p-3 flex items-center gap-2 font-semibold text-[13.5px]"
-              style={{ color: activeProc.item.result === 'NG' ? 'var(--st-damage)' : 'var(--st-yard)' }}>
-              {activeProc.item.result === 'NG' ? <XCircle size={17} /> : <ShieldCheck size={17} />}
-              {activeProc.queue.name} · {activeProc.item.result}
+              <div className="text-[11.5px] mt-2 pl-[26px]" style={{ color: 'var(--muted)' }}>
+                {procStage === 'checked'
+                  ? <>บันทึกแล้ว · ผล <b style={{ color: activeProc.item.result === 'NG' ? '#dc2626' : 'var(--st-yard)' }}>{activeProc.item.result}</b></>
+                  : procStage === 'at-station' ? 'รถถึงสถานีแล้ว · พร้อมบันทึก OK / NG' : 'ยังไม่ได้นำรถเข้าสถานี (บันทึกได้)'}
+              </div>
             </div>
           )}
           {!activeProc && unit.inspected && unit.damages.length === 0 && (
