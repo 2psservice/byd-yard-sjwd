@@ -42,7 +42,7 @@ export function UnitDetail({ vin, onClose }: { vin: string | null; onClose: () =
     { id: 'overview', label: 'Overview', icon: <Car size={15} /> },
     { id: 'timeline', label: lang === 'th' ? 'ไทม์ไลน์' : 'Timeline', icon: <Clock size={15} />, badge: events.length },
     { id: 'location', label: lang === 'th' ? 'ประวัติตำแหน่ง' : 'Location History', icon: <MapPin size={15} /> },
-    { id: 'damages', label: lang === 'th' ? 'ตำหนิ' : 'Damages', icon: <ShieldCheck size={15} />, badge: unit.damages.length || undefined },
+    { id: 'damages', label: lang === 'th' ? 'Defect' : 'Damages', icon: <ShieldCheck size={15} />, badge: unit.damages.length || undefined },
   ]
 
   return (
@@ -227,7 +227,7 @@ function buildEvents(unit: Unit | undefined, lang: 'th' | 'en'): Ev[] {
   if (unit.gateInAt) evs.push({ t: unit.gateInAt, label: lang === 'th' ? 'เข้าลาน (Gate-in)' : 'Gate-in', sub: unit.gateInBy, icon: <CheckCircle2 size={13} />, color: '#2563eb' })
   if (unit.assignedAt) evs.push({ t: unit.assignedAt, label: lang === 'th' ? `รับตำแหน่ง ${pos(unit)}` : `Assigned ${pos(unit)}`, sub: unit.driver, icon: <Navigation size={13} />, color: '#0891b2' })
   if (unit.parkedAt) evs.push({ t: unit.parkedAt, label: lang === 'th' ? `จอดสำเร็จ ${pos(unit)}` : `Parked ${pos(unit)}`, sub: unit.driver, icon: <PackageCheck size={13} />, color: '#16a34a' })
-  unit.damages.forEach((d) => evs.push({ t: d.at, label: lang === 'th' ? `พบตำหนิ · ${partLabel(d, 'th')}` : `Damage · ${partLabel(d, 'en')}`, sub: d.by, icon: <AlertTriangle size={13} />, color: '#dc2626' }))
+  unit.damages.forEach((d) => evs.push({ t: d.at, label: lang === 'th' ? `พบ Defect · ${partLabel(d, 'th')}` : `Damage · ${partLabel(d, 'en')}`, sub: d.by, icon: <AlertTriangle size={13} />, color: '#dc2626' }))
   return evs.sort((a, b) => a.t - b.t)
 }
 
@@ -283,7 +283,7 @@ function DamagesTab({ unit, lang }: { unit: Unit; lang: 'th' | 'en' }) {
         <div className="w-14 h-14 rounded-full flex items-center justify-center mb-3" style={{ background: '#e7f6ec' }}>
           <ShieldCheck size={26} style={{ color: 'var(--st-yard)' }} />
         </div>
-        <div className="font-semibold">{lang === 'th' ? 'ไม่พบตำหนิ' : 'No damage recorded'}</div>
+        <div className="font-semibold">{lang === 'th' ? 'ไม่พบ Defect' : 'No damage recorded'}</div>
         <div className="text-[12.5px] mt-1" style={{ color: 'var(--muted)' }}>{lang === 'th' ? 'รถผ่านการตรวจ walk-around เรียบร้อย' : 'Vehicle passed walk-around inspection'}</div>
       </div>
     )

@@ -267,7 +267,7 @@ export function Report() {
         </div>
         <ul className="list-disc pl-5 space-y-1">
           <li><b>Tracking Status</b> — {lang === 'th' ? 'ครบ 66 คอลัมน์ตามไฟล์ master: ฟอนต์ Tahoma 10, ความกว้างคอลัมน์, ความสูงแถว, สีหัวคอลัมน์ (PIC (PDI) ส้ม, กลุ่ม Vin Of Status ฟ้าอ่อน) ตรงต้นฉบับ' : 'all 66 master columns with the master fonts, widths, heights and header colours'}</li>
-          <li><b>Defect-Yard / Defect-Factory / Defect-Whale 28 rai</b> — {lang === 'th' ? 'หัวคอลัมน์ ฟอนต์ และขนาดตรงตาม sheet ต้นฉบับ (ตำหนิที่บันทึกในแอปรวมอยู่ใน Defect-Yard)' : 'defect sheets with the master layout (in-app finds are included in Defect-Yard)'}</li>
+          <li><b>Defect-Yard / Defect-Factory / Defect-Whale 28 rai</b> — {lang === 'th' ? 'หัวคอลัมน์ ฟอนต์ และขนาดตรงตาม sheet ต้นฉบับ (Defect ที่บันทึกในแอปรวมอยู่ใน Defect-Yard)' : 'defect sheets with the master layout (in-app finds are included in Defect-Yard)'}</li>
           <li>{lang === 'th' ? 'ไฟล์นี้นำกลับมา Import ในระบบได้ทันที (ชื่อ sheet และหัวคอลัมน์ตรงกับตัวอ่านไฟล์ 100%)' : 'The exported file can be re-imported — sheet names and headers match the parser 1:1'}</li>
         </ul>
       </div>

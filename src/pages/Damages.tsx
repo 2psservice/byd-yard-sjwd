@@ -125,14 +125,14 @@ function DamageReportModal({ units, onClose }: { units: Unit[]; onClose: () => v
   const docTitle = `Defect Report — ${matched} คัน (Yard ${yard.length} · Factory ${factory.length})`
 
   const doExcel = async () => {
-    if (!total) { toast('err', 'ยังไม่พบตำหนิของ VIN ที่ใส่'); return }
+    if (!total) { toast('err', 'ยังไม่พบ Defect ของ VIN ที่ใส่'); return }
     setBusy(true)
     try { await exportDefectExcel(sheets, trackByVin, `SJWD-Defect-Report-${matched}คัน-${stamp}.xlsx`); toast('ok', `ออกรายงาน Excel — ${total} รายการ`) }
     catch (e) { console.error('[damage report] excel', e); toast('err', 'ออกรายงานไม่สำเร็จ') }
     setBusy(false)
   }
   const doPdf = () => {
-    if (!total) { toast('err', 'ยังไม่พบตำหนิของ VIN ที่ใส่'); return }
+    if (!total) { toast('err', 'ยังไม่พบ Defect ของ VIN ที่ใส่'); return }
     printDefectReport(sheets, trackByVin, docTitle)
   }
 

@@ -556,7 +556,7 @@ export const useYard = create<YardState>()(
           // and the record would only exist on this one device.
           db.upsertUnit(u).then(() => db.insertDamage(vin, dmg)).catch((e) => {
             console.error('[db] addDamage', e)
-            get().toast('err', `บันทึกตำหนิไว้ในเครื่องนี้ แต่ยังไม่ขึ้น cloud (เน็ตหลุด?) — ${vin.slice(-6)}`)
+            get().toast('err', `บันทึก Defect ไว้ในเครื่องนี้ แต่ยังไม่ขึ้น cloud (เน็ตหลุด?) — ${vin.slice(-6)}`)
           })
           return { units: { ...s.units, [vin]: { ...u, damages: [...u.damages, dmg] } } }
         }),
@@ -569,8 +569,8 @@ export const useYard = create<YardState>()(
           db.deleteDamage(id).catch((e) => console.error('[db] removeDamage', e))
           // permanent audit line in the admin Event tab (survives the delete)
           if (gone) {
-            const what = gone.item || gone.note || gone.type || 'ตำหนิ'
-            logDamageEvent(vin, `ลบตำหนิ · ${gone.area || '—'} · ${what}`, s.currentUser)
+            const what = gone.item || gone.note || gone.type || 'Defect'
+            logDamageEvent(vin, `ลบ Defect · ${gone.area || '—'} · ${what}`, s.currentUser)
           }
           return { units: { ...s.units, [vin]: { ...u, damages: u.damages.filter((x) => x.id !== id) } } }
         }),

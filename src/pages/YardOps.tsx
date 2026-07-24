@@ -613,7 +613,7 @@ function DamageForm({ onSaveAll, onCancel }: {
   // every defect must carry at least one photo before it can be saved
   const allPhotographed = rows.every(row => row.photos.length > 0)
   const save = () => {
-    if (!allPhotographed) { toast('err', 'กรุณาถ่ายรูปตำหนิอย่างน้อย 1 รูปต่อรายการ'); return }
+    if (!allPhotographed) { toast('err', 'กรุณาถ่ายรูป Defect อย่างน้อย 1 รูปต่อรายการ'); return }
     onSaveAll(rows.map(row => {
     const part = resolvePart(row.area)     // { en, th } from the master Part list
     const def = resolveDefect(row.detail)  // { en, th } from the master Defect list
@@ -709,7 +709,7 @@ function DamageForm({ onSaveAll, onCancel }: {
         {/* photo requirement hint */}
         {!allPhotographed && (
           <div className="text-[11.5px] flex items-center gap-1.5 pt-0.5" style={{ color: 'var(--st-damage)' }}>
-            <Camera size={13} /> ต้องถ่ายรูปตำหนิอย่างน้อย 1 รูปต่อรายการก่อนบันทึก
+            <Camera size={13} /> ต้องถ่ายรูป Defect อย่างน้อย 1 รูปต่อรายการก่อนบันทึก
           </div>
         )}
 
@@ -1132,7 +1132,7 @@ function WalkView() {
                     <DamageForm
                       onSaveAll={damages => {
                         const valid = damages.filter(d => (d.area ?? '').trim())
-                        if (!valid.length) { toast('err', 'กรุณาใส่ตำแหน่งตำหนิอย่างน้อย 1 จุด'); return }
+                        if (!valid.length) { toast('err', 'กรุณาใส่ตำแหน่ง Defect อย่างน้อย 1 จุด'); return }
                         doTrackingGateIn(valid)
                       }}
                       onCancel={() => setDmgResult(null)}
@@ -1242,7 +1242,7 @@ function WalkView() {
               <DamageForm
                 onSaveAll={damages => {
                   damages.forEach(d => addDamage(unit.vin, { ...d, source: 'walkaround', station: 'Gate-in' }))
-                  toast('ok', damages.length > 1 ? `บันทึกตำหนิ ${damages.length} รายการ` : 'บันทึกตำหนิแล้ว')
+                  toast('ok', damages.length > 1 ? `บันทึก Defect ${damages.length} รายการ` : 'บันทึก Defect แล้ว')
                   setShowDmg(false)
                 }}
                 onCancel={() => setShowDmg(false)}
@@ -3096,7 +3096,7 @@ function CheckView() {
             {row?.cells['Final Status'] && <Row label="Final Status" value={row.cells['Final Status']} />}
             {row?.cells['Status']       && <Row label="Status (Excel)" value={row.cells['Status']} />}
             {row?.cells['PIC (PDI)']    && <Row label="PIC (PDI)" value={row.cells['PIC (PDI)']} />}
-            <Row label="Damage" value={damaged ? 'NG — มีตำหนิ' : 'OK — ปกติ'} accent={damaged ? '#dc2626' : '#16a34a'} />
+            <Row label="Damage" value={damaged ? 'NG — มี Defect' : 'OK — ปกติ'} accent={damaged ? '#dc2626' : '#16a34a'} />
             {unit && unit.damages.length > 0 && unit.damages.map((d, i) => (
               <div key={d.id} className="flex items-start gap-3 px-4 py-2.5 border-b hairline">
                 {d.photo

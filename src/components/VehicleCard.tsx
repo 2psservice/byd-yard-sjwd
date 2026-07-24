@@ -49,7 +49,7 @@ export function VehicleCard({ unit }: { unit: Unit }) {
         <div className="mt-4 flex items-center gap-2 rounded-lg px-3 py-2" style={{ background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.3)' }}>
           <AlertTriangle size={15} style={{ color: 'var(--st-damage)' }} />
           <span className="text-[13px] font-medium" style={{ color: '#ffc4c4' }}>
-            {unit.damages.length} {lang === 'th' ? 'รายการตำหนิ' : 'damage(s) recorded'}
+            {unit.damages.length} {lang === 'th' ? 'รายการ Defect' : 'damage(s) recorded'}
           </span>
         </div>
       )}
