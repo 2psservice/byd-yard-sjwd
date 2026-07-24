@@ -94,20 +94,27 @@ const POSITION_OPTS = MASTER_PARTS   // { id, en, th }
 const TYPES = MASTER_DEFECTS         // { id, en, th }
 
 // Repair-status ladder for a Defect — "ปลด" no longer deletes, it moves status.
-const DEFECT_STATUSES = ['Waiting Repair', 'Accept', 'OK Accept', 'OK Repaired', 'Repaired'] as const
+const DEFECT_STATUSES = ['Waiting Repair', 'Accept', 'Acc byd', 'OK Accept', 'OK Repaired', 'Repaired'] as const
 const defectStatusStyle = (s?: string): { color: string; background: string } =>
-  s === 'Repaired' || s === 'Accept' || s === 'OK Accept' || s === 'OK Repaired'
-    ? { color: '#16a34a', background: '#dcfce7' }
+  s && s !== 'Waiting Repair'
+    ? { color: '#16a34a', background: '#dcfce7' } // any resolved status → green
     : { color: '#b45309', background: '#fef3c7' } // Waiting Repair (default)
 
-/** Inline colour-coded repair-status picker for one Defect. */
+/** Colour-coded repair-status badge for one Defect — tap to advance to the next
+ *  status (Waiting Repair → Accept → Acc byd → OK Accept → OK Repaired → Repaired
+ *  → back). Not a dropdown — just the status. */
 function DefectStatusSelect({ value, onChange }: { value?: string; onChange: (s: string) => void }) {
   const v = value || 'Waiting Repair'
+  const next = () => {
+    const i = DEFECT_STATUSES.indexOf(v as typeof DEFECT_STATUSES[number])
+    onChange(DEFECT_STATUSES[(i + 1) % DEFECT_STATUSES.length])
+  }
   return (
-    <select value={v} onChange={e => onChange(e.target.value)}
-      className="font-bold rounded-lg px-2 py-1.5 cursor-pointer outline-none shrink-0" style={{ ...defectStatusStyle(v), border: 'none', fontSize: 11.5 }}>
-      {DEFECT_STATUSES.map(st => <option key={st} value={st}>{st}</option>)}
-    </select>
+    <button type="button" onClick={next} title="แตะเพื่อเปลี่ยนสถานะ"
+      className="font-bold rounded-lg px-2.5 py-1.5 shrink-0 transition active:scale-95 whitespace-nowrap"
+      style={{ ...defectStatusStyle(v), border: 'none', fontSize: 11.5 }}>
+      {v}
+    </button>
   )
 }
 
