@@ -92,9 +92,11 @@ function damageToRow(vin: string, d: Damage): DbDamage {
     type:           d.type,
     severity:       d.severity,
     note:           d.note           ?? null,
-    // only include the remark key when set — keeps bulk imports off a column
-    // that may not be migrated yet (insertDamage retries without it on error).
+    // only include optional bilingual/remark keys when set — keeps bulk imports
+    // off columns that may not be migrated yet (writes retry without them).
     ...(d.remark ? { remark: d.remark } : {}),
+    ...(d.areaTh ? { area_th: d.areaTh } : {}),
+    ...(d.itemTh ? { item_th: d.itemTh } : {}),
     photo_url:      d.photo          ?? d.photos?.[0] ?? null,
     photo_urls:     d.photos?.length  ? d.photos : null,
     recorded_at:    new Date(d.at).toISOString(),
@@ -122,6 +124,8 @@ export function rowToDamage(r: DbDamage): Damage {
     severity:       (r.severity      as Damage['severity']) ?? 'minor',
     note:           r.note           ?? undefined,
     remark:         r.remark         ?? undefined,
+    areaTh:         r.area_th         ?? undefined,
+    itemTh:         r.item_th         ?? undefined,
     photo:          r.photo_url      ?? r.photo_urls?.[0] ?? undefined,
     photos:         r.photo_urls     ?? undefined,
     at:             r.recorded_at    ? new Date(r.recorded_at).getTime() : 0,
@@ -237,10 +241,15 @@ export async function deleteAllUnits(): Promise<void> {
 
 // ── damage operations ─────────────────────────────────────────────────────
 
-/** Detect PostgREST "column does not exist" (schema not yet migrated). */
-function isMissingColumn(e: unknown, col: string): boolean {
+/** Detect a PostgREST "column does not exist" error (schema not yet migrated). */
+function isMissingColumn(e: unknown): boolean {
   const s = JSON.stringify(e ?? '')
-  return s.includes(col) && (s.includes('PGRST204') || s.includes('42703') || s.includes('schema cache') || s.includes('does not exist'))
+  return s.includes('PGRST204') || s.includes('42703') || s.includes('schema cache') || s.includes('does not exist')
+}
+/** Drop the optional (maybe-unmigrated) damage columns so a write still succeeds. */
+function stripOptionalDamageCols<T extends object>(row: T): T {
+  const { remark, area_th, item_th, ...rest } = row as Record<string, unknown>
+  return rest as unknown as T
 }
 
 export async function insertDamage(vin: string, d: Damage): Promise<void> {
@@ -249,11 +258,11 @@ export async function insertDamage(vin: string, d: Damage): Promise<void> {
   try {
     await withRetry(() => supabase.from('damages').insert(row))
   } catch (error) {
-    // remark column may not be migrated yet — retry without it so the damage
-    // still saves (the remark stays on this device until the column exists).
-    if (isMissingColumn(error, 'remark')) {
-      const { remark, ...rest } = row
-      const { error: e2 } = await supabase.from('damages').insert(rest)
+    // optional columns (remark / area_th / item_th) may not be migrated yet —
+    // retry without them so the damage still saves (extra fields stay on this
+    // device until the columns exist).
+    if (isMissingColumn(error)) {
+      const { error: e2 } = await supabase.from('damages').insert(stripOptionalDamageCols(row))
       if (!e2) return
     }
     console.error('[db] insertDamage', vin, error)
@@ -289,8 +298,19 @@ export async function patchDamage(
   if ('item'           in patch) row.item           = patch.item ?? null
   if ('source'         in patch) row.source         = patch.source ?? null
   if ('station'        in patch) row.station        = patch.station ?? null
+  if ('remark'         in patch) row.remark         = patch.remark ?? null
+  if ('areaTh'         in patch) row.area_th        = patch.areaTh ?? null
+  if ('itemTh'         in patch) row.item_th        = patch.itemTh ?? null
   const { error } = await supabase.from('damages').update(row).eq('id', id)
-  if (error) console.error('[db] patchDamage', id, error)
+  if (error) {
+    // optional columns may not be migrated yet — retry without them so the rest
+    // of the patch (repair status, etc.) still lands in the cloud.
+    if (isMissingColumn(error)) {
+      const { error: e2 } = await supabase.from('damages').update(stripOptionalDamageCols(row)).eq('id', id)
+      if (!e2) return
+    }
+    console.error('[db] patchDamage', id, error)
+  }
 }
 
 export async function deleteDamage(id: string): Promise<void> {

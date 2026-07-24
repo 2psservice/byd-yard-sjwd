@@ -39,6 +39,8 @@ export interface DbDamage {
   severity: string | null
   note: string | null
   remark?: string | null         // free-text remark (optional column; only written when set, degrades gracefully if absent)
+  area_th?: string | null        // Thai part name (optional column; only written when set)
+  item_th?: string | null        // Thai defect name (optional column; only written when set)
   photo_url: string | null       // base64 dataURL (Phase 3 → Storage URL) — first photo, back-compat
   photo_urls: string[] | null    // all photos (base64 dataURL, compressed)
   recorded_at: string | null

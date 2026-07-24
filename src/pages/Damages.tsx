@@ -3,6 +3,7 @@ import { Plus, Search, Pencil, Trash2, CheckCircle2, XCircle, ChevronLeft, Chevr
 import { useYard, useUnits } from '../store/useYard'
 import { useTrackingRows } from '../store/useTracking'
 import { zoneLabel } from '../components/CarDiagramMultiView'
+import { partLabel, defectLabel } from '../lib/damageLabel'
 import { PageHead } from '../components/ui'
 import { YARD_SHEET, FACTORY_SHEET, exportDefectExcel, printDefectReport, type DefectExportRow } from '../lib/defectReport'
 import { thaiKbToLatin } from '../lib/findCar'
@@ -257,9 +258,15 @@ export function Damages() {
                     </td>
                     {/* Zone / Type */}
                     <td className="px-4 py-3">
-                      <div className="font-semibold">{zoneLabel(r.damage.area)}</div>
-                      <div className="text-[11.5px] capitalize" style={{ color: 'var(--muted)' }}>
-                        {r.damage.item ?? r.damage.type}{r.damage.note ? ` · ${r.damage.note}` : ''}
+                      <div className="font-semibold">
+                        {partLabel(r.damage, 'en')}
+                        {partLabel(r.damage, 'th') && partLabel(r.damage, 'th') !== partLabel(r.damage, 'en') && (
+                          <span className="block font-normal text-[11px]" style={{ color: 'var(--muted)' }}>{partLabel(r.damage, 'th')}</span>
+                        )}
+                      </div>
+                      <div className="text-[11.5px]" style={{ color: 'var(--muted)' }}>
+                        {defectLabel(r.damage, 'en')}
+                        {defectLabel(r.damage, 'th') && defectLabel(r.damage, 'th') !== defectLabel(r.damage, 'en') && <span> · {defectLabel(r.damage, 'th')}</span>}
                       </div>
                     </td>
                     {/* Inspector */}

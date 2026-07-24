@@ -65,7 +65,8 @@ export type DamageSource = 'walkaround' | 'pdi' | 'mechanic' | 'update' | 'yardD
 
 export interface Damage {
   id: string
-  area: string // body zone id (e.g. 'fl-door')
+  area: string // body zone id (e.g. 'fl-door') OR English part name (master-list capture)
+  areaTh?: string // Thai part name (master-list capture) — admin shows EN + this below
   type: string // damage type id
   severity: 'minor' | 'major'
   note?: string
@@ -76,7 +77,8 @@ export interface Damage {
   by: string
   source?: DamageSource // where it was found (gate-in walk-around, PDI, …)
   station?: string      // human-readable station/queue name (e.g. "Gate-in", or a custom Operation queue name like "Wash for sale")
-  item?: string         // inspection checklist item (รายการตรวจสอบ) — Final Check NG
+  item?: string         // English defect / checklist item (master-list capture, Final Check NG)
+  itemTh?: string       // Thai defect (master-list capture) — admin shows EN + this below
   categoryNG?: DamageCategoryNG
   categoryRepair?: DamageCategoryRepair
   incharge?: DamageIncharge
@@ -213,6 +215,7 @@ export interface Settings {
 
 export interface DamageInput {
   area: string
+  areaTh?: string
   type: string
   severity: 'minor' | 'major'
   note?: string
@@ -222,6 +225,7 @@ export interface DamageInput {
   source?: DamageSource
   station?: string
   item?: string
+  itemTh?: string
 }
 
 /** A single candidate slot the engine proposes. */

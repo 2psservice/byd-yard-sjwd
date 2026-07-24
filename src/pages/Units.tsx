@@ -19,6 +19,8 @@ import { printFindList, exportFindListXlsx } from '../lib/groupingPrint'
 import { matchVins, toFindListRows } from '../lib/findCar'
 import { rowInSite } from '../lib/siteScope'
 import { zoneLabel } from '../components/CarDiagramMultiView'
+import { partLabel, defectLabel } from '../lib/damageLabel'
+import { resolvePart, resolveDefect } from '../lib/masterDefect'
 import { cx, PhotoLightbox } from '../components/ui'
 import { useQueues } from '../store/useOps'
 
@@ -1606,7 +1608,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
               const startEdit = (d: typeof damages[number]) => {
                 setEditingId(d.id)
                 setEditForm({
-                  position: zoneLabel(d.area), defect: d.item ?? d.type,
+                  position: partLabel(d, 'en'), defect: defectLabel(d, 'en'),
                   categoryNG: d.categoryNG ?? '', categoryRepair: d.categoryRepair ?? '',
                   incharge: d.incharge ?? '', note: d.note ?? '',
                   date: toDateInput(d.at), statusRepair: d.statusRepair ?? 'Waiting Repair',
@@ -1616,10 +1618,11 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
               const cancelEdit = () => { setEditingId(null); setEditForm(BLANK_DMG_FORM) }
               const saveEdit = (d: typeof damages[number]) => {
                 if (!editForm.position.trim() && !editForm.defect.trim()) { window.alert('กรุณากรอกอย่างน้อย Position หรือ Defect/NG'); return }
+                const ep = resolvePart(editForm.position.trim()), ed = resolveDefect(editForm.defect.trim())
                 updateDamage(vin, d.id, {
-                  area: editForm.position.trim() || d.area,
+                  area: ep.en || d.area, areaTh: ep.th || d.areaTh,
                   type: editForm.defect.trim() || d.type,
-                  item: editForm.defect.trim() || undefined,
+                  item: ed.en || undefined, itemTh: ed.th || undefined,
                   categoryNG: (editForm.categoryNG.trim() as typeof d.categoryNG) || undefined,
                   categoryRepair: (editForm.categoryRepair.trim() as typeof d.categoryRepair) || undefined,
                   incharge: (editForm.incharge.trim() as typeof d.incharge) || undefined,
@@ -1727,7 +1730,12 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                           <Fragment key={d.id}>
                             <tr style={{ background: tint, borderTop: '1px solid var(--line)' }}>
                               <td className="px-2.5 py-3 tabular" style={{ color: 'var(--faint)', borderLeft: `3px solid ${accent}` }}>{idx + 1}</td>
-                              <td className="px-2.5 py-3 font-semibold whitespace-nowrap">{zoneLabel(d.area)}</td>
+                              <td className="px-2.5 py-3 font-semibold whitespace-nowrap">
+                                {partLabel(d, 'en')}
+                                {partLabel(d, 'th') && partLabel(d, 'th') !== partLabel(d, 'en') && (
+                                  <span className="block font-normal text-[11px]" style={{ color: 'var(--muted)' }}>{partLabel(d, 'th')}</span>
+                                )}
+                              </td>
                               <td className="px-2.5 py-3">
                                 <span className="flex items-center gap-1.5">
                                   {(() => {
@@ -1737,7 +1745,12 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                                         className="w-5 h-5 rounded object-cover cursor-pointer shrink-0" alt="" title={`ดูรูป ${pi + 1}/${photos.length}`} />
                                     ))
                                   })()}
-                                  {d.item ?? d.type}
+                                  <span>
+                                    {defectLabel(d, 'en')}
+                                    {defectLabel(d, 'th') && defectLabel(d, 'th') !== defectLabel(d, 'en') && (
+                                      <span className="block text-[11px]" style={{ color: 'var(--muted)' }}>{defectLabel(d, 'th')}</span>
+                                    )}
+                                  </span>
                                 </span>
                               </td>
                               <td className="px-2.5 py-3 whitespace-nowrap">{d.categoryNG ?? '—'}</td>
