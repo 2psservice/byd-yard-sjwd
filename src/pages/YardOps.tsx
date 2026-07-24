@@ -2791,14 +2791,6 @@ function RelocationView() {
 
 // ── Check view ────────────────────────────────────────────────────────────────
 // ── Update Damage ─────────────────────────────────────────────────────────────
-// Position / Defect options — combobox suggestions (operator can also type freely)
-const UPD_POS_OPTS = POSITION_OPTS.map(o => ({ id: o.id, label: o.th }))
-const UPD_DEF_OPTS = [
-  { id: 'scratch', label: 'รอยขีดข่วน' }, { id: 'dent', label: 'บุบ' }, { id: 'chip', label: 'สีกระเทาะ' },
-  { id: 'crack', label: 'แตก / ร้าว' }, { id: 'stain', label: 'คราบ' }, { id: 'rust', label: 'สนิม' },
-]
-const UPD_POS_TO_ID: Record<string, string> = Object.fromEntries(UPD_POS_OPTS.map(o => [o.label, o.id]))
-
 function UpdateDamageView() {
   const units = useSiteUnits()
   const trackingRows = useSiteRows()
@@ -2808,13 +2800,7 @@ function UpdateDamageView() {
   const { block: blockGate, modal: gateModal } = useNotGatedIn()
   const [vin, setVin] = useState<string | null>(null)
   const [showAdd, setShowAdd] = useState(false)
-  const [newArea, setNewArea] = useState(UPD_POS_OPTS[0].label)
-  const [newType, setNewType] = useState(UPD_DEF_OPTS[0].label)
-  const [newSev, setNewSev] = useState<'minor' | 'major'>('minor')
-  const [newNote, setNewNote] = useState('')
-  const [newPhoto, setNewPhoto] = useState<string | undefined>(undefined)
-  const [busy, setBusy] = useState(false)
-  const fileRef = useRef<HTMLInputElement>(null)
+  const SEV_COLOR = { minor: '#2563eb', major: '#dc2626' }
 
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
 
@@ -2843,28 +2829,6 @@ function UpdateDamageView() {
     if (!gated) { blockGate(found, fu?.modelName ?? fr?.cells['Model name'] ?? fr?.cells['Model'] ?? ''); return }
     setVin(found); setShowAdd(false)
   }
-
-  const pickPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0]
-    e.target.value = ''
-    if (!f) return
-    setBusy(true)
-    try { setNewPhoto(await compressImage(f)) } catch { toast('err', 'อ่านรูปไม่สำเร็จ') }
-    setBusy(false)
-  }
-  const saveNew = () => {
-    if (!unit) return
-    // Position → zone id when it matches a known label (keeps diagrams working);
-    // Defect/NG kept as the typed/selected text so the exact wording shows everywhere
-    const area = UPD_POS_TO_ID[newArea.trim()] ?? newArea.trim()
-    const type = newType.trim()
-    if (!area || !type) { toast('err', 'กรอก Position และ Defect/NG'); return }
-    addDamage(unit.vin, { area, type, severity: newSev, note: newNote.trim() || undefined, photo: newPhoto, source: 'update', station: 'Update Damage' })
-    setShowAdd(false); setNewNote(''); setNewPhoto(undefined)
-    toast('ok', 'บันทึกความเสียหายแล้ว')
-  }
-
-  const SEV_COLOR = { minor: '#2563eb', major: '#dc2626' }
 
   const fmt = (ts: number) => {
     const d = new Date(ts)
@@ -2934,52 +2898,18 @@ function UpdateDamageView() {
             </div>
           )}
 
-          {/* add new damage form */}
+          {/* add new damage form — same dropdowns / photos / remark as Gate-in */}
           {showAdd ? (
-            <div className="border-t hairline px-4 py-3 space-y-2.5" style={{ background: 'rgba(220,38,38,0.03)' }}>
-              <div className="text-[12px] font-bold" style={{ color: '#dc2626' }}>+ เพิ่มความเสียหายใหม่</div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <div className="text-[10.5px] font-semibold mb-1" style={{ color: 'var(--muted)' }}>Position</div>
-                  <input className="input w-full text-[12px]" list="upd-pos-opts" placeholder="เลือก / พิมพ์เอง…"
-                    value={newArea} onChange={e => setNewArea(e.target.value)} />
-                  <datalist id="upd-pos-opts">{UPD_POS_OPTS.map(o => <option key={o.id} value={o.label} />)}</datalist>
-                </div>
-                <div>
-                  <div className="text-[10.5px] font-semibold mb-1" style={{ color: 'var(--muted)' }}>Defect/NG</div>
-                  <input className="input w-full text-[12px]" list="upd-def-opts" placeholder="เลือก / พิมพ์เอง…"
-                    value={newType} onChange={e => setNewType(e.target.value)} />
-                  <datalist id="upd-def-opts">{UPD_DEF_OPTS.map(o => <option key={o.id} value={o.label} />)}</datalist>
-                </div>
-              </div>
-              <div className="flex gap-2">
-                {(['minor','major'] as const).map(s => (
-                  <button key={s} onClick={() => setNewSev(s)}
-                    className="flex-1 py-1.5 rounded-lg text-[12px] font-bold border transition"
-                    style={newSev === s ? { background: SEV_COLOR[s], color: '#fff', borderColor: 'transparent' } : { background: 'var(--chip)', borderColor: 'var(--line-strong)' }}>
-                    {s === 'minor' ? 'Minor' : 'Major'}
-                  </button>
-                ))}
-              </div>
-              <input className="input w-full text-[12px]" placeholder="หมายเหตุ (ถ้ามี)" value={newNote} onChange={e => setNewNote(e.target.value)} />
-              {/* photo capture */}
-              <div className="flex items-center gap-2.5">
-                <input ref={fileRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={pickPhoto} />
-                <button onClick={() => fileRef.current?.click()} disabled={busy}
-                  className="btn px-3 py-2 text-[12px] font-semibold" style={{ background: 'var(--chip)' }}>
-                  <Camera size={15} /> {busy ? 'กำลังอ่าน…' : newPhoto ? 'เปลี่ยนรูป' : 'ถ่ายรูป / แนบรูป'}
-                </button>
-                {newPhoto && (
-                  <div className="relative">
-                    <img src={newPhoto} alt="" className="w-11 h-11 rounded-lg object-cover" style={{ border: '1px solid var(--line)' }} />
-                    <button onClick={() => setNewPhoto(undefined)} className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full flex items-center justify-center" style={{ background: '#dc2626', color: '#fff' }}><X size={11} /></button>
-                  </div>
-                )}
-              </div>
-              <div className="flex gap-2 pt-1">
-                <button className="btn flex-1 text-[12px]" onClick={() => { setShowAdd(false); setNewPhoto(undefined) }}>ยกเลิก</button>
-                <button className="btn btn-primary flex-1 text-[12px]" onClick={saveNew} disabled={!unit}>บันทึก</button>
-              </div>
+            <div className="border-t hairline p-3" style={{ background: 'rgba(220,38,38,0.03)' }}>
+              <DamageForm
+                onSaveAll={dmgs => {
+                  if (!unit) return
+                  dmgs.forEach(d => addDamage(unit.vin, { ...d, source: 'update', station: 'Update Damage' }))
+                  setShowAdd(false)
+                  toast('ok', dmgs.length > 1 ? `บันทึก Defect ${dmgs.length} รายการ` : 'บันทึก Defect แล้ว')
+                }}
+                onCancel={() => setShowAdd(false)}
+              />
             </div>
           ) : (
             <div className="px-4 py-3 border-t hairline">
