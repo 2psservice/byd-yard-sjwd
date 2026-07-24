@@ -747,6 +747,7 @@ function WalkView() {
   const [editId, setEditId] = useState<string | null>(null)
   const [editArea, setEditArea] = useState('')
   const [editDetail, setEditDetail] = useState('')
+  const [editRemark, setEditRemark] = useState('')
   const [doneUnit, setDoneUnit] = useState<{ vin: string; modelName: string; color: string; colorHex?: string; inspector: string; gateInAt: number } | null>(null)
   const [lightbox, setLightbox] = useState<{ photos: string[]; index: number } | null>(null)
   // mandatory damage check at gate-in — must pick OK or NG before confirming
@@ -1262,6 +1263,11 @@ function WalkView() {
                         <MasterCombo options={TYPES} placeholder="รายละเอียด…" value={editDetail} onChange={setEditDetail} />
                       </div>
                     </div>
+                    <div>
+                      <div className="text-[10px] font-bold mb-1" style={{ color: 'var(--muted)' }}>Remark (หมายเหตุ)</div>
+                      <input className="input text-[12px] w-full" style={{ padding: '6px 8px' }}
+                        placeholder="หมายเหตุ…" value={editRemark} onChange={e => setEditRemark(e.target.value)} />
+                    </div>
                     <div className="flex gap-1.5">
                       <button className="btn flex-1 text-[12px] py-1.5" onClick={() => setEditId(null)}>ยกเลิก</button>
                       <button className="btn flex-1 text-[12px] py-1.5 font-bold"
@@ -1271,6 +1277,7 @@ function WalkView() {
                           updateDamage(unit.vin, d.id, {
                             area: p.en || d.area, areaTh: p.th || d.areaTh,
                             item: df.en || d.item, itemTh: df.th || d.itemTh,
+                            remark: editRemark.trim() || undefined,
                           })
                           setEditId(null)
                         }}>บันทึก</button>
@@ -1285,12 +1292,12 @@ function WalkView() {
                       <div className="flex-1 min-w-0">
                         <div className="text-[12.5px] leading-snug">
                           <span className="font-bold" style={{ color: 'var(--st-damage)' }}>{partLabel(d, 'th')}</span>
-                          <span className="font-semibold" style={{ color: 'var(--st-damage)' }}> // {d.item || defectLabel(d, 'th') || '—'}</span>
-                          {d.note && <span className="font-semibold" style={{ color: 'var(--text)' }}> · {d.note}</span>}
+                          <span className="font-semibold" style={{ color: 'var(--st-damage)' }}> // {defectLabel(d, 'th') || '—'}</span>
+                          {(d.remark || d.note) && <span className="font-semibold" style={{ color: 'var(--text)' }}> · {d.remark || d.note}</span>}
                         </div>
                       </div>
                       <button
-                        onClick={() => { setEditId(d.id); setEditArea(POSITION_OPTS.find(p => p.id === d.area)?.th ?? d.area); setEditDetail(d.note || (defectLabel(d, 'th') ?? '')) }}
+                        onClick={() => { setEditId(d.id); setEditArea(partLabel(d, 'th')); setEditDetail(defectLabel(d, 'th')); setEditRemark(d.remark ?? '') }}
                         className="w-6 h-6 rounded-md flex items-center justify-center shrink-0"
                         style={{ background: 'rgba(255,255,255,0.8)', color: 'var(--muted)' }}>
                         <Pencil size={11} />
