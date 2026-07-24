@@ -105,8 +105,10 @@ const defectStatusStyle = (s?: string): { color: string; background: string } =>
  *  status options AND the change history (who changed it, from → to, when). */
 function DefectStatusSelect({ d, onChange }: { d: Damage; onChange: (s: string) => void }) {
   const [open, setOpen] = useState(false)
+  const [pending, setPending] = useState<string | null>(null) // status awaiting confirmation
   const v = d.statusRepair || 'Waiting Repair'
   const hist = d.repairHistory ?? []
+  const close = () => { setOpen(false); setPending(null) }
   return (
     <div className="flex items-center gap-1 shrink-0">
       <span className="font-bold rounded-lg px-2.5 py-1.5 whitespace-nowrap" style={{ ...defectStatusStyle(v), fontSize: 11.5 }}>{v}</span>
@@ -115,22 +117,46 @@ function DefectStatusSelect({ d, onChange }: { d: Damage; onChange: (s: string) 
         <Pencil size={12} />
       </button>
       {open && createPortal(
-        <div className="fixed inset-0 z-[95] flex items-end sm:items-center justify-center p-3" style={{ background: 'rgba(15,23,42,0.5)', backdropFilter: 'blur(3px)' }} onClick={() => setOpen(false)}>
+        <div className="fixed inset-0 z-[95] flex items-end sm:items-center justify-center p-3" style={{ background: 'rgba(15,23,42,0.5)', backdropFilter: 'blur(3px)' }} onClick={close}>
           <div className="panel-solid w-full pop overflow-hidden flex flex-col" style={{ maxWidth: 420, maxHeight: '82vh' }} onClick={e => e.stopPropagation()}>
             <div className="px-4 py-3 border-b hairline flex items-center gap-2">
               <span className="font-bold text-[14px]">เปลี่ยนสถานะ Defect</span>
-              <button className="ml-auto p-1.5 rounded-lg" style={{ color: 'var(--muted)' }} onClick={() => setOpen(false)}><X size={17} /></button>
+              <button className="ml-auto p-1.5 rounded-lg" style={{ color: 'var(--muted)' }} onClick={close}><X size={17} /></button>
             </div>
+            {pending ? (
+              <div className="p-4">
+                <div className="text-[13px] mb-3 leading-relaxed" style={{ color: 'var(--text)' }}>
+                  ยืนยันเปลี่ยนสถานะจาก{' '}
+                  <b className="rounded-md px-1.5 py-0.5" style={{ ...defectStatusStyle(v), fontSize: 11.5 }}>{v}</b>{' '}
+                  เป็น{' '}
+                  <b className="rounded-md px-1.5 py-0.5" style={{ ...defectStatusStyle(pending), fontSize: 11.5 }}>{pending}</b>{' '}
+                  ?
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => setPending(null)}
+                    className="flex-1 py-2.5 rounded-xl text-[12.5px] font-bold transition active:scale-95"
+                    style={{ background: 'var(--chip)', color: 'var(--muted)' }}>
+                    ยกเลิก
+                  </button>
+                  <button onClick={() => { onChange(pending); close() }}
+                    className="flex-1 py-2.5 rounded-xl text-[12.5px] font-bold text-white transition active:scale-95"
+                    style={{ background: 'var(--brand)' }}>
+                    ยืนยัน
+                  </button>
+                </div>
+              </div>
+            ) : (
             <div className="p-3 grid grid-cols-2 gap-2">
               {DEFECT_STATUSES.map(st => (
-                <button key={st} onClick={() => { onChange(st); setOpen(false) }}
+                <button key={st} onClick={() => { if (st === v) { close() } else { setPending(st) } }}
                   className="py-2.5 rounded-xl text-[12.5px] font-bold transition active:scale-95"
                   style={{ ...defectStatusStyle(st), boxShadow: st === v ? '0 0 0 2px currentColor inset' : 'none' }}>
                   {st}
                 </button>
               ))}
             </div>
-            {hist.length > 0 && (
+            )}
+            {!pending && hist.length > 0 && (
               <div className="border-t hairline p-3 overflow-auto">
                 <div className="text-[11px] font-bold uppercase mb-1.5" style={{ color: 'var(--muted)' }}>ประวัติการเปลี่ยนสถานะ</div>
                 <div className="space-y-1.5">
