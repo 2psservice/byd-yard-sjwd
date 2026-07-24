@@ -668,12 +668,16 @@ export const useYard = create<YardState>()(
           const damages = u.damages.map((d) => {
             if (d.id !== id || d.statusRepair === status) return d
             const repairHistory = [...(d.repairHistory ?? []), { status, from: d.statusRepair, at: now, by }]
-            const repaired = status === 'Repaired' || status === 'Accept'
+            // any status other than "Waiting Repair" resolves the Defect (leaves the
+            // repair queue); reopening to Waiting Repair clears the resolve stamp.
+            const resolved = status !== 'Waiting Repair'
             const next = {
               ...d,
               statusRepair: status as import('../types').DamageStatusRepair,
               repairHistory,
-              ...(repaired && !d.repairDate ? { repairDate: now, repairedBy: by } : {}),
+              ...(resolved
+                ? (d.repairDate ? {} : { repairDate: now, repairedBy: by })
+                : { repairDate: undefined, repairedBy: undefined }),
             }
             patched = next
             return next

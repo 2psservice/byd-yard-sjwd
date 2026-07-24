@@ -59,7 +59,7 @@ export interface DamageType {
 export type DamageCategoryNG = 'NG' | 'HEAVY NG'
 export type DamageCategoryRepair = 'Re Dent' | 'Re paint' | 'Part'
 export type DamageIncharge = 'SJWD' | 'BYD'
-export type DamageStatusRepair = 'Waiting Repair' | 'Repaired' | 'Accept'
+export type DamageStatusRepair = 'Waiting Repair' | 'Accept' | 'OK Accept' | 'OK Repaired' | 'Repaired'
 /** Which step recorded the damage (undefined = legacy gate-in walk-around). */
 export type DamageSource = 'walkaround' | 'pdi' | 'mechanic' | 'update' | 'yardDefect' | 'factoryDefect' | 'whaleDefect' | 'manual'
 
@@ -79,7 +79,7 @@ export interface Damage {
   station?: string      // human-readable station/queue name (e.g. "Gate-in", or a custom Operation queue name like "Wash for sale")
   item?: string         // English defect / checklist item (master-list capture, Final Check NG)
   itemTh?: string       // Thai defect (master-list capture) — admin shows EN + this below
-  categoryNG?: DamageCategoryNG
+  categoryNG?: DamageCategoryNG | string
   categoryRepair?: DamageCategoryRepair
   incharge?: DamageIncharge
   statusRepair?: DamageStatusRepair
@@ -226,6 +226,8 @@ export interface DamageInput {
   station?: string
   item?: string
   itemTh?: string
+  categoryNG?: DamageCategoryNG | string | string
+  statusRepair?: DamageStatusRepair
 }
 
 /** A single candidate slot the engine proposes. */

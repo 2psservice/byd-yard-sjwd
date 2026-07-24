@@ -87,11 +87,11 @@ const presetMatch = (preset: string, r: TrackRow): boolean => {
 }
 
 // Status Repair options + colour (editable in the Damages tab)
-const REPAIR_STATUSES = ['Waiting Repair', 'Repaired', 'Accept'] as const
+const REPAIR_STATUSES = ['Waiting Repair', 'Accept', 'OK Accept', 'OK Repaired', 'Repaired'] as const
 // compact Excel-like date (27 Jun 26) for the defect table
 const fmtDay = (ts: number) => new Date(ts).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })
 const repairColor = (s?: string): { color: string; background: string } =>
-  s === 'Repaired' || s === 'Accept' ? { color: '#16a34a', background: '#dcfce7' }
+  s === 'Repaired' || s === 'Accept' || s === 'OK Accept' || s === 'OK Repaired' ? { color: '#16a34a', background: '#dcfce7' }
   : s === 'Waiting Repair' ? { color: '#b45309', background: '#fef3c7' }
   : { color: '#dc2626', background: '#fee2e2' }
 /** Full date-time "DD/MM/YYYY HH:MM" for defect / repair history. */
