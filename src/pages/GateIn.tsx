@@ -280,6 +280,13 @@ function PreGateInQueues() {
     for (const r of rows) m.set(r.vin, r.cells['Model name'] || r.cells['Model'] || '')
     return m
   }, [rows])
+  // inspector fallback: auto-reconciled gate-ins don't set the item's doneBy, but
+  // doTrackingGateIn stamps the operator into the 'Gate In Inspector' cell.
+  const inspectorByVin = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const r of rows) { const by = r.cells['Gate In Inspector']; if (by) m.set(r.vin, by) }
+    return m
+  }, [rows])
   const queues = useMemo(
     () => all.filter((q) => q.name.trim().startsWith('(') && (!q.site || q.site === currentSite)),
     [all, currentSite],
@@ -340,7 +347,7 @@ function PreGateInQueues() {
                           <div className="text-[10.5px] mt-0.5 flex items-center gap-1" style={{ color: 'var(--faint)' }}>
                             <Clock size={10} />
                             <span>Gate-in {new Date(item.doneAt).toLocaleString('th-TH', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
-                            {item.doneBy && <span>· {item.doneBy}</span>}
+                            {(item.doneBy || inspectorByVin.get(item.vin)) && <span>· {item.doneBy || inspectorByVin.get(item.vin)}</span>}
                           </div>
                         )}
                       </div>
