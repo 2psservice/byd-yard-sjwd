@@ -8,6 +8,7 @@ import { CarTopView } from './CarTopView'
 import { clock, pos, tState, CATEGORY_META, STATUS_META } from '../lib/format'
 import { modelById } from '../lib/sampleData'
 import { zoneLabel } from '../pages/GateIn'
+import { partLabel, defectLabel } from '../lib/damageLabel'
 import type { Unit, UnitStatus } from '../types'
 
 const GLOW: Record<UnitStatus, string> = {
@@ -226,7 +227,7 @@ function buildEvents(unit: Unit | undefined, lang: 'th' | 'en'): Ev[] {
   if (unit.gateInAt) evs.push({ t: unit.gateInAt, label: lang === 'th' ? 'เข้าลาน (Gate-in)' : 'Gate-in', sub: unit.gateInBy, icon: <CheckCircle2 size={13} />, color: '#2563eb' })
   if (unit.assignedAt) evs.push({ t: unit.assignedAt, label: lang === 'th' ? `รับตำแหน่ง ${pos(unit)}` : `Assigned ${pos(unit)}`, sub: unit.driver, icon: <Navigation size={13} />, color: '#0891b2' })
   if (unit.parkedAt) evs.push({ t: unit.parkedAt, label: lang === 'th' ? `จอดสำเร็จ ${pos(unit)}` : `Parked ${pos(unit)}`, sub: unit.driver, icon: <PackageCheck size={13} />, color: '#16a34a' })
-  unit.damages.forEach((d) => evs.push({ t: d.at, label: lang === 'th' ? `พบตำหนิ · ${zoneLabel(d.area, lang)}` : `Damage · ${zoneLabel(d.area, lang)}`, sub: d.by, icon: <AlertTriangle size={13} />, color: '#dc2626' }))
+  unit.damages.forEach((d) => evs.push({ t: d.at, label: lang === 'th' ? `พบตำหนิ · ${partLabel(d, 'th')}` : `Damage · ${partLabel(d, 'en')}`, sub: d.by, icon: <AlertTriangle size={13} />, color: '#dc2626' }))
   return evs.sort((a, b) => a.t - b.t)
 }
 
@@ -287,10 +288,13 @@ function DamagesTab({ unit, lang }: { unit: Unit; lang: 'th' | 'en' }) {
       </div>
     )
   const SOURCE_LABEL: Record<string, string> = { walkaround: 'Walk-around', pdi: 'PDI', mechanic: 'ช่าง', update: 'Update' }
-  const DRow = ({ label, value, color }: { label: string; value: string; color?: string }) => (
+  const DRow = ({ label, value, sub, color }: { label: string; value: string; sub?: string; color?: string }) => (
     <div className="flex gap-2 text-[12.5px]">
       <span className="shrink-0" style={{ color: 'var(--muted)', width: 92 }}>{label}</span>
-      <span className="font-semibold flex-1 min-w-0" style={color ? { color } : undefined}>{value}</span>
+      <span className="font-semibold flex-1 min-w-0" style={color ? { color } : undefined}>
+        {value}
+        {sub && sub !== value && <span className="block font-normal text-[11px]" style={{ color: 'var(--muted)' }}>{sub}</span>}
+      </span>
     </div>
   )
   return (
@@ -304,8 +308,8 @@ function DamagesTab({ unit, lang }: { unit: Unit; lang: 'th' | 'en' }) {
                 ? <img src={d.photo} className="w-24 object-cover shrink-0" style={{ borderRight: '1px solid var(--line)' }} />
                 : <div className="w-20 shrink-0 flex items-center justify-center" style={{ background: '#fef2f2', borderRight: '1px solid var(--line)' }}><AlertTriangle size={24} style={{ color: 'var(--st-damage)' }} /></div>}
               <div className="flex-1 min-w-0 p-3 space-y-1">
-                <DRow label="Position" value={zoneLabel(d.area, lang)} />
-                <DRow label="Defect/NG" value={(d.item ?? d.type) + (d.note ? ` · ${d.note}` : '')} />
+                <DRow label="Position" value={partLabel(d, 'en')} sub={partLabel(d, 'th')} />
+                <DRow label="Defect/NG" value={defectLabel(d, 'en')} sub={defectLabel(d, 'th')} />
                 {d.remark && <DRow label="Remark" value={d.remark} />}
                 <DRow label="Record date" value={`${fullDT(d.at)} · ${d.by}`} />
                 <DRow label="Repair date" value={repaired ? `${fullDT(d.repairDate!)} · ${d.repairedBy ?? '—'}` : '—'} color={repaired ? '#16a34a' : 'var(--faint)'} />

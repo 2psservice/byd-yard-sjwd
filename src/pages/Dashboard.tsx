@@ -7,6 +7,7 @@ import { modelById, matchModel, ZONE_COLOR } from '../lib/sampleData'
 import { deriveCarStatus, CAR_STATUS_META, CAR_STATUS_ORDER, PARKED_STATUSES, isWaitingRepair } from '../lib/carStatus'
 import { rowInSite } from '../lib/siteScope'
 import { pct, pos, timeAgo } from '../lib/format'
+import { defectLabel } from '../lib/damageLabel'
 import { PageHead, ProgressBar, Stat } from '../components/ui'
 import { YardSummary } from '../components/YardSummary'
 import { STATUS_META } from '../lib/format'
@@ -264,14 +265,14 @@ export function Dashboard() {
         if (!trackingVins.has(u.vin)) continue
         if (u.parkedAt) evs.push({ ts: u.parkedAt, vin: u.vin, kind: 'park', text: `จอดสำเร็จ · ${pos(u)}`, color: 'var(--st-yard)' })
         else if (u.assignedAt) evs.push({ ts: u.assignedAt, vin: u.vin, kind: 'assign', text: `รับตำแหน่ง · ${pos(u)}`, color: 'var(--st-driving)' })
-        u.damages.forEach(d => evs.push({ ts: d.at, vin: u.vin, kind: 'dmg', text: `พบตำหนิ · ${d.type}`, color: 'var(--st-damage)' }))
+        u.damages.forEach(d => evs.push({ ts: d.at, vin: u.vin, kind: 'dmg', text: `พบตำหนิ · ${defectLabel(d, 'th')}`, color: 'var(--st-damage)' }))
       }
     } else {
       for (const u of units) {
         if (u.parkedAt) evs.push({ ts: u.parkedAt, vin: u.vin, kind: 'park', text: `จอดสำเร็จ · ${pos(u)}`, color: 'var(--st-yard)' })
         else if (u.assignedAt) evs.push({ ts: u.assignedAt, vin: u.vin, kind: 'assign', text: `รับตำแหน่ง · ${pos(u)}`, color: 'var(--st-driving)' })
         if (u.gateInAt && !u.parkedAt && !u.assignedAt) evs.push({ ts: u.gateInAt, vin: u.vin, kind: 'gate', text: `เข้าลาน (Gate-in)`, color: 'var(--brand-2)' })
-        u.damages.forEach(d => evs.push({ ts: d.at, vin: u.vin, kind: 'dmg', text: `พบตำหนิ · ${d.type}`, color: 'var(--st-damage)' }))
+        u.damages.forEach(d => evs.push({ ts: d.at, vin: u.vin, kind: 'dmg', text: `พบตำหนิ · ${defectLabel(d, 'th')}`, color: 'var(--st-damage)' }))
       }
     }
     return evs.sort((a, b) => b.ts - a.ts).slice(0, 9)

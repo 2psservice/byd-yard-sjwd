@@ -20,6 +20,8 @@ import { LogoMark } from '../components/Logo'
 import { DrivingScreen } from '../components/DrivingScreen'
 import { LiveTrackingMap } from '../components/LiveTrackingMap'
 import { ALL_ZONES, zoneLabel } from '../components/CarDiagramMultiView'
+import { MASTER_PARTS, MASTER_DEFECTS, resolvePart, resolveDefect } from '../lib/masterDefect'
+import { partLabel, defectLabel } from '../lib/damageLabel'
 import { candidates } from '../lib/parkingEngine'
 import { slotToLatLng } from '../lib/geo'
 import { cx, PhotoLightbox } from '../components/ui'
@@ -85,23 +87,10 @@ function findSeqItem(vin: string | null, queues: WorkQueue[]): { queue: WorkQueu
   return null
 }
 
-// ── damage config ─────────────────────────────────────────────────────────────
-const TYPES = [
-  { id: 'scratch', th: 'รอยขีดข่วน', en: 'Scratch' },
-  { id: 'dent', th: 'บุบ', en: 'Dent' },
-  { id: 'chip', th: 'สีกระเทาะ', en: 'Paint chip' },
-  { id: 'crack', th: 'แตก/ร้าว', en: 'Crack' },
-  { id: 'missing', th: 'ชิ้นส่วนหาย', en: 'Missing part' },
-]
-
-// Deduplicated zone list for dropdown (order: top-view first, then front/rear/sides)
-const POSITION_OPTS = (() => {
-  const seen = new Set<string>()
-  return ALL_ZONES.reduce<{ id: string; th: string }[]>((acc, z) => {
-    if (!seen.has(z.th)) { seen.add(z.th); acc.push({ id: z.id, th: z.th }) }
-    return acc
-  }, [])
-})()
+// ── damage config: bilingual master lists (Part + Defect) from the master Excel ──
+// Field staff type Thai (English shown alongside); we store BOTH languages.
+const POSITION_OPTS = MASTER_PARTS   // { id, en, th }
+const TYPES = MASTER_DEFECTS         // { id, en, th }
 
 type RoleKey = 'walk' | 'driver' | 'pdi' | 'mechanic' | 'gateout' | 'relocation' | 'check' | 'updatedmg'
 const ROLES: { key: RoleKey; th: string; en: string; icon: React.ReactNode; color: string; desc: string }[] = [
@@ -564,15 +553,21 @@ function DamageForm({ onSaveAll, onCancel }: {
   const removePhoto = (rid: string, i: number) =>
     setRows(r => r.map(x => x.rid === rid ? { ...x, photos: x.photos.filter((_, pi) => pi !== i) } : x))
 
-  const save = () => onSaveAll(rows.map(row => ({
-    area: AREA_TEXT_MAP[row.area] ?? row.area,              // known → id, custom → raw text
-    type: TYPE_TEXT_MAP[row.detail] ?? 'scratch',           // known → id, custom → default type
-    severity: row.severity,
-    note: TYPE_TEXT_MAP[row.detail] ? undefined : (row.detail || undefined), // custom text → note
-    remark: row.remark.trim() || undefined,
-    photos: row.photos.length ? row.photos : undefined,
-    photo: row.photos[0],
-  })))
+  const save = () => onSaveAll(rows.map(row => {
+    const part = resolvePart(row.area)     // { en, th } from the master Part list
+    const def = resolveDefect(row.detail)  // { en, th } from the master Defect list
+    return {
+      area:   part.en,          // English part — primary (admin/report)
+      areaTh: part.th,          // Thai part — shown below in admin
+      item:   def.en,           // English defect — primary
+      itemTh: def.th,           // Thai defect — shown below in admin
+      type:   'scratch',        // legacy field kept for back-compat
+      severity: row.severity,
+      remark: row.remark.trim() || undefined,
+      photos: row.photos.length ? row.photos : undefined,
+      photo: row.photos[0],
+    }
+  }))
 
   return (
     <div className="panel overflow-hidden fade-up">
@@ -599,7 +594,7 @@ function DamageForm({ onSaveAll, onCancel }: {
                 onChange={e => upd(row.rid, 'area', e.target.value)}
               />
               <datalist id={`pos-${row.rid}`}>
-                {POSITION_OPTS.map(p => <option key={p.id} value={p.th} />)}
+                {POSITION_OPTS.map(p => <option key={p.id} value={p.th}>{p.en}</option>)}
               </datalist>
 
               <input
@@ -611,7 +606,7 @@ function DamageForm({ onSaveAll, onCancel }: {
                 onChange={e => upd(row.rid, 'detail', e.target.value)}
               />
               <datalist id={`def-${row.rid}`}>
-                {TYPES.map(t => <option key={t.id} value={t.th} />)}
+                {TYPES.map(t => <option key={t.id} value={t.th}>{t.en}</option>)}
               </datalist>
 
               {/* delete guard: first tap arms (pencil → trash), second tap deletes */}
@@ -1135,8 +1130,8 @@ function WalkView() {
                                   <AlertTriangle size={14} style={{ color: 'var(--st-damage)', marginTop: 2, flexShrink: 0 }} />
                                   <div className="flex-1 min-w-0">
                                     <div className="text-[12.5px] leading-snug">
-                                      <span className="font-bold" style={{ color: 'var(--st-damage)' }}>{zoneLabel(d.area)}</span>
-                                      <span className="font-semibold" style={{ color: 'var(--st-damage)' }}> // {d.item || TYPES.find(t => t.id === d.type)?.th || d.type || '—'}</span>
+                                      <span className="font-bold" style={{ color: 'var(--st-damage)' }}>{partLabel(d, 'th')}</span>
+                                      <span className="font-semibold" style={{ color: 'var(--st-damage)' }}> // {defectLabel(d, 'th') || '—'}</span>
                                       {d.note && <span className="font-semibold" style={{ color: 'var(--text)' }}> · {d.note}</span>}
                                     </div>
                                   </div>
@@ -1213,14 +1208,14 @@ function WalkView() {
                         <input className="input text-[12px] w-full" style={{ padding: '6px 8px' }}
                           list={`ep-${d.id}`} placeholder="ตำแหน่ง…" value={editArea}
                           onChange={e => setEditArea(e.target.value)} />
-                        <datalist id={`ep-${d.id}`}>{POSITION_OPTS.map(p => <option key={p.id} value={p.th} />)}</datalist>
+                        <datalist id={`ep-${d.id}`}>{POSITION_OPTS.map(p => <option key={p.id} value={p.th}>{p.en}</option>)}</datalist>
                       </div>
                       <div>
                         <div className="text-[10px] font-bold mb-1" style={{ color: 'var(--muted)' }}>Defect/NG</div>
                         <input className="input text-[12px] w-full" style={{ padding: '6px 8px' }}
                           list={`ed-${d.id}`} placeholder="รายละเอียด…" value={editDetail}
                           onChange={e => setEditDetail(e.target.value)} />
-                        <datalist id={`ed-${d.id}`}>{TYPES.map(t => <option key={t.id} value={t.th} />)}</datalist>
+                        <datalist id={`ed-${d.id}`}>{TYPES.map(t => <option key={t.id} value={t.th}>{t.en}</option>)}</datalist>
                       </div>
                     </div>
                     <div className="flex gap-1.5">
@@ -1228,10 +1223,10 @@ function WalkView() {
                       <button className="btn flex-1 text-[12px] py-1.5 font-bold"
                         style={{ background: 'var(--brand)', color: '#fff', border: 'none' }}
                         onClick={() => {
+                          const p = resolvePart(editArea), df = resolveDefect(editDetail)
                           updateDamage(unit.vin, d.id, {
-                            area: (AREA_TEXT_MAP[editArea] ?? editArea) || d.area,
-                            type: TYPE_TEXT_MAP[editDetail] ?? d.type,
-                            note: TYPE_TEXT_MAP[editDetail] ? d.note : (editDetail || d.note),
+                            area: p.en || d.area, areaTh: p.th || d.areaTh,
+                            item: df.en || d.item, itemTh: df.th || d.itemTh,
                           })
                           setEditId(null)
                         }}>บันทึก</button>
@@ -1245,13 +1240,13 @@ function WalkView() {
                       <AlertTriangle size={14} style={{ color: 'var(--st-damage)', marginTop: 2, flexShrink: 0 }} />
                       <div className="flex-1 min-w-0">
                         <div className="text-[12.5px] leading-snug">
-                          <span className="font-bold" style={{ color: 'var(--st-damage)' }}>{zoneLabel(d.area)}</span>
-                          <span className="font-semibold" style={{ color: 'var(--st-damage)' }}> // {d.item || TYPES.find(t => t.id === d.type)?.th || '—'}</span>
+                          <span className="font-bold" style={{ color: 'var(--st-damage)' }}>{partLabel(d, 'th')}</span>
+                          <span className="font-semibold" style={{ color: 'var(--st-damage)' }}> // {d.item || defectLabel(d, 'th') || '—'}</span>
                           {d.note && <span className="font-semibold" style={{ color: 'var(--text)' }}> · {d.note}</span>}
                         </div>
                       </div>
                       <button
-                        onClick={() => { setEditId(d.id); setEditArea(POSITION_OPTS.find(p => p.id === d.area)?.th ?? d.area); setEditDetail(d.note || (TYPES.find(t => t.id === d.type)?.th ?? '')) }}
+                        onClick={() => { setEditId(d.id); setEditArea(POSITION_OPTS.find(p => p.id === d.area)?.th ?? d.area); setEditDetail(d.note || (defectLabel(d, 'th') ?? '')) }}
                         className="w-6 h-6 rounded-md flex items-center justify-center shrink-0"
                         style={{ background: 'rgba(255,255,255,0.8)', color: 'var(--muted)' }}>
                         <Pencil size={11} />
@@ -2272,8 +2267,8 @@ function PdiView() {
                 <div key={d.id} className="flex items-center gap-2.5 px-4 py-2.5 border-b hairline last:border-0">
                   <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: d.severity === 'major' ? '#dc2626' : '#d97706' }} />
                   <div className="flex-1 min-w-0 text-[12.5px]">
-                    <span className="font-semibold">{zoneLabel(d.area)}</span>
-                    <span style={{ color: 'var(--muted)' }}> · {TYPES.find(t => t.id === d.type)?.th ?? d.type}</span>
+                    <span className="font-semibold">{partLabel(d, 'th')}</span>
+                    <span style={{ color: 'var(--muted)' }}> · {defectLabel(d, 'th') ?? d.type}</span>
                     {d.note ? <span style={{ color: 'var(--muted)' }}> · {d.note}</span> : null}
                   </div>
                   <span className="badge text-[10px] shrink-0" style={{ color: d.severity === 'major' ? '#dc2626' : '#d97706', background: d.severity === 'major' ? 'rgba(220,38,38,0.1)' : 'rgba(217,119,6,0.1)' }}>
@@ -2308,7 +2303,7 @@ function PdiView() {
                       <AlertTriangle size={16} style={{ color: 'var(--st-damage)' }} />
                     </div>}
                   <div className="flex-1 min-w-0 text-[12.5px]">
-                    <div className="font-semibold">{zoneLabel(d.area)} · {d.item ?? TYPES.find(t => t.id === d.type)?.th ?? d.type}</div>
+                    <div className="font-semibold">{partLabel(d, 'th')} · {defectLabel(d, 'th')}</div>
                     <div style={{ color: d.severity === 'major' ? '#dc2626' : '#d97706' }}>
                       {d.severity === 'major' ? 'Heavy NG' : 'NG'}{d.note ? ` · ${d.note}` : ''}
                     </div>
@@ -2447,7 +2442,7 @@ function MechanicView() {
                     </div>}
                   <div className="flex-1 min-w-0">
                     <div className="font-semibold text-[13px]">
-                      {zoneLabel(d.area)} · {TYPES.find(t => t.id === d.type)?.th}
+                      {partLabel(d, 'th')} · {defectLabel(d, 'th')}
                     </div>
                     <div className="text-[11.5px] mt-0.5" style={{ color: d.severity === 'major' ? '#dc2626' : '#d97706' }}>
                       {d.severity === 'major' ? 'Heavy NG' : 'NG'}{d.note ? ` · ${d.note}` : ''}
@@ -2818,7 +2813,7 @@ function UpdateDamageView() {
                     ? <img src={d.photo} alt="" className="w-12 h-12 rounded-lg object-cover shrink-0" style={{ border: `2px solid ${SEV_COLOR[d.severity]}` }} />
                     : <div className="w-2 h-2 rounded-full mt-1.5 shrink-0" style={{ background: SEV_COLOR[d.severity] }} />}
                   <div className="flex-1 min-w-0">
-                    <div className="text-[12.5px] font-semibold">{zoneLabel(d.area)} · <span className="capitalize">{d.item ?? d.type}</span></div>
+                    <div className="text-[12.5px] font-semibold">{partLabel(d, 'th')} · <span>{defectLabel(d, 'th')}</span></div>
                     {d.note && <div className="text-[11.5px]" style={{ color: 'var(--muted)' }}>{d.note}</div>}
                     <div className="text-[11px] mt-0.5" style={{ color: 'var(--faint)' }}>บันทึก {fmt(d.at)} · {d.by}</div>
                     {d.repairDate && (
@@ -3059,7 +3054,7 @@ function CheckView() {
                       style={{ border: `2px solid ${d.severity === 'major' ? '#dc2626' : 'var(--line)'}` }} />
                   : <AlertTriangle size={13} style={{ color: '#dc2626', flexShrink: 0, marginTop: 2 }} />}
                 <div className="flex-1 text-[12px]">
-                  <div className="font-semibold">{zoneLabel(d.area)}</div>
+                  <div className="font-semibold">{partLabel(d, 'th')}</div>
                   <div style={{ color: 'var(--muted)' }}>{d.note || d.type}{d.severity === 'major' ? ' · Heavy NG' : ''}</div>
                   {d.photo && <div className="text-[10.5px] mt-0.5" style={{ color: 'var(--brand)' }}>แตะเพื่อดูรูปเต็ม</div>}
                 </div>

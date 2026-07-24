@@ -5,6 +5,7 @@
  * measured 1:1 from the master file, so an exported sheet re-imports cleanly.
  */
 import type { Damage, Unit } from '../types'
+import { partLabel, defectLabel } from './damageLabel'
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 /** timestamp → "5-Jun-26" — the date shape the Defect sheets use (round-trips on re-import). */
@@ -98,8 +99,8 @@ export function defectValue(header: string, seq: number, { unit, dmg }: DefectEx
     case 'Category (Repair)': return dmg.categoryRepair ?? ''
     case 'Incharge': return dmg.incharge ?? ''
     case 'Date': return defDate(dmg.at)
-    case 'Position': return dmg.area === '—' ? '' : dmg.area
-    case 'Defect': case 'Defect/NG': return dmg.item ?? (dmg.type === '—' ? '' : dmg.type)
+    case 'Position': return partLabel(dmg, 'en') === '—' ? '' : partLabel(dmg, 'en')
+    case 'Defect': case 'Defect/NG': return defectLabel(dmg, 'en')
     case 'Status Repair': return dmg.statusRepair ?? (dmg.repairDate ? 'Repaired' : 'Waiting Repair')
     case 'Repair Date': return defDate(dmg.repairDate)
     default: return ''
