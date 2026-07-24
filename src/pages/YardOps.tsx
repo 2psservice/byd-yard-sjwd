@@ -14,8 +14,8 @@ import {
 import { useYard, useUnits, useTrips, useBlocks, useMe } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { isDamaged } from '../lib/carStatus'
-import { useOps, useActiveQueues, activeProcess, stageOf, isSequenceQueue, seqStageOf, isQueueComplete } from '../store/useOps'
-import type { WorkQueue, QueueItem } from '../store/useOps'
+import { useOps, useActiveQueues, activeProcess, stageOf, isSequenceQueue, seqStageOf, isQueueComplete, queueTypeOf } from '../store/useOps'
+import type { WorkQueue, QueueItem, QueueType } from '../store/useOps'
 import { CarTopView } from '../components/CarTopView'
 import { LogoMark } from '../components/Logo'
 import { DrivingScreen } from '../components/DrivingScreen'
@@ -179,13 +179,15 @@ function DefectStatusSelect({ d, onChange }: { d: Damage; onChange: (s: string) 
   )
 }
 
-type RoleKey = 'walk' | 'driver' | 'pdi' | 'mechanic' | 'gateout' | 'relocation' | 'check' | 'updatedmg'
+type RoleKey = 'walk' | 'driver' | 'pdi' | 'pm' | 'fc' | 'mechanic' | 'gateout' | 'relocation' | 'check' | 'updatedmg'
 const ROLES: { key: RoleKey; th: string; en: string; icon: React.ReactNode; color: string; desc: string }[] = [
   { key: 'walk',      th: 'Gate-in',         en: 'Gate-in',         icon: <ScanLine size={28} />,      color: 'var(--brand)',   desc: 'ตรวจรับรถเข้าลาน' },
   { key: 'gateout',  th: 'Gate-out',        en: 'Gate-out',        icon: <LogOut size={28} />,        color: '#64748b',        desc: 'บันทึกรถออกจากลาน' },
   { key: 'driver',   th: 'Driver',          en: 'Driver',          icon: <Car size={28} />,           color: 'var(--st-yard)', desc: 'นำรถไปจอดตามตำแหน่ง' },
   { key: 'relocation',th:'Re-location',     en: 'Re-location',     icon: <MapPin size={28} />,        color: '#0ea5e9',        desc: 'เปลี่ยนตำแหน่งรถในลาน' },
-  { key: 'pdi',      th: 'PDI / PM / FC',   en: 'PDI / PM / FC',   icon: <ShieldCheck size={28} />,   color: '#7c3aed',        desc: 'ตรวจสอบคุณภาพ OK / NG' },
+  { key: 'pdi',      th: 'PDI',             en: 'PDI',             icon: <ShieldCheck size={28} />,   color: '#7c3aed',        desc: 'ตรวจสอบคุณภาพ OK / NG' },
+  { key: 'pm',       th: 'PM',              en: 'PM',              icon: <ShieldCheck size={28} />,   color: '#2563eb',        desc: 'ตรวจสอบคุณภาพ OK / NG' },
+  { key: 'fc',       th: 'FINAL CHECK',     en: 'FINAL CHECK',     icon: <ShieldCheck size={28} />,   color: '#059669',        desc: 'ตรวจสอบคุณภาพ OK / NG' },
   { key: 'updatedmg',th: 'Update Damage',   en: 'Update Damage',   icon: <AlertTriangle size={28} />, color: '#dc2626',        desc: 'บันทึก / แก้ไขความเสียหาย' },
   { key: 'check',    th: 'Check',           en: 'Check',           icon: <ClipboardList size={28} />, color: '#0891b2',        desc: 'ตรวจสอบข้อมูลรถ' },
   { key: 'mechanic', th: 'ช่าง',             en: 'Mechanic',        icon: <Wrench size={28} />,        color: '#c2680b',        desc: 'แก้ไข NG · ปลด / เพิ่ม NG' },
@@ -2198,11 +2200,11 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved }: {
 }
 
 // ── pdi view ──────────────────────────────────────────────────────────────────
-function PdiView() {
+function PdiView({ types, accent }: { types: QueueType[]; accent: string }) {
   const units = useSiteUnits()
   const trackingRows = useSiteRows()
   const wrongSite = useWrongSiteHint()
-  const queues = useSiteQueues()
+  const allQueues = useSiteQueues()
   const sites = useYard(s => s.sites)
   const currentSite = useYard(s => s.currentSite)
   const locPrefix = siteGroupingConfig(sites.find(s => s.id === currentSite)?.name ?? '').prefix
@@ -2212,12 +2214,14 @@ function PdiView() {
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
   const [vin, setVin] = useState<string | null>(null)
   const [justOk, setJustOk] = useState(false)
-  const [okLabel, setOkLabel] = useState('PDI OK')
+  const [okLabel, setOkLabel] = useState('OK')
   const [okResult, setOkResult] = useState<'OK' | 'NG'>('OK')
   const [selectedQueueId, setSelectedQueueId] = useState<string | null>(null)
 
-  // admin process queues (PDI / FINAL PM / Wash …) — NOT the Pre Gate-in ones
-  // completed queues drop off the live PDI/PM/FC list (they've filed under their day)
+  // only this station's queues (PDI / PM / FINAL CHECK) — scanning / recording
+  // stays scoped to the chosen station so the three stations don't cross-record.
+  const queues = useMemo(() => allQueues.filter(q => types.includes(queueTypeOf(q))), [allQueues, types])
+  // completed queues drop off the live list (they've filed under their day)
   const procQueues = useMemo(() => queues.filter(q => !isPreGateInQueue(q.name) && q.items.length > 0 && !isQueueComplete(q)), [queues])
   const selectedQueue = selectedQueueId ? queues.find(q => q.id === selectedQueueId) ?? null : null
   const queueCars = useMemo(() => {
@@ -2283,7 +2287,7 @@ function PdiView() {
   return (
     <div className="space-y-4">
       {/* VIN input sits ABOVE the queues (same order as the Gate-in station) */}
-      <VinInput onScan={onScan} accent="#7c3aed" />
+      <VinInput onScan={onScan} accent={accent} />
       {gateModal}
 
       {/* ── process queues (PDI / FINAL PM / Wash …) — vertical stacked cards
@@ -2343,7 +2347,7 @@ function PdiView() {
 
       {unit && (
         <div className="space-y-3 fade-up">
-          <UnitCard unit={unit} accent="#7c3aed" />
+          <UnitCard unit={unit} accent={accent} />
 
           {/* station context — which queue this scan records into */}
           {activeProc && (
@@ -3214,7 +3218,9 @@ export function YardOps() {
       {role === 'updatedmg'  && <UpdateDamageView />}
       {role === 'driver'     && <DriverView />}
       {role === 'relocation' && <RelocationView />}
-      {role === 'pdi'        && <PdiView />}
+      {role === 'pdi'        && <PdiView types={['PDI']} accent="#7c3aed" />}
+      {role === 'pm'         && <PdiView types={['PM']} accent="#2563eb" />}
+      {role === 'fc'         && <PdiView types={['FINAL']} accent="#059669" />}
       {role === 'check'      && <CheckView />}
       {role === 'mechanic'   && <MechanicView />}
     </div>
