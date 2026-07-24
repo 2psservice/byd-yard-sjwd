@@ -93,6 +93,24 @@ function findSeqItem(vin: string | null, queues: WorkQueue[]): { queue: WorkQueu
 const POSITION_OPTS = MASTER_PARTS   // { id, en, th }
 const TYPES = MASTER_DEFECTS         // { id, en, th }
 
+// Repair-status ladder for a Defect — "ปลด" no longer deletes, it moves status.
+const DEFECT_STATUSES = ['Waiting Repair', 'Accept', 'OK Accept', 'OK Repaired', 'Repaired'] as const
+const defectStatusStyle = (s?: string): { color: string; background: string } =>
+  s === 'Repaired' || s === 'Accept' || s === 'OK Accept' || s === 'OK Repaired'
+    ? { color: '#16a34a', background: '#dcfce7' }
+    : { color: '#b45309', background: '#fef3c7' } // Waiting Repair (default)
+
+/** Inline colour-coded repair-status picker for one Defect. */
+function DefectStatusSelect({ value, onChange }: { value?: string; onChange: (s: string) => void }) {
+  const v = value || 'Waiting Repair'
+  return (
+    <select value={v} onChange={e => onChange(e.target.value)}
+      className="font-bold rounded-lg px-2 py-1.5 cursor-pointer outline-none shrink-0" style={{ ...defectStatusStyle(v), border: 'none', fontSize: 11.5 }}>
+      {DEFECT_STATUSES.map(st => <option key={st} value={st}>{st}</option>)}
+    </select>
+  )
+}
+
 type RoleKey = 'walk' | 'driver' | 'pdi' | 'mechanic' | 'gateout' | 'relocation' | 'check' | 'updatedmg'
 const ROLES: { key: RoleKey; th: string; en: string; icon: React.ReactNode; color: string; desc: string }[] = [
   { key: 'walk',      th: 'Gate-in',         en: 'Gate-in',         icon: <ScanLine size={28} />,      color: 'var(--brand)',   desc: 'ตรวจรับรถเข้าลาน' },
@@ -631,6 +649,7 @@ function DamageForm({ onSaveAll, onCancel }: {
   const [rows, setRows] = useState<DmgRow[]>([mkRow()])
   const [busyRid, setBusyRid] = useState<string | null>(null)
   const [armed, setArmed] = useState<string | null>(null) // rid whose delete is armed (2-tap guard)
+  const [accByd, setAccByd] = useState(false) // ACC BYD label (defect is always HEAVY NG)
   const upd = (rid: string, k: keyof DmgRow, v: string) =>
     setRows(r => r.map(x => x.rid === rid ? { ...x, [k]: v } : x))
   const del = (rid: string) => { setRows(r => r.length > 1 ? r.filter(x => x.rid !== rid) : r); setArmed(null) }
@@ -659,7 +678,9 @@ function DamageForm({ onSaveAll, onCancel }: {
       item:   def.en,           // English defect — primary
       itemTh: def.th,           // Thai defect — shown below in admin
       type:   'scratch',        // legacy field kept for back-compat
-      severity: row.severity,
+      severity: 'major' as const,                          // gate-in Defect is always HEAVY NG
+      categoryNG: accByd ? 'HEAVY NG · ACC BYD' : 'HEAVY NG',
+      statusRepair: 'Waiting Repair' as const,             // opens waiting for repair
       remark: row.remark.trim() || undefined,
       photos: row.photos.length ? row.photos : undefined,
       photo: row.photos[0],
@@ -719,18 +740,18 @@ function DamageForm({ onSaveAll, onCancel }: {
           </div>
         ))}
 
-        {/* severity — shared toggle (applies to all rows at once) */}
+        {/* Defect is always HEAVY NG · optional ACC BYD label */}
         <div className="flex gap-2 pt-0.5">
-          {(['minor', 'major'] as const).map(sv => (
-            <button key={sv}
-              onClick={() => setRows(r => r.map(x => ({ ...x, severity: sv })))}
-              className="flex-1 py-2 rounded-xl text-[12px] font-bold transition"
-              style={rows[0].severity === sv
-                ? { background: sv === 'major' ? '#dc2626' : '#d97706', color: '#fff' }
-                : { background: 'var(--chip)', color: 'var(--muted)' }}>
-              {sv === 'minor' ? 'NG' : 'HEAVY NG'}
-            </button>
-          ))}
+          <div className="flex-1 py-2 rounded-xl text-[12px] font-bold text-center" style={{ background: '#dc2626', color: '#fff' }}>
+            HEAVY NG
+          </div>
+          <button onClick={() => setAccByd(v => !v)}
+            className="flex-1 py-2 rounded-xl text-[12px] font-bold transition flex items-center justify-center gap-1.5"
+            style={accByd
+              ? { background: '#1d4ed8', color: '#fff' }
+              : { background: 'var(--chip)', color: 'var(--muted)', border: '1px dashed var(--line-strong)' }}>
+            {accByd ? <CheckCircle2 size={14} /> : <XCircle size={14} style={{ opacity: 0.5 }} />} ACC BYD
+          </button>
         </div>
 
         {/* add row */}
@@ -755,7 +776,7 @@ function DamageForm({ onSaveAll, onCancel }: {
           <button className="btn py-3 text-[13.5px] font-bold"
             onClick={save} disabled={!allPhotographed}
             style={{ background: allPhotographed ? 'var(--st-damage)' : 'var(--chip)', color: allPhotographed ? '#fff' : 'var(--faint)', border: 'none' }}>
-            <Plus size={14} /> บันทึก NG{rows.length > 1 ? ` (${rows.length})` : ''}
+            <Plus size={14} /> บันทึก HEAVY NG{rows.length > 1 ? ` (${rows.length})` : ''}
           </button>
         </div>
       </div>
@@ -2168,7 +2189,7 @@ function PdiView() {
   const currentSite = useYard(s => s.currentSite)
   const locPrefix = siteGroupingConfig(sites.find(s => s.id === currentSite)?.name ?? '').prefix
   const { loadFromIdb } = useTracking()
-  const { setInspected, removeDamage, toast } = useYard()
+  const { setInspected, removeDamage, updateRepairStatus, toast } = useYard()
   const { block: blockGate, modal: gateModal } = useNotGatedIn()
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
   const [vin, setVin] = useState<string | null>(null)
@@ -2357,12 +2378,9 @@ function PdiView() {
                   <div className="flex-1 min-w-0 text-[12.5px]">
                     <span className="font-semibold">{partLabel(d, 'th')}</span>
                     <span style={{ color: 'var(--muted)' }}> · {defectLabel(d, 'th') ?? d.type}</span>
-                    {d.note ? <span style={{ color: 'var(--muted)' }}> · {d.note}</span> : null}
+                    <div className="text-[11px]" style={{ color: 'var(--st-damage)' }}>{d.categoryNG || (d.severity === 'major' ? 'HEAVY NG' : 'NG')}{d.remark ? ` · ${d.remark}` : ''}</div>
                   </div>
-                  <span className="badge text-[10px] shrink-0" style={{ color: d.severity === 'major' ? '#dc2626' : '#d97706', background: d.severity === 'major' ? 'rgba(220,38,38,0.1)' : 'rgba(217,119,6,0.1)' }}>
-                    {d.severity === 'major' ? 'Heavy NG' : 'NG'}
-                  </span>
-                  <button onClick={() => doReleaseNg(d.id)} className="px-2.5 py-1 rounded-lg text-[11px] font-bold shrink-0" style={{ background: 'var(--st-yard)', color: '#fff' }}>ปลด</button>
+                  <DefectStatusSelect value={d.statusRepair} onChange={s => updateRepairStatus(unit.vin, d.id, s)} />
                 </div>
               ))}
             </div>
@@ -2393,14 +2411,10 @@ function PdiView() {
                   <div className="flex-1 min-w-0 text-[12.5px]">
                     <div className="font-semibold">{partLabel(d, 'th')} · {defectLabel(d, 'th')}</div>
                     <div style={{ color: d.severity === 'major' ? '#dc2626' : '#d97706' }}>
-                      {d.severity === 'major' ? 'Heavy NG' : 'NG'}{d.note ? ` · ${d.note}` : ''}
+                      {d.categoryNG || (d.severity === 'major' ? 'Heavy NG' : 'NG')}{d.remark ? ` · ${d.remark}` : ''}
                     </div>
                   </div>
-                  <button onClick={() => doReleaseNg(d.id)}
-                    className="px-3 py-1.5 rounded-xl text-[12px] font-bold transition-all"
-                    style={{ background: 'var(--st-yard)', color: '#fff' }}>
-                    ปลด NG
-                  </button>
+                  <DefectStatusSelect value={d.statusRepair} onChange={s => updateRepairStatus(unit.vin, d.id, s)} />
                 </div>
               ))}
             </div>
@@ -2417,7 +2431,7 @@ function MechanicView() {
   const trackingRows = useSiteRows()
   const wrongSite = useWrongSiteHint()
   const { loadFromIdb } = useTracking()
-  const { addDamage, removeDamage, setInspected, toast } = useYard()
+  const { addDamage, removeDamage, updateRepairStatus, setInspected, toast } = useYard()
   const { block: blockGate, modal: gateModal } = useNotGatedIn()
   const sites = useYard(s => s.sites)
   const currentSite = useYard(s => s.currentSite)
@@ -2533,14 +2547,10 @@ function MechanicView() {
                       {partLabel(d, 'th')} · {defectLabel(d, 'th')}
                     </div>
                     <div className="text-[11.5px] mt-0.5" style={{ color: d.severity === 'major' ? '#dc2626' : '#d97706' }}>
-                      {d.severity === 'major' ? 'Heavy NG' : 'NG'}{d.note ? ` · ${d.note}` : ''}
+                      {d.categoryNG || (d.severity === 'major' ? 'Heavy NG' : 'NG')}{d.remark ? ` · ${d.remark}` : ''}
                     </div>
                   </div>
-                  <button onClick={() => doRelease(d.id)}
-                    className="shrink-0 px-3 py-2 rounded-xl text-[12.5px] font-bold transition-all active:scale-95"
-                    style={{ background: 'var(--st-yard)', color: '#fff', boxShadow: '0 4px 12px -4px rgba(22,163,74,0.4)' }}>
-                    ✓ แก้แล้ว
-                  </button>
+                  <DefectStatusSelect value={d.statusRepair} onChange={s => updateRepairStatus(unit.vin, d.id, s)} />
                 </div>
               ))}
             </div>
