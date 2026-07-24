@@ -31,7 +31,7 @@ import { storePhoto } from '../lib/photoStore'
 import { siteGroupingConfig, yardLocCode, byYardLocation } from '../lib/groupingImport'
 import { fmtSerialToDate } from '../lib/trackingColumns'
 import { matchModel } from '../lib/sampleData'
-import type { DamageInput, Unit } from '../types'
+import type { Damage, DamageInput, Unit } from '../types'
 import type { TrackRow } from '../lib/excelTracking'
 import { SeqQueuePicker } from '../components/SeqQueueList'
 
@@ -491,20 +491,7 @@ function UnitCard({ unit, accent = 'var(--brand)' }: { unit: Unit; accent?: stri
               <button className="ml-auto p-1.5 rounded-lg" style={{ color: 'var(--muted)' }} onClick={() => setWalkOpen(false)}><X size={17} /></button>
             </div>
             <div className="overflow-auto p-3 space-y-2.5">
-              {walkDmgs.map(d => {
-                const photos = d.photos?.length ? d.photos : (d.photo ? [d.photo] : [])
-                return (
-                  <div key={d.id} className="rounded-xl p-3" style={{ background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.14)' }}>
-                    <div className="text-[13px] font-bold" style={{ color: 'var(--st-damage)' }}>
-                      {partLabel(d, 'th')} <span style={{ color: 'var(--text)' }}>// {defectLabel(d, 'th') || '—'}</span>
-                      {d.severity === 'major' && <span className="badge ml-1.5" style={{ fontSize: 10, background: '#fee2e2', color: '#b91c1c' }}>HEAVY NG</span>}
-                    </div>
-                    {d.remark && <div className="text-[11.5px] mt-0.5" style={{ color: 'var(--muted)' }}>หมายเหตุ: {d.remark}</div>}
-                    <div className="text-[11px] mt-0.5" style={{ color: 'var(--faint)' }}>{d.by || '—'} · {new Date(d.at).toLocaleString('th-TH', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</div>
-                    {photos.length > 0 && <div className="mt-2"><DamagePhotoThumbs photos={photos} onOpen={i => setLightbox({ photos, index: i })} /></div>}
-                  </div>
-                )
-              })}
+              {walkDmgs.map(d => <DefectCard key={d.id} d={d} />)}
             </div>
           </div>
         </div>, document.body)
@@ -525,6 +512,44 @@ function DamagePhotoThumbs({ photos, onOpen }: { photos: string[]; onOpen: (i: n
           style={{ width: 44, height: 44, border: '1px solid var(--line)' }} />
       ))}
     </div>
+  )
+}
+
+/** A Defect is tagged ACC BYD when its category label says so, or its status is Acc byd. */
+const isAccByd = (d: { categoryNG?: string; statusRepair?: string }) =>
+  /acc\s*byd/i.test(d.categoryNG || '') || d.statusRepair === 'Acc byd'
+
+/** Shared Defect card — identical look on every gate-in / ops-scan station.
+ *  Green "ACC BYD" when tagged. `right` is the per-station control (edit pencil
+ *  or tap-status badge). Self-contained photo lightbox. */
+function DefectCard({ d, right }: { d: Damage; right?: React.ReactNode }) {
+  const [lb, setLb] = useState<number | null>(null)
+  const photos = d.photos?.length ? d.photos : (d.photo ? [d.photo] : [])
+  return (
+    <>
+      <div className="rounded-xl overflow-hidden" style={{ background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.14)' }}>
+        <div className="p-3 space-y-2">
+          <div className="flex items-start gap-2">
+            <AlertTriangle size={14} style={{ color: 'var(--st-damage)', marginTop: 2, flexShrink: 0 }} />
+            <div className="flex-1 min-w-0">
+              <div className="text-[12.5px] leading-snug">
+                <span className="font-bold" style={{ color: 'var(--st-damage)' }}>{partLabel(d, 'th')}</span>
+                <span className="font-semibold" style={{ color: 'var(--st-damage)' }}> // {defectLabel(d, 'th') || '—'}</span>
+                {isAccByd(d) && <span className="font-extrabold" style={{ color: '#16a34a' }}> · ACC BYD</span>}
+                {(d.remark || d.note) && <span className="font-semibold" style={{ color: 'var(--text)' }}> · {d.remark || d.note}</span>}
+              </div>
+            </div>
+            {right && <div className="shrink-0">{right}</div>}
+          </div>
+          <div className="flex items-center gap-x-3 gap-y-1 flex-wrap text-[11px]" style={{ color: 'var(--text)' }}>
+            <span className="flex items-center gap-1"><User size={11} /> {d.by || '—'}</span>
+            <span className="flex items-center gap-1"><Clock size={11} /> {fmtDateTime(d.at).date} {fmtDateTime(d.at).time}</span>
+          </div>
+          {photos.length > 0 && <DamagePhotoThumbs photos={photos} onOpen={i => setLb(i)} />}
+        </div>
+      </div>
+      {lb != null && <PhotoLightbox photos={photos} index={lb} onClose={() => setLb(null)} />}
+    </>
   )
 }
 
@@ -1313,9 +1338,8 @@ function WalkView() {
               />
             )}
             {unit.damages.map(d => (
-              <div key={d.id} className="rounded-xl mb-2 overflow-hidden" style={{ background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.14)' }}>
-                {editId === d.id ? (
-                  /* ── inline edit: position + defect text ── */
+              editId === d.id ? (
+                <div key={d.id} className="rounded-xl mb-2 overflow-hidden" style={{ background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.14)' }}>
                   <div className="p-3 space-y-2">
                     <div className="grid gap-1.5" style={{ gridTemplateColumns: '1fr 1fr' }}>
                       <div>
@@ -1347,41 +1371,19 @@ function WalkView() {
                         }}>บันทึก</button>
                     </div>
                   </div>
-                ) : (
-                  /* ── display + interactive chip rows ── */
-                  <div className="p-3 space-y-2">
-                    {/* Header row */}
-                    <div className="flex items-start gap-2">
-                      <AlertTriangle size={14} style={{ color: 'var(--st-damage)', marginTop: 2, flexShrink: 0 }} />
-                      <div className="flex-1 min-w-0">
-                        <div className="text-[12.5px] leading-snug">
-                          <span className="font-bold" style={{ color: 'var(--st-damage)' }}>{partLabel(d, 'th')}</span>
-                          <span className="font-semibold" style={{ color: 'var(--st-damage)' }}> // {defectLabel(d, 'th') || '—'}</span>
-                          {(d.remark || d.note) && <span className="font-semibold" style={{ color: 'var(--text)' }}> · {d.remark || d.note}</span>}
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => { setEditId(d.id); setEditArea(partLabel(d, 'th')); setEditDetail(defectLabel(d, 'th')); setEditRemark(d.remark ?? '') }}
-                        className="w-6 h-6 rounded-md flex items-center justify-center shrink-0"
-                        style={{ background: 'rgba(255,255,255,0.8)', color: 'var(--muted)' }}>
-                        <Pencil size={11} />
-                      </button>
-                    </div>
-                    {/* สถานี / ผู้ตรวจ / วันที่ / เวลา */}
-                    <div className="flex items-center gap-x-3 gap-y-1 flex-wrap text-[11px]" style={{ color: 'var(--text)' }}>
-                      <span className="flex items-center gap-1"><User size={11} /> {d.by || '—'}</span>
-                      <span className="flex items-center gap-1"><Clock size={11} /> {fmtDateTime(d.at).date} {fmtDateTime(d.at).time}</span>
-                    </div>
-                    {/* รูปภาพ — คลิกเพื่อขยาย */}
-                    {(() => {
-                      const photos = d.photos?.length ? d.photos : (d.photo ? [d.photo] : [])
-                      return photos.length > 0
-                        ? <DamagePhotoThumbs photos={photos} onOpen={i => setLightbox({ photos, index: i })} />
-                        : null
-                    })()}
-                  </div>
-                )}
-              </div>
+                </div>
+              ) : (
+                <div key={d.id} className="mb-2">
+                  <DefectCard d={d} right={
+                    <button
+                      onClick={() => { setEditId(d.id); setEditArea(partLabel(d, 'th')); setEditDetail(defectLabel(d, 'th')); setEditRemark(d.remark ?? '') }}
+                      className="w-6 h-6 rounded-md flex items-center justify-center shrink-0"
+                      style={{ background: 'rgba(255,255,255,0.8)', color: 'var(--muted)' }}>
+                      <Pencil size={11} />
+                    </button>
+                  } />
+                </div>
+              )
             ))}
           </div>
         </div>
@@ -2379,17 +2381,12 @@ function PdiView() {
                 style={{ background: '#fff8f8', color: 'var(--st-damage)' }}>
                 <AlertTriangle size={14} /> Walk around · NG ({walkDmgs.length})
               </div>
-              {walkDmgs.map(d => (
-                <div key={d.id} className="flex items-center gap-2.5 px-4 py-2.5 border-b hairline last:border-0">
-                  <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: d.severity === 'major' ? '#dc2626' : '#d97706' }} />
-                  <div className="flex-1 min-w-0 text-[12.5px]">
-                    <span className="font-semibold">{partLabel(d, 'th')}</span>
-                    <span style={{ color: 'var(--muted)' }}> · {defectLabel(d, 'th') ?? d.type}</span>
-                    <div className="text-[11px]" style={{ color: 'var(--st-damage)' }}>{d.categoryNG || (d.severity === 'major' ? 'HEAVY NG' : 'NG')}{d.remark ? ` · ${d.remark}` : ''}</div>
-                  </div>
-                  <DefectStatusSelect value={d.statusRepair} onChange={s => updateRepairStatus(unit.vin, d.id, s)} />
-                </div>
-              ))}
+              <div className="p-3 space-y-2">
+                {walkDmgs.map(d => (
+                  <DefectCard key={d.id} d={d}
+                    right={<DefectStatusSelect value={d.statusRepair} onChange={s => updateRepairStatus(unit.vin, d.id, s)} />} />
+                ))}
+              </div>
             </div>
           )}
 
@@ -2409,21 +2406,12 @@ function PdiView() {
                 style={{ background: '#fff8f8', color: 'var(--st-damage)' }}>
                 <AlertTriangle size={13} /> NG เพิ่มเติม · PDI / ช่าง ({otherDmgs.length})
               </div>
-              {otherDmgs.map(d => (
-                <div key={d.id} className="flex items-center gap-3 px-4 py-3 border-b hairline">
-                  {d.photo ? <img src={d.photo} alt="" className="w-10 h-10 rounded-lg object-cover shrink-0" /> :
-                    <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0" style={{ background: '#fef2f2' }}>
-                      <AlertTriangle size={16} style={{ color: 'var(--st-damage)' }} />
-                    </div>}
-                  <div className="flex-1 min-w-0 text-[12.5px]">
-                    <div className="font-semibold">{partLabel(d, 'th')} · {defectLabel(d, 'th')}</div>
-                    <div style={{ color: d.severity === 'major' ? '#dc2626' : '#d97706' }}>
-                      {d.categoryNG || (d.severity === 'major' ? 'Heavy NG' : 'NG')}{d.remark ? ` · ${d.remark}` : ''}
-                    </div>
-                  </div>
-                  <DefectStatusSelect value={d.statusRepair} onChange={s => updateRepairStatus(unit.vin, d.id, s)} />
-                </div>
-              ))}
+              <div className="p-3 space-y-2">
+                {otherDmgs.map(d => (
+                  <DefectCard key={d.id} d={d}
+                    right={<DefectStatusSelect value={d.statusRepair} onChange={s => updateRepairStatus(unit.vin, d.id, s)} />} />
+                ))}
+              </div>
             </div>
           )}
         </div>
@@ -2543,23 +2531,12 @@ function MechanicView() {
                   <Wrench size={14} /> รายการ NG ที่ต้องแก้ ({unit.damages.length})
                 </span>
               </div>
-              {unit.damages.map(d => (
-                <div key={d.id} className="flex items-center gap-3 px-4 py-3.5 border-b hairline">
-                  {d.photo ? <img src={d.photo} alt="" className="w-11 h-11 rounded-xl object-cover shrink-0" /> :
-                    <div className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0" style={{ background: '#fff3e0' }}>
-                      <Wrench size={18} style={{ color: '#c2680b' }} />
-                    </div>}
-                  <div className="flex-1 min-w-0">
-                    <div className="font-semibold text-[13px]">
-                      {partLabel(d, 'th')} · {defectLabel(d, 'th')}
-                    </div>
-                    <div className="text-[11.5px] mt-0.5" style={{ color: d.severity === 'major' ? '#dc2626' : '#d97706' }}>
-                      {d.categoryNG || (d.severity === 'major' ? 'Heavy NG' : 'NG')}{d.remark ? ` · ${d.remark}` : ''}
-                    </div>
-                  </div>
-                  <DefectStatusSelect value={d.statusRepair} onChange={s => updateRepairStatus(unit.vin, d.id, s)} />
-                </div>
-              ))}
+              <div className="p-3 space-y-2">
+                {unit.damages.map(d => (
+                  <DefectCard key={d.id} d={d}
+                    right={<DefectStatusSelect value={d.statusRepair} onChange={s => updateRepairStatus(unit.vin, d.id, s)} />} />
+                ))}
+              </div>
             </div>
           )}
 
@@ -2813,7 +2790,7 @@ function UpdateDamageView() {
   const trackingRows = useSiteRows()
   const wrongSite = useWrongSiteHint()
   const { loadFromIdb } = useTracking()
-  const { addDamage, updateDamage, removeDamage, toast, currentUser } = useYard()
+  const { addDamage, removeDamage, updateRepairStatus, toast } = useYard()
   const { block: blockGate, modal: gateModal } = useNotGatedIn()
   const [vin, setVin] = useState<string | null>(null)
   const [showAdd, setShowAdd] = useState(false)
@@ -2875,42 +2852,17 @@ function UpdateDamageView() {
 
           {/* existing damages */}
           {damages.length > 0 && (
-            <div className="divide-y">
+            <div className="p-3 space-y-2">
               {damages.map(d => (
-                <div key={d.id} className="flex items-start gap-3 px-4 py-3">
-                  {d.photo
-                    ? <img src={d.photo} alt="" className="w-12 h-12 rounded-lg object-cover shrink-0" style={{ border: `2px solid ${SEV_COLOR[d.severity]}` }} />
-                    : <div className="w-2 h-2 rounded-full mt-1.5 shrink-0" style={{ background: SEV_COLOR[d.severity] }} />}
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[12.5px] font-semibold">{partLabel(d, 'th')} · <span>{defectLabel(d, 'th')}</span></div>
-                    {d.note && <div className="text-[11.5px]" style={{ color: 'var(--muted)' }}>{d.note}</div>}
-                    <div className="text-[11px] mt-0.5" style={{ color: 'var(--faint)' }}>บันทึก {fmt(d.at)} · {d.by}</div>
-                    {d.repairDate && (
-                      <div className="text-[11px]" style={{ color: '#16a34a' }}>✓ ซ่อม {fmt(d.repairDate)}{d.repairedBy ? ` · ${d.repairedBy}` : ''}</div>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    {!d.repairDate ? (
-                      <button
-                        onClick={() => updateDamage(vin, d.id, { statusRepair: 'Repaired', repairDate: Date.now(), repairedBy: currentUser })}
-                        className="text-[11px] font-bold px-2 py-1 rounded-lg transition"
-                        style={{ background: 'rgba(22,163,74,0.1)', color: '#16a34a', border: '1px solid rgba(22,163,74,0.25)' }}>
-                        Mark Fixed
-                      </button>
-                    ) : (
-                      <button
-                        onClick={() => updateDamage(vin, d.id, { statusRepair: undefined, repairDate: undefined, repairedBy: undefined })}
-                        className="text-[11px] font-bold px-2 py-1 rounded-lg transition"
-                        style={{ background: 'var(--chip)', color: 'var(--muted)', border: '1px solid var(--line-strong)' }}>
-                        Unfix
-                      </button>
-                    )}
+                <DefectCard key={d.id} d={d} right={
+                  <div className="flex items-center gap-1.5">
+                    <DefectStatusSelect value={d.statusRepair} onChange={s => updateRepairStatus(vin, d.id, s)} />
                     <button onClick={() => { if (confirm('ลบรายการนี้?')) removeDamage(vin, d.id) }}
                       className="btn p-1" style={{ color: '#dc2626' }}>
                       <Trash2 size={13} />
                     </button>
                   </div>
-                </div>
+                } />
               ))}
             </div>
           )}
