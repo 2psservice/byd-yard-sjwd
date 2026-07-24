@@ -744,13 +744,13 @@ function BulkDefectModal({ vins, onClose, onDone }: { vins: string[]; onClose: (
           <ShieldCheck size={18} style={{ color: 'var(--st-damage)' }} />
           <div className="min-w-0 flex-1">
             <div className="font-bold text-[16px] leading-tight">Add Defect</div>
-            <div className="text-[12px]" style={{ color: 'var(--muted)' }}>ใส่ตำหนิเดียวกันให้ <b className="tabular" style={{ color: 'var(--brand)' }}>{vins.length}</b> คันที่เลือก</div>
+            <div className="text-[12px]" style={{ color: 'var(--muted)' }}>ใส่ Defect เดียวกันให้ <b className="tabular" style={{ color: 'var(--brand)' }}>{vins.length}</b> คันที่เลือก</div>
           </div>
           <button className="btn btn-ghost p-2" onClick={onClose}><X size={18} /></button>
         </div>
         {/* sheet selector — decides which Report sheet the defect lands in */}
         <div className="px-4 pt-3">
-          <div className="text-[11px] font-semibold mb-1" style={{ color: 'var(--muted)' }}>ประเภทตำหนิ (ชีตในรายงาน)</div>
+          <div className="text-[11px] font-semibold mb-1" style={{ color: 'var(--muted)' }}>ประเภท Defect (ชีตในรายงาน)</div>
           <div className="inline-flex p-0.5 rounded-xl gap-0.5 w-full" style={{ background: 'var(--chip)' }}>
             {([['yardDefect', 'Defect-Yard'], ['factoryDefect', 'Defect-Factory']] as const).map(([k, l]) => (
               <button key={k} onClick={() => setSource(k)}
@@ -1412,7 +1412,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
       const station = d.station || DAMAGE_STATION_FALLBACK[d.source ?? ''] || 'Gate-in'
       log.push({
         at: d.at, by: d.by, station,
-        text: `บันทึกตำหนิ ${zoneLabel(d.area)} · ${d.item ?? d.type}${d.severity === 'major' ? ' (Heavy NG)' : ''}`,
+        text: `บันทึก Defect ${zoneLabel(d.area)} · ${d.item ?? d.type}${d.severity === 'major' ? ' (Heavy NG)' : ''}`,
         accent: '#dc2626',
       })
       for (const h of d.repairHistory ?? []) {
@@ -1634,7 +1634,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                 cancelEdit()
               }
               const deleteEdit = (d: typeof damages[number]) => {
-                if (window.confirm(`ลบตำหนินี้?\n${zoneLabel(d.area)} · ${d.item ?? d.type}`)) { removeDamage(vin, d.id); cancelEdit() }
+                if (window.confirm(`ลบ Defect นี้?\n${zoneLabel(d.area)} · ${d.item ?? d.type}`)) { removeDamage(vin, d.id); cancelEdit() }
               }
               return (
               <div className="panel-solid overflow-hidden">
@@ -1651,7 +1651,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                   )}
                 </div>
                 {damages.length === 0 && !adding ? (
-                  <Empty>ไม่พบข้อมูลตำหนิ (Defect) สำหรับคันนี้{canEdit ? ' — กด “เพิ่มแผล” เพื่อบันทึก' : ''}</Empty>
+                  <Empty>ไม่พบข้อมูล Defect สำหรับคันนี้{canEdit ? ' — กด “เพิ่มแผล” เพื่อบันทึก' : ''}</Empty>
                 ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-[12.5px]" style={{ borderCollapse: 'collapse' }}>
@@ -1720,7 +1720,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                                 <div className="flex items-center gap-1.5">
                                   <button onClick={() => saveEdit(d)} title="บันทึก" className="w-7 h-7 rounded flex items-center justify-center shrink-0" style={{ background: '#16a34a', color: '#fff' }}><Check size={14} /></button>
                                   <button onClick={cancelEdit} title="ยกเลิก" className="w-7 h-7 rounded flex items-center justify-center shrink-0" style={{ background: 'var(--chip)', color: 'var(--muted)' }}><X size={14} /></button>
-                                  <button onClick={() => deleteEdit(d)} title="ลบตำหนิ" className="w-7 h-7 rounded flex items-center justify-center shrink-0" style={{ background: 'rgba(220,38,38,0.1)', color: '#dc2626' }}><Trash2 size={14} /></button>
+                                  <button onClick={() => deleteEdit(d)} title="ลบ Defect" className="w-7 h-7 rounded flex items-center justify-center shrink-0" style={{ background: 'rgba(220,38,38,0.1)', color: '#dc2626' }}><Trash2 size={14} /></button>
                                 </div>
                               </td>
                             </tr>
@@ -1776,7 +1776,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                                   )}
                                   {canEdit && (
                                     <button onClick={() => startEdit(d)}
-                                      className="shrink-0 opacity-70 hover:opacity-100" style={{ color: 'var(--brand)' }} title="แก้ไขตำหนิ">
+                                      className="shrink-0 opacity-70 hover:opacity-100" style={{ color: 'var(--brand)' }} title="แก้ไข Defect">
                                       <Pencil size={14} />
                                     </button>
                                   )}
