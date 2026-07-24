@@ -1403,6 +1403,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
     }
     const log: LogEntry[] = []
     for (const h of row.history ?? []) {
+      if (h.field === '__damage') { log.push({ at: h.at, by: h.by, station: 'Damage', text: h.to, accent: '#dc2626' }); continue }
       log.push({ at: h.at, by: h.by, text: `แก้ไข ${h.field}: ${h.from || '(ว่าง)'} → ${h.to}` })
     }
     for (const d of damages) {

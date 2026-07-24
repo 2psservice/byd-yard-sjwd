@@ -49,6 +49,9 @@ interface TrackingState {
   commitCoInspection: (res: ParseResult) => { updated: number; added: number; skipped: number; gateOut: number; moved: number }
   updateCell: (vin: string, key: string, value: string) => void
   bulkUpdate: (vins: string[], key: string, value: string) => void
+  /** Append a free-form audit entry to a row's history (no cell change) — used to
+   *  log damage add/remove so the admin Event tab keeps a permanent record. */
+  appendHistory: (vin: string, entry: RowEvent) => void
   addRow: (vin: string, cells?: Record<string, string>) => boolean
   deleteRows: (vins: string[]) => void
   clearRows: () => void
@@ -468,6 +471,15 @@ export const useTracking = create<TrackingState>()(
         if (!r) return
         const by = useYard.getState().currentUser
         const next: TrackRow = { ...withHistoryEntry(r, key, value, get().columns, by), updatedAt: Date.now() }
+        set({ rows: { ...get().rows, [vin]: next } })
+        idbPut(next).catch(() => {})
+        db.upsertTrackingRows([next]).catch(() => {})
+      },
+
+      appendHistory: (vin, entry) => {
+        const r = get().rows[vin]
+        if (!r) return // only tracking-row cars keep an Event history
+        const next: TrackRow = { ...r, history: [...(r.history ?? []), entry].slice(-MAX_ROW_HISTORY), updatedAt: Date.now() }
         set({ rows: { ...get().rows, [vin]: next } })
         idbPut(next).catch(() => {})
         db.upsertTrackingRows([next]).catch(() => {})

@@ -306,6 +306,7 @@ function DamagesTab({ unit, lang }: { unit: Unit; lang: 'th' | 'en' }) {
               <div className="flex-1 min-w-0 p-3 space-y-1">
                 <DRow label="Position" value={zoneLabel(d.area, lang)} />
                 <DRow label="Defect/NG" value={(d.item ?? d.type) + (d.note ? ` · ${d.note}` : '')} />
+                {d.remark && <DRow label="Remark" value={d.remark} />}
                 <DRow label="Record date" value={`${fullDT(d.at)} · ${d.by}`} />
                 <DRow label="Repair date" value={repaired ? `${fullDT(d.repairDate!)} · ${d.repairedBy ?? '—'}` : '—'} color={repaired ? '#16a34a' : 'var(--faint)'} />
               </div>

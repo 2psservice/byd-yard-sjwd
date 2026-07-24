@@ -495,7 +495,7 @@ const fmtDateTime = (ts: number) => {
 }
 
 // ── shared: quick multi-row damage form ──────────────────────────────────────
-type DmgRow = { rid: string; area: string; detail: string; severity: 'minor' | 'major'; photos: string[] }
+type DmgRow = { rid: string; area: string; detail: string; remark: string; severity: 'minor' | 'major'; photos: string[] }
 
 // Maps display text → stored ID (for known entries)
 const TYPE_TEXT_MAP = Object.fromEntries(TYPES.map(t => [t.th, t.id]))
@@ -503,8 +503,9 @@ const AREA_TEXT_MAP = Object.fromEntries(POSITION_OPTS.map(p => [p.th, p.id]))
 
 const mkRow = (): DmgRow => ({
   rid: `r${Date.now()}${Math.random().toString(36).slice(2)}`,
-  area: POSITION_OPTS[0].th,   // display text (กันชนหน้า)
-  detail: TYPES[0].th,         // display text (รอยขีดข่วน)
+  area: '',    // blank — operator types the position (datalist still suggests)
+  detail: '',  // blank — operator types the defect
+  remark: '',
   severity: 'minor',
   photos: [],
 })
@@ -547,9 +548,10 @@ function DamageForm({ onSaveAll, onCancel }: {
   const { toast } = useYard()
   const [rows, setRows] = useState<DmgRow[]>([mkRow()])
   const [busyRid, setBusyRid] = useState<string | null>(null)
+  const [armed, setArmed] = useState<string | null>(null) // rid whose delete is armed (2-tap guard)
   const upd = (rid: string, k: keyof DmgRow, v: string) =>
     setRows(r => r.map(x => x.rid === rid ? { ...x, [k]: v } : x))
-  const del = (rid: string) => setRows(r => r.length > 1 ? r.filter(x => x.rid !== rid) : r)
+  const del = (rid: string) => { setRows(r => r.length > 1 ? r.filter(x => x.rid !== rid) : r); setArmed(null) }
 
   const addPhotos = async (rid: string, files: FileList) => {
     setBusyRid(rid)
@@ -567,6 +569,7 @@ function DamageForm({ onSaveAll, onCancel }: {
     type: TYPE_TEXT_MAP[row.detail] ?? 'scratch',           // known → id, custom → default type
     severity: row.severity,
     note: TYPE_TEXT_MAP[row.detail] ? undefined : (row.detail || undefined), // custom text → note
+    remark: row.remark.trim() || undefined,
     photos: row.photos.length ? row.photos : undefined,
     photo: row.photos[0],
   })))
@@ -611,14 +614,27 @@ function DamageForm({ onSaveAll, onCancel }: {
                 {TYPES.map(t => <option key={t.id} value={t.th} />)}
               </datalist>
 
+              {/* delete guard: first tap arms (pencil → trash), second tap deletes */}
               <button
-                onClick={() => del(row.rid)}
-                className="w-8 h-8 rounded-lg flex items-center justify-center transition hover:bg-red-50"
-                style={{ color: 'var(--muted)', background: 'var(--chip)' }}
+                onClick={() => (armed === row.rid ? del(row.rid) : setArmed(row.rid))}
+                title={armed === row.rid ? 'กดอีกครั้งเพื่อลบ' : 'แก้ไข / ลบ'}
+                className="w-8 h-8 rounded-lg flex items-center justify-center transition"
+                style={armed === row.rid
+                  ? { color: '#fff', background: '#dc2626' }
+                  : { color: 'var(--muted)', background: 'var(--chip)' }}
               >
-                <Trash2 size={12} />
+                {armed === row.rid ? <Trash2 size={12} /> : <Pencil size={12} />}
               </button>
             </div>
+
+            {/* remark — free text (e.g. "Move From Main yard") */}
+            <input
+              className="input text-[12.5px] w-full"
+              style={{ padding: '7px 8px' }}
+              placeholder="Remark (หมายเหตุ)…"
+              value={row.remark}
+              onChange={e => upd(row.rid, 'remark', e.target.value)}
+            />
 
             <PhotoStrip
               photos={row.photos}
