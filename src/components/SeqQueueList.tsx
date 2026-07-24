@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { ListChecks, ChevronLeft } from 'lucide-react'
+import { ListChecks, ChevronLeft, Clock } from 'lucide-react'
 import { seqStageOf } from '../store/useOps'
 import { yardLocCode, byYardLocation } from '../lib/groupingImport'
 import type { WorkQueue, QueueItem } from '../store/useOps'
@@ -40,11 +40,16 @@ export function SeqQueuePicker({ queues, units, trackingRows, locPrefix, queuedL
   const isGone = (i: QueueItem) => i.gatedOut === true || goneVins.has(i.vin)
   const openSeq = openId ? queues.find((q) => q.id === openId) ?? null : null
   const seqCars = useMemo(() => {
-    if (!openSeq) return [] as { vin: string; model: string; color: string; grouping: string; location: string; lane: string; stage: string; done: boolean }[]
+    if (!openSeq) return [] as { vin: string; model: string; color: string; grouping: string; location: string; lane: string; stage: string; done: boolean; ts?: number; tsLabel?: string; by?: string }[]
     return openSeq.items.map((i) => {
       const u = units.find((x) => x.vin === i.vin)
       const row = trackingRows.find((r) => r.vin === i.vin)
       const gone = isGone(i)
+      // most-recent stage timestamp for the history line (gate-out → preload → wash)
+      const step = gone || i.gatedOut ? { ts: i.doneAt, label: 'gate out', by: i.doneBy }
+        : i.atLaneAt ? { ts: i.atLaneAt, label: 'preload', by: i.returnedBy }
+        : i.atWashAt ? { ts: i.atWashAt, label: 'wash', by: i.deliveredBy }
+        : { ts: undefined, label: '', by: undefined }
       return {
         vin: i.vin,
         model: row?.cells['Model'] ?? row?.cells['Model name'] ?? u?.modelName ?? '—',
@@ -54,6 +59,9 @@ export function SeqQueuePicker({ queues, units, trackingRows, locPrefix, queuedL
         lane: i.laneLoad ?? '—',
         stage: gone ? 'gateout' : seqStageOf(i),
         done: gone || i.done,
+        ts: step.ts,
+        tsLabel: step.label,
+        by: step.by,
       }
     }).sort((a, b) => byYardLocation(a.location, b.location))
   }, [openSeq, units, trackingRows, locPrefix, goneVins]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -91,6 +99,13 @@ export function SeqQueuePicker({ queues, units, trackingRows, locPrefix, queuedL
                         <div className="text-[11px] mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5" style={{ color: 'var(--muted)' }}>
                           <span>{c.model}</span><span>· {c.color}</span><span>· {c.grouping}</span>
                         </div>
+                        {c.ts && (
+                          <div className="text-[10.5px] mt-0.5 flex items-center gap-1" style={{ color: 'var(--faint)' }}>
+                            <Clock size={10} />
+                            <span>{c.tsLabel} {new Date(c.ts).toLocaleString('th-TH', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
+                            {c.by && <span>· {c.by}</span>}
+                          </div>
+                        )}
                       </div>
                       <div className="text-right shrink-0">
                         <div className="tabular text-[12px] font-bold">{c.location}</div>
