@@ -322,15 +322,29 @@ function PreGateInQueues() {
               </button>
               {open && (
                 <div className="border-t hairline max-h-[320px] overflow-y-auto divide-y">
-                  {complete ? (
-                    <div className="px-4 py-3 text-[11.5px] font-bold flex items-center gap-1.5" style={{ color: '#16a34a' }}>
+                  {complete && (
+                    <div className="px-4 py-2 text-[11.5px] font-bold flex items-center gap-1.5" style={{ color: '#16a34a' }}>
                       <CheckCircle2 size={13} /> เข้าครบแล้ว
                     </div>
-                  ) : pending.map((item) => (
+                  )}
+                  {/* every car — pending first, each Gate-in'd car shows when + who */}
+                  {[...q.items].sort((a, b) => Number(a.done) - Number(b.done)).map((item) => (
                     <div key={item.vin} className="flex items-center gap-3 px-4 py-2.5">
-                      <div className="w-2 h-2 rounded-full shrink-0" style={{ background: '#f6d365' }} />
-                      <span className="vin text-[12px] flex-1 truncate">{item.vin}</span>
-                      <span className="text-[11px] truncate shrink-0" style={{ color: 'var(--muted)', maxWidth: 130 }}>{modelByVin.get(item.vin) || ''}</span>
+                      <div className="w-2 h-2 rounded-full shrink-0" style={{ background: item.done ? '#22c55e' : '#f6d365' }} />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="vin text-[12px] truncate">{item.vin}</span>
+                          <span className="text-[11px] truncate shrink-0" style={{ color: 'var(--muted)', maxWidth: 130 }}>{modelByVin.get(item.vin) || ''}</span>
+                        </div>
+                        {item.done && item.doneAt && (
+                          <div className="text-[10.5px] mt-0.5 flex items-center gap-1" style={{ color: 'var(--faint)' }}>
+                            <Clock size={10} />
+                            <span>Gate-in {new Date(item.doneAt).toLocaleString('th-TH', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
+                            {item.doneBy && <span>· {item.doneBy}</span>}
+                          </div>
+                        )}
+                      </div>
+                      {item.done && <CheckCircle2 size={13} className="shrink-0" style={{ color: '#16a34a' }} />}
                     </div>
                   ))}
                 </div>
