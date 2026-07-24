@@ -3,6 +3,7 @@
  * Roles: Walk (Gate In) · Driver (Park) · PDI/PM/FC (Inspect) · Mechanic (Repair)
  */
 import { useEffect, useRef, useState, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import {
   ScanLine, Car, ShieldCheck, Wrench, ChevronLeft,
   CheckCircle2, XCircle, AlertTriangle, Navigation, Clock,
@@ -530,6 +531,62 @@ function PhotoStrip({ photos, onAdd, onRemove, busy }: {
   )
 }
 
+/** Filterable bilingual dropdown — a real tappable list (native <datalist> does
+ *  not show a usable dropdown on mobile). Value stored is Thai; English shows
+ *  under each option. Type to filter by either language. The list renders in a
+ *  portal with fixed positioning so no `overflow:hidden` ancestor clips it. */
+function MasterCombo({ value, onChange, options, placeholder }: {
+  value: string; onChange: (v: string) => void; options: { id: string; en: string; th: string }[]; placeholder?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [box, setBox] = useState<{ left: number; top: number; width: number } | null>(null)
+  const measure = () => {
+    const r = inputRef.current?.getBoundingClientRect()
+    if (r) setBox({ left: r.left, top: r.bottom, width: r.width })
+  }
+  const q = value.trim().toLowerCase()
+  const matches = useMemo(() => {
+    const list = q ? options.filter(o => o.th.toLowerCase().includes(q) || o.en.toLowerCase().includes(q)) : options
+    return list.slice(0, 60)
+  }, [q, options])
+  useEffect(() => {
+    if (!open) return
+    const reposition = () => measure()
+    window.addEventListener('scroll', reposition, true)
+    window.addEventListener('resize', reposition)
+    return () => { window.removeEventListener('scroll', reposition, true); window.removeEventListener('resize', reposition) }
+  }, [open])
+  const openList = () => { measure(); setOpen(true) }
+  const pick = (v: string) => { onChange(v); setOpen(false) }
+  return (
+    <>
+      <input
+        ref={inputRef}
+        className="input text-[12.5px] w-full" style={{ padding: '7px 8px' }}
+        placeholder={placeholder} value={value}
+        onFocus={openList} onClick={openList}
+        onChange={e => { onChange(e.target.value); measure(); setOpen(true) }}
+      />
+      {open && box && matches.length > 0 && createPortal(
+        <>
+          <div className="fixed inset-0" style={{ zIndex: 90 }} onMouseDown={() => setOpen(false)} onTouchStart={() => setOpen(false)} />
+          <div className="rounded-xl overflow-auto" style={{ position: 'fixed', left: box.left, top: box.top + 4, width: box.width, maxHeight: 240, zIndex: 91, background: 'var(--panel)', border: '1px solid var(--line-strong)', boxShadow: '0 12px 32px -8px rgba(15,23,42,0.4)' }}>
+            {matches.map(o => (
+              <button key={o.id} type="button" onMouseDown={e => e.preventDefault()}
+                onClick={() => pick(o.th)}
+                className="w-full text-left px-3 py-2 border-b hairline last:border-0 active:bg-chip">
+                <div className="text-[13px] font-semibold">{o.th}</div>
+                <div className="text-[11px]" style={{ color: 'var(--muted)' }}>{o.en}</div>
+              </button>
+            ))}
+          </div>
+        </>, document.body)
+      }
+    </>
+  )
+}
+
 function DamageForm({ onSaveAll, onCancel }: {
   onSaveAll: (damages: DamageInput[]) => void
   onCancel: () => void
@@ -553,7 +610,11 @@ function DamageForm({ onSaveAll, onCancel }: {
   const removePhoto = (rid: string, i: number) =>
     setRows(r => r.map(x => x.rid === rid ? { ...x, photos: x.photos.filter((_, pi) => pi !== i) } : x))
 
-  const save = () => onSaveAll(rows.map(row => {
+  // every defect must carry at least one photo before it can be saved
+  const allPhotographed = rows.every(row => row.photos.length > 0)
+  const save = () => {
+    if (!allPhotographed) { toast('err', 'กรุณาถ่ายรูปตำหนิอย่างน้อย 1 รูปต่อรายการ'); return }
+    onSaveAll(rows.map(row => {
     const part = resolvePart(row.area)     // { en, th } from the master Part list
     const def = resolveDefect(row.detail)  // { en, th } from the master Defect list
     return {
@@ -568,12 +629,13 @@ function DamageForm({ onSaveAll, onCancel }: {
       photo: row.photos[0],
     }
   }))
+  }
 
   return (
-    <div className="panel overflow-hidden fade-up">
-      <div className="p-3 text-[13px] font-semibold flex items-center gap-2 border-b hairline" style={{ background: '#fff8f8' }}>
+    <div className="panel fade-up" style={{ overflow: 'visible' }}>
+      <div className="p-3 text-[13px] font-semibold flex items-center gap-2 border-b hairline rounded-t-2xl" style={{ background: '#fff8f8' }}>
         <AlertTriangle size={15} style={{ color: 'var(--st-damage)' }} />
-        <span style={{ color: 'var(--st-damage)' }}>บันทึกตำหนิ</span>
+        <span style={{ color: 'var(--st-damage)' }}>+ADD DEFECT</span>
       </div>
       <div className="p-4 space-y-2">
         {/* column headers */}
@@ -584,30 +646,11 @@ function DamageForm({ onSaveAll, onCancel }: {
         {/* damage rows — each field is a combobox: type freely or pick from list */}
         {rows.map(row => (
           <div key={row.rid} className="space-y-1.5 pb-1.5 border-b hairline last:border-b-0">
-            <div className="grid gap-1.5 items-center" style={{ gridTemplateColumns: '1fr 1fr 32px' }}>
-              <input
-                className="input text-[12.5px]"
-                style={{ padding: '7px 8px' }}
-                list={`pos-${row.rid}`}
-                placeholder="ตำแหน่ง…"
-                value={row.area}
-                onChange={e => upd(row.rid, 'area', e.target.value)}
-              />
-              <datalist id={`pos-${row.rid}`}>
-                {POSITION_OPTS.map(p => <option key={p.id} value={p.th}>{p.en}</option>)}
-              </datalist>
-
-              <input
-                className="input text-[12.5px]"
-                style={{ padding: '7px 8px' }}
-                list={`def-${row.rid}`}
-                placeholder="รายละเอียด…"
-                value={row.detail}
-                onChange={e => upd(row.rid, 'detail', e.target.value)}
-              />
-              <datalist id={`def-${row.rid}`}>
-                {TYPES.map(t => <option key={t.id} value={t.th}>{t.en}</option>)}
-              </datalist>
+            <div className="grid gap-1.5 items-start" style={{ gridTemplateColumns: '1fr 1fr 32px' }}>
+              <MasterCombo options={POSITION_OPTS} placeholder="ตำแหน่ง…"
+                value={row.area} onChange={v => upd(row.rid, 'area', v)} />
+              <MasterCombo options={TYPES} placeholder="รายละเอียด…"
+                value={row.detail} onChange={v => upd(row.rid, 'detail', v)} />
 
               {/* delete guard: first tap arms (pencil → trash), second tap deletes */}
               <button
@@ -663,12 +706,19 @@ function DamageForm({ onSaveAll, onCancel }: {
           <Plus size={14} /> เพิ่มแผล
         </button>
 
+        {/* photo requirement hint */}
+        {!allPhotographed && (
+          <div className="text-[11.5px] flex items-center gap-1.5 pt-0.5" style={{ color: 'var(--st-damage)' }}>
+            <Camera size={13} /> ต้องถ่ายรูปตำหนิอย่างน้อย 1 รูปต่อรายการก่อนบันทึก
+          </div>
+        )}
+
         {/* actions */}
         <div className="grid grid-cols-2 gap-2 pt-1">
           <button className="btn py-3 text-[13.5px]" onClick={onCancel}>ยกเลิก</button>
           <button className="btn py-3 text-[13.5px] font-bold"
-            onClick={save}
-            style={{ background: 'var(--st-damage)', color: '#fff', border: 'none' }}>
+            onClick={save} disabled={!allPhotographed}
+            style={{ background: allPhotographed ? 'var(--st-damage)' : 'var(--chip)', color: allPhotographed ? '#fff' : 'var(--faint)', border: 'none' }}>
             <Plus size={14} /> บันทึก NG{rows.length > 1 ? ` (${rows.length})` : ''}
           </button>
         </div>
@@ -1205,17 +1255,11 @@ function WalkView() {
                     <div className="grid gap-1.5" style={{ gridTemplateColumns: '1fr 1fr' }}>
                       <div>
                         <div className="text-[10px] font-bold mb-1" style={{ color: 'var(--muted)' }}>Position</div>
-                        <input className="input text-[12px] w-full" style={{ padding: '6px 8px' }}
-                          list={`ep-${d.id}`} placeholder="ตำแหน่ง…" value={editArea}
-                          onChange={e => setEditArea(e.target.value)} />
-                        <datalist id={`ep-${d.id}`}>{POSITION_OPTS.map(p => <option key={p.id} value={p.th}>{p.en}</option>)}</datalist>
+                        <MasterCombo options={POSITION_OPTS} placeholder="ตำแหน่ง…" value={editArea} onChange={setEditArea} />
                       </div>
                       <div>
                         <div className="text-[10px] font-bold mb-1" style={{ color: 'var(--muted)' }}>Defect/NG</div>
-                        <input className="input text-[12px] w-full" style={{ padding: '6px 8px' }}
-                          list={`ed-${d.id}`} placeholder="รายละเอียด…" value={editDetail}
-                          onChange={e => setEditDetail(e.target.value)} />
-                        <datalist id={`ed-${d.id}`}>{TYPES.map(t => <option key={t.id} value={t.th}>{t.en}</option>)}</datalist>
+                        <MasterCombo options={TYPES} placeholder="รายละเอียด…" value={editDetail} onChange={setEditDetail} />
                       </div>
                     </div>
                     <div className="flex gap-1.5">
