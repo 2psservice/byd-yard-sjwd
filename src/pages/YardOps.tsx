@@ -2314,7 +2314,7 @@ function PdiView({ types, accent }: { types: QueueType[]; accent: string }) {
                   <ChevronLeft size={16} style={{ color: 'var(--muted)', transform: isOpen ? 'rotate(90deg)' : 'rotate(-90deg)', transition: 'transform .15s' }} />
                 </button>
                 {isOpen && (queueCars.length > 0 ? (
-                  <div className="border-t hairline max-h-72 overflow-y-auto divide-y" style={{ borderColor: 'var(--line)' }}>
+                  <div className="border-t hairline max-h-[65vh] overflow-y-auto divide-y" style={{ borderColor: 'var(--line)' }}>
                     {queueCars.map(item => (
                       <button key={item.vin} onClick={() => { setVin(item.vin); setJustOk(false) }}
                         className="flex items-center gap-3 px-4 py-2.5 w-full text-left transition active:bg-chip">
