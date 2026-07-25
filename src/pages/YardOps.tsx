@@ -14,7 +14,7 @@ import {
 import { useYard, useUnits, useTrips, useBlocks, useMe } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { isDamaged } from '../lib/carStatus'
-import { useOps, useActiveQueues, activeProcess, stageOf, isSequenceQueue, seqStageOf, isQueueComplete, queueTypeOf } from '../store/useOps'
+import { useOps, useActiveQueues, activeProcess, stageOf, isSequenceQueue, seqStageOf, isQueueComplete, queueTypeOf, stampStationDate } from '../store/useOps'
 import type { WorkQueue, QueueItem, QueueType } from '../store/useOps'
 import { CarTopView } from '../components/CarTopView'
 import { LogoMark } from '../components/Logo'
@@ -2135,8 +2135,13 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved, stationTit
       if (voltage.trim()) updateCell(row.vin, 'Voltage of 12V', voltage.trim())
     }
     const result: 'OK' | 'NG' = stationDmgs.length > 0 ? 'NG' : 'OK'
-    if (canRecord && activeProc) recordCheck(activeProc.queue.id, unit.vin, result, currentUser)
-    else setInspected(unit.vin, result === 'OK')
+    if (canRecord && activeProc) {
+      recordCheck(activeProc.queue.id, unit.vin, result, currentUser) // stamps the station date via the queue
+    } else {
+      setInspected(unit.vin, result === 'OK')
+      // no queue → still stamp the date ladder (PM → PM1/PM2…, FINAL → Final check date)
+      if (!activeProc) stampStationDate(unit.vin, stationTitle === 'PM' ? 'PM' : stationTitle === 'FINAL CHECK' ? 'FINAL' : 'PDI')
+    }
     if (row) updateCell(row.vin, 'Car Status', stationResultStatus(stationName, result))
     onSaved(stationResultStatus(stationName, result), result)
   }

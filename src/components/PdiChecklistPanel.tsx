@@ -6,7 +6,7 @@ import { useMemo, useRef, useState } from 'react'
 import { ShieldCheck, CheckCircle2, Camera, X, AlertTriangle } from 'lucide-react'
 import { useYard } from '../store/useYard'
 import { useTracking } from '../store/useTracking'
-import { useOps } from '../store/useOps'
+import { useOps, stampStationDate } from '../store/useOps'
 import { compressImage } from '../lib/photo'
 import { PDI_CHECKLIST, pdiItemId, type PdiResult } from '../lib/pdiChecklist'
 import type { Unit } from '../types'
@@ -88,8 +88,14 @@ export default function PdiChecklistPanel({ unit, row, activeProc, canRecord, on
       })
     })))
     const result: 'OK' | 'NG' = totalNg > 0 ? 'NG' : 'OK'
-    if (canRecord && activeProc) recordCheck(activeProc.queue.id, unit.vin, result, currentUser)
-    else setInspected(unit.vin, result === 'OK')
+    if (canRecord && activeProc) {
+      recordCheck(activeProc.queue.id, unit.vin, result, currentUser) // stamps the PDI date via the queue
+    } else {
+      setInspected(unit.vin, result === 'OK')
+      // no queue → still stamp the PDI-date ladder (PDI → RE-PDI #1 → #2…) so the
+      // admin Unit sheet records this inspection's date (OK or NG alike)
+      if (!activeProc) stampStationDate(unit.vin, 'PDI')
+    }
     if (row) updateCell(row.vin, 'Car Status', `${stationName} ${result}`)
     onSaved(`${stationName} ${result}`, result)
   }

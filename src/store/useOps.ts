@@ -99,9 +99,15 @@ const PDI_KEYS = ['PDI', ...Array.from({ length: 8 }, (_, i) => `RE PDI  Date #$
  * true if it wrote a cell, so the caller can flip the item's `stamped` flag and
  * never double-write (which would eat a second PM slot on a re-toggle).
  */
-function stampOverview(q: WorkQueue, vin: string, result?: 'OK' | 'NG'): boolean {
-  const type = queueTypeOf(q)
-  if (type === 'WASH' || type === 'SPECIAL') return false // event-log only, no cell
+/**
+ * Stamp today's date into the tracking sheet for a station check, using the
+ * per-type ladder — PM → next empty PM1…PM15, PDI → PDI then RE-PDI 1…8, FINAL
+ * → "Final check date" (single). Queue-independent so field stations can stamp
+ * even when the car isn't part of a work queue. Returns true if a cell was
+ * written. WASH / SPECIAL have no date cell.
+ */
+export function stampStationDate(vin: string, type: QueueType): boolean {
+  if (type === 'WASH' || type === 'SPECIAL') return false
   const tr = useTracking.getState()
   const row = tr.rows[vin]
   if (!row) return false
@@ -122,6 +128,10 @@ function stampOverview(q: WorkQueue, vin: string, result?: 'OK' | 'NG'): boolean
   // FINAL — stamp the done-date into "Final check date"
   tr.updateCell(vin, 'Final check date', d)
   return true
+}
+
+function stampOverview(q: WorkQueue, vin: string, _result?: 'OK' | 'NG'): boolean {
+  return stampStationDate(vin, queueTypeOf(q))
 }
 
 let qid = 0
