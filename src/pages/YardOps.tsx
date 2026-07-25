@@ -3137,21 +3137,20 @@ function CheckView() {
             {row?.cells['Status']       && <Row label="Status (Excel)" value={row.cells['Status']} />}
             {row?.cells['PIC (PDI)']    && <Row label="PIC (PDI)" value={row.cells['PIC (PDI)']} />}
             <Row label="Damage" value={damaged ? 'NG — มี Defect' : 'OK — ปกติ'} accent={damaged ? '#dc2626' : '#16a34a'} />
-            {unit && unit.damages.length > 0 && unit.damages.map((d, i) => (
-              <div key={d.id} className="flex items-start gap-3 px-4 py-2.5 border-b hairline">
-                {d.photo
-                  ? <img src={d.photo} alt="" onClick={() => window.open(d.photo, '_blank')}
-                      className="w-14 h-14 rounded-lg object-cover shrink-0 cursor-pointer"
-                      style={{ border: `2px solid ${d.severity === 'major' ? '#dc2626' : 'var(--line)'}` }} />
-                  : <AlertTriangle size={13} style={{ color: '#dc2626', flexShrink: 0, marginTop: 2 }} />}
-                <div className="flex-1 text-[12px]">
-                  <div className="font-semibold">{partLabel(d, 'th')}</div>
-                  <div style={{ color: 'var(--muted)' }}>{d.note || d.type}{d.severity === 'major' ? ' · Heavy NG' : ''}</div>
-                  {d.photo && <div className="text-[10.5px] mt-0.5" style={{ color: 'var(--brand)' }}>แตะเพื่อดูรูปเต็ม</div>}
-                </div>
-                <span className="text-[10.5px]" style={{ color: 'var(--faint)' }}>#{i+1}</span>
+            {/* same DefectCard as Gate-in: bilingual labels, photo strip with
+                full-screen lightbox, and a read-only repair-status badge */}
+            {unit && unit.damages.length > 0 && (
+              <div className="p-3 space-y-2">
+                {unit.damages.map(d => (
+                  <DefectCard key={d.id} d={d} right={
+                    <span className="font-bold rounded-lg px-2.5 py-1.5 whitespace-nowrap shrink-0"
+                      style={{ ...defectStatusStyle(d.statusRepair || 'Waiting Repair'), fontSize: 11.5 }}>
+                      {d.statusRepair || 'Waiting Repair'}
+                    </span>
+                  } />
+                ))}
               </div>
-            ))}
+            )}
           </Sec>
 
           {/* ── Station work + driver history (per station) ── */}
