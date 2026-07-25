@@ -63,11 +63,11 @@ function UserMenu({ onGoSettings }: { onGoSettings: () => void }) {
   }, [])
 
   return (
-    <div className="hidden md:flex items-center gap-2 pl-2.5 ml-0.5 border-l hairline">
+    <div className="flex items-center gap-2 pl-2.5 ml-0.5 border-l hairline">
       <button
         ref={btnRef}
         onClick={openMenu}
-        className="flex items-center gap-2 rounded-xl px-2 py-1 transition hover:bg-[var(--chip)]"
+        className="flex items-center gap-2 rounded-xl px-1.5 py-1 transition hover:bg-[var(--chip)]"
       >
         <div className="w-7 h-7 rounded-full flex items-center justify-center text-[12px] font-bold shrink-0"
           style={{ background: 'var(--brand)', color: '#fff' }}>
