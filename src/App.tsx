@@ -109,9 +109,17 @@ export default function App() {
   //    the tab becomes visible again (PWA left open overnight on a phone). ──
   useEffect(() => {
     if (!loggedInUserId) return
+    let warned = false
     const check = () => {
       const { loggedInUserId: uid, loginAt, logout, toast } = useYard.getState()
       if (!uid) return
+      // heads-up 10 min before the midnight cutoff so a night-shift inspector
+      // can finish/save instead of losing an in-progress checklist to the logout
+      const now = new Date()
+      if (!warned && now.getHours() === 23 && now.getMinutes() >= 50) {
+        warned = true
+        toast('err', 'ระบบจะหมดเวลาใช้งานตอนเที่ยงคืน — กรุณาบันทึกงานที่ค้างไว้')
+      }
       if (!loginAt || !sameDay(loginAt, Date.now())) {
         logout()
         toast('info', 'ครบกำหนดการใช้งานรายวัน — กรุณาเข้าสู่ระบบใหม่')
@@ -127,9 +135,12 @@ export default function App() {
   // load real tracking data from IndexedDB on startup
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
 
-  // once tracking rows are available, purge any leftover sample units/trips
+  // once tracking rows are available, purge any leftover sample units/trips —
+  // but only AFTER a cloud sync completed (lastSync > 0). On a fresh device the
+  // first non-empty set is the site-scoped partial load; purging against it
+  // deleted every unit whose VIN wasn't in that subset.
   useEffect(() => {
-    if (!purgedRef.current && trackingRows.length > 0) {
+    if (!purgedRef.current && trackingRows.length > 0 && useTracking.getState().lastSync > 0) {
       purgedRef.current = true
       purgeNonTracking(new Set(trackingRows.map((r) => r.vin)))
     }

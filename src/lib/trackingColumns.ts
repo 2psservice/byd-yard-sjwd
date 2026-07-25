@@ -69,9 +69,16 @@ export function parseCellDate(raw: string | undefined): number | null {
     const mon = _MONTHS[m[2].slice(0, 3).toLowerCase()]
     if (mon) { const y = +m[3]; return new Date(y < 100 ? 2000 + y : y, mon - 1, +m[1]).getTime() }
   }
-  // dd/mm/yyyy or dd-mm-yyyy (all-numeric)
-  const dmy = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})$/)
-  if (dmy) { const y = +dmy[3]; return new Date(y < 100 ? 2000 + y : y, +dmy[2] - 1, +dmy[1]).getTime() }
+  // dd/mm/yyyy or dd-mm-yyyy (all-numeric), optionally followed by a time —
+  // MUST match before Date.parse, which reads "10/07/2026 09:30" as US
+  // month-first (Oct 7). Buddhist-era years (2569) convert to CE (-543).
+  const dmy = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})(?:\s+(\d{1,2}):(\d{2}))?/)
+  if (dmy) {
+    let y = +dmy[3]
+    if (y < 100) y += 2000
+    if (y > 2400) y -= 543 // พ.ศ. → ค.ศ.
+    return new Date(y, +dmy[2] - 1, +dmy[1], +(dmy[4] ?? 0), +(dmy[5] ?? 0)).getTime()
+  }
   const t = Date.parse(s)
   return Number.isFinite(t) ? t : null
 }

@@ -198,7 +198,7 @@ interface YardState {
   renameBlockId: (id: string, newId: string) => string | null
   // --- gps ---
   startTrip: (vin: string, driver: string, from: string, to: string) => void
-  appendGps: (vin: string, p: GpsPoint) => void
+  appendGps: (vin: string, p: GpsPoint, sim?: boolean) => void
   endTrip: (vin: string) => void
   purgeNonTracking: (realVins: Set<string>) => void
   ensureUnitSites: () => void
@@ -263,7 +263,13 @@ function debouncedLocalStorage<S>(delay = 500): PersistStorage<S> {
       pendingName = null; pendingValue = null
     }
   }
-  if (typeof window !== 'undefined') window.addEventListener('beforeunload', flush)
+  if (typeof window !== 'undefined') {
+    window.addEventListener('beforeunload', flush)
+    // mobile PWAs are usually discarded WITHOUT beforeunload — pagehide /
+    // visibilitychange:hidden are the reliable pair on iOS/Android
+    window.addEventListener('pagehide', flush)
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush() })
+  }
   return {
     getItem: (name) => {
       const str = localStorage.getItem(name)
@@ -631,7 +637,7 @@ export const useYard = create<YardState>()(
         const s = get()
         const now = Date.now()
         const dmg: Damage = {
-          id: `man${++tid}_${now.toString(36)}`,
+          id: `man${now.toString(36)}${Math.random().toString(36).slice(2, 8)}`,
           area: f.position?.trim() || '—',
           type: f.defect?.trim() || '—',
           item: f.defect?.trim() || undefined,
@@ -668,7 +674,7 @@ export const useYard = create<YardState>()(
         const at = parseDefDate(f.date) ?? now
         for (const vin of new Set(vins)) {
           const dmg: Damage = {
-            id: `man${++tid}_${now.toString(36)}`,
+            id: `man${now.toString(36)}${Math.random().toString(36).slice(2, 8)}`,
             area: f.position?.trim() || '—',
             type: f.defect?.trim() || '—',
             item: f.defect?.trim() || undefined,
@@ -928,8 +934,10 @@ export const useYard = create<YardState>()(
       // ── gps ──────────────────────────────────────────────────────────────
       startTrip: (vin, driver, from, to) =>
         set((s) => {
+          // close any stale open trip at its LAST FIX time, not "now" — a phone
+          // that died mid-drive days ago must not record a multi-day duration
           const trips = s.trips.map((t) =>
-            t.vin === vin && !t.endedAt ? { ...t, endedAt: Date.now() } : t,
+            t.vin === vin && !t.endedAt ? { ...t, endedAt: t.path[t.path.length - 1]?.t ?? t.startedAt } : t,
           )
           const trip: Trip = { id: `t${++tid}${Date.now()}`, vin, driver, startedAt: Date.now(), from, to, path: [] }
           const u = s.units[vin]
@@ -939,7 +947,7 @@ export const useYard = create<YardState>()(
           }
         }),
 
-      appendGps: (vin, p) =>
+      appendGps: (vin, p, sim) =>
         set((s) => {
           let idx = -1
           for (let i = s.trips.length - 1; i >= 0; i--) {
@@ -951,7 +959,9 @@ export const useYard = create<YardState>()(
           if (last && haversineM(last, p) < 0.8 && p.t - last.t < 4000) return s
           const path = [...trip.path, p]
           const trips = s.trips.slice()
-          trips[idx] = { ...trip, path }
+          // sim flag: fabricated (permission-denied / no-fix fallback) points must
+          // not masquerade as a real GPS trace in Tracking / trip playback
+          trips[idx] = { ...trip, path, sim: trip.sim || sim || undefined }
           const u = s.units[vin]
           return {
             trips,
@@ -1055,6 +1065,11 @@ export const useYard = create<YardState>()(
               }
               const r = payload.new as DbUnit
               if (!r?.vin) return
+              // site-scope: loadFromSupabase deliberately loads one yard, but this
+              // channel received every yard's events — injecting other sites' units
+              // (each with damages:[]) bloated localStorage toward its quota
+              const sid = get().currentSite
+              if (sid && r.site_id && r.site_id !== sid && !get().units[r.vin]) return
               const ts = r.updated_at ? new Date(r.updated_at).getTime() : Date.now()
               if ((unitTs.get(r.vin) ?? 0) >= ts) return // stale / self-echo
               unitTs.set(r.vin, ts)
@@ -1070,7 +1085,24 @@ export const useYard = create<YardState>()(
             (payload) => {
               if (payload.eventType === 'DELETE') {
                 const id = (payload.old as { id?: string })?.id
-                if (!id) return
+                if (!id) {
+                  // key-only/truncated DELETE payload — refetch this site's units so
+                  // the removal still lands here (mirror of the INSERT/UPDATE path;
+                  // otherwise the deleted defect lingered and could be re-uploaded)
+                  scheduleDamageRefetch(() => {
+                    const siteId = get().currentSite
+                    if (!siteId) return
+                    db.fetchAllUnits(siteId).then((cloud) => {
+                      if (!cloud.length) return
+                      set((s) => {
+                        const merged: Record<string, Unit> = { ...s.units }
+                        for (const u of cloud) merged[u.vin] = u
+                        return { units: merged }
+                      })
+                    }).catch((e) => console.error('[db] damage delete refetch', e))
+                  })
+                  return
+                }
                 set((s) => {
                   for (const vin in s.units) {
                     const u = s.units[vin]
@@ -1134,6 +1166,7 @@ export const useYard = create<YardState>()(
 
       unsubscribeRealtime: () => {
         if (unitsChannel) { supabase.removeChannel(unitsChannel); unitsChannel = null; unitTs.clear() }
+        if (damageRefetchTimer) { clearTimeout(damageRefetchTimer); damageRefetchTimer = null } // don't refetch after logout/site switch
       },
 
       // Defect-Yard / Defect-Factory rows → Damage records on each VIN's unit.
@@ -1297,7 +1330,11 @@ export const useYard = create<YardState>()(
         groupModelsInRow: s.groupModelsInRow, laneDepth: s.laneDepth, view: s.view, appUsers: s.appUsers, loggedInUserId: s.loggedInUserId,
         loginAt: s.loginAt,
         units: s.units, trailers: s.trailers, policies: s.policies, blocksBySite: s.blocksBySite, models: s.models,
-        trips: s.trips, sites: s.sites,
+        // trips grew forever (full GPS path per drive) until localStorage hit its
+        // quota and EVERY state change silently stopped persisting. Keep the 30
+        // most recent, each capped to its last 600 fixes (~10 min at 1 Hz).
+        trips: s.trips.slice(-30).map((t) => (t.path.length > 600 ? { ...t, path: t.path.slice(-600) } : t)),
+        sites: s.sites,
       }),
     },
   ),

@@ -38,11 +38,20 @@ export function startSyncBus(): void {
 }
 
 export function stopSyncBus(): void {
-  channel?.unsubscribe()
+  if (channel) supabase.removeChannel(channel) // unsubscribe alone left the topic registered → duplicates on re-login
   channel = null
 }
 
-/** Tell every other open client that something changed (they refetch). */
+/** Tell every other open client that something changed (they refetch).
+ *  channel.send RESOLVES with 'ok' | 'timed out' | 'error' (it doesn't reject),
+ *  so check the status and retry once — a silently dropped broadcast meant
+ *  other devices never refetched a layout/rule change. */
 export function sendSync(event: SyncEvent, payload: object = {}): void {
-  channel?.send({ type: 'broadcast', event, payload }).catch((e: unknown) => console.error('[syncBus] send', e))
+  const c = channel
+  if (!c) return
+  c.send({ type: 'broadcast', event, payload }).then((status: string) => {
+    if (status === 'ok') return
+    console.warn(`[syncBus] send ${event} → ${status}; retrying once`)
+    setTimeout(() => { c.send({ type: 'broadcast', event, payload }).catch(() => {}) }, 1000)
+  }).catch((e: unknown) => console.error('[syncBus] send', e))
 }

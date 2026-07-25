@@ -30,7 +30,7 @@ export function DrivingScreen({
   const startedAt = useRef(Date.now())
   const [elapsed, setElapsed] = useState(0)
 
-  const readout = useGeoTracker(true, dest, (p) => appendGps(unit.vin, p))
+  const readout = useGeoTracker(true, dest, (p, sim) => appendGps(unit.vin, p, sim))
 
   useEffect(() => {
     const i = setInterval(() => setElapsed(Math.floor((Date.now() - startedAt.current) / 1000)), 1000)

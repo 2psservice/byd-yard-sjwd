@@ -21,8 +21,13 @@ function openDB(): Promise<IDBDatabase> {
       const db = req.result
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'vin' })
     }
-    req.onsuccess = () => resolve(req.result)
-    req.onerror = () => reject(req.error)
+    req.onsuccess = () => {
+      // if the connection closes later (versionchange / browser eviction),
+      // drop the cache so the next call reopens instead of failing forever
+      req.result.onclose = () => { dbp = null }
+      resolve(req.result)
+    }
+    req.onerror = () => { dbp = null; reject(req.error) } // don't cache a rejected open — retry next call
   })
   return dbp
 }
@@ -71,6 +76,7 @@ export async function idbDelete(vins: string[]): Promise<void> {
     for (const v of vins) store.delete(v)
     t.oncomplete = () => resolve()
     t.onerror = () => reject(t.error)
+    t.onabort = () => reject(t.error ?? new Error('idb transaction aborted')) // quota/versionchange — never hang forever
   })
 }
 

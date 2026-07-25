@@ -227,9 +227,12 @@ function resolveForUnit(v: string, units: Unit[], rows: TrackRow[]):
   }
   let u = units.find(x => x.vin === v) ?? null
   if (!u && v.length <= 8) {
+    // suffix ambiguity must be checked across BOTH lists together — one unit hit
+    // + one tracking-row hit for a DIFFERENT car silently picked the unit before
+    const uniq = new Set<string>([...units.filter(x => x.vin.endsWith(v)).map(x => x.vin), ...rows.filter(x => x.vin.endsWith(v)).map(x => x.vin)])
+    if (uniq.size > 1) return { type: 'ambiguous', count: uniq.size }
     const hits = units.filter(x => x.vin.endsWith(v))
     if (hits.length === 1) u = hits[0]
-    else if (hits.length > 1) return { type: 'ambiguous', count: hits.length }
   }
   if (u) {
     if (u.status === 'EXPECTED' && !sheetGated(u.vin)) return { type: 'notGated', vin: u.vin, model: u.modelName }
@@ -295,12 +298,16 @@ function stationStatusOf(vin: string, queues: WorkQueue[]): { queue: string; tex
 /** Center-screen popup shown when an operator scans a vehicle that has not
  *  passed Gate-in yet. Used by every role except Gate-in itself. */
 function NotGatedInModal({ vin, model, onClose }: { vin: string; model?: string; onClose: () => void }) {
+  // onClose via ref + mount-only effect: the inline callback changed identity on
+  // every parent render, restarting the 4.5s auto-close forever
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
   useEffect(() => {
-    const t = setTimeout(onClose, 4500)
-    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    const t = setTimeout(() => onCloseRef.current(), 4500)
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onCloseRef.current() }
     window.addEventListener('keydown', h)
     return () => { clearTimeout(t); window.removeEventListener('keydown', h) }
-  }, [onClose])
+  }, [])
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-6"
       style={{ background: 'rgba(15,23,42,0.55)', backdropFilter: 'blur(4px)' }} onClick={onClose}>
@@ -1630,8 +1637,10 @@ function DriverView() {
   // ── delivery-sequence queues visible to the driver (browse + progress) ──
   const seqQueues = useMemo(() => queues.filter(q => isSequenceQueue(q) && !isQueueComplete(q)), [queues])
 
-  // the car's current station task (PDI / PM / Wash …), if any
-  const activeProc = useMemo(() => (unit ? activeProcess(unit.vin, queues) : null), [unit, queues])
+  // the car's current station task (PDI / PM / Wash …), if any — Pre Gate-in
+  // queues are NOT stations: matching them offered "ส่งเข้าสถานี · (Rayong·…)"
+  // and wrote a bogus "PARKING (…)" Car Status
+  const activeProc = useMemo(() => (unit ? activeProcess(unit.vin, queues.filter(q => !isPreGateInQueue(q.name))) : null), [unit, queues])
   const procStage = activeProc ? stageOf(activeProc.item) : null
   // a slot proposal is needed both for the gate-in first-park AND for returning a checked car
   const needsSlot = !!unit && (unit.status === 'GATE_IN' || (unit.status === 'PARKED' && procStage === 'checked'))
@@ -2134,8 +2143,14 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved, stationTit
   const last = (k: string) => (row?.cells[k]?.trim() ? row.cells[k] : '—')
   // tag the defect with the actual queue when the car is in one, else the station menu
   const stationName = activeProc?.queue.name ?? stationTitle
-  // NG found at THIS station (added via the shared DamageForm below)
-  const stationDmgs = unit.damages.filter(d => d.source === 'pdi' && d.station === stationName)
+  // NG found at THIS station — match the exact queue name OR any queue of this
+  // station's type (NGs recorded while in queue "FINAL CHECK 2" must still show
+  // after that queue completes and the car is re-scanned station-only)
+  const matchStation = (st?: string) => !!st && (st === stationName || st.toUpperCase().includes(stationTitle.toUpperCase()))
+  const stationDmgs = unit.damages.filter(d => d.source === 'pdi' && matchStation(d.station))
+  // the OK/NG verdict counts only UNRESOLVED defects — a repaired NG must not
+  // force this car to save NG forever
+  const openDmgs = stationDmgs.filter(d => !d.statusRepair || d.statusRepair === 'Waiting Repair')
 
   const clearAll = () => { setSoc(''); setMileage(''); setVoltage(''); setShowNgForm(false) }
 
@@ -2149,13 +2164,16 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved, stationTit
       if (mileage.trim()) updateCell(row.vin, 'Mileage', mileage.trim())
       if (voltage.trim()) updateCell(row.vin, 'Voltage of 12V', voltage.trim())
     }
-    const result: 'OK' | 'NG' = stationDmgs.length > 0 ? 'NG' : 'OK'
-    if (canRecord && activeProc) {
-      recordCheck(activeProc.queue.id, unit.vin, result, currentUser) // stamps the station date via the queue
+    const result: 'OK' | 'NG' = openDmgs.length > 0 ? 'NG' : 'OK'
+    if (activeProc) {
+      // record even when the item was already checked — a corrected re-save must
+      // update the queue's result (recordCheck's `stamped` guard prevents a
+      // second date stamp), else the queue said OK while the sheet said NG
+      recordCheck(activeProc.queue.id, unit.vin, result, currentUser)
     } else {
       setInspected(unit.vin, result === 'OK')
       // no queue → still stamp the date ladder (PM → PM1/PM2…, FINAL → Final check date)
-      if (!activeProc) stampStationDate(unit.vin, stationTitle === 'PM' ? 'PM' : stationTitle === 'FINAL CHECK' ? 'FINAL' : 'PDI')
+      stampStationDate(unit.vin, stationTitle === 'PM' ? 'PM' : stationTitle === 'FINAL CHECK' ? 'FINAL' : 'PDI')
     }
     if (row) updateCell(row.vin, 'Car Status', stationResultStatus(stationName, result))
     onSaved(stationResultStatus(stationName, result), result)
@@ -2205,8 +2223,8 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved, stationTit
       {/* actions */}
       <div className="p-3 grid grid-cols-2 gap-2">
         <button onClick={clearAll} className="btn py-3 text-[13.5px]">Clear</button>
-        <button onClick={save} className="btn py-3 text-[13.5px] font-bold" style={{ background: stationDmgs.length ? '#dc2626' : 'var(--st-yard)', color: '#fff', border: 'none' }}>
-          <CheckCircle2 size={16} /> Save {stationDmgs.length ? `· NG (${stationDmgs.length})` : '· OK'}
+        <button onClick={save} className="btn py-3 text-[13.5px] font-bold" style={{ background: openDmgs.length ? '#dc2626' : 'var(--st-yard)', color: '#fff', border: 'none' }}>
+          <CheckCircle2 size={16} /> Save {openDmgs.length ? `· NG (${openDmgs.length})` : '· OK'}
         </button>
       </div>
     </div>

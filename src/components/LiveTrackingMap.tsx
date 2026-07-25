@@ -1,29 +1,20 @@
 /**
  * LiveTrackingMap — Leaflet map for live GPS + trip playback.
- * Leaflet is loaded once from CDN (no bundler dependency). Markers are HTML
- * divIcons labelled by VIN (not people). Used by the admin Tracking page and
- * the driver DrivingScreen mini-map.
+ * Leaflet is BUNDLED (lazy chunk) — the old unpkg CDN load made the map dead
+ * exactly in the offline/dead-zone scenario the PWA exists for, and put a
+ * third-party CDN on the critical path. Markers are HTML divIcons labelled by
+ * VIN (not people). Used by the admin Tracking page and the DrivingScreen
+ * mini-map. (Map TILES still need network; the library itself no longer does.)
  */
 import { useEffect, useRef, useState } from 'react'
 import { YARD_CENTER } from '../lib/geo'
+import 'leaflet/dist/leaflet.css'
 
-// ── one-time Leaflet CDN loader ───────────────────────────────────────────────
+// lazy-import the library so it stays out of the main bundle (loaded only when
+// a map actually renders); precached by the SW like any other chunk
 let leafletPromise: Promise<any> | null = null
 function ensureLeaflet(): Promise<any> {
-  if ((window as any).L) return Promise.resolve((window as any).L)
-  if (leafletPromise) return leafletPromise
-  leafletPromise = new Promise((resolve, reject) => {
-    const css = document.createElement('link')
-    css.rel = 'stylesheet'
-    css.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'
-    document.head.appendChild(css)
-    const js = document.createElement('script')
-    js.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
-    js.async = true
-    js.onload = () => resolve((window as any).L)
-    js.onerror = () => reject(new Error('leaflet-load-failed'))
-    document.head.appendChild(js)
-  })
+  if (!leafletPromise) leafletPromise = import('leaflet').then((m) => (m as any).default ?? m)
   return leafletPromise
 }
 
