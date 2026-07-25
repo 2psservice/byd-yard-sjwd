@@ -195,11 +195,16 @@ const ROLES: { key: RoleKey; th: string; en: string; icon: React.ReactNode; colo
 ]
 
 // ── shared: "not gated-in" guard ──────────────────────────────────────────────
-// Car-Status values that mean the vehicle has already passed Gate-in
-const POST_GATEIN_STATUSES = new Set(
-  ['gate-in', 'gate in', 'parked', 'moving', 'pdi', 'pm', 'fc', 'ready', 'loaded', 'gate-out', 'gate out'],
-)
-const isGatedInStatus = (s?: string) => POST_GATEIN_STATUSES.has((s ?? '').trim().toLowerCase())
+// Car-Status values that mean the vehicle has NOT passed Gate-in yet. Anything
+// else that is non-blank counts as gated-in — the app itself writes many
+// post-gate-in statuses ('In Yard', 'PARKING PDI', 'PDI OK', 'Preload', lane
+// labels, …), so an allow-list kept missing them and falsely blocked parked
+// cars from Gate-out / Re-location / the stations.
+const PRE_GATEIN_STATUSES = new Set(['pre gate-in', 'pre gatein', 'pre gate in', 'expected'])
+const isGatedInStatus = (s?: string) => {
+  const v = (s ?? '').trim().toLowerCase()
+  return v !== '' && !PRE_GATEIN_STATUSES.has(v)
+}
 
 /** Resolve a typed VIN for unit-based roles (Driver / PDI / Mechanic).
  *  Prefers a yard unit (exact → unique suffix); falls back to a tracking row
@@ -779,8 +784,12 @@ function DamageForm({ onSaveAll, onCancel }: {
 
   // every defect must carry at least one photo before it can be saved
   const allPhotographed = rows.every(row => row.photos.length > 0)
+  const lastSaveRef = useRef(0) // double-tap guard — each save mints new damage ids
   const save = () => {
+    if (Date.now() - lastSaveRef.current < 1500) return
+    if (busyRid) { toast('err', 'รอรูปอัปโหลดเสร็จก่อนบันทึก'); return }
     if (!allPhotographed) { toast('err', 'กรุณาถ่ายรูป Defect อย่างน้อย 1 รูปต่อรายการ'); return }
+    lastSaveRef.current = Date.now()
     onSaveAll(rows.map(row => {
     const part = resolvePart(row.area)     // { en, th } from the master Part list
     const def = resolveDefect(row.detail)  // { en, th } from the master Defect list
@@ -1299,6 +1308,7 @@ function WalkView() {
                   {dmgResult === 'NG' ? (
                     // NG → ต้องใส่ตำแหน่ง + แผล ก่อนถึงจะ Gate In ได้
                     <DamageForm
+                      key={trackRow.vin}
                       onSaveAll={damages => {
                         const valid = damages.filter(d => (d.area ?? '').trim())
                         if (!valid.length) { toast('err', 'กรุณาใส่ตำแหน่ง Defect อย่างน้อย 1 จุด'); return }
@@ -1409,6 +1419,7 @@ function WalkView() {
             </div>
             {showDmg && (
               <DamageForm
+                key={unit.vin}
                 onSaveAll={damages => {
                   damages.forEach(d => addDamage(unit.vin, { ...d, source: 'walkaround', station: 'Gate-in' }))
                   toast('ok', damages.length > 1 ? `บันทึก Defect ${damages.length} รายการ` : 'บันทึก Defect แล้ว')
@@ -1567,7 +1578,7 @@ function DriverView() {
   const wrongSite = useWrongSiteHint()
   const queues = useSiteQueues()
   const { loadFromIdb, updateCell } = useTracking()
-  const { assign, confirmParked, resetParking, toast, currentUser, policies, groupModelsInRow, laneDepth, planMode, startTrip, endTrip, sites, currentSite } = useYard()
+  const { assign, confirmParked, resetParking, toast, currentUser, policies, groupModelsInRow, laneDepth, planMode, startTrip, endTrip, sites, currentSite, loadFromSupabase } = useYard()
   const blocks = useBlocks()
   const { deliverToStation, returnToSlot, markAtWash, markAtLane } = useOps()
   const { block: blockGate, modal: gateModal } = useNotGatedIn()
@@ -1647,6 +1658,7 @@ function DriverView() {
     if (res.type === 'ambiguous') { toast('err', `พบ ${res.count} คัน — พิมพ์ให้ยาวขึ้น`); return }
     if (res.type === 'none') { toast('err', wrongSite(v) ?? `ไม่พบ VIN: ${v}`); return }
     if (res.type === 'notGated') { blockGate(res.vin, res.model); return }
+    if (res.type === 'okPending') { toast('ok', 'กำลังโหลดข้อมูลรถ…'); loadFromSupabase() } // unit not synced yet
     setVin(res.vin)
   }
   const doAssign = (slot: { block: string; row: number; slot: number }) => {
@@ -2127,7 +2139,10 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved, stationTit
 
   const clearAll = () => { setSoc(''); setMileage(''); setVoltage(''); setShowNgForm(false) }
 
+  const savedRef = useRef(false) // double-tap guard — a 2nd save burns another PM/RE-PDI date slot
   const save = () => {
+    if (savedRef.current) return
+    savedRef.current = true
     // measurements → tracking cells
     if (row) {
       if (soc.trim())     updateCell(row.vin, '% SOC', soc.trim())
@@ -2350,9 +2365,14 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
       {/* VIN chosen but the unit row is still syncing from the cloud (fresh app
           load) — show a loader instead of a blank screen; it fills in on arrival. */}
       {vin && !unit && !justOk && (
-        <div className="panel p-5 flex items-center justify-center gap-2.5 fade-up" style={{ color: 'var(--muted)' }}>
-          <RefreshCw size={16} className="animate-spin" />
-          <span className="text-[13px] font-semibold">กำลังโหลดข้อมูลรถ {vin.slice(-6)}…</span>
+        <div className="panel p-5 fade-up text-center" style={{ color: 'var(--muted)' }}>
+          <div className="flex items-center justify-center gap-2.5">
+            <RefreshCw size={16} className="animate-spin" />
+            <span className="text-[13px] font-semibold">กำลังโหลดข้อมูลรถ {vin.slice(-6)}…</span>
+          </div>
+          <button onClick={() => loadFromSupabase()} className="btn btn-ghost mt-3 text-[12px] py-1.5 px-3">
+            โหลดช้า? กดลองใหม่
+          </button>
         </div>
       )}
 
@@ -2417,8 +2437,12 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
 
           {/* Inspection form — PDI uses the full structured checklist; PM / FINAL
               CHECK keep the lighter measurements + free-NG panel. */}
+          {/* key={vin} — the panels hold local form state (checklist ticks,
+              measurements); without a key, scanning the next car keeps the
+              previous car's entries and saves them onto the wrong VIN. */}
           {types.includes('PDI') ? (
             <PdiChecklistPanel
+              key={unit.vin}
               unit={unit}
               row={trackingRows.find(r => r.vin === unit.vin) ?? null}
               activeProc={activeProc}
@@ -2429,6 +2453,7 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
             />
           ) : (
             <FinalCheckPanel
+              key={unit.vin}
               unit={unit}
               row={trackingRows.find(r => r.vin === unit.vin) ?? null}
               activeProc={activeProc}
@@ -2466,7 +2491,7 @@ function MechanicView() {
   const trackingRows = useSiteRows()
   const wrongSite = useWrongSiteHint()
   const { loadFromIdb } = useTracking()
-  const { addDamage, removeDamage, updateRepairStatus, setInspected, toast } = useYard()
+  const { addDamage, removeDamage, updateRepairStatus, setInspected, toast, loadFromSupabase } = useYard()
   const { block: blockGate, modal: gateModal } = useNotGatedIn()
   const sites = useYard(s => s.sites)
   const currentSite = useYard(s => s.currentSite)
@@ -2500,6 +2525,7 @@ function MechanicView() {
     if (res.type === 'ambiguous') { toast('err', `พบ ${res.count} คัน — พิมพ์ให้ยาวขึ้น`); return }
     if (res.type === 'none') { toast('err', wrongSite(v) ?? `ไม่พบ VIN: ${v}`); return }
     if (res.type === 'notGated') { blockGate(res.vin, res.model); return }
+    if (res.type === 'okPending') { toast('ok', 'กำลังโหลดข้อมูลรถ…'); loadFromSupabase() } // unit not synced yet
     setVin(res.vin); setShowForm(false)
   }
   const doRelease = (id: string) => {
@@ -2588,6 +2614,7 @@ function MechanicView() {
             </button>
           ) : (
             <DamageForm
+              key={unit.vin}
               onSaveAll={damages => {
                 damages.forEach(d => addDamage(unit.vin, { ...d, source: 'mechanic', station: 'ช่าง (Mechanic)' }))
                 setInspected(unit.vin, false)
@@ -2830,7 +2857,7 @@ function UpdateDamageView() {
   const trackingRows = useSiteRows()
   const wrongSite = useWrongSiteHint()
   const { loadFromIdb } = useTracking()
-  const { addDamage, removeDamage, updateRepairStatus, toast } = useYard()
+  const { addDamage, removeDamage, updateRepairStatus, toast, loadFromSupabase } = useYard()
   const me = useMe()
   const isAdmin = me?.role === 'admin'
   const { block: blockGate, modal: gateModal } = useNotGatedIn()
@@ -2921,8 +2948,16 @@ function UpdateDamageView() {
           {showAdd ? (
             <div className="border-t hairline p-3" style={{ background: 'rgba(220,38,38,0.03)' }}>
               <DamageForm
+                key={vin ?? 'none'}
                 onSaveAll={dmgs => {
-                  if (!unit) return
+                  if (!unit) {
+                    // the car exists only as a tracking row (unit not synced yet) —
+                    // keep the filled form open, tell the operator, and hurry the fetch
+                    // instead of silently discarding their photos and entries.
+                    toast('err', 'ข้อมูลรถยังโหลดไม่เสร็จ — รอสักครู่แล้วกดบันทึกอีกครั้ง')
+                    loadFromSupabase()
+                    return
+                  }
                   dmgs.forEach(d => addDamage(unit.vin, { ...d, source: 'update', station: 'Update Damage' }))
                   setShowAdd(false)
                   toast('ok', dmgs.length > 1 ? `บันทึก Defect ${dmgs.length} รายการ` : 'บันทึก Defect แล้ว')
