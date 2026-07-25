@@ -54,12 +54,13 @@ function UserMenu({ onGoSettings }: { onGoSettings: () => void }) {
   }
 
   useEffect(() => {
-    const h = (e: MouseEvent) => {
+    const h = (e: MouseEvent | TouchEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node) &&
           btnRef.current && !btnRef.current.contains(e.target as Node)) setOpen(false)
     }
     document.addEventListener('mousedown', h)
-    return () => document.removeEventListener('mousedown', h)
+    document.addEventListener('touchstart', h) // mobile: mousedown alone left the menu stuck open
+    return () => { document.removeEventListener('mousedown', h); document.removeEventListener('touchstart', h) }
   }, [])
 
   return (

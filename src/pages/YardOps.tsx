@@ -2637,7 +2637,7 @@ function GateOutView() {
   const wrongSite = useWrongSiteHint()
   const queues = useSiteQueues()
   const { loadFromIdb, updateCell } = useTracking()
-  const { toast, currentUser, sites, currentSite } = useYard()
+  const { toast, currentUser, sites, currentSite, markDeparted } = useYard()
   const { confirmSeqGateOut } = useOps()
   const { block: blockGate, modal: gateModal } = useNotGatedIn()
   const [vin, setVin] = useState<string | null>(null)
@@ -2677,6 +2677,7 @@ function GateOutView() {
     updateCell(row.vin, 'Car Status', 'Pre Gate-out')
     updateCell(row.vin, 'Gate Out time stamp', ts)
     updateCell(row.vin, 'Gate Out Time', String(now.getTime())) // epoch → 09:30 flush calc
+    markDeparted(row.vin) // release the parking slot — the car left it for the preload lane
     // close the delivery-sequence item too, if this car belongs to one
     if (seqHit) confirmSeqGateOut(seqHit.queue.id, row.vin, currentUser)
     setDone({ vin: row.vin, label: 'Pre Gate-out' }); setVin(null)

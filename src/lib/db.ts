@@ -620,9 +620,22 @@ export async function fetchTrackingRows(sinceMs?: number): Promise<TrackRow[]> {
     return out
   }
 
-  // full pull → count, then fetch all pages concurrently
-  const { count } = await supabase.from('tracking_rows').select('vin', { count: 'exact', head: true })
-  const pages = Math.max(1, Math.ceil((count ?? 0) / PAGE))
+  // full pull → count, then fetch all pages concurrently. If the count query
+  // fails (timeout on yard cellular), DON'T assume 1 page — that silently
+  // loaded 1,000 of 11k rows and the incremental syncs never backfilled the
+  // rest. Fall back to sequential pages until a short page.
+  const { count, error: cntErr } = await supabase.from('tracking_rows').select('vin', { count: 'exact', head: true })
+  if (cntErr || count == null) {
+    if (cntErr) console.error('[db] fetchTrackingRows count', cntErr)
+    const out: TrackRow[] = []
+    for (let from = 0; ; from += PAGE) {
+      const batch = await page(from)
+      for (const r of batch) out.push(toTrackRow(r))
+      if (batch.length < PAGE) break
+    }
+    return out
+  }
+  const pages = Math.max(1, Math.ceil(count / PAGE))
   const all = await Promise.all(Array.from({ length: pages }, (_, i) => page(i * PAGE)))
   return all.flat().map(toTrackRow)
 }

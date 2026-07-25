@@ -19,7 +19,9 @@ export function Badge({ color, bg, children, dotted = true }: { color: string; b
 
 export function StatusBadge({ status }: { status: UnitStatus }) {
   const lang = useYard((s) => s.lang)
-  const m = STATUS_META[status]
+  // units.status has no DB CHECK constraint — an unknown value must not crash
+  // the whole app (this lookup killed BlockPopup/VehicleCard before the boundary)
+  const m = STATUS_META[status] ?? { th: status || '—', en: status || '—', color: '#64748b', bg: 'rgba(100,116,139,0.12)' }
   return (
     <Badge color={m.color} bg={m.bg}>
       {lang === 'th' ? m.th : m.en}
