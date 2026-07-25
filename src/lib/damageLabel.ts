@@ -2,6 +2,7 @@
 // the new bilingual master-list capture (area = English part, areaTh = Thai;
 // item = English defect, itemTh = Thai) and legacy zone-id / type-id damages.
 import { zoneLabel } from '../components/CarDiagramMultiView'
+import { resolvePart, resolveDefect } from './masterDefect'
 import type { Damage } from '../types'
 
 // the 5 legacy defect ids used before the master Defect list
@@ -29,4 +30,26 @@ export function defectLabel(d: Pick<Damage, 'item' | 'itemTh' | 'type' | 'note'>
   const en = d.item || LEGACY_TYPES[d.type]?.en || (d.type && d.type !== '—' ? d.type : '') || ''
   if (lang === 'th') return d.itemTh || LEGACY_TYPES[d.type]?.th || en || d.note || ''
   return en
+}
+
+/** Both languages for a damage's Part / Defect, filling in the missing side from
+ *  the master Defect list (the same wording the +ADD DEFECT dropdowns offer), so
+ *  imported rows that stored only one language still show EN with TH underneath.
+ *  `th === en` means no translation is known — callers should then show one line. */
+export function partBilingual(d: Pick<Damage, 'area' | 'areaTh'>): { en: string; th: string } {
+  const m = resolvePart(d.area || d.areaTh || '')
+  const known = m.en !== m.th // the master list matched and has both languages
+  return {
+    en: known ? m.en : partLabel(d, 'en'),
+    th: d.areaTh || (known ? m.th : partLabel(d, 'th')),
+  }
+}
+
+export function defectBilingual(d: Pick<Damage, 'item' | 'itemTh' | 'type' | 'note'>): { en: string; th: string } {
+  const m = resolveDefect(d.item || d.itemTh || d.type || '')
+  const known = m.en !== m.th
+  return {
+    en: known ? m.en : defectLabel(d, 'en'),
+    th: d.itemTh || (known ? m.th : defectLabel(d, 'th')),
+  }
 }

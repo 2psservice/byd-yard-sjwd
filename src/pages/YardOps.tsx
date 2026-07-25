@@ -22,7 +22,7 @@ import { DrivingScreen } from '../components/DrivingScreen'
 import { LiveTrackingMap } from '../components/LiveTrackingMap'
 import { ALL_ZONES, zoneLabel } from '../components/CarDiagramMultiView'
 import { MASTER_PARTS, MASTER_DEFECTS, resolvePart, resolveDefect } from '../lib/masterDefect'
-import { partLabel, defectLabel } from '../lib/damageLabel'
+import { partLabel, defectLabel, partBilingual, defectBilingual } from '../lib/damageLabel'
 import { candidates } from '../lib/parkingEngine'
 import { slotToLatLng } from '../lib/geo'
 import { cx, PhotoLightbox } from '../components/ui'
@@ -632,12 +632,21 @@ function DefectCard({ d, right }: { d: Damage; right?: React.ReactNode }) {
               ? <CheckCircle2 size={14} style={{ color: tint.fg, marginTop: 2, flexShrink: 0 }} />
               : <AlertTriangle size={14} style={{ color: tint.fg, marginTop: 2, flexShrink: 0 }} />}
             <div className="flex-1 min-w-0">
-              <div className="text-[12.5px] leading-snug">
-                <span className="font-bold" style={{ color: tint.fg }}>{partLabel(d, 'th')}</span>
-                <span className="font-semibold" style={{ color: tint.fg }}> // {defectLabel(d, 'th') || '—'}</span>
-                {isAccByd(d) && <span className="font-extrabold" style={{ color: '#16a34a' }}> · ACC BYD</span>}
-                {(d.remark || d.note) && <span className="font-semibold" style={{ color: 'var(--text)' }}> · {d.remark || d.note}</span>}
-              </div>
+              {(() => {
+                // English on top, Thai underneath — Thai wording comes from the
+                // master list, i.e. the same words the +ADD DEFECT dropdowns show
+                const p = partBilingual(d), q = defectBilingual(d)
+                const thLine = (p.th !== p.en || q.th !== q.en) ? `${p.th} // ${q.th || '—'}` : ''
+                return (
+                  <div className="text-[12.5px] leading-snug">
+                    <span className="font-bold" style={{ color: tint.fg }}>{p.en}</span>
+                    <span className="font-semibold" style={{ color: tint.fg }}> // {q.en || '—'}</span>
+                    {isAccByd(d) && <span className="font-extrabold" style={{ color: '#16a34a' }}> · ACC BYD</span>}
+                    {(d.remark || d.note) && <span className="font-semibold" style={{ color: 'var(--text)' }}> · {d.remark || d.note}</span>}
+                    {thLine && <div className="text-[11.5px] font-normal mt-0.5" style={{ color: 'var(--muted)' }}>{thLine}</div>}
+                  </div>
+                )
+              })()}
             </div>
             {right && <div className="shrink-0">{right}</div>}
           </div>
