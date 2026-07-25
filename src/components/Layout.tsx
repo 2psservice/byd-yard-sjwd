@@ -60,7 +60,15 @@ function UserMenu({ onGoSettings }: { onGoSettings: () => void }) {
     }
     document.addEventListener('mousedown', h)
     document.addEventListener('touchstart', h) // mobile: mousedown alone left the menu stuck open
-    return () => { document.removeEventListener('mousedown', h); document.removeEventListener('touchstart', h) }
+    // the dropdown is position:fixed at its open-time coords — close it when the
+    // page scrolls/rotates instead of leaving it floating detached
+    const close = () => setOpen(false)
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('resize', close)
+    return () => {
+      document.removeEventListener('mousedown', h); document.removeEventListener('touchstart', h)
+      window.removeEventListener('scroll', close, true); window.removeEventListener('resize', close)
+    }
   }, [])
 
   return (
@@ -240,9 +248,13 @@ export function Layout({ children }: { children: ReactNode }) {
 }
 
 function CommandPalette({ onClose, onGo }: { onClose: () => void; onGo: (v: View) => void }) {
-  const { lang, setFocus } = useYard()
+  // selector-scoped subscriptions + memoized t: the old bare useYard() +
+  // fresh makeT() per render defeated the results memo and re-scanned all
+  // ~15k rows on every store tick while realtime streamed in
+  const lang = useYard((s) => s.lang)
+  const setFocus = useYard((s) => s.setFocus)
   const rows = useTrackingRows() // every VIN in the system (imported + added), not just gated-in units
-  const t = makeT(lang)
+  const t = useMemo(() => makeT(lang), [lang])
   const [q, setQ] = useState('')
 
   const results = useMemo(() => {

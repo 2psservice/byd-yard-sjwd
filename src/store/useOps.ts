@@ -231,7 +231,10 @@ export const useOps = create<OpsState>()(
 
       createTypedQueue: (type, name, by, site) => {
         const siteTag = site ?? useYard.getState().currentSite ?? undefined
-        const base = (name || '').trim() || (QUEUE_TYPES.find((t) => t.type === type)?.name ?? type)
+        // a leading "(" is reserved for auto-named Pre Gate-in queues — a custom
+        // queue named "(รอบเช้า)…" would vanish from the Operation board and be
+        // auto-completed by the gate-in reconciler
+        const base = (name || '').trim().replace(/^\(+\s*/, '') || (QUEUE_TYPES.find((t) => t.type === type)?.name ?? type)
         // unique display name within this yard: "PM", "PM 2", "PM 3" …
         const taken = new Set(
           get().queues.filter((q) => (q.site ?? null) === (siteTag ?? null)).map((q) => q.name.toLowerCase()),

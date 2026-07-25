@@ -28,7 +28,7 @@ export interface GeoReadout {
 export function useGeoTracker(
   active: boolean,
   dest: { lat: number; lng: number } | null,
-  onPoint: (p: GpsPoint) => void,
+  onPoint: (p: GpsPoint, sim: boolean) => void,
 ): GeoReadout {
   const [readout, setReadout] = useState<GeoReadout>({ speedKmh: 0, status: 'idle' })
   const onPointRef = useRef(onPoint)
@@ -48,7 +48,7 @@ export function useGeoTracker(
 
     const emit = (p: GpsPoint, status: GeoStatus) => {
       lastFix.current = p
-      onPointRef.current(p)
+      onPointRef.current(p, status === 'sim') // tell the recorder when the point is SIMULATED
       setReadout({ speedKmh: p.speed ?? 0, acc: p.acc, heading: p.heading, lat: p.lat, lng: p.lng, status })
     }
 

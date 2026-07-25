@@ -56,7 +56,12 @@ export default function PdiChecklistPanel({ unit, row, activeProc, canRecord, on
     if (!id || !files?.length) return
     try {
       const added = await Promise.all(Array.from(files).map(f => compressImage(f)))
-      setItem(id, { photos: [...(get(id).photos ?? []), ...added] })
+      // FUNCTIONAL update — the upload takes seconds; reading render-time state
+      // here made a second photo shot mid-upload overwrite the first
+      setState(s => {
+        const cur = s[id] ?? { result: 'OK' as const }
+        return { ...s, [id]: { ...cur, photos: [...(cur.photos ?? []), ...added] } }
+      })
     } catch { toast('err', 'อัปโหลดรูปไม่สำเร็จ') }
     if (fileRef.current) fileRef.current.value = ''
   }
@@ -64,6 +69,15 @@ export default function PdiChecklistPanel({ unit, row, activeProc, canRecord, on
   const savedRef = useRef(false) // double-tap guard — a 2nd save duplicates defects + burns a RE-PDI slot
   const save = () => {
     if (savedRef.current) return
+    // every NG/NG Heavy needs ≥1 photo — same rule as every other defect path
+    // (this station generates the most defects; photo-less ones can't evidence
+    // a repair/claim later)
+    const noPhoto: string[] = []
+    PDI_CHECKLIST.forEach((c) => c.groups.forEach((g, gi) => g.items.forEach((it, ii) => {
+      const st = state[pdiItemId(c.key, gi, ii)]
+      if (st && (st.result === 'NG' || st.result === 'NG Heavy') && !st.photos?.length) noPhoto.push(it.en)
+    })))
+    if (noPhoto.length) { toast('err', `กรุณาถ่ายรูปรายการ NG: ${noPhoto.slice(0, 3).join(', ')}${noPhoto.length > 3 ? ` และอีก ${noPhoto.length - 3} รายการ` : ''}`); return }
     savedRef.current = true
     // measurements → tracking cells
     if (row) {
@@ -91,13 +105,15 @@ export default function PdiChecklistPanel({ unit, row, activeProc, canRecord, on
       })
     })))
     const result: 'OK' | 'NG' = totalNg > 0 ? 'NG' : 'OK'
-    if (canRecord && activeProc) {
-      recordCheck(activeProc.queue.id, unit.vin, result, currentUser) // stamps the PDI date via the queue
+    if (activeProc) {
+      // record even when already checked — a corrected re-save must update the
+      // queue's result (the `stamped` guard prevents a second date stamp)
+      recordCheck(activeProc.queue.id, unit.vin, result, currentUser)
     } else {
       setInspected(unit.vin, result === 'OK')
       // no queue → still stamp the PDI-date ladder (PDI → RE-PDI #1 → #2…) so the
       // admin Unit sheet records this inspection's date (OK or NG alike)
-      if (!activeProc) stampStationDate(unit.vin, 'PDI')
+      stampStationDate(unit.vin, 'PDI')
     }
     if (row) updateCell(row.vin, 'Car Status', `${stationName} ${result}`)
     onSaved(`${stationName} ${result}`, result)

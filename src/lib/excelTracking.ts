@@ -103,7 +103,7 @@ function parseDefectSheet(XLSX: any, ws: any, source: 'yard' | 'factory' | 'whal
   const out: DefectRow[] = []
   for (let r = 1; r < aoa.length; r++) {
     const row = aoa[r]
-    const vin = String(row[vinIdx] ?? '').trim().toUpperCase()
+    const vin = String(row[vinIdx] ?? '').replace(/\s+/g, '').toUpperCase()
     if (!isVin(vin)) continue
     const defect = defectOf(row)
     const position = col(row, 'Position')
@@ -184,7 +184,7 @@ export async function parseTrackingWorkbook(file: File): Promise<ParseResult> {
 
   for (let r = 1; r < aoa.length; r++) {
     const row = aoa[r] as any[]
-    const vin = String(row[vinIdx] ?? '').trim().toUpperCase()
+    const vin = String(row[vinIdx] ?? '').replace(/\s+/g, '').toUpperCase()
     if (!isVin(vin)) continue
     total++
     // Gate-out ⟺ "Gate Out time stamp" holds a real date/timestamp. Empty, or a
@@ -304,7 +304,7 @@ export function parseVinListInventory(XLSX: any, wb: any): ParseResult {
       const row = aoa[r] as any[]
       if (!row) continue
       let vin = ''
-      for (const ci of vinCols) { const v = String(row[ci] ?? '').trim().toUpperCase(); if (isVin(v)) { vin = v; break } }
+      for (const ci of vinCols) { const v = String(row[ci] ?? '').replace(/\s+/g, '').toUpperCase(); if (isVin(v)) { vin = v; break } }
       if (!vin) continue
       total++
 

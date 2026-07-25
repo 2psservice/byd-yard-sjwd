@@ -326,8 +326,13 @@ export async function patchDamage(
     // optional columns may not be migrated yet — retry without them so the rest
     // of the patch (repair status, etc.) still lands in the cloud.
     if (isMissingColumn(error)) {
-      const { error: e2 } = await supabase.from('damages').update(stripOptionalDamageCols(row)).eq('id', id)
-      if (!e2) return
+      const stripped = stripOptionalDamageCols(row)
+      // a patch of ONLY optional fields strips to {} — an empty update would
+      // "succeed" while saving nothing; report the failure instead
+      if (Object.keys(stripped).length) {
+        const { error: e2 } = await supabase.from('damages').update(stripped).eq('id', id)
+        if (!e2) return
+      }
     }
     console.error('[db] patchDamage', id, error)
   }
@@ -494,13 +499,15 @@ export async function fetchBlocks(siteId: string): Promise<Block[]> {
  *  cloud rows that no longer exist locally (covers delete + id rename). */
 export async function replaceBlocks(siteId: string, blocks: Block[]): Promise<void> {
   if (!isConfigured()) return
-  if (blocks.length) {
-    const { error } = await supabase.from('blocks').upsert(blocks.map((b) => blockToRow(siteId, b)), { onConflict: 'site_id,id' })
-    if (error) { console.error('[db] upsertBlocks', error); return } // don't prune if the upsert failed
-  }
+  // NEVER prune with an empty list: the block-sync debounce could fire before
+  // the cloud layout loaded, and an unfiltered delete then destroyed the whole
+  // shared yard plan for every device. (Deleting the final block one-by-one
+  // still works — the list has ≥1 entry until the last delete syncs.)
+  if (!blocks.length) return
+  const { error } = await supabase.from('blocks').upsert(blocks.map((b) => blockToRow(siteId, b)), { onConflict: 'site_id,id' })
+  if (error) { console.error('[db] upsertBlocks', error); return } // don't prune if the upsert failed
   const keep = blocks.map((b) => `"${b.id}"`).join(',')
-  const del = supabase.from('blocks').delete().eq('site_id', siteId)
-  const { error: e2 } = await (blocks.length ? del.not('id', 'in', `(${keep})`) : del)
+  const { error: e2 } = await supabase.from('blocks').delete().eq('site_id', siteId).not('id', 'in', `(${keep})`)
   if (e2) console.error('[db] pruneBlocks', e2)
 }
 

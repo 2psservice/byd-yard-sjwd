@@ -204,8 +204,10 @@ export function Units() {
     const o: Record<string, string[]> = {}
     for (const key of activeFilterCols) o[key] = distinctFor(key)
     return o
+  // allUnits/locPrefix feed locOf() for the Location options — without them the
+  // dropdown kept a stale list after an Update-Location import / park confirm
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, activeFilterCols])
+  }, [rows, activeFilterCols, allUnits, locPrefix])
 
   const liveOpts = useMemo(() => {
     const o: Record<string, string[]> = {}
@@ -1598,7 +1600,12 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
           )}
 
           {tab === 'damages' && (() => {
-              const stat = (d: typeof damages[number]) => d.statusRepair ?? (d.repairDate ? 'Repaired' : 'Waiting Repair')
+              // normalise imported spellings ("OK-Repaired", "waiting repair") onto the
+              // canonical option list — an unmatched value made the <select> silently
+              // display "Waiting Repair" for a defect that was actually repaired
+              const canonStatus = (raw: string) =>
+                REPAIR_STATUSES.find((s) => s.toLowerCase() === raw.trim().toLowerCase().replace(/-/g, ' ')) ?? raw
+              const stat = (d: typeof damages[number]) => canonStatus(d.statusRepair ?? (d.repairDate ? 'Repaired' : 'Waiting Repair'))
               const waiting = damages.filter((d) => stat(d) === 'Waiting Repair').length
               const done = damages.length - waiting
               const TH = ['#', 'Position', 'Defect/NG', 'Cat NG', 'Cat (Repair)', 'Incharge', 'From/Stock', 'Date', 'Status Repair', 'Repair Date', '']
@@ -1780,6 +1787,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                                 {canEdit ? (
                                   <select value={curStatus} onChange={(e) => updateRepairStatus(vin, d.id, e.target.value)}
                                     className="font-bold rounded-md px-2 py-1 cursor-pointer outline-none" style={{ ...repairColor(curStatus), border: 'none', fontSize: 12 }} title="แก้ไขสถานะการซ่อม">
+                                    {!REPAIR_STATUSES.includes(curStatus as typeof REPAIR_STATUSES[number]) && <option value={curStatus}>{curStatus}</option>}
                                     {REPAIR_STATUSES.map((st) => <option key={st} value={st}>{st}</option>)}
                                   </select>
                                 ) : <span className="badge whitespace-nowrap" style={repairColor(curStatus)}>{curStatus}</span>}

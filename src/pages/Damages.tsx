@@ -169,7 +169,14 @@ function DamageReportModal({ units, onClose }: { units: Unit[]; onClose: () => v
 }
 
 export function Damages() {
-  const units = useUnits()
+  const allUnits = useUnits()
+  const currentSite = useYard(s => s.currentSite)
+  // site-scope like every other page — units from a previously selected yard
+  // stay in the store, and this list mixed their defects in with no site column
+  const units = useMemo(
+    () => (currentSite ? allUnits.filter(u => !u.site || u.site === currentSite) : allUnits),
+    [allUnits, currentSite],
+  )
   const { removeDamage, updateDamage } = useYard()
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)

@@ -112,6 +112,9 @@ export function ImportPage() {
     const occ = new Map<string, Set<number>>() // "block|column" → used rows
     for (const u of Object.values(yardUnits)) {
       if (!u.block || !u.row || !u.slot || u.status === 'DEPARTED' || placing.has(u.vin)) continue
+      // only THIS yard's cars occupy this yard's lanes — every yard has blocks
+      // named A/O/WCL, so a car parked at NYB2 A|15 was blocking 20Rai's A|15
+      if (u.site && currentSite && u.site !== currentSite) continue
       const k = `${u.block}|${u.slot}`
       if (!occ.has(k)) occ.set(k, new Set())
       occ.get(k)!.add(u.row)
