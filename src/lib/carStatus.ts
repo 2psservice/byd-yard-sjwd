@@ -163,6 +163,10 @@ export function finalColor(v: string): { color: string; bg: string } | null {
 export function vinOfStatusColor(v: string): { color: string; bg: string } | null {
   const s = v.toLowerCase()
   if (/total\s*loss/.test(s)) return { color: '#fff', bg: '#991b1b' }   // write-off — แดงเข้ม
+  // damage states — แดง. \bng\b: word-bounded so "waiting" (…ng) can't match
+  if (/heavy\s*ng|accident|\bng\b/.test(s)) return { color: '#fff', bg: '#dc2626' }
+  // Waiting PDI — น้ำเงิน (must beat the generic wait→yellow rule below)
+  if (s.includes('pdi') && s.includes('wait')) return { color: '#fff', bg: '#2563eb' }
   if (s.includes('deliver')) return { color: '#fff', bg: '#16a34a' }    // FIS for delivery — เขียว
   if (s.includes('wait') || s.includes('alloc')) return { color: '#5b4a00', bg: '#facc15' } // FIS Waiting Allocation — เหลือง
   if (s.includes('fis')) return { color: '#fff', bg: '#0ea5e9' }        // สถานะ FIS อื่น ๆ — ฟ้า
