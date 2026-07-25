@@ -32,6 +32,17 @@ function logDamageEvent(vin: string, text: string, by: string): void {
 let unitsChannel: RealtimeChannel | null = null
 const unitTs = new Map<string, number>()
 
+// A damage row that carries base64 photos can exceed Supabase Realtime's
+// max_record_bytes; the server then delivers the change WITHOUT the record
+// body (no vin), so other devices silently never learn about that damage
+// until a full reload. When we see such a truncated damage event we schedule
+// one debounced re-pull of the active site's units so nothing is lost.
+let damageRefetchTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleDamageRefetch(run: () => void) {
+  if (damageRefetchTimer) clearTimeout(damageRefetchTimer)
+  damageRefetchTimer = setTimeout(() => { damageRefetchTimer = null; run() }, 1500)
+}
+
 /** A unit whose `model` is the CANONICAL policy id. The stored model can be
  *  empty (placeholder unit) or non-canonical ("BYD ATTO 2" vs "ATTO2"), which
  *  makes the parking policy fall back to "any block". Always re-derive it via
@@ -1032,7 +1043,24 @@ export const useYard = create<YardState>()(
                 return
               }
               const r = payload.new as DbDamage
-              if (!r?.vin) return
+              if (!r?.vin) {
+                // truncated INSERT/UPDATE (base64 photos > realtime max) — the
+                // record body was dropped. Re-pull this site's units so the new
+                // damage (and its photos, straight from the DB) still shows here.
+                scheduleDamageRefetch(() => {
+                  const siteId = get().currentSite
+                  if (!siteId) return
+                  db.fetchAllUnits(siteId).then((cloud) => {
+                    if (!cloud.length) return
+                    set((s) => {
+                      const merged: Record<string, Unit> = { ...s.units }
+                      for (const u of cloud) merged[u.vin] = u
+                      return { units: merged }
+                    })
+                  }).catch((e) => console.error('[db] damage refetch', e))
+                })
+                return
+              }
               const dmg = db.rowToDamage(r)
               set((s) => {
                 const u = s.units[r.vin]
