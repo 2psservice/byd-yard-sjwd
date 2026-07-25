@@ -1595,6 +1595,81 @@ function ProcRouteCard({ fromLabel, toLabel, result, badge, reason, accent, onSt
   )
 }
 
+/** Browsable list of every station work queue (PDI / PM / FINAL CHECK / งานพิเศษ).
+ *  Driver-only: a driver moves cars for all stations, so they need to see them
+ *  all — the stations themselves stay strictly scoped to their own type. */
+function AllQueuesBrowser({ queues, units, trackingRows, locPrefix, onPick }: {
+  queues: WorkQueue[]; units: Unit[]; trackingRows: TrackRow[]; locPrefix: string; onPick: (vin: string) => void
+}) {
+  const [openId, setOpenId] = useState<string | null>(null)
+  if (!queues.length) return null
+  return (
+    <div className="space-y-2.5 fade-up">
+      <div className="text-[10.5px] font-bold uppercase tracking-wider px-1" style={{ color: 'var(--muted)' }}>คิวงานสถานี · ทุกประเภท</div>
+      {queues.map(q => {
+        const done = q.items.filter(i => i.done).length
+        const total = q.items.length
+        const isOpen = q.id === openId
+        const cars = q.items.filter(i => !i.done).map(i => {
+          const u = units.find(x => x.vin === i.vin)
+          const row = trackingRows.find(r => r.vin === i.vin)
+          return {
+            vin: i.vin,
+            model: u?.modelName ?? row?.cells['Model name'] ?? row?.cells['Model'] ?? '—',
+            location: yardLocCode(u, locPrefix) || '—',
+            stage: stageOf(i),
+          }
+        }).sort((a, b) => byYardLocation(a.location, b.location))
+        return (
+          <div key={q.id} className="panel overflow-hidden">
+            <button className="w-full px-4 py-3 flex items-center gap-3 text-left" onClick={() => setOpenId(isOpen ? null : q.id)}>
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: 'var(--chip)', color: 'var(--st-yard)' }}>
+                <ClipboardList size={17} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="font-bold text-[12.5px] clip">{q.name}</div>
+                <div className="text-[11px] mt-0.5 flex items-center gap-1.5 flex-wrap" style={{ color: 'var(--muted)' }}>
+                  <span className="badge text-[9.5px] font-bold" style={{ background: 'rgba(22,163,74,0.1)', color: 'var(--st-yard)' }}>{queueTypeOf(q)}</span>
+                  {total === 0
+                    ? <span style={{ color: '#d97706' }}>ยังไม่มีรถในคิว</span>
+                    : <span><b style={{ color: 'var(--text)' }}>{done}/{total}</b> คัน · เหลือ <b style={{ color: total - done > 0 ? '#d97706' : '#16a34a' }}>{total - done}</b></span>}
+                </div>
+              </div>
+              <ChevronLeft size={16} style={{ color: 'var(--muted)', transform: isOpen ? 'rotate(90deg)' : 'rotate(-90deg)', transition: 'transform .15s' }} />
+            </button>
+            {isOpen && (cars.length > 0 ? (
+              <div className="border-t hairline max-h-[60vh] overflow-y-auto divide-y" style={{ borderColor: 'var(--line)' }}>
+                {cars.map(item => (
+                  <button key={item.vin} onClick={() => onPick(item.vin)}
+                    className="flex items-center gap-3 px-4 py-2.5 w-full text-left transition active:bg-chip">
+                    <div className="flex-1 min-w-0">
+                      <div className="vin text-[12.5px] font-bold clip">{item.vin}</div>
+                      <div className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>{item.model}</div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="tabular text-[12px] font-bold">{item.location}</div>
+                      <span className="badge text-[10px] mt-0.5 inline-block" style={item.stage === 'at-station'
+                        ? { background: 'rgba(14,165,233,0.12)', color: '#0ea5e9' }
+                        : item.stage === 'checked' ? { background: 'rgba(22,163,74,0.12)', color: '#16a34a' }
+                        : { background: 'var(--chip)', color: 'var(--muted)' }}>
+                        {item.stage === 'at-station' ? 'ถึงสถานีแล้ว' : item.stage === 'checked' ? 'ตรวจแล้ว' : 'รอส่ง'}
+                      </span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="px-4 py-3 border-t hairline text-[12px] font-semibold" style={{ color: total === 0 ? '#d97706' : '#16a34a' }}>
+                {total === 0 ? 'ยังไม่มีรถในคิวนี้' : '✓ ส่งครบแล้ว'}
+              </div>
+            ))}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 function DriverView() {
   const units = useSiteUnits()
   const trips = useTrips()
@@ -1653,6 +1728,13 @@ function DriverView() {
 
   // ── delivery-sequence queues visible to the driver (browse + progress) ──
   const seqQueues = useMemo(() => queues.filter(q => isSequenceQueue(q) && !isQueueComplete(q)), [queues])
+  // the driver moves cars for EVERY station, so they see all work queues
+  // (PDI / PM / FINAL CHECK / งานพิเศษ) — unlike the stations, which are
+  // strictly scoped to their own type.
+  const allWorkQueues = useMemo(
+    () => queues.filter(q => !isSequenceQueue(q) && !isPreGateInQueue(q.name) && !isQueueComplete(q)),
+    [queues],
+  )
 
   // the car's current station task (PDI / PM / Wash …), if any — Pre Gate-in
   // queues are NOT stations: matching them offered "ส่งเข้าสถานี · (Rayong·…)"
@@ -1944,6 +2026,12 @@ function DriverView() {
       {/* ── delivery-sequence queues (browse the run + car details before scanning) ── */}
       {!unit && !seqHit && (
         <SeqQueuePicker queues={seqQueues} units={units} trackingRows={trackingRows} locPrefix={locPrefix} />
+      )}
+
+      {/* ── every station work queue — the driver serves them all ── */}
+      {!unit && !seqHit && (
+        <AllQueuesBrowser queues={allWorkQueues} units={units} trackingRows={trackingRows} locPrefix={locPrefix}
+          onPick={v => setVin(v)} />
       )}
 
       {/* ── delivery-sequence step (takes over from the normal parking flow) ── */}
@@ -2269,16 +2357,15 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
   const [okResult, setOkResult] = useState<'OK' | 'NG'>('OK')
   const [selectedQueueId, setSelectedQueueId] = useState<string | null>(null)
 
-  // This station's queues (PDI / PM / FINAL CHECK) — scanning / recording stays
-  // scoped to the chosen station so the three don't cross-record. WASH/SPECIAL
-  // have no station of their own, so they'd be unreachable anywhere: show them
-  // in every station (they stamp no date cell, so this can't cross-record).
+  // STRICTLY this station's own queues. Delivery-sequence (Grouping) runs and
+  // every other work type belong to their own screens — a station must never
+  // list another station's work.
   const typeKey = types.join(',')
-  const queues = useMemo(() => allQueues.filter(q => {
-    const t = queueTypeOf(q)
-    return types.includes(t) || t === 'SPECIAL' || t === 'WASH'
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [allQueues, typeKey])
+  const queues = useMemo(
+    () => allQueues.filter(q => !isSequenceQueue(q) && types.includes(queueTypeOf(q))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [allQueues, typeKey],
+  )
   // completed queues drop off the live list (they've filed under their day).
   // A just-created queue with no cars yet IS shown (it used to vanish, so an
   // operator who had just created it thought the queue never arrived).
