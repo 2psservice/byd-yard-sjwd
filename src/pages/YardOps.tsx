@@ -2269,11 +2269,20 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
   const [okResult, setOkResult] = useState<'OK' | 'NG'>('OK')
   const [selectedQueueId, setSelectedQueueId] = useState<string | null>(null)
 
-  // only this station's queues (PDI / PM / FINAL CHECK) — scanning / recording
-  // stays scoped to the chosen station so the three stations don't cross-record.
-  const queues = useMemo(() => allQueues.filter(q => types.includes(queueTypeOf(q))), [allQueues, types])
-  // completed queues drop off the live list (they've filed under their day)
-  const procQueues = useMemo(() => queues.filter(q => !isPreGateInQueue(q.name) && q.items.length > 0 && !isQueueComplete(q)), [queues])
+  // This station's queues (PDI / PM / FINAL CHECK) — scanning / recording stays
+  // scoped to the chosen station so the three don't cross-record. WASH/SPECIAL
+  // have no station of their own, so they'd be unreachable anywhere: show them
+  // in every station (they stamp no date cell, so this can't cross-record).
+  const typeKey = types.join(',')
+  const queues = useMemo(() => allQueues.filter(q => {
+    const t = queueTypeOf(q)
+    return types.includes(t) || t === 'SPECIAL' || t === 'WASH'
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [allQueues, typeKey])
+  // completed queues drop off the live list (they've filed under their day).
+  // A just-created queue with no cars yet IS shown (it used to vanish, so an
+  // operator who had just created it thought the queue never arrived).
+  const procQueues = useMemo(() => queues.filter(q => !isPreGateInQueue(q.name) && !isQueueComplete(q)), [queues])
   const selectedQueue = selectedQueueId ? queues.find(q => q.id === selectedQueueId) ?? null : null
   const queueCars = useMemo(() => {
     if (!selectedQueue) return [] as { vin: string; model: string; color: string; grouping: string; location: string; stage: string }[]
@@ -2359,8 +2368,11 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="font-bold text-[12.5px] clip">{q.name}</div>
-                    <div className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
-                      <b style={{ color: 'var(--text)' }}>{done}/{total}</b> คัน · เหลือ <b style={{ color: remaining > 0 ? '#d97706' : '#16a34a' }}>{remaining}</b>
+                    <div className="text-[11px] mt-0.5 flex items-center gap-1.5 flex-wrap" style={{ color: 'var(--muted)' }}>
+                      <span className="badge text-[9.5px] font-bold" style={{ background: `${accent}1a`, color: accent }}>{queueTypeOf(q)}</span>
+                      {total === 0
+                        ? <span style={{ color: '#d97706' }}>ยังไม่มีรถในคิว</span>
+                        : <span><b style={{ color: 'var(--text)' }}>{done}/{total}</b> คัน · เหลือ <b style={{ color: remaining > 0 ? '#d97706' : '#16a34a' }}>{remaining}</b></span>}
                     </div>
                   </div>
                   <ChevronLeft size={16} style={{ color: 'var(--muted)', transform: isOpen ? 'rotate(90deg)' : 'rotate(-90deg)', transition: 'transform .15s' }} />
@@ -2387,6 +2399,10 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
                         </div>
                       </button>
                     ))}
+                  </div>
+                ) : total === 0 ? (
+                  <div className="px-4 py-3 border-t hairline text-[12px] font-semibold" style={{ color: '#d97706' }}>
+                    ยังไม่มีรถในคิวนี้ — เพิ่มรถได้ที่หน้า Operation (คิวงาน)
                   </div>
                 ) : (
                   <div className="px-4 py-3 border-t hairline text-[12px] font-semibold" style={{ color: '#16a34a' }}>✓ เสร็จครบแล้ว!</div>

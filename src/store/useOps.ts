@@ -28,7 +28,8 @@ export const QUEUE_TYPES: { type: QueueType; name: string; th: string }[] = [
   { type: 'PM', name: 'PM', th: 'PM' },
   { type: 'PDI', name: 'PDI', th: 'PDI' },
   { type: 'FINAL', name: 'FINAL CHECK', th: 'FINAL CHECK' },
-  { type: 'WASH', name: 'Wash for sale', th: 'Wash for sale' },
+  // 'WASH' stays in the QueueType union for legacy queues, but is no longer
+  // offered when creating a new one.
   { type: 'SPECIAL', name: 'งานพิเศษ', th: 'งานพิเศษ' },
 ]
 
