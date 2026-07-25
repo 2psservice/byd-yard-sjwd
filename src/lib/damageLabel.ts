@@ -20,9 +20,13 @@ export function partLabel(d: Pick<Damage, 'area' | 'areaTh'>, lang: 'en' | 'th')
   return zoneLabel(d.area, 'en')
 }
 
-/** Defect label. English from `item` (or legacy type id). Thai from `itemTh`
- *  (or legacy `note`). Empty string when nothing is recorded. */
+/** Defect label. English from `item` (or legacy type id). Thai from `itemTh`,
+ *  else the English defect name — NOT `note`: imported defects never carry a
+ *  Thai translation and their `note` holds From/Stock/Remark metadata, so the
+ *  old fallback rendered a yard code ("NYB2") where the defect ("Rust") belongs.
+ *  `note` stays as the last resort for legacy in-app damages that only have it. */
 export function defectLabel(d: Pick<Damage, 'item' | 'itemTh' | 'type' | 'note'>, lang: 'en' | 'th'): string {
-  if (lang === 'th') return d.itemTh || LEGACY_TYPES[d.type]?.th || d.note || ''
-  return d.item || LEGACY_TYPES[d.type]?.en || (d.type && d.type !== '—' ? d.type : '') || ''
+  const en = d.item || LEGACY_TYPES[d.type]?.en || (d.type && d.type !== '—' ? d.type : '') || ''
+  if (lang === 'th') return d.itemTh || LEGACY_TYPES[d.type]?.th || en || d.note || ''
+  return en
 }
