@@ -617,16 +617,24 @@ const isAccByd = (d: { categoryNG?: string; statusRepair?: string }) =>
 function DefectCard({ d, right }: { d: Damage; right?: React.ReactNode }) {
   const [lb, setLb] = useState<number | null>(null)
   const photos = d.photos?.length ? d.photos : (d.photo ? [d.photo] : [])
+  // resolved (Accept / Repaired / ACC BYD / any status ≠ Waiting Repair) → green
+  // card; only a defect still waiting for repair stays red
+  const resolved = !!d.statusRepair && d.statusRepair !== 'Waiting Repair'
+  const tint = resolved
+    ? { bg: 'rgba(22,163,74,0.06)', border: '1px solid rgba(22,163,74,0.2)', fg: '#15803d' }
+    : { bg: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.14)', fg: 'var(--st-damage)' }
   return (
     <>
-      <div className="rounded-xl overflow-hidden" style={{ background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.14)' }}>
+      <div className="rounded-xl overflow-hidden" style={{ background: tint.bg, border: tint.border }}>
         <div className="p-3 space-y-2">
           <div className="flex items-start gap-2">
-            <AlertTriangle size={14} style={{ color: 'var(--st-damage)', marginTop: 2, flexShrink: 0 }} />
+            {resolved
+              ? <CheckCircle2 size={14} style={{ color: tint.fg, marginTop: 2, flexShrink: 0 }} />
+              : <AlertTriangle size={14} style={{ color: tint.fg, marginTop: 2, flexShrink: 0 }} />}
             <div className="flex-1 min-w-0">
               <div className="text-[12.5px] leading-snug">
-                <span className="font-bold" style={{ color: 'var(--st-damage)' }}>{partLabel(d, 'th')}</span>
-                <span className="font-semibold" style={{ color: 'var(--st-damage)' }}> // {defectLabel(d, 'th') || '—'}</span>
+                <span className="font-bold" style={{ color: tint.fg }}>{partLabel(d, 'th')}</span>
+                <span className="font-semibold" style={{ color: tint.fg }}> // {defectLabel(d, 'th') || '—'}</span>
                 {isAccByd(d) && <span className="font-extrabold" style={{ color: '#16a34a' }}> · ACC BYD</span>}
                 {(d.remark || d.note) && <span className="font-semibold" style={{ color: 'var(--text)' }}> · {d.remark || d.note}</span>}
               </div>
