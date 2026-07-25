@@ -75,10 +75,12 @@ export const PRESET_QUEUES = ['PM', 'Wash for sale', 'PDI', 'FINAL CHECK'] as co
 export function queueTypeOf(q: WorkQueue): QueueType {
   if (q.type) return q.type
   const n = q.name.toLowerCase()
-  if (n.includes('final')) return 'FINAL'
   if (n.includes('pdi')) return 'PDI'
-  if (n.includes('wash')) return 'WASH'
+  // PM before FINAL: a legacy queue named "FINAL PM" is a PM run — classifying
+  // it FINAL stamped "Final check date" instead of the next PM1..15 slot.
   if (/\bpm\b|^pm|pm[\s·-]/.test(n) || n.startsWith('pm')) return 'PM'
+  if (n.includes('final')) return 'FINAL'
+  if (n.includes('wash')) return 'WASH'
   return 'SPECIAL'
 }
 
@@ -307,8 +309,15 @@ export const useOps = create<OpsState>()(
       },
 
       clearQueues: () => {
-        set({ queues: [] })
-        db.clearOpsQueues().then(() => sendSync('ops')).catch((e) => console.error('[db] clearQueues', e))
+        // scoped to the ACTIVE yard — the old global clear deleted every yard's
+        // queues (and the field phones' live work) from one site's button.
+        const sid = useYard.getState().currentSite
+        if (!sid) return
+        const gone = get().queues.filter((q) => !q.site || q.site === sid).map((q) => q.id)
+        set((s) => ({ queues: s.queues.filter((q) => q.site && q.site !== sid) }))
+        Promise.all(gone.map((id) => db.deleteOpsQueue(id)))
+          .then(() => sendSync('ops'))
+          .catch((e) => console.error('[db] clearQueues', e))
       },
 
       // ── process flow ──────────────────────────────────────────────────────

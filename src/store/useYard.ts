@@ -506,10 +506,18 @@ export const useYard = create<YardState>()(
       },
 
       clearAll: () => {
-        set({ units: {}, trailers: [], trips: [] })
+        // scoped to the ACTIVE yard only — the old global delete wiped every
+        // site's units/damages (~15k rows) from one yard's "clear data" button.
+        const sid = get().currentSite
+        if (!sid) return
+        set((s) => {
+          const units: Record<string, Unit> = {}
+          for (const [vin, u] of Object.entries(s.units)) if (u.site && u.site !== sid) units[vin] = u
+          return { units, trailers: [], trips: [] }
+        })
         // damages + trips cascade automatically (FK on delete cascade)
-        db.deleteAllUnits().catch((e) => console.error('[db] clearAll units', e))
-        db.deleteAllTrailers().catch((e) => console.error('[db] clearAll trailers', e))
+        db.deleteUnitsForSite(sid).catch((e) => console.error('[db] clearAll units', e))
+        db.deleteTrailersForSite(sid).catch((e) => console.error('[db] clearAll trailers', e))
       },
 
       removeUnit: (vin) => {
@@ -1167,6 +1175,18 @@ export const useYard = create<YardState>()(
           for (let dmg of fileById.values()) {
             const base = oldById.get(dmg.id) ?? healedTwin.get(dayKey(dmg.source, dmg.area, dmg.at))
             if (base) {
+              // keep evidence captured in-app that the workbook can't carry —
+              // photos, remark/note, Thai labels. Without this a weekly re-import
+              // permanently wiped the mechanic's photos off every device + cloud.
+              dmg = {
+                ...dmg,
+                photo:  dmg.photo  ?? base.photo,
+                photos: dmg.photos?.length ? dmg.photos : base.photos,
+                remark: dmg.remark ?? base.remark,
+                note:   dmg.note   ?? base.note,
+                areaTh: dmg.areaTh ?? base.areaTh,
+                itemTh: dmg.itemTh ?? base.itemTh,
+              }
               const hist = base.repairHistory ?? []
               if (dmg.statusRepair && base.statusRepair && dmg.statusRepair !== base.statusRepair) {
                 dmg = { ...dmg, repairHistory: [...hist, { status: dmg.statusRepair, from: base.statusRepair, at: now, by: 'Co-Inspection Import' }] }
