@@ -2111,12 +2111,14 @@ function Meas({ label, value, onChange, unit: u, lastVal }: { label: string; val
   )
 }
 
-function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved }: {
+function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved, stationTitle, accent }: {
   unit: Unit
   row: TrackRow | null
   activeProc: { queue: WorkQueue; item: QueueItem } | null
   canRecord: boolean
   onSaved: (label: string, result: 'OK' | 'NG') => void
+  stationTitle: string   // the station menu this panel is on — PDI / PM / FINAL CHECK
+  accent: string
 }) {
   const { addDamage, updateRepairStatus, setInspected, currentUser, toast } = useYard()
   const { updateCell } = useTracking()
@@ -2127,7 +2129,8 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved }: {
   const [showNgForm, setShowNgForm] = useState(false)
 
   const last = (k: string) => (row?.cells[k]?.trim() ? row.cells[k] : '—')
-  const stationName = activeProc?.queue.name ?? 'PDI'
+  // tag the defect with the actual queue when the car is in one, else the station menu
+  const stationName = activeProc?.queue.name ?? stationTitle
   // NG found at THIS station (added via the shared DamageForm below)
   const stationDmgs = unit.damages.filter(d => d.source === 'pdi' && d.station === stationName)
 
@@ -2149,9 +2152,9 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved }: {
 
   return (
     <div className="panel overflow-hidden">
-      <div className="px-4 py-2.5 border-b hairline flex items-center gap-2" style={{ background: 'linear-gradient(135deg,#5b21b6,#7c3aed)' }}>
+      <div className="px-4 py-2.5 border-b hairline flex items-center gap-2" style={{ background: `linear-gradient(135deg, ${accent}, ${accent}cc)` }}>
         <ShieldCheck size={15} color="#fff" />
-        <span className="font-bold text-[13.5px] text-white">Final Check · {stationName}</span>
+        <span className="font-bold text-[13.5px] text-white">{stationTitle}</span>
       </div>
 
       {/* measurements */}
@@ -2165,7 +2168,7 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved }: {
       {/* NG entry — same Defect form as Gate-in (bilingual dropdowns / photos / remark) */}
       <div className="p-4 space-y-2.5 border-b hairline" style={{ background: '#fbfaff' }}>
         <div className="flex items-center justify-between">
-          <div className="badge text-[11px]" style={{ background: 'rgba(124,58,237,0.1)', color: '#7c3aed' }}>NG · เพิ่มรายการตรวจพบ{stationDmgs.length ? ` (${stationDmgs.length})` : ''}</div>
+          <div className="badge text-[11px]" style={{ background: `${accent}1a`, color: accent }}>NG · เพิ่มรายการตรวจพบ{stationDmgs.length ? ` (${stationDmgs.length})` : ''}</div>
           <button onClick={() => setShowNgForm(v => !v)} className="btn btn-ghost text-[12px] py-1 px-2.5" style={{ color: '#dc2626' }}>
             <Plus size={13} /> เพิ่ม NG
           </button>
@@ -2200,7 +2203,7 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved }: {
 }
 
 // ── pdi view ──────────────────────────────────────────────────────────────────
-function PdiView({ types, accent }: { types: QueueType[]; accent: string }) {
+function PdiView({ types, accent, title }: { types: QueueType[]; accent: string; title: string }) {
   const units = useSiteUnits()
   const trackingRows = useSiteRows()
   const wrongSite = useWrongSiteHint()
@@ -2411,6 +2414,8 @@ function PdiView({ types, accent }: { types: QueueType[]; accent: string }) {
             activeProc={activeProc}
             canRecord={canRecord}
             onSaved={onSaved}
+            stationTitle={title}
+            accent={accent}
           />
 
           {/* NG added later at PDI / by mechanic (walk-around NG is shown above) */}
@@ -3218,9 +3223,9 @@ export function YardOps() {
       {role === 'updatedmg'  && <UpdateDamageView />}
       {role === 'driver'     && <DriverView />}
       {role === 'relocation' && <RelocationView />}
-      {role === 'pdi'        && <PdiView types={['PDI']} accent="#7c3aed" />}
-      {role === 'pm'         && <PdiView types={['PM']} accent="#2563eb" />}
-      {role === 'fc'         && <PdiView types={['FINAL']} accent="#059669" />}
+      {role === 'pdi'        && <PdiView types={['PDI']} accent="#7c3aed" title="PDI" />}
+      {role === 'pm'         && <PdiView types={['PM']} accent="#2563eb" title="PM" />}
+      {role === 'fc'         && <PdiView types={['FINAL']} accent="#059669" title="FINAL CHECK" />}
       {role === 'check'      && <CheckView />}
       {role === 'mechanic'   && <MechanicView />}
     </div>
