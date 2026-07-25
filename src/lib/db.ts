@@ -35,13 +35,18 @@ async function withRetry<T>(fn: () => PromiseLike<{ error: unknown } & T>, attem
  * Upsert many rows in parallel chunks, retrying failed chunks up to 2× — a big
  * defect import (16k+ rows) must not silently drop a chunk on a transient error.
  */
-async function bulkUpsert(table: string, rows: any[], chunkSize: number, onConflict: string, concurrency = 5): Promise<void> {
+async function bulkUpsert(table: string, rows: any[], chunkSize: number, onConflict: string, concurrency = 5, stripFallback?: (row: any) => any): Promise<void> {
   if (!rows.length) return
   const chunks: any[][] = []
   for (let i = 0; i < rows.length; i += chunkSize) chunks.push(rows.slice(i, i + chunkSize))
   const runChunk = async (c: any[], attempt = 0): Promise<void> => {
     const { error } = await supabase.from(table).upsert(c, { onConflict })
     if (error) {
+      // optional columns not migrated yet → retry the chunk without them
+      if (stripFallback && isMissingColumn(error)) {
+        const { error: e2 } = await supabase.from(table).upsert(c.map(stripFallback), { onConflict })
+        if (!e2) return
+      }
       if (attempt < 2) { await sleep(400 * (attempt + 1)); return runChunk(c, attempt + 1) }
       console.error(`[db] bulkUpsert ${table} gave up after retries`, error)
     }
@@ -237,6 +242,21 @@ export async function deleteAllUnits(): Promise<void> {
   if (!isConfigured()) return
   const { error } = await supabase.from('units').delete().neq('vin', '')
   if (error) console.error('[db] deleteAllUnits', error)
+}
+
+/** Delete only THIS yard's units (damages + trips cascade). Includes untagged
+ *  (site_id null) units — those render in every yard's view. The global
+ *  deleteAllUnits wiped all five yards from one site's "clear data" button. */
+export async function deleteUnitsForSite(siteId: string): Promise<void> {
+  if (!isConfigured()) return
+  const { error } = await supabase.from('units').delete().or(`site_id.eq.${siteId},site_id.is.null`)
+  if (error) console.error('[db] deleteUnitsForSite', error)
+}
+
+export async function deleteTrailersForSite(siteId: string): Promise<void> {
+  if (!isConfigured()) return
+  const { error } = await supabase.from('trailers').delete().eq('site_id', siteId)
+  if (error) console.error('[db] deleteTrailersForSite', error)
 }
 
 // ── damage operations ─────────────────────────────────────────────────────
@@ -490,6 +510,10 @@ function rowToQueue(r: any): WorkQueue {
     id: r.id, name: r.name ?? '', createdAt: r.created_at ? new Date(r.created_at).getTime() : 0,
     createdBy: r.created_by ?? undefined, items: (r.items as WorkQueue['items']) ?? [],
     site: r.site_id ?? undefined,
+    // work category + sequence flag — without these every cloud round-trip
+    // degraded the queue to name-guessing, mis-routing the PM/PDI date stamps
+    type: (r.type as WorkQueue['type']) ?? undefined,
+    kind: (r.kind as WorkQueue['kind']) ?? undefined,
   }
 }
 
@@ -503,12 +527,23 @@ export async function fetchOpsQueues(): Promise<WorkQueue[] | null> {
 
 export async function upsertOpsQueue(q: WorkQueue): Promise<void> {
   if (!isConfigured()) return
-  const { error } = await supabase.from('ops_queues').upsert({
+  const row = {
     id: q.id, site_id: q.site ?? null, name: q.name,
     created_at: new Date(q.createdAt).toISOString(), created_by: q.createdBy ?? null,
     items: q.items, updated_at: new Date().toISOString(),
-  }, { onConflict: 'id' })
-  if (error) console.error('[db] upsertOpsQueue', error)
+    type: q.type ?? null, kind: q.kind ?? null,
+  }
+  const { error } = await supabase.from('ops_queues').upsert(row, { onConflict: 'id' })
+  if (error) {
+    // type/kind columns may not be migrated yet (supabase-ops-queue-type.sql) —
+    // retry without them so the queue itself still syncs.
+    if (isMissingColumn(error)) {
+      const { type: _t, kind: _k, ...rest } = row
+      const { error: e2 } = await supabase.from('ops_queues').upsert(rest, { onConflict: 'id' })
+      if (!e2) return
+    }
+    console.error('[db] upsertOpsQueue', error)
+  }
 }
 
 export async function deleteOpsQueue(id: string): Promise<void> {
@@ -528,8 +563,13 @@ export async function clearOpsQueues(): Promise<void> {
 export async function upsertDamages(items: { vin: string; d: Damage }[]): Promise<void> {
   if (!isConfigured() || !items.length) return
   // parallel chunks + retry — 16k+ defect rows finish in a few seconds and no
-  // chunk is silently dropped on a transient error (that stranded ~6k rows before)
-  await bulkUpsert('damages', items.map(({ vin, d }) => damageToRow(vin, d)), 500, 'id')
+  // chunk is silently dropped on a transient error (that stranded ~6k rows before).
+  // Every row carries the SAME key set (optional cols explicitly null): PostgREST
+  // builds the column list from the union of keys per request, filling absent keys
+  // with NULL — heterogeneous chunks were randomly NULLing remark/area_th/item_th
+  // on rows that happened to share a chunk with a row that had them.
+  const rows = items.map(({ vin, d }) => ({ remark: null, area_th: null, item_th: null, ...damageToRow(vin, d) }))
+  await bulkUpsert('damages', rows, 500, 'id', 5, stripOptionalDamageCols)
 }
 
 // ── tracking rows (master vehicle list — flexible JSONB columns) ────────────

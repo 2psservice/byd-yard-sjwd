@@ -265,7 +265,7 @@ export const useTracking = create<TrackingState>()(
                 idbDelete([vin]).catch(() => {})
                 return
               }
-              const r = payload.new as { vin?: string; cells?: Record<string, string> | null; updated_at?: string | null; site?: string | null; deleted_at?: string | null }
+              const r = payload.new as { vin?: string; cells?: Record<string, string> | null; updated_at?: string | null; site?: string | null; deleted_at?: string | null; history?: TrackRow['history'] | null }
               if (!r?.vin) return
               // soft-delete arrives here as an UPDATE with deleted_at set → drop locally
               if (r.deleted_at) {
@@ -280,10 +280,15 @@ export const useTracking = create<TrackingState>()(
                 cells: r.cells ?? {},
                 updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : Date.now(),
                 site: r.site ?? undefined,
+                history: r.history ?? undefined,
               }
               set((s) => {
                 const cur = s.rows[incoming.vin]
                 if (cur && (cur.updatedAt ?? 0) >= (incoming.updatedAt ?? 0)) return s // stale / self-echo
+                // payload without history (column omitted / truncated) must NOT wipe
+                // the local audit trail — a later updateCell on this device would then
+                // upsert history:null to the cloud, destroying it everywhere.
+                if (!incoming.history?.length && cur?.history?.length) incoming.history = cur.history
                 idbPut(incoming).catch(() => {})
                 return { rows: { ...s.rows, [incoming.vin]: incoming } }
               })
