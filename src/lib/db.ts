@@ -419,10 +419,13 @@ export async function deleteSite(id: string): Promise<void> {
 // each device kept its own isolated user list and a new account only ever
 // "existed" on whichever browser created it. ────────────────────────────────
 
-export async function fetchAppUsers(): Promise<AppUser[]> {
-  if (!isConfigured()) return []
+/** null = fetch FAILED (offline / error) — callers must keep their local roster.
+ *  Returning [] for an error made a transient failure look like an empty cloud,
+ *  which re-seeded the whole local roster upward (resurrecting deleted users). */
+export async function fetchAppUsers(): Promise<AppUser[] | null> {
+  if (!isConfigured()) return null
   const { data, error } = await supabase.from('app_users').select('id, name, role, username, password, active')
-  if (error) { console.error('[db] fetchAppUsers', error); return [] }
+  if (error) { console.error('[db] fetchAppUsers', error); return null }
   return ((data ?? []) as { id: string; name: string; role: string; username: string; password: string; active: boolean | null }[])
     .map((r) => ({ id: r.id, name: r.name, role: r.role as AppUser['role'], username: r.username, password: r.password, active: r.active ?? true }))
 }

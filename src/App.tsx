@@ -97,6 +97,13 @@ export default function App() {
     if (!currentSite) openSiteModal()
   }, [currentSite, openSiteModal])
 
+  // stale-session cleanup: if the signed-in account was deleted/deactivated
+  // while this device was open, clear the session state too (the render gate
+  // below already fails closed — this keeps loggedInUserId consistent).
+  useEffect(() => {
+    if (loggedInUserId && (!me || !me.active)) useYard.getState().logout()
+  }, [loggedInUserId, me])
+
   // ── daily session expiry: any session that crossed midnight is logged out
   //    (all roles, admin included). Checked at mount, every minute, and when
   //    the tab becomes visible again (PWA left open overnight on a phone). ──
@@ -156,7 +163,11 @@ export default function App() {
   // the login form can trust its "invalid username/password" verdict
   if (!usersReady) return <><LogoLoaderOverlay label="กำลังเตรียมระบบ" /><Toaster /></>
 
-  if (!loggedInUserId) return <><LoginScreen /><Toaster /></>
+  // fail-CLOSED: a session whose account no longer resolves (deleted from the
+  // roster) or is deactivated goes back to login. It used to fall through with
+  // a null role — `isOpsOnlyRole(undefined) === false` — straight into the
+  // full admin shell.
+  if (!loggedInUserId || !me || !me.active) return <><LoginScreen /><Toaster /></>
 
   // brand loader while the boot animation plays or yard data is still loading
   if (booting || !trackingLoaded)

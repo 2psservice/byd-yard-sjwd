@@ -13,6 +13,7 @@ import { useYard, useUnits } from '../store/useYard'
 import type { UserRole } from '../types'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { PageHead, Toggle, cx } from '../components/ui'
+import { hashPassword } from '../lib/password'
 
 const VIN_RE = /^[A-HJ-NPR-Z0-9]{17}$/i
 
@@ -265,25 +266,30 @@ function UserManager() {
   // "test" are treated as the same account, not two different (one unreachable)
   const sameUsername = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
 
-  const doAdd = () => {
+  const doAdd = async () => {
     const n = newName.trim()
     if (!n) { setErr('กรุณาใส่ชื่อ'); return }
     if (!newUser.trim()) { setErr('กรุณาใส่ Username'); return }
     if (appUsers.some(u => u.name === n)) { setErr(`มีชื่อ "${n}" อยู่แล้ว`); return }
     if (appUsers.some(u => sameUsername(u.username, newUser))) { setErr(`Username "${newUser.trim()}" ถูกใช้แล้ว`); return }
-    addAppUser(n, newRole, newUser.trim(), newPass)
+    addAppUser(n, newRole, newUser.trim(), await hashPassword(newPass)) // never store plaintext
     setNewName(''); setNewUser(''); setNewPass(''); setErr('')
   }
 
   const startEdit = (u: { id: string; name: string; role: UserRole; username: string; password: string }) => {
-    setEditId(u.id); setEditName(u.name); setEditRole(u.role); setEditUser(u.username); setEditPass(u.password); setErr('')
+    // password box starts EMPTY — the stored value is a hash (never shown);
+    // leaving it blank keeps the current password
+    setEditId(u.id); setEditName(u.name); setEditRole(u.role); setEditUser(u.username); setEditPass(''); setErr('')
   }
-  const saveEdit = () => {
+  const saveEdit = async () => {
     const n = editName.trim()
     if (!n || !editId) return
     if (!editUser.trim()) { setErr('กรุณาใส่ Username'); return }
     if (appUsers.some(u => u.id !== editId && sameUsername(u.username, editUser))) { setErr(`Username "${editUser.trim()}" ถูกใช้แล้ว`); return }
-    updateAppUser(editId, { name: n, role: editRole, username: editUser.trim(), password: editPass })
+    updateAppUser(editId, {
+      name: n, role: editRole, username: editUser.trim(),
+      ...(editPass ? { password: await hashPassword(editPass) } : {}), // blank = keep current
+    })
     setEditId(null); setErr('')
   }
 
@@ -361,7 +367,7 @@ function UserManager() {
                   <div className="flex flex-wrap items-center gap-2">
                     <input className="input py-1.5 text-[13px]" style={{ minWidth: 130 }} placeholder="Username"
                       value={editUser} onChange={e => { setEditUser(e.target.value); setErr('') }} />
-                    <input className="input py-1.5 text-[13px]" style={{ minWidth: 130 }} placeholder="Password" type="text"
+                    <input className="input py-1.5 text-[13px]" style={{ minWidth: 170 }} placeholder="รหัสใหม่ (ว่าง = คงเดิม)" type="text"
                       value={editPass} onChange={e => setEditPass(e.target.value)} />
                     <button className="btn btn-primary px-3 py-1.5 text-[12.5px]" onClick={saveEdit}><Check size={14} /> บันทึก</button>
                     <button className="btn px-3 py-1.5 text-[12.5px]" onClick={() => setEditId(null)}><X size={14} /></button>

@@ -19,8 +19,8 @@ export function LoginScreen() {
   const doLogin = () => {
     if (!username.trim()) { setErr('กรุณาใส่ชื่อผู้ใช้'); return }
     setLoading(true)
-    setTimeout(() => {
-      const ok = login(username.trim(), password)
+    setTimeout(async () => {
+      const ok = await login(username.trim(), password)
       if (!ok) { setLoading(false); setErr('ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง') }
       // on success: keep the loader up — App takes over with the same brand overlay
     }, 700)
