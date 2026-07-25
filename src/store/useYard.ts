@@ -166,6 +166,8 @@ interface YardState {
   loadSample: () => void
   clearAll: () => void
   removeUnit: (vin: string) => void
+  /** Gate-out: mark the car DEPARTED and release its parking slot. */
+  markDeparted: (vin: string) => void
   markTrailerArrived: (no: number, arrived?: boolean) => void
   gateIn: (vin: string) => void
   setInspected: (vin: string, v: boolean) => void
@@ -528,6 +530,17 @@ export const useYard = create<YardState>()(
           return { units, trips: s.trips.filter((t) => t.vin !== vin) }
         })
         db.deleteUnit(vin).catch((e) => console.error('[db] removeUnit', e))
+      },
+
+      markDeparted: (vin) => {
+        // Nothing ever set DEPARTED before, so a gated-out car kept PARKED with
+        // its block/row/slot — the engine counted the slot occupied forever and
+        // after enough gate-outs the auto-plan reported a full yard.
+        const u = get().units[vin]
+        if (!u) return // sheet-only car (no yard unit) — nothing to release
+        const updated: Unit = { ...u, status: 'DEPARTED', block: undefined, row: undefined, slot: undefined }
+        set((s) => ({ units: { ...s.units, [vin]: updated } }))
+        db.upsertUnit(updated).catch((e) => console.error('[db] markDeparted', e))
       },
 
       markTrailerArrived: (no, arrived = true) => {

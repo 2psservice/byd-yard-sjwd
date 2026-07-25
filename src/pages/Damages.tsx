@@ -25,7 +25,10 @@ function AddDamageModal({ units, onClose }: { units: Unit[]; onClose: () => void
   const [sev, setSev] = useState<'minor' | 'major'>('minor')
   const [note, setNote] = useState('')
 
-  const matched = units.find(u => u.vin.toUpperCase().endsWith(vin.toUpperCase()) || u.vin === vin.toUpperCase())
+  // require ≥4 chars: ''.endsWith('') is true, so an empty/1-char VIN box used
+  // to "match" the first unit in the list and saved the damage onto a random car
+  const q = vin.trim().toUpperCase()
+  const matched = q.length >= 4 ? units.find(u => u.vin.toUpperCase().endsWith(q) || u.vin === q) ?? null : null
 
   const save = () => {
     if (!matched) return

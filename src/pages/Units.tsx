@@ -105,9 +105,11 @@ const ROW_H = 28
 const GUTTER = 14 // small left pad (checkbox column removed)
 const GROUPING_KEY = 'Grouping  Number'
 
-// strip everything but A–Z/0–9 so a pasted VIN with stray spaces, dashes, line
-// breaks or hidden unicode (common when copied from Excel / a label) still matches
-const normKey = (s: string) => (s || '').toUpperCase().replace(/[^A-Z0-9]/g, '')
+// strip everything but A–Z/0–9/ก–๙ so a pasted VIN with stray spaces, dashes,
+// line breaks or hidden unicode still matches. Thai kept: company / Location
+// yard hold Thai values — stripping them made a Thai query normalise to ''
+// and the search silently matched every row.
+const normKey = (s: string) => (s || '').toUpperCase().replace(/[^A-Z0-9ก-๙]/g, '')
 // fields the "Unit Nbr" box searches across
 const SEARCH_KEYS = ['Vin', 'Model name', 'Model', GROUPING_KEY, 'company', 'Location yard', 'storage Yard', 'PIC (PDI)']
 
@@ -1604,7 +1606,17 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                 if (!form.position.trim() && !form.defect.trim()) { window.alert('กรุณากรอกอย่างน้อย Position หรือ Defect/NG'); return }
                 addManualDamage(vin, form); setForm(BLANK_DMG_FORM); setAdding(false)
               }
-              const toDateInput = (ts?: number) => (ts ? new Date(ts).toISOString().slice(0, 10) : '')
+              // LOCAL date, not toISOString (UTC): in UTC+7 a defect dated 29 Jun
+              // rendered as 28 Jun, and saving ANY field then rewrote `at` a day back.
+              const toDateInput = (ts?: number) => {
+                if (!ts) return ''
+                const dt = new Date(ts)
+                return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`
+              }
+              const fromDateInput = (s: string): number | undefined => {
+                const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+                return m ? new Date(+m[1], +m[2] - 1, +m[3]).getTime() : undefined // local midnight
+              }
               const startEdit = (d: typeof damages[number]) => {
                 setEditingId(d.id)
                 setEditForm({
@@ -1619,6 +1631,11 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
               const saveEdit = (d: typeof damages[number]) => {
                 if (!editForm.position.trim() && !editForm.defect.trim()) { window.alert('กรุณากรอกอย่างน้อย Position หรือ Defect/NG'); return }
                 const ep = resolvePart(editForm.position.trim()), ed = resolveDefect(editForm.defect.trim())
+                // Status Repair goes through updateRepairStatus so the change is
+                // audited (repairHistory + repairedBy + repairDate) exactly like the
+                // inline dropdown — the raw patch used to bypass all of that.
+                const newStatus = editForm.statusRepair.trim() as typeof d.statusRepair
+                if (newStatus && newStatus !== (d.statusRepair ?? 'Waiting Repair')) updateRepairStatus(vin, d.id, newStatus)
                 updateDamage(vin, d.id, {
                   area: ep.en || d.area, areaTh: ep.th || d.areaTh,
                   type: editForm.defect.trim() || d.type,
@@ -1627,9 +1644,10 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                   categoryRepair: (editForm.categoryRepair.trim() as typeof d.categoryRepair) || undefined,
                   incharge: (editForm.incharge.trim() as typeof d.incharge) || undefined,
                   note: editForm.note.trim() || undefined,
-                  at: editForm.date ? new Date(editForm.date).getTime() : d.at,
-                  statusRepair: (editForm.statusRepair.trim() as typeof d.statusRepair) || undefined,
-                  repairDate: editForm.repairDate ? new Date(editForm.repairDate).getTime() : undefined,
+                  at: fromDateInput(editForm.date) ?? d.at,
+                  // only override the repair date when the admin actually typed one —
+                  // updateRepairStatus above already stamps it on resolve
+                  ...(editForm.repairDate ? { repairDate: fromDateInput(editForm.repairDate) } : {}),
                 })
                 cancelEdit()
               }

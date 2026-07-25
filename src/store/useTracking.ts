@@ -354,7 +354,11 @@ export const useTracking = create<TrackingState>()(
         const GATE_OUT_TS = 'Gate Out time stamp'
         const ORDER = CAR_STATUS_ORDER as readonly string[]
         const IN_YARD_STAGE = ORDER.indexOf('In Yard')
-        const stageOf = (s: string) => { const i = ORDER.indexOf(s); return i < 0 ? 0 : i }
+        // unknown statuses are LIVE station writes ('PARKING PDI', 'PDI NG',
+        // 'FINAL CHECK OK', 'Wash for sale', lane labels…) — treat them as
+        // already ≥ In Yard so the daily merge doesn't demote a car that is
+        // mid-inspection back to 'In Yard' and erase its NG flag.
+        const stageOf = (s: string) => { const i = ORDER.indexOf(s); return i < 0 ? IN_YARD_STAGE : i }
         const promote = (cells: Record<string, string>): boolean => {
           if (isGateOutStamp(cells['Gate Out time stamp'])) {
             if (cells['Car Status'] !== 'Gate-out') { cells['Car Status'] = 'Gate-out'; return true }

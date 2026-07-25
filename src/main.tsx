@@ -2,6 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { registerSW } from 'virtual:pwa-register'
 import App from './App'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import './index.css'
 
 // PWA devices (phones left open for hours/days) can silently keep running an
@@ -21,6 +22,8 @@ const updateSW = registerSW({
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <App />
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </React.StrictMode>,
 )

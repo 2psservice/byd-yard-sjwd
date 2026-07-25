@@ -247,7 +247,10 @@ export function ImportPage() {
 
   const confirm = () => {
     if (!parsed || !newRows.length) return
-    for (const r of newRows) r.cells['Car Status'] = 'Pre Gate-in'
+    // keep the parser's Gate-out detection: a row with a real Gate Out Date is a
+    // car that already LEFT — blanket-forcing Pre Gate-in re-imported historical
+    // rows as expected arrivals and queued long-departed cars for gate-in.
+    for (const r of newRows) if (r.cells['Car Status'] !== 'Gate-out') r.cells['Car Status'] = 'Pre Gate-in'
     commitImport({ ...parsed, rows: newRows, inYard: newRows.length })
     toast('ok', `นำเข้าใหม่ ${newRows.length.toLocaleString()} คัน · ข้ามซ้ำ (In Yard เดิม) ${dupCount.toLocaleString()} · Pre Gate-in`)
 
@@ -264,6 +267,7 @@ export function ImportPage() {
     for (const r of selRows) {
       const ex = existing[r.vin]
       if (ex && deriveCarStatus(ex.cells) !== 'Pre Gate-in') continue
+      if (r.cells['Car Status'] === 'Gate-out') continue // already left — never queue for gate-in
       const dk = dateKey(r.cells)
       if (dk === '(ไม่ระบุ)') continue
       const yard = (r.cells['Location yard'] || '').trim() || '—'
