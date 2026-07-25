@@ -206,9 +206,20 @@ const isGatedInStatus = (s?: string) => POST_GATEIN_STATUSES.has((s ?? '').trim(
  *  to tell "not gated-in yet" apart from "unknown VIN". */
 function resolveForUnit(v: string, units: Unit[], rows: TrackRow[]):
   | { type: 'ok'; vin: string }
+  | { type: 'okPending'; vin: string } // gated-in per the tracking sheet, unit row still syncing to this device
   | { type: 'notGated'; vin: string; model: string }
   | { type: 'ambiguous'; count: number }
   | { type: 'none' } {
+  // Is this VIN already gated-in according to the tracking sheet? The `units`
+  // store is fetched from the cloud on every app start (not persisted) while
+  // tracking rows load instantly from IndexedDB — so right after opening the
+  // app the unit may not be loaded yet even though the car is long gated-in.
+  // Trust the sheet's Car Status so a search during that window isn't wrongly
+  // told "not Gate-in".
+  const sheetGated = (vin: string) => {
+    const r = rows.find(x => x.vin === vin)
+    return !!r && isGatedInStatus(r.cells['Car Status'])
+  }
   let u = units.find(x => x.vin === v) ?? null
   if (!u && v.length <= 8) {
     const hits = units.filter(x => x.vin.endsWith(v))
@@ -216,7 +227,7 @@ function resolveForUnit(v: string, units: Unit[], rows: TrackRow[]):
     else if (hits.length > 1) return { type: 'ambiguous', count: hits.length }
   }
   if (u) {
-    if (u.status === 'EXPECTED') return { type: 'notGated', vin: u.vin, model: u.modelName }
+    if (u.status === 'EXPECTED' && !sheetGated(u.vin)) return { type: 'notGated', vin: u.vin, model: u.modelName }
     return { type: 'ok', vin: u.vin }
   }
   // no parkable unit — is it a known (pre-gate-in) tracking row?
@@ -226,7 +237,12 @@ function resolveForUnit(v: string, units: Unit[], rows: TrackRow[]):
     if (hits.length === 1) r = hits[0]
     else if (hits.length > 1) return { type: 'ambiguous', count: hits.length }
   }
-  if (r) return { type: 'notGated', vin: r.vin, model: r.cells['Model name'] ?? r.cells['Model'] ?? '' }
+  if (r) {
+    // gated-in per the sheet but the unit hasn't synced here yet → let it through
+    // (the caller loads units and shows the car once it arrives)
+    if (isGatedInStatus(r.cells['Car Status'])) return { type: 'okPending', vin: r.vin }
+    return { type: 'notGated', vin: r.vin, model: r.cells['Model name'] ?? r.cells['Model'] ?? '' }
+  }
   return { type: 'none' }
 }
 
@@ -2187,9 +2203,11 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
   const currentSite = useYard(s => s.currentSite)
   const locPrefix = siteGroupingConfig(sites.find(s => s.id === currentSite)?.name ?? '').prefix
   const { loadFromIdb } = useTracking()
-  const { setInspected, removeDamage, updateRepairStatus, toast } = useYard()
+  const { setInspected, removeDamage, updateRepairStatus, toast, loadFromSupabase } = useYard()
   const { block: blockGate, modal: gateModal } = useNotGatedIn()
-  useEffect(() => { loadFromIdb() }, [loadFromIdb])
+  // pull tracking rows (IDB) AND units (cloud) on entry so a scan right after
+  // opening the station finds the car instead of racing the initial load.
+  useEffect(() => { loadFromIdb(); loadFromSupabase() }, [loadFromIdb, loadFromSupabase])
   const [vin, setVin] = useState<string | null>(null)
   const [justOk, setJustOk] = useState(false)
   const [okLabel, setOkLabel] = useState('OK')
@@ -2231,6 +2249,7 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
     if (res.type === 'ambiguous') { toast('err', `พบ ${res.count} คัน — พิมพ์ให้ยาวขึ้น`); return }
     if (res.type === 'none') { toast('err', wrongSite(v) ?? `ไม่พบ VIN: ${v}`); return }
     if (res.type === 'notGated') { blockGate(res.vin, res.model); return }
+    if (res.type === 'okPending') loadFromSupabase() // unit not synced yet — hurry the fetch
     setVin(res.vin); setJustOk(false)
   }
   // called by FinalCheckPanel after it records the inspection (OK / NG)
@@ -2320,6 +2339,15 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
               </div>
             )
           })}
+        </div>
+      )}
+
+      {/* VIN chosen but the unit row is still syncing from the cloud (fresh app
+          load) — show a loader instead of a blank screen; it fills in on arrival. */}
+      {vin && !unit && !justOk && (
+        <div className="panel p-5 flex items-center justify-center gap-2.5 fade-up" style={{ color: 'var(--muted)' }}>
+          <RefreshCw size={16} className="animate-spin" />
+          <span className="text-[13px] font-semibold">กำลังโหลดข้อมูลรถ {vin.slice(-6)}…</span>
         </div>
       )}
 
