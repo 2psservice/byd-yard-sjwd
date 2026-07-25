@@ -679,7 +679,7 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
                 <div className="gcell" style={{ width: GUTTER }} />
                 {visCols.map((c) => (
                   <Cell key={c.key} col={c} value={c.key === 'Car Status' ? carStatus : c.key === 'No' ? fmtUpdated(r.updatedAt) : c.key === LOCATION_KEY ? locFor(r) : c.key === 'Aging PM' ? fmtAgingPm(r.cells) : c.key === 'storage Yard' ? cleanStorage(r.cells[c.key]) : isDateColumn(c.key, c.label) ? fmtSerialToDate(r.cells[c.key]) : (r.cells[c.key] ?? '')}
-                    dim={c.key === 'Final Status' && carStatus === 'Gate-out'} />
+                    dim={(c.key === 'Final Status' || c.key === 'Status Tax') && carStatus === 'Gate-out'} />
                 ))}
               </div>
             )
@@ -1098,8 +1098,11 @@ function Cell({ col, value, dim }: { col: Column; value: string; dim?: boolean }
     const vc = vinOfStatusColor(value)
     content = vc ? <span className="gbadge" style={{ color: vc.color, background: vc.bg }}>{value}</span> : <span>{value}</span>
   } else if (col.key === 'Status Tax') {
+    // gated-out car → fade like Final Status (no longer actionable)
     const tc = taxStatusColor(value)
-    content = tc ? <span className="gbadge" style={{ color: tc.color, background: tc.bg }}>{value}</span> : <span>{value}</span>
+    content = tc
+      ? <span className="gbadge" style={{ color: tc.color, background: tc.bg, opacity: dim ? 0.4 : 1 }}>{value}</span>
+      : <span style={{ opacity: dim ? 0.4 : 1 }}>{value}</span>
   } else if (col.key === 'No') content = <span className="tabular whitespace-nowrap text-[11.5px]" style={{ color: '#7c8696' }}>{value}</span>
   else content = <span>{value}</span>
 
