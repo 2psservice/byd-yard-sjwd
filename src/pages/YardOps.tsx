@@ -27,7 +27,8 @@ import { candidates } from '../lib/parkingEngine'
 import { slotToLatLng } from '../lib/geo'
 import { cx, PhotoLightbox } from '../components/ui'
 import { rowInSite } from '../lib/siteScope'
-import { storePhoto } from '../lib/photoStore'
+import { compressImage } from '../lib/photo'
+import PdiChecklistPanel from '../components/PdiChecklistPanel'
 import { siteGroupingConfig, yardLocCode, byYardLocation } from '../lib/groupingImport'
 import { fmtSerialToDate } from '../lib/trackingColumns'
 import { matchModel } from '../lib/sampleData'
@@ -2065,33 +2066,7 @@ const FINAL_CHECK_ITEMS = [
   'ระบบเบรก', 'ระบบไฟฟ้า', 'แบตเตอรี่ / การชาร์จ', 'ระบบปรับอากาศ', 'การทำงานทั่วไป', 'อื่นๆ',
 ]
 
-/** Read an image File, downscale to maxW, and return a compressed JPEG dataURL. */
-function compressToDataUrl(file: File, maxW = 900): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onerror = reject
-    reader.onload = () => {
-      const img = new Image()
-      img.onerror = reject
-      img.onload = () => {
-        const scale = Math.min(1, maxW / img.width)
-        const w = Math.round(img.width * scale), h = Math.round(img.height * scale)
-        const canvas = document.createElement('canvas')
-        canvas.width = w; canvas.height = h
-        canvas.getContext('2d')!.drawImage(img, 0, 0, w, h)
-        resolve(canvas.toDataURL('image/jpeg', 0.7))
-      }
-      img.src = reader.result as string
-    }
-    reader.readAsDataURL(file)
-  })
-}
-
-/** Compress, then push to R2 — every photo-capture path funnels through here.
- *  Returns the short R2 URL, or the data-URL itself when upload isn't possible. */
-async function compressImage(file: File, maxW = 900): Promise<string> {
-  return storePhoto(await compressToDataUrl(file, maxW))
-}
+// compressToDataUrl / compressImage moved to lib/photo.ts (shared, no circular import)
 
 type NgEntry = { item: string; pos: string; remark: string; photo?: string }
 
@@ -2407,16 +2382,29 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
             </div>
           )}
 
-          {/* Final Check inspection form (measurements + NG + photos) */}
-          <FinalCheckPanel
-            unit={unit}
-            row={trackingRows.find(r => r.vin === unit.vin) ?? null}
-            activeProc={activeProc}
-            canRecord={canRecord}
-            onSaved={onSaved}
-            stationTitle={title}
-            accent={accent}
-          />
+          {/* Inspection form — PDI uses the full structured checklist; PM / FINAL
+              CHECK keep the lighter measurements + free-NG panel. */}
+          {types.includes('PDI') ? (
+            <PdiChecklistPanel
+              unit={unit}
+              row={trackingRows.find(r => r.vin === unit.vin) ?? null}
+              activeProc={activeProc}
+              canRecord={canRecord}
+              onSaved={onSaved}
+              stationTitle={title}
+              accent={accent}
+            />
+          ) : (
+            <FinalCheckPanel
+              unit={unit}
+              row={trackingRows.find(r => r.vin === unit.vin) ?? null}
+              activeProc={activeProc}
+              canRecord={canRecord}
+              onSaved={onSaved}
+              stationTitle={title}
+              accent={accent}
+            />
+          )}
 
           {/* NG added later at PDI / by mechanic (walk-around NG is shown above) */}
           {otherDmgs.length > 0 && (
