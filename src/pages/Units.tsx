@@ -19,7 +19,7 @@ import { printFindList, exportFindListXlsx } from '../lib/groupingPrint'
 import { matchVins, toFindListRows } from '../lib/findCar'
 import { rowInSite } from '../lib/siteScope'
 import { zoneLabel } from '../components/CarDiagramMultiView'
-import { partLabel, defectLabel } from '../lib/damageLabel'
+import { partLabel, defectLabel, partBilingual, defectBilingual } from '../lib/damageLabel'
 import { resolvePart, resolveDefect } from '../lib/masterDefect'
 import { cx, PhotoLightbox } from '../components/ui'
 import { useQueues } from '../store/useOps'
@@ -1759,9 +1759,10 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                             <tr style={{ background: tint, borderTop: '1px solid var(--line)' }}>
                               <td className="px-2.5 py-3 tabular" style={{ color: 'var(--faint)', borderLeft: `3px solid ${accent}` }}>{idx + 1}</td>
                               <td className="px-2.5 py-3 font-semibold whitespace-nowrap">
-                                {partLabel(d, 'en')}
-                                {partLabel(d, 'th') && partLabel(d, 'th') !== partLabel(d, 'en') && (
-                                  <span className="block font-normal text-[11px]" style={{ color: 'var(--muted)' }}>{partLabel(d, 'th')}</span>
+                                {/* EN on top, master-list Thai underneath */}
+                                {partBilingual(d).en}
+                                {partBilingual(d).th !== partBilingual(d).en && (
+                                  <span className="block font-normal text-[11px]" style={{ color: 'var(--muted)' }}>{partBilingual(d).th}</span>
                                 )}
                               </td>
                               <td className="px-2.5 py-3">
@@ -1774,9 +1775,9 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                                     ))
                                   })()}
                                   <span>
-                                    {defectLabel(d, 'en')}
-                                    {defectLabel(d, 'th') && defectLabel(d, 'th') !== defectLabel(d, 'en') && (
-                                      <span className="block text-[11px]" style={{ color: 'var(--muted)' }}>{defectLabel(d, 'th')}</span>
+                                    {defectBilingual(d).en}
+                                    {defectBilingual(d).th !== defectBilingual(d).en && (
+                                      <span className="block text-[11px]" style={{ color: 'var(--muted)' }}>{defectBilingual(d).th}</span>
                                     )}
                                   </span>
                                 </span>
