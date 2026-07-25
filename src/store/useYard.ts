@@ -12,6 +12,7 @@ import type { RawRow } from '../lib/excel'
 import type { DefectRow, TrackRow } from '../lib/excelTracking'
 import * as db from '../lib/db'
 import { onSync, sendSync } from '../lib/syncBus'
+import { hashPassword, verifyPassword, isHashed } from '../lib/password'
 import { supabase } from '../lib/supabase'
 import type { DbDamage, DbUnit } from '../lib/database.types'
 import type { RealtimeChannel } from '@supabase/supabase-js'
@@ -145,7 +146,7 @@ interface YardState {
   updateAppUser: (id: string, patch: Partial<Pick<AppUser, 'name' | 'role' | 'active' | 'username' | 'password'>>) => void
   removeAppUser: (id: string) => void
   loadAppUsersFromCloud: () => Promise<void>
-  login: (username: string, password: string) => boolean
+  login: (username: string, password: string) => Promise<boolean>
   logout: () => void
   setGroupModels: (b: boolean) => void
   setLaneDepth: (n: number) => void
@@ -360,26 +361,41 @@ export const useYard = create<YardState>()(
       loadAppUsersFromCloud: async () => {
         if (!db.isConfigured()) return
         const cloud = await db.fetchAppUsers()
+        if (cloud === null) return // fetch failed (offline) — keep the local roster untouched
         if (cloud.length === 0) {
-          // empty cloud (first run, or transient fetch error) → seed from this
-          // device; upsert by id is idempotent so a false-empty does no harm
+          // TRULY empty cloud (first run) → seed from this device
           await Promise.all(get().appUsers.map((u) => db.upsertAppUser(u))).catch((e) => console.error('[db] seed appUsers', e))
           return
         }
-        const cloudIds = new Set(cloud.map((u) => u.id))
-        const localOnly = get().appUsers.filter((u) => !cloudIds.has(u.id))
-        set({ appUsers: [...cloud, ...localOnly] })
-        for (const u of localOnly) {
-          db.upsertAppUser(u).catch((e) => console.error('[db] re-push local appUser', e))
+        // The cloud roster is the source of truth. The old merge kept "local-only"
+        // users AND re-pushed them — so a user deleted by the admin was resurrected
+        // by any device that still cached them, and could log in again forever.
+        set({ appUsers: cloud })
+        // fail-closed: if the signed-in account was deleted or deactivated,
+        // end this session instead of leaving it running (or worse, letting a
+        // null role fall through to the full admin shell).
+        const uid = get().loggedInUserId
+        if (uid) {
+          const me = cloud.find((u) => u.id === uid)
+          if (!me || !me.active) {
+            get().logout()
+            get().toast('info', 'บัญชีนี้ถูกปิดการใช้งานหรือถูกลบ — กรุณาติดต่อแอดมิน')
+          }
         }
       },
-      login: (username, password) => {
+      login: async (username, password) => {
         const s = get()
         // username matches case-insensitively — an admin typing "TEST" when
         // creating a user shouldn't lock that person out for typing "test"
         const norm = (v: string) => v.trim().toLowerCase()
-        const user = s.appUsers.find(u => norm(u.username) === norm(username) && u.password === password && u.active)
-        if (!user) return false
+        const user = s.appUsers.find(u => norm(u.username) === norm(username) && u.active)
+        if (!user || !(await verifyPassword(password, user.password))) return false
+        // legacy plaintext row → upgrade to a salted hash in place (local + cloud)
+        if (!isHashed(user.password)) {
+          const hashed = await hashPassword(password)
+          set((st) => ({ appUsers: st.appUsers.map((u) => (u.id === user.id ? { ...u, password: hashed } : u)) }))
+          db.upsertAppUser({ ...user, password: hashed }).catch((e) => console.error('[db] upgrade password hash', e))
+        }
         // every login: stamp the session day (auto-logout on day change) and
         // clear the site so the operator must pick their yard again — prevents
         // recording work into another site left selected by the previous shift
@@ -388,6 +404,8 @@ export const useYard = create<YardState>()(
           currentSite: null, siteModalOpen: true,
           view: user.role === 'admin' ? s.view : 'yardops',
         })
+        if (norm(user.username) === 'admin' && password === 'admin')
+          get().toast('err', 'บัญชี admin ยังใช้รหัสผ่านเริ่มต้น — กรุณาเปลี่ยนที่หน้า ตั้งค่า')
         return true
       },
       logout: () => set({ loggedInUserId: null, loginAt: null, currentSite: null, siteModalOpen: false }),
