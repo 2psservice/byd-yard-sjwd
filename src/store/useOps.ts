@@ -112,19 +112,23 @@ export function stampStationDate(vin: string, type: QueueType): boolean {
   const row = tr.rows[vin]
   if (!row) return false
   const d = todayCell()
-  if (type === 'PM') {
-    const slot = PM_KEYS.find((k) => !(row.cells[k] || '').trim())
-    if (!slot) return false // all 15 PM slots already used
+  // idempotent per day: walk the ladder to the first empty slot, but if the
+  // LAST filled slot already carries today's date this is a re-save of the same
+  // inspection (double-tap / corrected entry) — don't burn another slot.
+  const ladder = (keys: readonly string[]): boolean => {
+    let slot: string | null = null
+    for (let i = 0; i < keys.length; i++) {
+      const val = (row.cells[keys[i]] || '').trim()
+      if (!val) { slot = keys[i]; break }
+      if (val === d && (i === keys.length - 1 || !(row.cells[keys[i + 1]] || '').trim()))
+        return false // latest stamp is already today → same inspection re-saved
+    }
+    if (!slot) return false // all slots already used
     tr.updateCell(vin, slot, d)
     return true
   }
-  if (type === 'PDI') {
-    // 1st PDI → "PDI"; each redo → next empty RE-PDI slot (Re-PDI 1…8)
-    const slot = PDI_KEYS.find((k) => !(row.cells[k] || '').trim())
-    if (!slot) return false // PDI + all 8 re-PDI slots already used
-    tr.updateCell(vin, slot, d)
-    return true
-  }
+  if (type === 'PM') return ladder(PM_KEYS)
+  if (type === 'PDI') return ladder(PDI_KEYS) // 1st PDI → "PDI"; each redo → next RE-PDI slot
   // FINAL — stamp the done-date into "Final check date"
   tr.updateCell(vin, 'Final check date', d)
   return true

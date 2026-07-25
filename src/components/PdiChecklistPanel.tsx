@@ -61,7 +61,10 @@ export default function PdiChecklistPanel({ unit, row, activeProc, canRecord, on
     if (fileRef.current) fileRef.current.value = ''
   }
 
+  const savedRef = useRef(false) // double-tap guard — a 2nd save duplicates defects + burns a RE-PDI slot
   const save = () => {
+    if (savedRef.current) return
+    savedRef.current = true
     // measurements → tracking cells
     if (row) {
       if (mileage.trim()) updateCell(row.vin, 'Mileage', mileage.trim())
