@@ -13,9 +13,9 @@ import {
 } from 'lucide-react'
 import { useYard, useUnits, useTrips, useBlocks, useMe } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
-import { isDamaged, deriveCarStatus, IN_YARD_STATUSES } from '../lib/carStatus'
-import { useOps, useActiveQueues, activeProcess, stageOf, isSequenceQueue, seqStageOf, isQueueComplete, queueTypeOf, stampStationDate } from '../store/useOps'
-import type { WorkQueue, QueueItem, QueueType } from '../store/useOps'
+import { isDamaged, deriveCarStatus, IN_YARD_STATUSES, CAR_STATUS_META } from '../lib/carStatus'
+import { useOps, useActiveQueues, activeProcess, stageOf, isSequenceQueue, seqStageOf, isQueueComplete, queueTypeOf, stampStationDate, stationProgress, drivingNow } from '../store/useOps'
+import type { WorkQueue, QueueItem, QueueType, QueueStage } from '../store/useOps'
 import { CarTopView } from '../components/CarTopView'
 import { LogoMark } from '../components/Logo'
 import { DrivingScreen } from '../components/DrivingScreen'
@@ -255,14 +255,39 @@ function resolveForUnit(v: string, units: Unit[], rows: TrackRow[]):
 }
 
 // ── process Car-Status strings ────────────────────────────────────────────────
+// Car Status is a LIFECYCLE column, not a work log: a car sitting at the PM
+// station is still In Yard. Station work is recorded on the Overview (the
+// PM1…PM15 / PDI / Final-check date ladder) and in the queue itself — writing
+// "PARKING PM · PM20" or "PM · PM20 OK" here dropped the car out of every
+// in-yard count. These strings are display labels for the driver/station
+// confirmation screens only.
 const MOVING_STATUS = 'Moving'
-const stationParkStatus = (queue: string) => `PARKING ${queue}`     // e.g. "PARKING PDI"
-const stationResultStatus = (queue: string, r: 'OK' | 'NG') => `${queue} ${r}` // e.g. "PDI NG"
+const YARD_STATUS = 'In Yard'
+const stationParkLabel = (queue: string) => `PARKING ${queue}`     // e.g. "PARKING PDI"
+const stationResultLabel = (queue: string, r: 'OK' | 'NG') => `${queue} ${r}` // e.g. "PDI NG"
 // Yard address, column-first: block + column(slot) + "." + row-in-column. Lane
 // blocks store the LaneNo column in `slot` and the 1..8 stack position in `row`,
 // so the column leads (e.g. RR38.5 = block RR, column 38, car 5).
 const slotLabelOf = (u: { block?: string; row?: number; slot?: number }) =>
   u.block ? `${u.block}${u.slot}.${u.row}` : '—'
+
+/**
+ * Live status pill for one car in a station queue. Blue = a driver has it right
+ * now (with their name, so nobody goes looking for a car that is already moving);
+ * green = parked at the station / inspected; grey = still waiting for a driver.
+ */
+function StagePill({ stage, drivingBy, atStation }: { stage: QueueStage; drivingBy?: string; atStation: string }) {
+  const s = drivingBy
+    ? { text: `Driving · ${drivingBy}`, bg: 'rgba(37,99,235,0.12)', fg: '#2563eb' }
+    : stage === 'at-station' ? { text: atStation, bg: 'rgba(22,163,74,0.12)', fg: '#16a34a' }
+    : stage === 'checked' ? { text: 'ตรวจแล้ว', bg: 'rgba(22,163,74,0.12)', fg: '#16a34a' }
+    : { text: 'รอส่ง', bg: 'var(--chip)', fg: 'var(--muted)' }
+  return (
+    <span className="badge text-[10px] mt-0.5 inline-block max-w-[150px] clip" style={{ background: s.bg, color: s.fg }}>
+      {s.text}
+    </span>
+  )
+}
 
 // Pre Gate-in queues are auto-named "(M-D-N)" (start with "("); admin process
 // queues (PDI / FINAL PM / WASHFORSALE …) are plain names — keep the two apart
@@ -1607,8 +1632,7 @@ function AllQueuesBrowser({ queues, units, trackingRows, locPrefix, onPick }: {
     <div className="space-y-2.5 fade-up">
       <div className="text-[10.5px] font-bold uppercase tracking-wider px-1" style={{ color: 'var(--muted)' }}>คิวงานสถานี · ทุกประเภท</div>
       {queues.map(q => {
-        const done = q.items.filter(i => i.done).length
-        const total = q.items.length
+        const { done, total } = stationProgress(q)
         const isOpen = q.id === openId
         const cars = q.items.filter(i => !i.done).map(i => {
           const u = units.find(x => x.vin === i.vin)
@@ -1618,6 +1642,7 @@ function AllQueuesBrowser({ queues, units, trackingRows, locPrefix, onPick }: {
             model: u?.modelName ?? row?.cells['Model name'] ?? row?.cells['Model'] ?? '—',
             location: yardLocCode(u, locPrefix) || '—',
             stage: stageOf(i),
+            drivingBy: drivingNow(i),
           }
         }).sort((a, b) => byYardLocation(a.location, b.location))
         return (
@@ -1648,12 +1673,7 @@ function AllQueuesBrowser({ queues, units, trackingRows, locPrefix, onPick }: {
                     </div>
                     <div className="text-right shrink-0">
                       <div className="tabular text-[12px] font-bold">{item.location}</div>
-                      <span className="badge text-[10px] mt-0.5 inline-block" style={item.stage === 'at-station'
-                        ? { background: 'rgba(14,165,233,0.12)', color: '#0ea5e9' }
-                        : item.stage === 'checked' ? { background: 'rgba(22,163,74,0.12)', color: '#16a34a' }
-                        : { background: 'var(--chip)', color: 'var(--muted)' }}>
-                        {item.stage === 'at-station' ? 'ถึงสถานีแล้ว' : item.stage === 'checked' ? 'ตรวจแล้ว' : 'รอส่ง'}
-                      </span>
+                      <StagePill stage={item.stage} drivingBy={item.drivingBy} atStation="Parking" />
                     </div>
                   </button>
                 ))}
@@ -1679,7 +1699,7 @@ function DriverView() {
   const { loadFromIdb, updateCell } = useTracking()
   const { assign, confirmParked, resetParking, toast, currentUser, policies, groupModelsInRow, laneDepth, planMode, startTrip, endTrip, sites, currentSite, loadFromSupabase } = useYard()
   const blocks = useBlocks()
-  const { deliverToStation, returnToSlot, markAtWash, markAtLane } = useOps()
+  const { deliverToStation, returnToSlot, markAtWash, markAtLane, setDriving } = useOps()
   const { block: blockGate, modal: gateModal } = useNotGatedIn()
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
   const siteName = sites.find((s) => s.id === currentSite)?.name ?? ''
@@ -1798,31 +1818,43 @@ function DriverView() {
   // ── process drive (PARKED car → station, or station → new slot) ──
   const startProc = (kind: 'to-station' | 'to-slot', slot?: { block: string; row: number; slot: number }) => {
     if (!unit || !activeProc) return
-    const prevStatus = trackingRows.find(r => r.vin === unit.vin)?.cells['Car Status'] ?? slotLabelOf(unit)
+    // only a real lifecycle status is worth restoring on cancel — a legacy
+    // "PARKING PM · PM20" would just be written straight back
+    const cur = trackingRows.find(r => r.vin === unit.vin)?.cells['Car Status'] ?? ''
+    const prevStatus = CAR_STATUS_META[cur] ? cur : YARD_STATUS
     const fromLabel = kind === 'to-station' ? slotLabelOf(unit) : activeProc.queue.name
     const destLabel = kind === 'to-station' ? activeProc.queue.name : `${slot!.block}${slot!.slot}.${slot!.row}`
     const dest = kind === 'to-slot' && slot ? slotToLatLng(slot.block, slot.row, slot.slot) : null
     updateCell(unit.vin, 'Car Status', MOVING_STATUS)
     startTrip(unit.vin, driverName, fromLabel, destLabel)
+    // publish the driver on the queue item so every other phone can see who has
+    // this car right now (cleared the moment it arrives)
+    setDriving(activeProc.queue.id, unit.vin, driverName)
     setProc({ kind, queueId: activeProc.queue.id, queueName: activeProc.queue.name, fromLabel, destLabel, dest, slot, prevStatus })
   }
   const arriveProc = () => {
     if (!unit || !proc) return
     endTrip(unit.vin)
+    // the car never leaves the yard on a station run — Car Status goes back to
+    // In Yard either way; the station work itself lands on the Overview
     if (proc.kind === 'to-station') {
       deliverToStation(proc.queueId, unit.vin, proc.fromLabel, driverName)
-      updateCell(unit.vin, 'Car Status', stationParkStatus(proc.queueName))
-      setProcDone({ label: stationParkStatus(proc.queueName), sub: `ส่งเข้าสถานี ${proc.queueName} แล้ว · รอตรวจ`, accent: '#0ea5e9' })
+      updateCell(unit.vin, 'Car Status', YARD_STATUS)
+      setProcDone({ label: stationParkLabel(proc.queueName), sub: `ส่งเข้าสถานี ${proc.queueName} แล้ว · รอตรวจ`, accent: '#0ea5e9' })
     } else {
       if (proc.slot) { assign(unit.vin, proc.slot, driverName, planMode); confirmParked(unit.vin) }
       returnToSlot(proc.queueId, unit.vin, driverName)
-      updateCell(unit.vin, 'Car Status', proc.destLabel)
+      updateCell(unit.vin, 'Car Status', YARD_STATUS)
       setProcDone({ label: proc.destLabel, sub: `${proc.queueName} เสร็จ · จอดที่ ${proc.destLabel}`, accent: 'var(--st-yard)' })
     }
     setProc(null)
   }
   const cancelProc = () => {
-    if (unit && proc) { endTrip(unit.vin); updateCell(unit.vin, 'Car Status', proc.prevStatus) }
+    if (unit && proc) {
+      endTrip(unit.vin)
+      updateCell(unit.vin, 'Car Status', proc.prevStatus)
+      setDriving(proc.queueId, unit.vin, undefined) // nobody is driving it now
+    }
     setProc(null)
   }
   const finishProc = () => { setProcDone(null); setVin(null) }
@@ -2280,8 +2312,12 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved, stationTit
       // no queue → still stamp the date ladder (PM → PM1/PM2…, FINAL → Final check date)
       stampStationDate(unit.vin, stationTitle === 'PM' ? 'PM' : stationTitle === 'FINAL CHECK' ? 'FINAL' : 'PDI')
     }
-    if (row) updateCell(row.vin, 'Car Status', stationResultStatus(stationName, result))
-    onSaved(stationResultStatus(stationName, result), result)
+    // Car Status stays a lifecycle value — the inspection itself is recorded on
+    // the Overview date ladder and in the queue. Only heal a row still carrying
+    // a legacy station string ("PARKING PM · PM20", "PM · PM20 OK"), which no
+    // in-yard count recognises.
+    if (row && !CAR_STATUS_META[(row.cells['Car Status'] || '').trim()]) updateCell(row.vin, 'Car Status', YARD_STATUS)
+    onSaved(stationResultLabel(stationName, result), result)
   }
 
   return (
@@ -2372,7 +2408,7 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
   const procQueues = useMemo(() => queues.filter(q => !isPreGateInQueue(q.name) && !isQueueComplete(q)), [queues])
   const selectedQueue = selectedQueueId ? queues.find(q => q.id === selectedQueueId) ?? null : null
   const queueCars = useMemo(() => {
-    if (!selectedQueue) return [] as { vin: string; model: string; color: string; grouping: string; location: string; stage: string }[]
+    if (!selectedQueue) return []
     return selectedQueue.items.filter(i => !i.done).map(i => {
       const u = units.find(x => x.vin === i.vin)
       const row = trackingRows.find(r => r.vin === i.vin)
@@ -2383,6 +2419,7 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
         grouping: row?.cells['Grouping  Number'] || '—',
         location: yardLocCode(u, locPrefix) || '—',
         stage: stageOf(i),
+        drivingBy: drivingNow(i),
       }
     }).sort((a, b) => byYardLocation(a.location, b.location))
   }, [selectedQueue, units, trackingRows, locPrefix])
@@ -2443,9 +2480,9 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
       {procQueues.length > 0 && !unit && (
         <div className="space-y-2.5 fade-up">
           {procQueues.map(q => {
-            const done = q.items.filter(i => i.done).length
-            const total = q.items.length
-            const remaining = total - done
+            // the station's own progress: counted at OK/NG, not at the driver's
+            // return trip (which is a different person's job)
+            const { done, total, remaining } = stationProgress(q)
             const isOpen = q.id === selectedQueueId
             return (
               <div key={q.id} className="panel overflow-hidden">
@@ -2477,12 +2514,7 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
                         </div>
                         <div className="text-right shrink-0">
                           <div className="tabular text-[12px] font-bold">{item.location}</div>
-                          <span className="badge text-[10px] mt-0.5 inline-block" style={item.stage === 'at-station'
-                            ? { background: 'rgba(14,165,233,0.12)', color: '#0ea5e9' }
-                            : item.stage === 'checked' ? { background: 'rgba(22,163,74,0.12)', color: '#16a34a' }
-                            : { background: 'var(--chip)', color: 'var(--muted)' }}>
-                            {item.stage === 'at-station' ? 'พร้อมตรวจ' : item.stage === 'checked' ? 'ตรวจแล้ว' : 'รอส่ง'}
-                          </span>
+                          <StagePill stage={item.stage} drivingBy={item.drivingBy} atStation="พร้อมตรวจ" />
                         </div>
                       </button>
                     ))}
@@ -2533,6 +2565,11 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
                     style={{ background: activeProc.item.result === 'NG' ? 'rgba(220,38,38,0.1)' : 'rgba(22,163,74,0.12)', color: activeProc.item.result === 'NG' ? 'var(--st-damage)' : 'var(--st-yard)' }}>
                     {activeProc.item.result === 'NG' ? <XCircle size={13} /> : <ShieldCheck size={13} />}{activeProc.item.result}
                   </span>
+                ) : drivingNow(activeProc.item) ? (
+                  <span className="badge shrink-0 font-bold text-[11px] flex items-center gap-1"
+                    style={{ background: 'rgba(37,99,235,0.12)', color: '#2563eb' }}>
+                    <Navigation size={12} />Driving
+                  </span>
                 ) : (
                   <span className="badge shrink-0 font-bold text-[11px] flex items-center gap-1"
                     style={{ background: 'rgba(217,119,6,0.12)', color: '#d97706' }}>
@@ -2543,7 +2580,9 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
               <div className="text-[11.5px] mt-2 pl-[26px]" style={{ color: 'var(--muted)' }}>
                 {procStage === 'checked'
                   ? <>บันทึกแล้ว · ผล <b style={{ color: activeProc.item.result === 'NG' ? '#dc2626' : 'var(--st-yard)' }}>{activeProc.item.result}</b></>
-                  : procStage === 'at-station' ? 'รถถึงสถานีแล้ว · พร้อมบันทึก OK / NG' : 'ยังไม่ได้นำรถเข้าสถานี (บันทึกได้)'}
+                  : drivingNow(activeProc.item)
+                    ? <>กำลังขับโดย <b style={{ color: '#2563eb' }}>{drivingNow(activeProc.item)}</b></>
+                    : procStage === 'at-station' ? 'รถถึงสถานีแล้ว · พร้อมบันทึก OK / NG' : 'ยังไม่ได้นำรถเข้าสถานี (บันทึกได้)'}
               </div>
             </div>
           )}

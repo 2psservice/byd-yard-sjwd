@@ -106,6 +106,17 @@ export function pastGateOutFlush(c: Record<string, string>, now: number = Date.n
 }
 
 /**
+ * Legacy station strings the field app used to write into Car Status —
+ * "PARKING PM · PM20" (driver delivered) and "PM · PM20 OK" / "… NG" (station
+ * recorded). They are work records, not lifecycle statuses, and being unknown
+ * values they dropped the car out of every in-yard count. Cars carrying one are
+ * still parked in the yard, so read them as 'In Yard'.
+ */
+function isStationWorkStatus(v: string): boolean {
+  return /^parking\s+\S/i.test(v) || /\s(ok|ng)$/i.test(v)
+}
+
+/**
  * Derive a Car Status from imported sheet fields when not set explicitly. An
  * admin can override it; the importer stamps 'Pre Gate-in' on new vehicles.
  */
@@ -120,6 +131,7 @@ export function deriveCarStatus(c: Record<string, string>): string {
   // Pre Gate-out: ops-scan gate-out parks the car in preload until the daily 09:30
   // flush, when it becomes a real Gate-out (unless it was confirmed Preload first).
   if (explicit === 'Pre Gate-out') return pastGateOutFlush(c) ? 'Gate-out' : 'Pre Gate-out'
+  if (explicit && isStationWorkStatus(explicit)) return 'In Yard'
   if (explicit) return explicit
   // gate-out signal — the Tracking Status sheet uses "Gate Out time stamp",
   // the Vin List Inventory uses "Gate Out Date"; either real date = gated out
