@@ -20,6 +20,7 @@ const typeIcon = (type: QueueType, size = 18) => {
     case 'WASH': return <Sparkles size={size} />
     case 'PDI': return <ShieldCheck size={size} />
     case 'FINAL': return <ClipboardCheck size={size} />
+    case 'REPAIR': return <Wrench size={size} />
     default: return <Layers size={size} />
   }
 }
@@ -30,6 +31,7 @@ const TYPE_WRITEBACK: Record<QueueType, string> = {
   PM: 'ลงวันที่ในช่อง PM ถัดไป (PM1→PM15)',
   PDI: 'ลงวันที่ PDI ครั้งแรก · ครั้งถัดไปลง RE-PDI',
   FINAL: 'ลงวันที่ในช่อง Final check date',
+  REPAIR: 'บันทึกใน Event log (งานซ่อมของช่าง)',
   WASH: 'บันทึกใน Event log',
   SPECIAL: 'บันทึกใน Event log',
 }
@@ -158,6 +160,7 @@ const TYPE_BADGE: Record<QueueType, { th: string; color: string; bg: string }> =
   PM: { th: 'PM', color: '#c2680b', bg: 'rgba(194,104,11,0.12)' },
   PDI: { th: 'PDI', color: '#7c3aed', bg: 'rgba(124,58,237,0.12)' },
   FINAL: { th: 'FINAL CHECK', color: '#0891b2', bg: 'rgba(8,145,178,0.12)' },
+  REPAIR: { th: 'ช่าง (ซ่อม)', color: '#c2680b', bg: 'rgba(194,104,11,0.12)' },
   WASH: { th: 'Wash', color: '#2563eb', bg: 'rgba(37,99,235,0.12)' },
   SPECIAL: { th: 'งานพิเศษ', color: '#64748b', bg: 'rgba(100,116,139,0.12)' },
 }

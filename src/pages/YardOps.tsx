@@ -1181,7 +1181,7 @@ function WalkView() {
                   <ChevronLeft size={16} style={{ color: 'var(--muted)', transform: isOpen ? 'rotate(90deg)' : 'rotate(-90deg)', transition: 'transform .15s' }} />
                 </button>
                 {isOpen && (
-                  <div className="border-t hairline max-h-72 overflow-y-auto divide-y" style={{ borderColor: 'var(--line)' }}>
+                  <div className="border-t hairline max-h-[65vh] overflow-y-auto divide-y" style={{ borderColor: 'var(--line)' }}>
                     {queueCars.map(c => (
                       <button key={c.vin} onClick={() => setTrackingVin(c.vin)}
                         className="w-full px-4 py-2.5 flex items-center gap-3 text-left transition active:bg-chip"
@@ -2628,6 +2628,7 @@ function MechanicView() {
   const units = useSiteUnits()
   const trackingRows = useSiteRows()
   const wrongSite = useWrongSiteHint()
+  const allQueues = useSiteQueues()
   const { loadFromIdb } = useTracking()
   const { addDamage, removeDamage, updateRepairStatus, setInspected, toast, loadFromSupabase } = useYard()
   const { block: blockGate, modal: gateModal } = useNotGatedIn()
@@ -2658,6 +2659,15 @@ function MechanicView() {
     .sort((a, b) => byYardLocation(a.location, b.location)),
     [units, trackingRows, locPrefix])
 
+  // assigned repair queues created on the Operation page (type "ช่าง (ซ่อม)") —
+  // same behaviour as the PDI / PM / FINAL CHECK stations
+  const repairQueues = useMemo(
+    () => allQueues.filter(q =>
+      !isSequenceQueue(q) && !isPreGateInQueue(q.name) &&
+      queueTypeOf(q) === 'REPAIR' && !isQueueComplete(q)),
+    [allQueues],
+  )
+
   const onScan = (v: string) => {
     const res = resolveForUnit(v, units, trackingRows)
     if (res.type === 'ambiguous') { toast('err', `พบ ${res.count} คัน — พิมพ์ให้ยาวขึ้น`); return }
@@ -2681,6 +2691,13 @@ function MechanicView() {
       <VinInput onScan={onScan} accent="#c2680b" />
       {gateModal}
 
+      {/* assigned repair queues from the Operation page — listed first, above the
+          auto-generated "every car with an open NG" list */}
+      {!unit && repairQueues.length > 0 && (
+        <AllQueuesBrowser queues={repairQueues} units={units} trackingRows={trackingRows} locPrefix={locPrefix}
+          onPick={v => { setVin(v); setShowForm(false) }} />
+      )}
+
       {/* repair queue — cars in this yard with unrepaired NG (card + list, tap to fix) */}
       {!unit && ngCars.length > 0 && (
         <div className="panel overflow-hidden fade-up">
@@ -2697,7 +2714,7 @@ function MechanicView() {
             <ChevronLeft size={16} style={{ color: 'var(--muted)', transform: listOpen ? 'rotate(90deg)' : 'rotate(-90deg)', transition: 'transform .15s' }} />
           </button>
           {listOpen && (
-            <div className="border-t hairline max-h-72 overflow-y-auto divide-y" style={{ borderColor: 'var(--line)' }}>
+            <div className="border-t hairline max-h-[65vh] overflow-y-auto divide-y" style={{ borderColor: 'var(--line)' }}>
               {ngCars.map(c => (
                 <button key={c.vin} onClick={() => { setVin(c.vin); setShowForm(false) }}
                   className="w-full px-4 py-2.5 flex items-center gap-3 text-left transition active:bg-chip">
