@@ -10,21 +10,20 @@ import { ChevronDown, Table2, ShieldAlert } from 'lucide-react'
 import { useYard } from '../store/useYard'
 import { useTrackingRows } from '../store/useTracking'
 import { rowInSite } from '../lib/siteScope'
-import { deriveCarStatus, IN_YARD_STATUSES, vinOfStatusColor } from '../lib/carStatus'
+import { deriveCarStatus, IN_YARD_STATUSES } from '../lib/carStatus'
 import type { TrackRow } from '../lib/excelTracking'
 
 const EMPTY_COL = '(ว่าง)'
 
 /** One Model × <column> pivot. `presetKey` is the Unit-List preset prefix
  *  ('sum' = Final Status, 'vos' = Vin Of Status). */
-function Pivot({ rows, cellKey, presetKey, title, caption, icon, colorFor }: {
+function Pivot({ rows, cellKey, presetKey, title, caption, icon }: {
   rows: TrackRow[]
   cellKey: string
   presetKey: 'sum' | 'vos'
   title: string
   caption: string
   icon: React.ReactNode
-  colorFor?: (v: string) => { color: string; bg: string } | null
 }) {
   const setView = useYard((s) => s.setView)
   const setUnitPreset = useYard((s) => s.setUnitPreset)
@@ -80,13 +79,10 @@ function Pivot({ rows, cellKey, presetKey, title, caption, icon, colorFor }: {
             <thead>
               <tr style={{ background: 'var(--app-bg)' }}>
                 <th className="text-left px-3 py-1.5 font-bold whitespace-nowrap" style={{ color: 'var(--muted)' }}>Model</th>
-                {data.cols.map((c) => {
-                  const k = c === EMPTY_COL ? null : colorFor?.(c)
-                  return (
-                    <th key={c} className="text-center px-2 py-1.5 font-bold whitespace-nowrap"
-                      style={{ color: k?.color ?? (c === EMPTY_COL ? 'var(--faint)' : 'var(--muted)') }}>{c}</th>
-                  )
-                })}
+                {data.cols.map((c) => (
+                  <th key={c} className="text-center px-2 py-1.5 font-bold whitespace-nowrap"
+                    style={{ color: c === EMPTY_COL ? 'var(--faint)' : 'var(--muted)' }}>{c}</th>
+                ))}
                 <th className="text-center px-3 py-1.5 font-bold" style={{ color: 'var(--text)' }}>รวม</th>
               </tr>
             </thead>
@@ -170,7 +166,6 @@ export function YardSummary() {
         title="Vin Of Status"
         caption="Model × Vin Of Status"
         icon={<ShieldAlert size={14} style={{ color: 'var(--st-damage)' }} />}
-        colorFor={vinOfStatusColor}
       />
     </>
   )
