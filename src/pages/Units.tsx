@@ -20,7 +20,7 @@ import { matchVins, toFindListRows } from '../lib/findCar'
 import { rowInSite } from '../lib/siteScope'
 import { zoneLabel } from '../components/CarDiagramMultiView'
 import { partLabel, defectLabel, partBilingual, defectBilingual } from '../lib/damageLabel'
-import { resolvePart, resolveDefect } from '../lib/masterDefect'
+import { resolvePart, resolveDefect, MASTER_PARTS, MASTER_DEFECTS } from '../lib/masterDefect'
 import { cx, PhotoLightbox } from '../components/ui'
 import { useQueues } from '../store/useOps'
 
@@ -30,15 +30,36 @@ const DMG_SRC: Record<string, string> = { walkaround: 'Walk-around', pdi: 'PDI',
 const BLANK_DMG_FORM = { position: '', defect: '', categoryNG: '', categoryRepair: '', incharge: '', note: '', date: '', statusRepair: 'Waiting Repair', repairDate: '' }
 
 // combobox: free-type + pick from a <datalist> of values seen in the imported data
-function Combo({ value, onChange, options, placeholder, id, type = 'text' }: { value: string; onChange: (v: string) => void; options?: string[]; placeholder?: string; id?: string; type?: string }) {
+function Combo({ value, onChange, options, pairs, placeholder, id, type = 'text' }: { value: string; onChange: (v: string) => void; options?: string[]; pairs?: { value: string; label?: string }[]; placeholder?: string; id?: string; type?: string }) {
   return (
     <>
       <input list={id} type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
         className="w-full min-w-[68px] px-1.5 py-1 rounded outline-none focus:ring-1"
         style={{ border: '1px solid var(--line-strong)', background: 'var(--panel)', fontSize: 11 }} />
-      {options && id && <datalist id={id}>{options.map((o) => <option key={o} value={o} />)}</datalist>}
+      {/* `pairs` shows the English name beside each Thai choice — the same master
+          lists the Gate-in Defect form offers */}
+      {pairs && id
+        ? <datalist id={id}>{pairs.map((o) => <option key={o.value} value={o.value} label={o.label} />)}</datalist>
+        : options && id ? <datalist id={id}>{options.map((o) => <option key={o} value={o} />)}</datalist> : null}
     </>
   )
+}
+
+/** Master Part/Defect list as datalist pairs (Thai value + English label), with
+ *  any value already stored in the data appended so legacy rows stay selectable. */
+function masterPairs(list: { en: string; th: string }[], used: Set<string>): { value: string; label?: string }[] {
+  const seen = new Set<string>()
+  const out: { value: string; label?: string }[] = []
+  for (const e of list) {
+    const v = e.th || e.en
+    if (!v || seen.has(v.toLowerCase())) continue
+    seen.add(v.toLowerCase()); if (e.en) seen.add(e.en.toLowerCase())
+    out.push({ value: v, label: e.en && e.en !== v ? e.en : undefined })
+  }
+  for (const v of [...used].sort((a, b) => a.localeCompare(b))) {
+    if (!seen.has(v.toLowerCase())) { seen.add(v.toLowerCase()); out.push({ value: v }) }
+  }
+  return out
 }
 
 // dashboard quick-filter presets (card → Unit List), matching the dashboard's KPI logic
@@ -753,7 +774,12 @@ function BulkDefectModal({ vins, onClose, onDone }: { vins: string[]; onClose: (
       if (d.note) S.note.add(d.note)
     }
     const arr = (s: Set<string>) => [...s].sort((a, b) => a.localeCompare(b))
-    return { position: arr(S.position), defect: arr(S.defect), catNG: arr(S.catNG), catRepair: arr(S.catRepair), incharge: arr(S.incharge), note: arr(S.note) }
+    return {
+      position: arr(S.position), defect: arr(S.defect),
+      positionPairs: masterPairs(MASTER_PARTS, S.position),
+      defectPairs: masterPairs(MASTER_DEFECTS, S.defect),
+      catNG: arr(S.catNG), catRepair: arr(S.catRepair), incharge: arr(S.incharge), note: arr(S.note),
+    }
   }, [allUnits])
   const set = (patch: Partial<typeof form>) => setForm((f) => ({ ...f, ...patch }))
   const save = () => {
@@ -787,8 +813,8 @@ function BulkDefectModal({ vins, onClose, onDone }: { vins: string[]; onClose: (
         </div>
         <div className="p-4 overflow-auto grid grid-cols-2 gap-3">
           {/* every field is type-in + dropdown (native datalist) — needs a unique id */}
-          <DField label="Position"><Combo id="bd-pos" value={form.position} onChange={(v) => set({ position: v })} options={opts.position} placeholder="Position" /></DField>
-          <DField label={factory ? 'Defect/NG' : 'Defect'}><Combo id="bd-defect" value={form.defect} onChange={(v) => set({ defect: v })} options={opts.defect} placeholder="Defect" /></DField>
+          <DField label="Position"><Combo id="bd-pos" value={form.position} onChange={(v) => set({ position: v })} pairs={opts.positionPairs} placeholder="Position" /></DField>
+          <DField label={factory ? 'Defect/NG' : 'Defect'}><Combo id="bd-defect" value={form.defect} onChange={(v) => set({ defect: v })} pairs={opts.defectPairs} placeholder="Defect" /></DField>
           <DField label={factory ? 'Category defect' : 'Category NG'}><Combo id="bd-catng" value={form.categoryNG} onChange={(v) => set({ categoryNG: v })} options={opts.catNG} placeholder="Category" /></DField>
           {!factory && <DField label="Category (Repair)"><Combo id="bd-catrep" value={form.categoryRepair} onChange={(v) => set({ categoryRepair: v })} options={opts.catRepair} placeholder="Category (Repair)" /></DField>}
           <DField label="Incharge"><Combo id="bd-incharge" value={form.incharge} onChange={(v) => set({ incharge: v })} options={opts.incharge} placeholder="Incharge" /></DField>
@@ -1392,7 +1418,12 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
       if (d.note) S.note.add(d.note)
     }
     const arr = (s: Set<string>) => [...s].sort((a, b) => a.localeCompare(b))
-    return { position: arr(S.position), defect: arr(S.defect), catNG: arr(S.catNG), catRepair: arr(S.catRepair), incharge: arr(S.incharge), note: arr(S.note) }
+    return {
+      position: arr(S.position), defect: arr(S.defect),
+      positionPairs: masterPairs(MASTER_PARTS, S.position),
+      defectPairs: masterPairs(MASTER_DEFECTS, S.defect),
+      catNG: arr(S.catNG), catRepair: arr(S.catRepair), incharge: arr(S.incharge), note: arr(S.note),
+    }
   }, [allUnits])
   useEffect(() => {
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -1717,8 +1748,8 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                       {adding && (
                         <tr style={{ background: 'rgba(37,99,235,0.06)', borderTop: '2px solid var(--brand)' }}>
                           <td className="px-2 py-2.5 font-bold whitespace-nowrap" style={{ color: 'var(--brand)', borderLeft: '3px solid var(--brand)' }}>ใหม่</td>
-                          <td className="px-1 py-1.5"><Combo id="dl-pos" value={form.position} onChange={(v) => setForm({ ...form, position: v })} options={dmgOpts.position} placeholder="Position" /></td>
-                          <td className="px-1 py-1.5"><Combo id="dl-defect" value={form.defect} onChange={(v) => setForm({ ...form, defect: v })} options={dmgOpts.defect} placeholder="Defect/NG" /></td>
+                          <td className="px-1 py-1.5"><Combo id="dl-pos" value={form.position} onChange={(v) => setForm({ ...form, position: v })} pairs={dmgOpts.positionPairs} placeholder="Position" /></td>
+                          <td className="px-1 py-1.5"><Combo id="dl-defect" value={form.defect} onChange={(v) => setForm({ ...form, defect: v })} pairs={dmgOpts.defectPairs} placeholder="Defect/NG" /></td>
                           <td className="px-1 py-1.5"><Combo id="dl-catng" value={form.categoryNG} onChange={(v) => setForm({ ...form, categoryNG: v })} options={dmgOpts.catNG} placeholder="Cat NG" /></td>
                           <td className="px-1 py-1.5"><Combo id="dl-catrep" value={form.categoryRepair} onChange={(v) => setForm({ ...form, categoryRepair: v })} options={dmgOpts.catRepair} placeholder="Cat (Repair)" /></td>
                           <td className="px-1 py-1.5"><Combo id="dl-incharge" value={form.incharge} onChange={(v) => setForm({ ...form, incharge: v })} options={dmgOpts.incharge} placeholder="Incharge" /></td>
@@ -1752,12 +1783,12 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                           <Fragment key={d.id}>
                             <tr style={{ background: 'rgba(37,99,235,0.06)', borderTop: '2px solid var(--brand)' }}>
                               <td className="px-2 py-2.5 tabular" style={{ color: 'var(--brand)', borderLeft: '3px solid var(--brand)' }}>{idx + 1}</td>
-                              <td className="px-1 py-1.5"><Combo value={editForm.position} onChange={(v) => setEditForm({ ...editForm, position: v })} options={dmgOpts.position} placeholder="Position" /></td>
-                              <td className="px-1 py-1.5"><Combo value={editForm.defect} onChange={(v) => setEditForm({ ...editForm, defect: v })} options={dmgOpts.defect} placeholder="Defect/NG" /></td>
-                              <td className="px-1 py-1.5"><Combo value={editForm.categoryNG} onChange={(v) => setEditForm({ ...editForm, categoryNG: v })} options={dmgOpts.catNG} placeholder="Cat NG" /></td>
-                              <td className="px-1 py-1.5"><Combo value={editForm.categoryRepair} onChange={(v) => setEditForm({ ...editForm, categoryRepair: v })} options={dmgOpts.catRepair} placeholder="Cat (Repair)" /></td>
-                              <td className="px-1 py-1.5"><Combo value={editForm.incharge} onChange={(v) => setEditForm({ ...editForm, incharge: v })} options={dmgOpts.incharge} placeholder="Incharge" /></td>
-                              <td className="px-1 py-1.5"><Combo value={editForm.note} onChange={(v) => setEditForm({ ...editForm, note: v })} options={dmgOpts.note} placeholder="From/Stock" /></td>
+                              <td className="px-1 py-1.5"><Combo id="dl-e-pos" value={editForm.position} onChange={(v) => setEditForm({ ...editForm, position: v })} pairs={dmgOpts.positionPairs} placeholder="Position" /></td>
+                              <td className="px-1 py-1.5"><Combo id="dl-e-defect" value={editForm.defect} onChange={(v) => setEditForm({ ...editForm, defect: v })} pairs={dmgOpts.defectPairs} placeholder="Defect/NG" /></td>
+                              <td className="px-1 py-1.5"><Combo id="dl-e-catNG" value={editForm.categoryNG} onChange={(v) => setEditForm({ ...editForm, categoryNG: v })} options={dmgOpts.catNG} placeholder="Cat NG" /></td>
+                              <td className="px-1 py-1.5"><Combo id="dl-e-catRepair" value={editForm.categoryRepair} onChange={(v) => setEditForm({ ...editForm, categoryRepair: v })} options={dmgOpts.catRepair} placeholder="Cat (Repair)" /></td>
+                              <td className="px-1 py-1.5"><Combo id="dl-e-incharge" value={editForm.incharge} onChange={(v) => setEditForm({ ...editForm, incharge: v })} options={dmgOpts.incharge} placeholder="Incharge" /></td>
+                              <td className="px-1 py-1.5"><Combo id="dl-e-note" value={editForm.note} onChange={(v) => setEditForm({ ...editForm, note: v })} options={dmgOpts.note} placeholder="From/Stock" /></td>
                               <td className="px-1 py-1.5"><Combo value={editForm.date} onChange={(v) => setEditForm({ ...editForm, date: v })} type="date" /></td>
                               <td className="px-1 py-1.5">
                                 <select value={editForm.statusRepair} onChange={(e) => setEditForm({ ...editForm, statusRepair: e.target.value })}

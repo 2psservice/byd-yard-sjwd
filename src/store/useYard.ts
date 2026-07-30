@@ -13,6 +13,7 @@ import type { DefectRow, TrackRow } from '../lib/excelTracking'
 import * as db from '../lib/db'
 import { onSync, sendSync } from '../lib/syncBus'
 import { hashPassword, verifyPassword, isHashed } from '../lib/password'
+import { resolvePart, resolveDefect } from '../lib/masterDefect'
 import { supabase } from '../lib/supabase'
 import type { DbDamage, DbUnit } from '../lib/database.types'
 import type { RealtimeChannel } from '@supabase/supabase-js'
@@ -638,9 +639,15 @@ export const useYard = create<YardState>()(
         const now = Date.now()
         const dmg: Damage = {
           id: `man${now.toString(36)}${Math.random().toString(36).slice(2, 8)}`,
-          area: f.position?.trim() || '—',
+          // resolve against the master Part/Defect lists so the admin form stores
+          // English in area/item and Thai in areaTh/itemTh — exactly like the
+          // Gate-in capture. Without this a Thai pick leaked into the
+          // English-only Defect export.
+          area: resolvePart(f.position?.trim() ?? '').en || '—',
+          areaTh: resolvePart(f.position?.trim() ?? '').th || undefined,
           type: f.defect?.trim() || '—',
-          item: f.defect?.trim() || undefined,
+          item: resolveDefect(f.defect?.trim() ?? '').en || undefined,
+          itemTh: resolveDefect(f.defect?.trim() ?? '').th || undefined,
           severity: f.severity ?? (/heavy/i.test(f.categoryNG ?? '') ? 'major' : 'minor'),
           at: parseDefDate(f.date) ?? now,
           by: s.currentUser,
