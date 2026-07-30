@@ -443,22 +443,35 @@ onSync('ops', () => { useOps.getState().loadFromCloud(true).catch((e) => console
 //  • Gate-in: a car in a PRE GATE-IN queue "(yard·date·N)" whose status is no
 //    longer 'Pre Gate-in' has entered the yard → mark that item done, so the
 //    "0/117" progress updates as cars gate in (regardless of the scan path).
+const GROUPING_KEY = 'Grouping  Number' // header carries two spaces
+/** A car pulled back out of its delivery group: the sheet replaces the grouping
+ *  code with a leftover note ("เศษรอ Mix"). It is no longer part of any delivery
+ *  run, so it must drop out of the sequence — otherwise that run can never reach
+ *  100% and sits "คา" on the Gate-out board forever. */
+function isUngrouped(cells: Record<string, string>): boolean {
+  const g = (cells[GROUPING_KEY] || '').trim().toLowerCase()
+  if (!g) return false // blank = data not filled in yet, NOT a removal signal
+  return g.includes('เศษ') || g.includes('mix')
+}
+
 let reconcileTimer: ReturnType<typeof setTimeout> | null = null
 function reconcileGateOuts() {
   const rows = useTracking.getState().rows
   const gone = new Set<string>()
   const gatedIn = new Set<string>() // no longer Pre Gate-in → has entered the yard
+  const ungrouped = new Set<string>() // pulled out of its delivery group
   for (const vin in rows) {
     const cs = (rows[vin].cells['Car Status'] || '').trim()
     if (isGoneStatus(cs)) gone.add(vin)
     else if (cs && cs.toLowerCase() !== 'pre gate-in') gatedIn.add(vin)
+    if (isUngrouped(rows[vin].cells)) ungrouped.add(vin)
   }
-  if (!gone.size && !gatedIn.size) return
+  if (!gone.size && !gatedIn.size && !ungrouped.size) return
   const dirty: string[] = []
   const next = useOps.getState().queues.map((q) => {
     const isPreGateIn = q.name.trim().startsWith('(')
     let changed = false
-    const items = q.items.map((i) => {
+    let items = q.items.map((i) => {
       if (gone.has(i.vin) && !(i.done && i.gatedOut)) {
         changed = true
         return { ...i, gatedOut: true, done: true, doneAt: i.doneAt ?? Date.now() }
@@ -469,6 +482,13 @@ function reconcileGateOuts() {
       }
       return i
     })
+    // delivery runs only: drop cars that left the group. Keep any car that has
+    // already gated out — it really was delivered on this run, and the sequence
+    // deliberately keeps gated-out cars so progress reads 17/17, not a shrinking total.
+    if (isSequenceQueue(q)) {
+      const kept = items.filter((i) => !(ungrouped.has(i.vin) && !i.gatedOut && !i.done))
+      if (kept.length !== items.length) { changed = true; items = kept }
+    }
     if (!changed) return q
     dirty.push(q.id)
     return { ...q, items }
