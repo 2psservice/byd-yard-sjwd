@@ -45,6 +45,8 @@ export interface QueueItem {
   stamped?: boolean        // overview write-back already applied (stamp once per item)
   fromSlot?: string        // slot the car was at before going to the station (e.g. "A1.1")
   // per-station people history
+  drivingBy?: string       // driver CURRENTLY behind the wheel (cleared on arrival)
+  drivingAt?: number
   deliveredBy?: string     // driver who drove the car TO the station
   deliveredAt?: number
   checkedBy?: string       // staff who recorded OK / NG at the station
@@ -165,6 +167,9 @@ interface OpsState {
   setAllDone: (id: string, done: boolean, by?: string) => void
   clearQueues: () => void
   // process flow
+  /** Driver picked the car up and is on the move — broadcast so every other
+   *  phone sees who has it. Pass `by = undefined` to clear (drive cancelled). */
+  setDriving: (id: string, vin: string, by?: string) => void
   deliverToStation: (id: string, vin: string, fromSlot?: string, by?: string) => void
   recordCheck: (id: string, vin: string, result: 'OK' | 'NG', by?: string) => void
   returnToSlot: (id: string, vin: string, by?: string) => void
@@ -328,11 +333,22 @@ export const useOps = create<OpsState>()(
       },
 
       // ── process flow ──────────────────────────────────────────────────────
+      setDriving: (id, vin, by) => {
+        set((s) => ({
+          queues: s.queues.map((q) =>
+            q.id === id
+              ? { ...q, items: q.items.map((i) => (i.vin === vin ? { ...i, drivingBy: by || undefined, drivingAt: by ? Date.now() : undefined } : i)) }
+              : q,
+          ),
+        }))
+        pushQueue(get, id)
+      },
+
       deliverToStation: (id, vin, fromSlot, by) => {
         set((s) => ({
           queues: s.queues.map((q) =>
             q.id === id
-              ? { ...q, items: q.items.map((i) => (i.vin === vin ? { ...i, stage: 'at-station', fromSlot, deliveredBy: by, deliveredAt: Date.now() } : i)) }
+              ? { ...q, items: q.items.map((i) => (i.vin === vin ? { ...i, stage: 'at-station', fromSlot, deliveredBy: by, deliveredAt: Date.now(), drivingBy: undefined, drivingAt: undefined } : i)) }
               : q,
           ),
         }))
@@ -340,11 +356,18 @@ export const useOps = create<OpsState>()(
       },
 
       recordCheck: (id, vin, result, by) => {
+        const q = get().queues.find((x) => x.id === id)
+        const it = q?.items.find((i) => i.vin === vin)
+        // The station's own save is what belongs on the master row, so stamp the
+        // date ladder HERE (PM → next empty PM1…PM15, PDI → PDI/RE-PDI, FINAL →
+        // Final check date). It used to wait for the driver's return trip, which
+        // left the Overview blank for hours after the inspection was recorded.
+        const wrote = q && it && !it.stamped ? stampOverview(q, vin, result) : false
         set((s) => ({
-          queues: s.queues.map((q) =>
-            q.id === id
-              ? { ...q, items: q.items.map((i) => (i.vin === vin ? { ...i, stage: 'checked', result, checkedBy: by, checkedAt: Date.now(), doneBy: by } : i)) }
-              : q,
+          queues: s.queues.map((qq) =>
+            qq.id === id
+              ? { ...qq, items: qq.items.map((i) => (i.vin === vin ? { ...i, stage: 'checked', result, checkedBy: by, checkedAt: Date.now(), doneBy: by, stamped: i.stamped || !!wrote, drivingBy: undefined, drivingAt: undefined } : i)) }
+              : qq,
           ),
         }))
         pushQueue(get, id)
@@ -357,7 +380,7 @@ export const useOps = create<OpsState>()(
         set((s) => ({
           queues: s.queues.map((qq) =>
             qq.id === id
-              ? { ...qq, items: qq.items.map((i) => (i.vin === vin ? { ...i, done: true, doneAt: Date.now(), doneBy: by ?? i.doneBy, returnedBy: by, returnedAt: Date.now(), stamped: i.stamped || wrote } : i)) }
+              ? { ...qq, items: qq.items.map((i) => (i.vin === vin ? { ...i, done: true, doneAt: Date.now(), doneBy: by ?? i.doneBy, returnedBy: by, returnedAt: Date.now(), stamped: i.stamped || wrote, drivingBy: undefined, drivingAt: undefined } : i)) }
               : qq,
           ),
         }))
@@ -565,6 +588,28 @@ export function queueProgress(q: WorkQueue) {
   const total = q.items.length
   const done = q.items.reduce((n, i) => n + (i.done ? 1 : 0), 0)
   return { total, done, remaining: total - done, pct: total ? Math.round((done / total) * 100) : 0 }
+}
+
+/** A drive left open for this long (driver closed the app mid-trip, never
+ *  pressed "ถึงแล้ว") is stale — stop showing the car as being driven. */
+const DRIVING_TTL_MS = 4 * 60 * 60 * 1000
+
+/** The driver currently behind the wheel of this car, or undefined. */
+export function drivingNow(i: QueueItem): string | undefined {
+  if (!i.drivingBy || i.done) return undefined
+  return i.drivingAt && Date.now() - i.drivingAt > DRIVING_TTL_MS ? undefined : i.drivingBy
+}
+
+/**
+ * Progress of a STATION queue (PM / PDI / FINAL CHECK) as the station sees it:
+ * a car counts the moment its OK/NG is recorded. `done` alone only flips when
+ * the driver has taken the car back to a parking slot — a separate job — so the
+ * station's own counter sat at 0/20 with cars already inspected.
+ */
+export function stationProgress(q: WorkQueue) {
+  const total = q.items.length
+  const done = q.items.reduce((n, i) => n + (i.done || stageOf(i) === 'checked' ? 1 : 0), 0)
+  return { total, done, remaining: total - done }
 }
 
 /** A queue is "complete" once every car in it is done (gated-in / gated-out).
