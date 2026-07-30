@@ -21,13 +21,14 @@ export type QueueStage = 'queued' | 'at-station' | 'checked'
  *   PM → the next empty PM1…PM15 slot · PDI → the "PDI" date ·
  *   FINAL → "Final check date" (+ Final Status) · WASH / SPECIAL → no cell,
  *   the completion is only recorded in the car's Event log. */
-export type QueueType = 'PDI' | 'PM' | 'FINAL' | 'WASH' | 'SPECIAL'
+export type QueueType = 'PDI' | 'PM' | 'FINAL' | 'REPAIR' | 'WASH' | 'SPECIAL'
 
 /** Preset work types offered on the Operation page (order = button order). */
 export const QUEUE_TYPES: { type: QueueType; name: string; th: string }[] = [
   { type: 'PM', name: 'PM', th: 'PM' },
   { type: 'PDI', name: 'PDI', th: 'PDI' },
   { type: 'FINAL', name: 'FINAL CHECK', th: 'FINAL CHECK' },
+  { type: 'REPAIR', name: 'ช่าง (ซ่อม)', th: 'ช่าง (ซ่อม)' },
   // 'WASH' stays in the QueueType union for legacy queues, but is no longer
   // offered when creating a new one.
   { type: 'SPECIAL', name: 'งานพิเศษ', th: 'งานพิเศษ' },
@@ -81,6 +82,7 @@ export function queueTypeOf(q: WorkQueue): QueueType {
   // it FINAL stamped "Final check date" instead of the next PM1..15 slot.
   if (/\bpm\b|^pm|pm[\s·-]/.test(n) || n.startsWith('pm')) return 'PM'
   if (n.includes('final')) return 'FINAL'
+  if (n.includes('ช่าง') || n.includes('ซ่อม') || n.includes('repair')) return 'REPAIR'
   if (n.includes('wash')) return 'WASH'
   return 'SPECIAL'
 }
@@ -110,7 +112,8 @@ const PDI_KEYS = ['PDI', ...Array.from({ length: 8 }, (_, i) => `RE PDI  Date #$
  * written. WASH / SPECIAL have no date cell.
  */
 export function stampStationDate(vin: string, type: QueueType): boolean {
-  if (type === 'WASH' || type === 'SPECIAL') return false
+  // REPAIR/WASH/SPECIAL have no date column on the master sheet — event log only
+  if (type === 'REPAIR' || type === 'WASH' || type === 'SPECIAL') return false
   const tr = useTracking.getState()
   const row = tr.rows[vin]
   if (!row) return false
