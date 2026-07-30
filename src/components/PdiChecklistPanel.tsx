@@ -8,6 +8,7 @@ import { useYard } from '../store/useYard'
 import { useTracking } from '../store/useTracking'
 import { useOps, stampStationDate } from '../store/useOps'
 import { compressImage } from '../lib/photo'
+import { CAR_STATUS_META } from '../lib/carStatus'
 import { PDI_CHECKLIST, pdiItemId, type PdiResult } from '../lib/pdiChecklist'
 import type { Unit } from '../types'
 import type { TrackRow } from '../lib/excelTracking'
@@ -115,7 +116,10 @@ export default function PdiChecklistPanel({ unit, row, activeProc, canRecord, on
       // admin Unit sheet records this inspection's date (OK or NG alike)
       stampStationDate(unit.vin, 'PDI')
     }
-    if (row) updateCell(row.vin, 'Car Status', `${stationName} ${result}`)
+    // Car Status stays a lifecycle value — a car at the PDI station is still In
+    // Yard, and the inspection is recorded on the Overview date ladder + the
+    // queue. Only heal a row still carrying a legacy station string.
+    if (row && !CAR_STATUS_META[(row.cells['Car Status'] || '').trim()]) updateCell(row.vin, 'Car Status', 'In Yard')
     onSaved(`${stationName} ${result}`, result)
   }
 
