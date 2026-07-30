@@ -13,7 +13,7 @@ import {
 } from 'lucide-react'
 import { useYard, useUnits, useTrips, useBlocks, useMe } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
-import { isDamaged } from '../lib/carStatus'
+import { isDamaged, deriveCarStatus, IN_YARD_STATUSES } from '../lib/carStatus'
 import { useOps, useActiveQueues, activeProcess, stageOf, isSequenceQueue, seqStageOf, isQueueComplete, queueTypeOf, stampStationDate } from '../store/useOps'
 import type { WorkQueue, QueueItem, QueueType } from '../store/useOps'
 import { CarTopView } from '../components/CarTopView'
@@ -2642,22 +2642,30 @@ function MechanicView() {
 
   const unit = vin ? units.find(u => u.vin === vin) ?? null : null
 
-  // repair queue — every car in this yard with an unrepaired NG, so the mechanic
-  // can browse the outstanding list (same card style as the other stations) and
-  // tap one to work on it, instead of only scanning one at a time
-  const ngCars = useMemo(() => units
-    .map(u => ({ u, open: u.damages.filter(d => !d.repairDate).length }))
-    .filter(x => x.open > 0)
-    .map(({ u, open }) => ({
-      vin: u.vin,
-      model: u.modelName || '—',
-      color: u.color || '—',
-      grouping: trackingRows.find(r => r.vin === u.vin)?.cells['Grouping  Number'] || '—',
-      location: yardLocCode(u, locPrefix) || '—',
-      open,
-    }))
-    .sort((a, b) => byYardLocation(a.location, b.location)),
-    [units, trackingRows, locPrefix])
+  // repair queue — cars still IN YARD with at least one defect that is actually
+  // waiting for repair. Two things used to inflate this list far past the
+  // Dashboard's "Damage" figure: it keyed off `!repairDate`, which counts an
+  // Accept / Acc byd / OK Accept defect (resolved, but nothing was repaired, so
+  // it has no repair date) as outstanding; and it never excluded cars that have
+  // already left the yard.
+  const ngCars = useMemo(() => {
+    const inYard = new Set<string>()
+    for (const r of trackingRows) if (IN_YARD_STATUSES.has(deriveCarStatus(r.cells))) inYard.add(r.vin)
+    const isOpen = (d: Damage) => !d.statusRepair || d.statusRepair === 'Waiting Repair'
+    return units
+      .filter(u => inYard.has(u.vin))
+      .map(u => ({ u, open: u.damages.filter(isOpen).length }))
+      .filter(x => x.open > 0)
+      .map(({ u, open }) => ({
+        vin: u.vin,
+        model: u.modelName || '—',
+        color: u.color || '—',
+        grouping: trackingRows.find(r => r.vin === u.vin)?.cells['Grouping  Number'] || '—',
+        location: yardLocCode(u, locPrefix) || '—',
+        open,
+      }))
+      .sort((a, b) => byYardLocation(a.location, b.location))
+  }, [units, trackingRows, locPrefix])
 
   // assigned repair queues created on the Operation page (type "ช่าง (ซ่อม)") —
   // same behaviour as the PDI / PM / FINAL CHECK stations
@@ -2708,7 +2716,7 @@ function MechanicView() {
             <div className="min-w-0 flex-1">
               <div className="font-bold text-[12.5px] clip">คิวงานซ่อม (NG)</div>
               <div className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
-                รอซ่อม <b style={{ color: '#c2680b' }}>{ngCars.length}</b> คัน · NG รวม <b style={{ color: 'var(--st-damage)' }}>{ngCars.reduce((n, c) => n + c.open, 0)}</b>
+                รอซ่อม <b style={{ color: '#c2680b' }}>{ngCars.length}</b> คัน · Defect รอซ่อม <b style={{ color: 'var(--st-damage)' }}>{ngCars.reduce((n, c) => n + c.open, 0)}</b> รายการ
               </div>
             </div>
             <ChevronLeft size={16} style={{ color: 'var(--muted)', transform: listOpen ? 'rotate(90deg)' : 'rotate(-90deg)', transition: 'transform .15s' }} />
