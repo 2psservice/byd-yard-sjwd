@@ -52,7 +52,20 @@ const parseSumPreset = (preset: string): { model: string; final: string } | null
   const i = preset.lastIndexOf('|')
   return { model: preset.slice(4, i), final: preset.slice(i + 1) }
 }
+/** Same shape for the "Vin Of Status" pivot: "vos:<Model>|<Vin Of Status>". */
+const parseVosPreset = (preset: string): { model: string; vos: string } | null => {
+  if (!preset.startsWith('vos:')) return null
+  const i = preset.lastIndexOf('|')
+  return { model: preset.slice(4, i), vos: preset.slice(i + 1) }
+}
 export const presetChipLabel = (preset: string): string => {
+  const vos = parseVosPreset(preset)
+  if (vos) {
+    if (vos.model === '*' && vos.vos === '*') return 'In Yard (ทั้งหมด)'
+    const m = vos.model === '*' ? 'ทุกรุ่น' : vos.model
+    const v = vos.vos === '*' ? 'ทุก Vin Of Status' : vos.vos || '(ว่าง)'
+    return `${m} · ${v}`
+  }
   const sum = parseSumPreset(preset)
   if (!sum) return PRESET_LABEL[preset] ?? preset
   if (sum.model === '*' && sum.final === '*') return 'In Yard (ทั้งหมด)'
@@ -62,6 +75,15 @@ export const presetChipLabel = (preset: string): string => {
 }
 const presetMatch = (preset: string, r: TrackRow): boolean => {
   const cs = deriveCarStatus(r.cells)
+  const vos = parseVosPreset(preset)
+  if (vos) {
+    if (!IN_YARD_STATUSES.has(cs)) return false
+    const model = (r.cells['Model'] || r.cells['Model name'] || '—').trim() || '—'
+    const v = (r.cells['Vin Of Status'] || '').trim()
+    if (vos.model !== '*' && model !== vos.model) return false
+    if (vos.vos !== '*' && v !== vos.vos) return false
+    return true
+  }
   const sum = parseSumPreset(preset)
   if (sum) {
     if (!IN_YARD_STATUSES.has(cs)) return false
