@@ -1,0 +1,189 @@
+<!-- ══════════ 6. ผู้ดูแลระบบ ══════════ -->
+<h2 id="s6"><span class="num">6.</span>การใช้งานสำหรับผู้ดูแลระบบ</h2>
+<p class="lead">หน้าจอสำหรับผู้ดูแลระบบใช้งานผ่านคอมพิวเตอร์ เมนูทั้งหมดอยู่ที่แถบด้านซ้ายของหน้าจอ ข้อมูลที่แสดงเป็นข้อมูลของลานที่เลือกไว้ที่แถบด้านบนเสมอ</p>
+
+<h3 id="s6-1"><span class="num">6.1</span>ภาพรวม (Dashboard)</h3>
+<p>หน้าจอแรกหลังเข้าสู่ระบบ แสดงสรุปสถานะของลานในภาพรวม</p>
+<ul>
+  <li><b>การ์ดสรุป</b> — จำนวนรถในลาน รถที่จอดแล้ว รถรอเข้าลาน รายการ Damage และความจุที่ใช้ไป คลิกที่การ์ดเพื่อเปิดรายการรถที่กรองไว้แล้ว</li>
+  <li><b>ตาราง Summary</b> — จำนวนรถแยกตามรุ่นและ Final Status</li>
+  <li><b>ตาราง Vin Of Status</b> — จำนวนรถแยกตามรุ่นและสถานะ FIS</li>
+  <li><b>กิจกรรมล่าสุด</b> — รายการเคลื่อนไหวล่าสุดในลาน</li>
+</ul>
+<div class="box"><span class="lbl">หมายเหตุ</span>ตัวเลขทุกช่องในตารางสรุป รวมถึงแถวและคอลัมน์ "รวม" สามารถคลิกเพื่อเปิดรายการรถเฉพาะกลุ่มนั้นได้ทันที ตัวเลขที่เห็นจึงตรงกับจำนวนรายการที่เปิดขึ้นมาเสมอ</div>
+
+<h3 id="s6-2"><span class="num">6.2</span>รายการรถ (Unit List)</h3>
+<p>ตารางข้อมูลรถทุกคัน เป็นหน้าจอหลักสำหรับค้นหาและแก้ไขข้อมูลรายคัน</p>
+<ul>
+  <li><b>ค้นหาและกรอง</b> — ค้นหาด้วยเลข VIN รุ่น เลขกลุ่ม หรือกรองตาม Car Status, Model, Final Status</li>
+  <li><b>เลือกคอลัมน์</b> — เลือกแสดงเฉพาะคอลัมน์ที่ต้องการ และบันทึกเป็นค่าตั้งต้นได้</li>
+  <li><b>แก้ไขข้อมูล</b> — คลิกที่ช่องเพื่อแก้ไขค่า ระบบบันทึกประวัติการแก้ไขทุกครั้ง</li>
+  <li><b>แท็บ Damages</b> — ดูและแก้ไขรายการความเสียหายของรถคันที่เลือก โดยรายการ Position และ Defect ใช้ข้อมูลชุดเดียวกับหน้าภาคสนาม</li>
+  <li><b>ส่งออก</b> — ส่งออกรายการที่กรองไว้เป็นไฟล์</li>
+</ul>
+
+<h3 id="s6-3"><span class="num">6.3</span>แผนผังลาน (Yard Plan)</h3>
+<p>แสดงผังตำแหน่งจอดของลานแบบกราฟิก คลิกที่บล็อกเพื่อดูรายละเอียดของแต่ละช่องจอด สามารถเลือกโหมดการแสดงสีตามรุ่นรถ สถานะ หรือ Final Status ได้</p>
+
+<h3 id="s6-4"><span class="num">6.4</span>ติดตาม GPS</h3>
+<p>แผนที่แสดงตำแหน่งล่าสุดของรถทุกคันที่มีการเคลื่อนย้าย เลือกรถหนึ่งคันเพื่อดูประวัติการเดินทางทั้งหมด พร้อมชื่อผู้ขับ เวลา ระยะทาง และเส้นทางที่ขับจริง</p>
+
+<h3 id="s6-5"><span class="num">6.5</span>Operation — คิวงาน</h3>
+<p>ศูนย์กลางการมอบหมายงานให้สถานีภาคสนาม งานทุกอย่างที่พนักงานหน้างานเห็น มาจากคิวงานที่สร้างในหน้านี้</p>
+<h4>ก. การสร้างคิวงาน</h4>
+<ol class="steps">
+  <li>เลือกประเภทงาน ได้แก่ <b>PM</b>, <b>PDI</b>, <b>FINAL CHECK</b>, <b>ช่าง (ซ่อม)</b> หรือ <b>งานพิเศษ</b></li>
+  <li>ตั้งชื่อคิวงานให้สื่อความหมาย เช่น <span class="mono">PM · PM20</span></li>
+  <li>กดสร้างคิวงาน</li>
+</ol>
+<h4>ข. การเพิ่มรถเข้าคิวงาน</h4>
+<ol class="steps">
+  <li>เปิดคิวงานที่สร้างไว้</li>
+  <li>ค้นหาเลข VIN 5 ตัวท้าย แล้วกด <b>เพิ่มเข้าคิว</b> หรือวางรายการเลข VIN หลายคันพร้อมกัน</li>
+  <li>ตรวจสอบจำนวนรถในคิวให้ครบถ้วน</li>
+</ol>
+<h4>ค. การติดตามความคืบหน้า</h4>
+<p>แต่ละคิวงานแสดงจำนวนที่ตรวจแล้วต่อจำนวนทั้งหมด และจำนวนคงเหลือ ผู้ดูแลสามารถกดยืนยันเสร็จหรือเอารถออกจากคิวได้จากหน้านี้</p>
+<div class="box warn"><span class="lbl">ข้อควรระวัง</span>คิวงานแต่ละประเภทจะปรากฏเฉพาะในสถานีของตนเท่านั้น คิวงาน PM จะไม่ปรากฏในสถานี FINAL CHECK ดังนั้นการเลือกประเภทงานให้ถูกต้องตั้งแต่ขั้นตอนสร้างจึงมีความสำคัญ</div>
+
+<h3 id="s6-6"><span class="num">6.6</span>แผน PM</h3>
+<p>ตารางประมาณการรถที่ครบกำหนดตรวจ PM ในแต่ละวันของเดือนที่เลือก แบ่งตามลาน</p>
+<ul>
+  <li>รอบการตรวจมาตรฐานคือ <b>ทุก 30 วัน</b> ยกเว้นลาน Auto Tran 38 Rai ซึ่งเป็น <b>ทุก 90 วัน</b></li>
+  <li>รถที่มีเลขกลุ่มแล้ว หรือออกจากลานแล้ว จะไม่ถูกนับในแผน PM</li>
+  <li>คลิกที่ตัวเลขในตารางเพื่อเปิดรายการรถของวันนั้น</li>
+  <li>ใช้ปุ่มส่ง LINE เพื่อแบ่งปันสรุปแผนรายลาน</li>
+</ul>
+
+<h3 id="s6-7"><span class="num">6.7</span>Damages</h3>
+<p>ทะเบียนรายการความเสียหายทั้งหมดของลาน แสดงเลข VIN ตำแหน่ง ลักษณะความเสียหาย ภาพถ่าย ผู้บันทึก สถานี และสถานะการซ่อม ใช้สำหรับติดตามงานซ่อมในภาพรวมและตรวจสอบย้อนกลับ</p>
+
+<h3 id="s6-8"><span class="num">6.8</span>Grouping</h3>
+<p>จัดการแผนการส่งมอบรถให้ผู้แทนจำหน่าย</p>
+<ol class="steps">
+  <li><b>อัปโหลดไฟล์ Excel Grouping</b> — ระบบอ่านรายการรถและใส่เลขกลุ่มให้อัตโนมัติ</li>
+  <li><b>พิมพ์ใบ Grouping</b> — เอกสารสรุปรายการรถแต่ละกลุ่ม</li>
+  <li><b>พิมพ์ใบหารถ</b> — เอกสารระบุตำแหน่งจอดของรถแต่ละคัน สำหรับพนักงานขับรถ</li>
+  <li><b>สร้างลำดับงาน</b> — สร้างคิวงานส่งมอบ ซึ่งจะปรากฏที่สถานี Driver และ Gate-out</li>
+</ol>
+<div class="box"><span class="lbl">หมายเหตุ</span>คิวงานส่งมอบที่สร้างจากขั้นตอนนี้เป็นเงื่อนไขบังคับของการ Gate-out รถที่ไม่อยู่ในคิวงานจะไม่สามารถบันทึกออกจากลานได้</div>
+
+<h3 id="s6-9"><span class="num">6.9</span>รายงาน (Report)</h3>
+<p>ส่งออกรายงานรูปแบบ Excel ตรงตามโครงสร้างไฟล์หลักขององค์กร ประกอบด้วยชีต</p>
+<ul>
+  <li><b>Tracking Status</b> — ข้อมูลสถานะรถทั้งหมด</li>
+  <li><b>Defect-Yard</b> — รายการความเสียหายที่พบในลาน</li>
+  <li><b>Defect-Factory</b> — รายการความเสียหายที่มาจากโรงงาน</li>
+  <li><b>Defect-Whale 28 rai</b> — รายการความเสียหายของลาน Whale 28 ไร่</li>
+</ul>
+<p>ไฟล์จะถูกตั้งชื่อพร้อมชื่อลานและวันที่ส่งออกโดยอัตโนมัติ</p>
+
+<h3 id="s6-10"><span class="num">6.10</span>Gate In/Out</h3>
+<p>กระดานติดตามคิวรับรถเข้าและส่งรถออกรายวัน แสดงความคืบหน้าของแต่ละล็อต จำนวนที่ดำเนินการแล้วและคงเหลือ พร้อมเลือกดูย้อนหลังตามวันที่ได้</p>
+
+<h3 id="s6-11"><span class="num">6.11</span>พนักงานขับรถ (Driver)</h3>
+<p>ติดตามงานขับรถที่กำลังดำเนินการและประวัติการเดินทางของพนักงานแต่ละคน</p>
+
+<h3 id="s6-12"><span class="num">6.12</span>นำเข้าข้อมูล (Import)</h3>
+<p>รองรับไฟล์นามสกุล <span class="mono">.xlsx</span>, <span class="mono">.xls</span> และ <span class="mono">.csv</span> โดยแบ่งประเภทการนำเข้าเป็น</p>
+<table class="t">
+  <tr><th style="width:44mm">ประเภทไฟล์</th><th>ผลลัพธ์</th></tr>
+  <tr><td class="k">Vin List Inventory</td><td>นำเข้ารายการรถแยกตามลาน สร้างสถานะ Pre Gate-in และคิว Gate-in อัตโนมัติตามวันที่ในคอลัมน์ Gate In Date</td></tr>
+  <tr><td class="k">Co Inspection</td><td>ผสานข้อมูลผลการตรวจเข้ากับรถเดิม (PDI · RE PDI · OK date · Final check · PM)</td></tr>
+  <tr><td class="k">Update Location</td><td>ปรับตำแหน่งจอดจากคอลัมน์ VinNo และ LaneNo</td></tr>
+  <tr><td class="k">Yard-to-Yard transfer</td><td>บันทึกการโอนย้ายรถระหว่างลาน</td></tr>
+</table>
+<div class="box warn"><span class="lbl">ข้อควรระวัง</span>ตรวจสอบว่าเลือกลานปลายทางถูกต้องก่อนนำเข้าทุกครั้ง และควรดาวน์โหลดเทมเพลตเพื่อตรวจสอบชื่อคอลัมน์ที่ระบบรองรับ</div>
+
+<h3 id="s6-13"><span class="num">6.13</span>ตั้งค่ากฎจอด</h3>
+<p>กำหนดกฎการจัดตำแหน่งจอดที่ระบบใช้คำนวณตำแหน่งให้พนักงานขับรถ</p>
+<ul>
+  <li><b>บล็อกที่อนุญาต</b> — กำหนดว่ารถแต่ละรุ่นจอดได้ที่บล็อกใดบ้าง</li>
+  <li><b>ช่วงแถว</b> — จำกัดแถวที่อนุญาตให้จอด</li>
+  <li><b>ห้ามปนรุ่นในแถว</b> — บังคับให้แต่ละแถวมีรุ่นเดียว</li>
+  <li><b>โหมดวางแผน</b> — Auto ให้ระบบเลือกตำแหน่งให้ หรือ Semi ให้พนักงานเลือกเองได้</li>
+</ul>
+
+<h3 id="s6-14"><span class="num">6.14</span>Yard Ops (มือถือ)</h3>
+<p>เปิดหน้าจอภาคสนามบนคอมพิวเตอร์ ใช้สำหรับตรวจสอบการทำงานของสถานีต่าง ๆ หรือปฏิบัติงานแทนกรณีจำเป็น</p>
+
+<h3 id="s6-15"><span class="num">6.15</span>ตั้งค่า (Settings)</h3>
+<table class="t">
+  <tr><th style="width:44mm">หัวข้อ</th><th>รายละเอียด</th></tr>
+  <tr><td class="k">จัดการผู้ใช้งาน</td><td>เพิ่ม แก้ไข ปิดใช้งาน หรือลบบัญชี พร้อมกำหนดประเภทบัญชีและรหัสผ่าน</td></tr>
+  <tr><td class="k">จัดการลาน (Site)</td><td>เพิ่ม แก้ไข หรือลบลาน ซึ่งจะปรากฏในหน้าจอเลือกลานหลังเข้าสู่ระบบ</td></tr>
+  <tr><td class="k">จัดการข้อมูลรถ</td><td>ค้นหาและลบเลข VIN ที่บันทึกผิดพลาดออกจากระบบ</td></tr>
+</table>
+<div class="box stop"><span class="lbl">ข้อห้าม</span>การลบลานหรือลบเลข VIN มีผลถาวรและกระทบข้อมูลย้อนหลัง ควรดำเนินการเมื่อมั่นใจแล้วเท่านั้น และควรออกรายงานเก็บไว้ก่อนดำเนินการ</div>
+
+
+<!-- ══════════ 7. ตารางอ้างอิง ══════════ -->
+<h2 id="s7"><span class="num">7.</span>ตารางอ้างอิง</h2>
+
+<h3 id="s7-1"><span class="num">7.1</span>สถานะรถ (Car Status)</h3>
+<p>สถานะแสดงตำแหน่งของรถในวงจรการทำงาน ระบบกำหนดสถานะให้อัตโนมัติตามการปฏิบัติงานของแต่ละสถานี</p>
+<table class="t">
+  <tr><th style="width:34mm">สถานะ</th><th>ความหมาย</th><th class="c" style="width:24mm">นับเป็นรถในลาน</th></tr>
+  <tr><td><span class="sw" style="background:#facc15"></span>Pre Gate-in</td><td>นำเข้าข้อมูลแล้ว แต่รถยังไม่มาถึงลาน</td><td class="c">—</td></tr>
+  <tr><td><span class="sw" style="background:#0ea5e9"></span>Gate-in</td><td>ตรวจรับเข้าลานแล้ว รอจัดตำแหน่งจอด</td><td class="c">✓</td></tr>
+  <tr><td><span class="sw" style="background:#15803d"></span>In Yard</td><td>จอดอยู่ในลานตามตำแหน่งที่กำหนด</td><td class="c">✓</td></tr>
+  <tr><td><span class="sw" style="background:#2563eb"></span>Moving</td><td>อยู่ระหว่างการเคลื่อนย้ายโดยพนักงานขับรถ</td><td class="c">✓</td></tr>
+  <tr><td><span class="sw" style="background:#f97316"></span>PDI</td><td>อยู่ระหว่างกระบวนการตรวจ PDI</td><td class="c">✓</td></tr>
+  <tr><td><span class="sw" style="background:#22c55e"></span>Ready</td><td>พร้อมส่งมอบ (มีเลขกลุ่มแล้ว)</td><td class="c">✓</td></tr>
+  <tr><td><span class="sw" style="background:#0d9488"></span>Preload</td><td>จอดรอรถบรรทุกมารับ ยังไม่ออกจากลาน</td><td class="c">—</td></tr>
+  <tr><td><span class="sw" style="background:#f59e0b"></span>Pre Gate-out</td><td>สแกนออกแล้ว รอรอบตัดยอดเวลา 09:30 น.</td><td class="c">—</td></tr>
+  <tr><td><span class="sw" style="background:#94a3b8"></span>Gate-out</td><td>ออกจากลานเรียบร้อยแล้ว</td><td class="c">—</td></tr>
+  <tr><td><span class="sw" style="background:#991b1b"></span>Total loss</td><td>รถเสียหายสิ้นเชิง แต่ยังจอดอยู่ในลาน</td><td class="c">✓</td></tr>
+</table>
+<div class="box"><span class="lbl">หมายเหตุ</span>Car Status เป็นสถานะของวงจรชีวิตรถเท่านั้น ผลการตรวจของแต่ละสถานีจะไม่ถูกเขียนทับลงในช่องนี้ แต่บันทึกไว้ในแฟ้มข้อมูลรถ (Overview) และในคิวงานแทน</div>
+
+<h3 id="s7-2"><span class="num">7.2</span>Vin Of Status</h3>
+<table class="t">
+  <tr><th style="width:56mm">ค่า</th><th>สีที่แสดง</th></tr>
+  <tr><td>Total loss</td><td><span class="sw" style="background:#991b1b"></span>แดงเข้ม</td></tr>
+  <tr><td>Heavy NG · Accident · NG</td><td><span class="sw" style="background:#dc2626"></span>แดง</td></tr>
+  <tr><td>Waiting PDI</td><td><span class="sw" style="background:#2563eb"></span>น้ำเงิน</td></tr>
+  <tr><td>FIS for delivery</td><td><span class="sw" style="background:#16a34a"></span>เขียว</td></tr>
+  <tr><td>FIS Waiting Allocation</td><td><span class="sw" style="background:#facc15"></span>เหลือง</td></tr>
+  <tr><td>สถานะ FIS อื่น ๆ</td><td><span class="sw" style="background:#0ea5e9"></span>ฟ้า</td></tr>
+</table>
+
+<h3 id="s7-3"><span class="num">7.3</span>Final Status</h3>
+<table class="t">
+  <tr><th style="width:56mm">ค่า</th><th>สีที่แสดง</th></tr>
+  <tr><td>OK-Accept · OK-Repaired</td><td><span class="sw" style="background:#16a34a"></span>เขียว</td></tr>
+  <tr><td>Waiting Repair</td><td><span class="sw" style="background:#dc2626"></span>แดง</td></tr>
+  <tr><td>Waiting (อื่น ๆ)</td><td><span class="sw" style="background:#facc15"></span>เหลือง</td></tr>
+</table>
+
+<h3 id="s7-4"><span class="num">7.4</span>สถานะการซ่อม (Status Repair)</h3>
+<table class="t">
+  <tr><th style="width:36mm">สถานะ</th><th>ความหมาย</th></tr>
+  <tr><td class="k">Waiting Repair</td><td>รอการซ่อม — เป็นสถานะตั้งต้นของทุกรายการ NG</td></tr>
+  <tr><td class="k">Accept</td><td>ยอมรับสภาพ ไม่ต้องซ่อม</td></tr>
+  <tr><td class="k">Acc byd</td><td>ยอมรับสภาพโดย BYD</td></tr>
+  <tr><td class="k">OK Accept</td><td>ตรวจสอบแล้วยอมรับได้</td></tr>
+  <tr><td class="k">Repaired</td><td>ซ่อมเรียบร้อยแล้ว</td></tr>
+  <tr><td class="k">OK Repaired</td><td>ซ่อมและตรวจรับเรียบร้อยแล้ว</td></tr>
+</table>
+<p>ในหน้าจอภาคสนาม รายการที่มีสถานะ <b>Waiting Repair</b> จะแสดงพื้นหลังสีแดง ส่วนสถานะอื่นซึ่งถือว่าปิดงานแล้วจะแสดงพื้นหลังสีเขียว</p>
+
+<h3 id="s7-5"><span class="num">7.5</span>ป้ายสถานะในคิวงาน</h3>
+<table class="t">
+  <tr><th style="width:44mm">ป้าย</th><th>ความหมาย</th></tr>
+  <tr><td><span class="chip" style="background:#8a94a6">รอส่ง</span></td><td>ยังไม่มีพนักงานรับงาน รถอยู่ที่ตำแหน่งจอดเดิม</td></tr>
+  <tr><td><span class="chip" style="background:#2563eb">Driving · ชื่อ</span></td><td>พนักงานที่ระบุกำลังขับรถคันนี้อยู่</td></tr>
+  <tr><td><span class="chip" style="background:#16a34a">Parking</span></td><td>รถถึงสถานีแล้ว รอการตรวจ</td></tr>
+  <tr><td><span class="chip" style="background:#16a34a">ตรวจแล้ว</span></td><td>สถานีบันทึกผล OK / NG แล้ว รอพนักงานนำรถกลับไปจอด</td></tr>
+</table>
+
+<h3 id="s7-6"><span class="num">7.6</span>การบันทึกวันที่ตรวจอัตโนมัติ</h3>
+<p>เมื่อสถานีบันทึกผลการตรวจ ระบบจะบันทึกวันที่ลงในแฟ้มข้อมูลรถ (Overview) ตามลำดับดังนี้</p>
+<table class="t">
+  <tr><th style="width:32mm">สถานี</th><th>ช่องที่บันทึก</th><th style="width:30mm">จำนวนครั้งสูงสุด</th></tr>
+  <tr><td class="k">PM</td><td>PM1 → PM2 → PM3 … ตามลำดับจนถึง PM15</td><td class="c">15 ครั้ง</td></tr>
+  <tr><td class="k">PDI</td><td>PDI → RE PDI #1 → RE PDI #2 … จนถึง RE PDI #8</td><td class="c">9 ครั้ง</td></tr>
+  <tr><td class="k">FINAL CHECK</td><td>Final check date</td><td class="c">1 ครั้ง</td></tr>
+</table>
+<p>ระบบบันทึกลงช่องว่างถัดไปเสมอ รถที่ไม่เคยตรวจ PM มาก่อนจะได้ช่อง PM1 หากตรวจครั้งต่อไปจะได้ PM2, PM3 ตามลำดับ</p>
+<div class="box"><span class="lbl">หมายเหตุ</span>หากบันทึกซ้ำในวันเดียวกัน เช่น กดบันทึกสองครั้งหรือแก้ไขข้อมูลที่เพิ่งบันทึก ระบบจะไม่ใช้ช่องเพิ่ม เพื่อป้องกันการนับรอบผิดพลาด</div>
