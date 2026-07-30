@@ -1,0 +1,130 @@
+/* ── SJWD Yard Control — formal user manual, A4 print stylesheet ── */
+@page { size: A4; margin: 18mm 16mm 18mm 16mm; }
+
+:root {
+  --ink:      #16202e;
+  --ink-soft: #4a586b;
+  --muted:    #6e7c93;
+  --line:     #d8dfe9;
+  --line-2:   #eef2f7;
+  --brand:    #0a4d8c;
+  --brand-2:  #007aff;
+  --brand-bg: #eef4fb;
+  --green:    #15803d;
+  --red:      #c0362c;
+  --amber:    #b45309;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: 'Loma', 'Garuda', 'Noto Sans Thai', sans-serif;
+  font-size: 10.2pt;
+  line-height: 1.62;
+  color: var(--ink);
+  margin: 0;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+/* ── cover ───────────────────────────────────────────────────────── */
+.cover { height: 250mm; display: flex; flex-direction: column; page-break-after: always; }
+.cover .logo { width: 62mm; margin-bottom: 4mm; }
+.cover .org { font-size: 9.5pt; color: var(--muted); letter-spacing: .06em; }
+.cover .rule { height: 3px; background: var(--brand); width: 34mm; margin: 9mm 0 8mm; }
+.cover .kicker { font-size: 10pt; color: var(--brand); font-weight: 700; letter-spacing: .16em; text-transform: uppercase; }
+.cover h1 { font-size: 27pt; line-height: 1.22; margin: 3mm 0 2mm; font-weight: 700; letter-spacing: -.01em; }
+.cover .sub { font-size: 13pt; color: var(--ink-soft); font-weight: 400; }
+.cover .sub-en { font-size: 10.5pt; color: var(--muted); margin-top: 1mm; }
+.cover .spacer { flex: 1; }
+.cover .meta { border-top: 2px solid var(--brand); padding-top: 5mm; }
+.cover .meta table { width: 100%; border-collapse: collapse; font-size: 9.6pt; }
+.cover .meta td { padding: 1.5mm 0; vertical-align: top; }
+.cover .meta td:first-child { color: var(--muted); width: 42mm; }
+.cover .meta td:last-child { font-weight: 600; }
+.cover .classif {
+  display: inline-block; align-self: flex-start; margin-top: 6mm; padding: 1.6mm 4mm; font-size: 8.6pt; font-weight: 700;
+  letter-spacing: .08em; color: var(--brand); background: var(--brand-bg); border: 1px solid #c9dcf0; border-radius: 3px;
+}
+
+/* ── page structure ──────────────────────────────────────────────── */
+.page-break { page-break-before: always; }
+h2, h3, h4 { page-break-after: avoid; }
+table, figure, .box { page-break-inside: avoid; }
+
+h2 {
+  font-size: 15pt; font-weight: 700; color: var(--brand);
+  margin: 0 0 4mm; padding-bottom: 2mm; border-bottom: 2px solid var(--brand);
+  page-break-before: always;
+}
+h2.no-break { page-break-before: auto; }
+h2 .num { display: inline-block; min-width: 11mm; }
+
+h3 { font-size: 11.8pt; font-weight: 700; color: var(--ink); margin: 7mm 0 2.5mm; }
+h3 .num { color: var(--brand); display: inline-block; min-width: 13mm; }
+
+h4 { font-size: 10.4pt; font-weight: 700; color: var(--ink-soft); margin: 5mm 0 1.5mm; }
+
+p { margin: 0 0 2.6mm; text-align: left; }
+ul, ol { margin: 0 0 3mm; padding-left: 6mm; }
+li { margin-bottom: 1.2mm; }
+b, strong { font-weight: 700; }
+code, .mono { font-family: 'DejaVu Sans Mono', monospace; font-size: 9pt; background: var(--line-2); padding: 0 1mm; border-radius: 2px; }
+
+/* ── tables ──────────────────────────────────────────────────────── */
+table.t { width: 100%; border-collapse: collapse; font-size: 9.4pt; margin: 2mm 0 4mm; }
+table.t th {
+  background: var(--brand); color: #fff; font-weight: 700; text-align: left;
+  padding: 2mm 2.5mm; border: 1px solid var(--brand); font-size: 9.2pt;
+}
+table.t td { padding: 1.9mm 2.5mm; border: 1px solid var(--line); vertical-align: top; }
+table.t tr:nth-child(even) td { background: #f7f9fc; }
+table.t td.c, table.t th.c { text-align: center; }
+table.t .k { font-weight: 600; white-space: nowrap; }
+
+/* document-control table (lighter head) */
+table.dc th { background: var(--line-2); color: var(--ink); border-color: var(--line); }
+
+/* ── numbered procedure steps ───────────────────────────────────── */
+ol.steps { counter-reset: step; list-style: none; padding-left: 0; margin: 2mm 0 4mm; }
+ol.steps > li {
+  counter-increment: step; position: relative; padding-left: 8mm; margin-bottom: 2mm;
+}
+ol.steps > li::before {
+  content: counter(step); position: absolute; left: 0; top: .3mm;
+  width: 5.4mm; height: 5.4mm; border-radius: 50%; background: var(--brand); color: #fff;
+  font-size: 7.6pt; font-weight: 700; display: flex; align-items: center; justify-content: center;
+}
+
+/* ── callout boxes ──────────────────────────────────────────────── */
+.box { border-left: 3px solid var(--brand); background: #f6f9fd; padding: 2.5mm 3.5mm; margin: 3mm 0; font-size: 9.5pt; }
+.box .lbl { font-weight: 700; color: var(--brand); font-size: 8.8pt; letter-spacing: .05em; text-transform: uppercase; display: block; margin-bottom: .8mm; }
+.box.warn { border-left-color: var(--amber); background: #fdf8ef; }
+.box.warn .lbl { color: var(--amber); }
+.box.stop { border-left-color: var(--red); background: #fdf5f4; }
+.box.stop .lbl { color: var(--red); }
+
+/* ── badges / colour chips ──────────────────────────────────────── */
+.chip { display: inline-block; padding: .3mm 2mm; border-radius: 3px; font-size: 8.6pt; font-weight: 700; color: #fff; white-space: nowrap; }
+.sw { display: inline-block; width: 3.4mm; height: 3.4mm; border-radius: 2px; vertical-align: -.6mm; margin-right: 1.5mm; border: 1px solid rgba(0,0,0,.12); }
+
+/* ── table of contents ──────────────────────────────────────────── */
+.toc { margin-top: 3mm; }
+.toc a { color: var(--ink); text-decoration: none; }
+.toc .l1, .toc .l2 { display: flex; align-items: baseline; gap: 2mm; }
+.toc .l1 { font-weight: 700; margin-top: 3.2mm; font-size: 10.4pt; }
+.toc .l2 { margin-left: 8mm; font-size: 9.7pt; color: var(--ink-soft); margin-top: 1.1mm; }
+.toc .dots { flex: 1; border-bottom: 1px dotted #b9c4d3; transform: translateY(-1mm); }
+.toc .pg { font-variant-numeric: tabular-nums; color: var(--muted); }
+.toc .n { display: inline-block; min-width: 9mm; }
+.toc .l2 .n { min-width: 11mm; }
+
+/* ── misc ───────────────────────────────────────────────────────── */
+.lead { font-size: 10.6pt; color: var(--ink-soft); margin-bottom: 4mm; }
+.sig { width: 100%; border-collapse: collapse; margin-top: 3mm; font-size: 9.4pt; }
+.sig td { border: 1px solid var(--line); padding: 2mm 2.5mm; vertical-align: top; }
+.sig .role { color: var(--muted); font-size: 8.8pt; }
+.sig .space { height: 16mm; }
+.flow { width: 100%; border-collapse: separate; border-spacing: 1.5mm 0; margin: 3mm 0 4mm; table-layout: fixed; }
+.flow td { text-align: center; font-size: 8.7pt; font-weight: 700; padding: 2.5mm 1mm; border-radius: 4px; background: var(--brand-bg); color: var(--brand); border: 1px solid #cfe0f2; }
+.flow td .s { display: block; font-weight: 400; color: var(--muted); font-size: 7.6pt; margin-top: .6mm; }

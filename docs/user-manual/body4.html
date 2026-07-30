@@ -1,0 +1,228 @@
+<!-- ══════════ 8. การแก้ไขปัญหา ══════════ -->
+<h2 id="s8"><span class="num">8.</span>การแก้ไขปัญหาเบื้องต้น</h2>
+<table class="t">
+  <tr><th style="width:52mm">อาการ</th><th>สาเหตุที่เป็นไปได้และวิธีแก้ไข</th></tr>
+  <tr>
+    <td class="k">ค้นหาแล้วไม่พบเลข VIN</td>
+    <td>1) เลือกลานไม่ถูกต้อง — ตรวจสอบชื่อลานที่แถบด้านบน<br>2) รถยังไม่ถูกนำเข้าระบบ — ประสานผู้ดูแลระบบให้นำเข้าไฟล์<br>3) พิมพ์เลขไม่ครบ — ลองพิมพ์ให้ยาวขึ้น</td>
+  </tr>
+  <tr>
+    <td class="k">ระบบแจ้ง "รถยังไม่ Gate-in" ทั้งที่รถอยู่ในลาน</td>
+    <td>ข้อมูลรถยังโหลดไม่เสร็จในครั้งแรก ให้รอสักครู่แล้วค้นหาใหม่อีกครั้ง หากยังพบปัญหา ให้ตรวจสอบ Car Status ของรถที่หน้ารายการรถ</td>
+  </tr>
+  <tr>
+    <td class="k">กล้องสแกนไม่ทำงาน</td>
+    <td>ตรวจสอบว่าอนุญาตให้เว็บไซต์ใช้กล้องแล้วหรือไม่ ที่ตั้งค่าของอุปกรณ์ และปิดแอปอื่นที่ใช้กล้องอยู่</td>
+  </tr>
+  <tr>
+    <td class="k">ภาพถ่ายไม่ปรากฏบนเครื่องอื่น</td>
+    <td>รอให้การอัปโหลดเสร็จสมบูรณ์ก่อนปิดหน้าจอ และตรวจสอบสัญญาณอินเทอร์เน็ต หากเพิ่งบันทึก ให้รอประมาณ 1 นาทีแล้วรีเฟรช</td>
+  </tr>
+  <tr>
+    <td class="k">ตัวเลขในคิวงานไม่ตรงกับที่ปฏิบัติจริง</td>
+    <td>ตรวจสอบว่าบันทึกผลครบทุกคันแล้ว รถที่ตรวจแล้วแต่ยังไม่ได้นำกลับไปจอด จะยังคงแสดงในรายการจนกว่าพนักงานขับรถจะยืนยันตำแหน่งจอดใหม่</td>
+  </tr>
+  <tr>
+    <td class="k">Gate-out ไม่ได้ ระบบแจ้งไม่มีคิวงาน</td>
+    <td>รถคันนั้นไม่อยู่ในคิวงานส่งมอบ ให้ประสานผู้ดูแลระบบเพื่อสร้างคิวงานหรือเพิ่มรถเข้าคิวที่หน้า Operation ก่อน</td>
+  </tr>
+  <tr>
+    <td class="k">คิวงานที่สร้างไว้ไม่ปรากฏที่สถานี</td>
+    <td>ตรวจสอบว่าเลือกประเภทงานถูกต้อง คิวงานแต่ละประเภทปรากฏเฉพาะที่สถานีของตนเท่านั้น และตรวจสอบว่าสร้างคิวในลานเดียวกับที่พนักงานเลือกใช้งาน</td>
+  </tr>
+  <tr>
+    <td class="k">ระบบให้เข้าสู่ระบบใหม่ระหว่างวัน</td>
+    <td>บัญชีหมดอายุตามรอบเที่ยงคืน หรือผู้ดูแลระบบปรับสิทธิ์บัญชี ให้เข้าสู่ระบบใหม่ตามปกติ</td>
+  </tr>
+  <tr>
+    <td class="k">หน้าจอไม่แสดงฟังก์ชันใหม่</td>
+    <td>ปิดแอปแล้วเปิดใหม่ หากยังไม่อัปเดต ให้รีเฟรชแบบล้างแคชตามข้อ 3.6</td>
+  </tr>
+</table>
+
+
+<!-- ══════════ 9. แนวปฏิบัติ ══════════ -->
+<h2 id="s9"><span class="num">9.</span>แนวปฏิบัติในการใช้งาน</h2>
+
+<h3 id="s9-1"><span class="num">9.1</span>ข้อกำหนดด้านความถูกต้องของข้อมูล</h3>
+<ol>
+  <li>บันทึกข้อมูลทันทีที่ปฏิบัติงานเสร็จ ณ จุดปฏิบัติงาน ห้ามรวบรวมบันทึกย้อนหลัง เนื่องจากระบบบันทึกวันเวลาจริงเป็นหลักฐาน</li>
+  <li>ถ่ายภาพความเสียหายให้เห็นทั้งตำแหน่งโดยรวมและรายละเอียดของจุดที่เสียหาย</li>
+  <li>ตรวจสอบเลข VIN ให้ตรงกับตัวรถทุกครั้งก่อนกดยืนยัน</li>
+  <li>ตรวจสอบลานที่เลือกก่อนเริ่มปฏิบัติงานทุกครั้ง</li>
+</ol>
+
+<h3 id="s9-2"><span class="num">9.2</span>ข้อกำหนดด้านความปลอดภัยของบัญชี</h3>
+<ol>
+  <li>ห้ามเปิดเผยรหัสผ่านหรือใช้บัญชีร่วมกับผู้อื่น</li>
+  <li>ออกจากระบบทุกครั้งเมื่อใช้อุปกรณ์ร่วมกับผู้อื่น</li>
+  <li>แจ้งผู้ดูแลระบบทันทีเมื่ออุปกรณ์สูญหายหรือสงสัยว่ามีผู้อื่นเข้าถึงบัญชี</li>
+</ol>
+
+<h3 id="s9-3"><span class="num">9.3</span>ข้อกำหนดสำหรับผู้ดูแลระบบ</h3>
+<ol>
+  <li>ตรวจสอบความถูกต้องของไฟล์ก่อนนำเข้าทุกครั้ง และออกรายงานเก็บไว้ก่อนดำเนินการที่มีผลถาวร</li>
+  <li>ปิดใช้งานบัญชีของพนักงานที่พ้นสภาพทันที</li>
+  <li>ตั้งชื่อคิวงานให้สื่อความหมายและสอดคล้องกับเอกสารการทำงาน</li>
+  <li>ตรวจสอบความสอดคล้องของยอดรถในลานกับการตรวจนับจริงอย่างสม่ำเสมอ</li>
+</ol>
+
+
+<!-- ══════════ ภาคผนวก ก ══════════ -->
+<h2 id="sa"><span class="num">ก.</span>ภาคผนวก ก — รายการตรวจ PDI</h2>
+<p class="lead">รายการตรวจมาตรฐานที่ระบบใช้ในสถานี PDI รวม 83 รายการ แบ่งเป็น 5 หมวด แต่ละรายการบันทึกผลเป็น OK, NG หรือ NG Heavy</p>
+
+<h3 id="sa-1"><span class="num">ก.1</span>หมวดอุปกรณ์และเครื่องมือ (Equipment &amp; Tools) — 13 รายการ</h3>
+<table class="t">
+  <tr><th style="width:14mm" class="c">ลำดับ</th><th>รายการตรวจ</th><th style="width:52mm">คำอธิบาย</th></tr>
+  <tr><td class="c">1</td><td>Remote / Key entry</td><td>ระบุจำนวน</td></tr>
+  <tr><td class="c">2</td><td>Key Code</td><td>ระบุรหัสกุญแจ</td></tr>
+  <tr><td class="c">3</td><td>Chassis Number</td><td>เลขตัวถัง</td></tr>
+  <tr><td class="c">4</td><td>Motor number</td><td>เลขมอเตอร์</td></tr>
+  <tr><td class="c">5</td><td>CF Card (Atto 3)</td><td>—</td></tr>
+  <tr><td class="c">6</td><td>V2L Extension Outlet 1 Unit</td><td>—</td></tr>
+  <tr><td class="c">7</td><td>Wiper Rubber 2 pieces</td><td>—</td></tr>
+  <tr><td class="c">8</td><td>Emergency Charger 1 Unit</td><td>—</td></tr>
+  <tr><td class="c">9</td><td>Air Pump / Emergency Tire Repair</td><td>ปั๊มลม / ชุดซ่อมยางฉุกเฉิน</td></tr>
+  <tr><td class="c">10</td><td>NFC Card</td><td>—</td></tr>
+  <tr><td class="c">11</td><td>Emergency traffic sign</td><td>ป้ายจราจรฉุกเฉิน</td></tr>
+  <tr><td class="c">12</td><td>Reflective vest</td><td>เสื้อสะท้อนแสง</td></tr>
+  <tr><td class="c">13</td><td>Towing Hook</td><td>ตะขอลาก</td></tr>
+</table>
+
+<h3 id="sa-2"><span class="num">ก.2</span>หมวดภายนอก (Exterior Inspection) — 47 รายการ</h3>
+<h4>ด้านหน้ารถ (Front Vehicle)</h4>
+<table class="t">
+  <tr><th>รายการตรวจ</th><th style="width:56mm">คำแปล</th></tr>
+  <tr><td>Wiper / Wiper blade</td><td>ที่ปัดน้ำฝน / ยางปัดน้ำฝน</td></tr>
+  <tr><td>Hood</td><td>ฝากระโปรง</td></tr>
+  <tr><td>Emblem</td><td>ตราสัญลักษณ์</td></tr>
+  <tr><td>Head Light RH / LH</td><td>ไฟหน้าขวา / ซ้าย</td></tr>
+  <tr><td>Front Bumper</td><td>กันชนหน้า</td></tr>
+  <tr><td>Front Grill</td><td>กระจังหน้า</td></tr>
+</table>
+<h4>ด้านซ้าย — แก้มหน้าและประตูหน้า (LH Front)</h4>
+<table class="t">
+  <tr><th>รายการตรวจ</th><th style="width:56mm">คำแปล</th></tr>
+  <tr><td>F-LH Front Fender</td><td>แก้มหน้า</td></tr>
+  <tr><td>F-LH Wheel and Tire</td><td>ล้อและยาง</td></tr>
+  <tr><td>F-LH Side Mirror</td><td>กระจกมองข้าง</td></tr>
+  <tr><td>F-LH Door / Door Handle</td><td>ประตู / มือจับประตู</td></tr>
+  <tr><td>F-LH Window glass</td><td>กระจกประตู</td></tr>
+  <tr><td>F-LH Door rim rubber</td><td>ยางขอบประตู</td></tr>
+  <tr><td>F-LH Door trim</td><td>แผงประตู</td></tr>
+</table>
+<h4>ด้านซ้าย — ประตูหลังและแก้มหลัง (LH Rear)</h4>
+<table class="t">
+  <tr><th>รายการตรวจ</th><th style="width:56mm">คำแปล</th></tr>
+  <tr><td>R-LH Door / Door Handle</td><td>ประตู / มือจับประตู</td></tr>
+  <tr><td>R-LH Window glass</td><td>กระจกประตู</td></tr>
+  <tr><td>R-LH Roof Rack</td><td>แร็คหลังคา</td></tr>
+  <tr><td>R-LH Fender</td><td>แก้มหลัง</td></tr>
+  <tr><td>R-LH Door rim rubber</td><td>ยางขอบประตู</td></tr>
+  <tr><td>R-LH Door trim</td><td>แผงประตู</td></tr>
+  <tr><td>R-LH Wheel and Tire</td><td>ล้อและยางหลังซ้าย</td></tr>
+</table>
+<h4>ฝาท้าย (Tailgate)</h4>
+<table class="t">
+  <tr><th>รายการตรวจ</th><th style="width:56mm">คำแปล</th></tr>
+  <tr><td>Tailgate Glass</td><td>ฝาท้าย</td></tr>
+  <tr><td>3rd Break Signal</td><td>ไฟเบรกดวงที่ 3</td></tr>
+  <tr><td>LH / RH Tail Lamp</td><td>ไฟท้ายด้านซ้าย / ขวา</td></tr>
+  <tr><td>Emblem</td><td>ตราสัญลักษณ์</td></tr>
+  <tr><td>Licence plate</td><td>ป้ายทะเบียน</td></tr>
+  <tr><td>Cover Hook</td><td>ฝาครอบฮุก</td></tr>
+  <tr><td>Rear Bumper</td><td>กันชนด้านหลัง</td></tr>
+  <tr><td>Shelf assembly part</td><td>ถาดปิดของท้ายรถ</td></tr>
+  <tr><td>Tailgate rim rubber</td><td>ยางขอบประตูท้าย</td></tr>
+  <tr><td>Tank Room Panel</td><td>ห้องเก็บสัมภาระท้ายรถ</td></tr>
+  <tr><td>Wiper</td><td>ใบปัดน้ำฝน</td></tr>
+</table>
+<h4>ด้านขวา (RH Front / RH Rear)</h4>
+<p>รายการตรวจเหมือนด้านซ้ายทุกประการ รวม 14 รายการ ประกอบด้วยแก้มหน้า ล้อและยาง กระจกมองข้าง ประตูและมือจับ กระจกประตู ยางขอบประตู แผงประตู แร็คหลังคา และแก้มหลัง</p>
+
+<h3 id="sa-3"><span class="num">ก.3</span>หมวดภายใน (Interior Inspection) — 17 รายการ</h3>
+<h4>การทำงานของอุปกรณ์ภายใน (Interior Function)</h4>
+<table class="t">
+  <tr><th>รายการตรวจ</th><th style="width:56mm">คำแปล</th></tr>
+  <tr><td>Steering wheel function</td><td>การทำงานของพวงมาลัย</td></tr>
+  <tr><td>Front / Rear camera</td><td>กล้องหน้า / หลัง</td></tr>
+  <tr><td>Left / Right camera</td><td>กล้องซ้าย / ขวา</td></tr>
+  <tr><td>Central screen</td><td>หน้าจอกลาง</td></tr>
+  <tr><td>Door Lock / Unlock</td><td>ล็อก / ปลดล็อกประตู</td></tr>
+  <tr><td>Turn signal L&amp;R</td><td>ไฟเลี้ยวซ้าย / ขวา</td></tr>
+  <tr><td>Sunroof</td><td>ซันรูฟ</td></tr>
+  <tr><td>Air conditioner</td><td>เครื่องปรับอากาศ</td></tr>
+  <tr><td>Side mirror</td><td>กระจกมองข้าง</td></tr>
+  <tr><td>Sun visor light</td><td>ไฟที่บังแดด</td></tr>
+</table>
+<h4>การใช้งานพื้นฐานในห้องโดยสาร (Basic Operating in Cockpit)</h4>
+<table class="t">
+  <tr><th>รายการตรวจ</th><th style="width:56mm">คำแปล</th></tr>
+  <tr><td>Head Light On-Off</td><td>ไฟหน้า</td></tr>
+  <tr><td>Wiper Front / Rear</td><td>ที่ปัดน้ำฝนหน้า–หลัง</td></tr>
+  <tr><td>Horn</td><td>แตร</td></tr>
+  <tr><td>Room Lighting</td><td>ไฟในห้องโดยสาร</td></tr>
+  <tr><td>NFC Card</td><td>สมาร์ทการ์ด</td></tr>
+  <tr><td>Keyless Remote Entry</td><td>รีโมท</td></tr>
+  <tr><td>Window Operation Up-Down</td><td>เปิด–ปิดกระจก</td></tr>
+</table>
+
+<h3 id="sa-4"><span class="num">ก.4</span>หมวดห้องเครื่อง (Engine Compartment) — 5 รายการ</h3>
+<table class="t">
+  <tr><th>รายการตรวจ</th><th style="width:56mm">คำแปล</th></tr>
+  <tr><td>Coolant Level</td><td>ระดับน้ำหล่อเย็น</td></tr>
+  <tr><td>Brake liquid Level</td><td>ระดับน้ำมันเบรก</td></tr>
+  <tr><td>Windshield washer fluid level</td><td>ระดับน้ำล้างกระจกหน้า</td></tr>
+  <tr><td>Battery terminal / battery strap</td><td>ขั้วแบตเตอรี่ / เข็มขัดรัดแบตเตอรี่</td></tr>
+  <tr><td>Battery 12V (Connecting Pole)</td><td>แบตเตอรี่ 12 โวลต์</td></tr>
+</table>
+
+<h3 id="sa-5"><span class="num">ก.5</span>หมวดใต้ท้องรถ (Under Body) — 1 รายการ</h3>
+<table class="t">
+  <tr><th>รายการตรวจ</th><th style="width:56mm">คำแปล</th></tr>
+  <tr><td>Under Body Overall</td><td>สภาพใต้ท้องรถโดยรวม</td></tr>
+</table>
+
+
+<!-- ══════════ ภาคผนวก ข ══════════ -->
+<h2 id="sb"><span class="num">ข.</span>ภาคผนวก ข — อภิธานศัพท์</h2>
+<table class="t">
+  <tr><th style="width:36mm">คำศัพท์</th><th>ความหมาย</th></tr>
+  <tr><td class="k">VIN</td><td>Vehicle Identification Number — เลขตัวถังประจำรถ ใช้เป็นรหัสอ้างอิงหลักของระบบ</td></tr>
+  <tr><td class="k">Gate-in</td><td>การตรวจรับรถเข้าลาน</td></tr>
+  <tr><td class="k">Gate-out</td><td>การบันทึกรถออกจากลาน</td></tr>
+  <tr><td class="k">Walk-around</td><td>การเดินตรวจสภาพรอบคันก่อนรับมอบ</td></tr>
+  <tr><td class="k">PDI</td><td>Pre-Delivery Inspection — การตรวจสอบคุณภาพก่อนส่งมอบ</td></tr>
+  <tr><td class="k">PM</td><td>Preventive Maintenance — การบำรุงรักษาเชิงป้องกันตามรอบเวลา</td></tr>
+  <tr><td class="k">FINAL CHECK</td><td>การตรวจสอบครั้งสุดท้ายก่อนส่งมอบ</td></tr>
+  <tr><td class="k">Defect</td><td>รายการความเสียหายหรือข้อบกพร่องที่ตรวจพบ</td></tr>
+  <tr><td class="k">NG</td><td>Not Good — ผลการตรวจที่ไม่ผ่านเกณฑ์</td></tr>
+  <tr><td class="k">NG Heavy</td><td>ความเสียหายระดับรุนแรง</td></tr>
+  <tr><td class="k">Grouping</td><td>การจัดกลุ่มรถตามแผนการส่งมอบให้ผู้แทนจำหน่าย</td></tr>
+  <tr><td class="k">Preload</td><td>การจอดรถรอรถบรรทุกมารับ โดยยังไม่ออกจากลาน</td></tr>
+  <tr><td class="k">Site</td><td>ลานจอดรถแต่ละแห่งที่ระบบให้บริการ</td></tr>
+  <tr><td class="k">Overview</td><td>แฟ้มข้อมูลรายละเอียดของรถแต่ละคัน รวมถึงประวัติการตรวจ</td></tr>
+  <tr><td class="k">PWA</td><td>Progressive Web App — เว็บแอปพลิเคชันที่ติดตั้งลงอุปกรณ์ได้เสมือนแอปทั่วไป</td></tr>
+</table>
+
+
+<!-- ══════════ ภาคผนวก ค ══════════ -->
+<h2 id="sc"><span class="num">ค.</span>ภาคผนวก ค — การขอความช่วยเหลือ</h2>
+<p>เมื่อพบปัญหาการใช้งานที่ไม่สามารถแก้ไขได้ตามข้อ 8 ให้ติดต่อผู้ดูแลระบบพร้อมข้อมูลต่อไปนี้ เพื่อให้ตรวจสอบได้รวดเร็ว</p>
+<table class="t">
+  <tr><th style="width:44mm">ข้อมูลที่ต้องแจ้ง</th><th>ตัวอย่าง</th></tr>
+  <tr><td class="k">ชื่อผู้ใช้งาน</td><td>ชื่อบัญชีที่ใช้เข้าสู่ระบบขณะเกิดปัญหา</td></tr>
+  <tr><td class="k">ลานที่ใช้งาน</td><td>ชื่อลานที่เลือกอยู่ในขณะนั้น</td></tr>
+  <tr><td class="k">สถานี / เมนู</td><td>เช่น สถานี PM หรือหน้า Operation</td></tr>
+  <tr><td class="k">เลข VIN ที่เกี่ยวข้อง</td><td>เลขเต็ม 17 หลัก</td></tr>
+  <tr><td class="k">วันและเวลาที่เกิดปัญหา</td><td>เช่น 30 กรกฎาคม 2569 เวลา 14:20 น.</td></tr>
+  <tr><td class="k">ภาพหน้าจอ</td><td>ภาพขณะเกิดปัญหา พร้อมข้อความแจ้งเตือนที่ปรากฏ</td></tr>
+</table>
+
+<table class="sig">
+  <tr>
+    <td style="width:50%"><div class="role">ผู้ดูแลระบบ</div><div style="font-weight:700;margin-top:1mm">บริษัท 2PS Services จำกัด</div></td>
+    <td><div class="role">ช่องทางติดต่อ</div><div style="margin-top:1mm">ตามที่หน่วยงานกำหนด</div></td>
+  </tr>
+</table>
