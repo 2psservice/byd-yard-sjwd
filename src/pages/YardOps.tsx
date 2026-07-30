@@ -322,7 +322,9 @@ function stationStatusOf(vin: string, queues: WorkQueue[]): { queue: string; tex
 
 /** Center-screen popup shown when an operator scans a vehicle that has not
  *  passed Gate-in yet. Used by every role except Gate-in itself. */
-function NotGatedInModal({ vin, model, onClose }: { vin: string; model?: string; onClose: () => void }) {
+function NotGatedInModal({ vin, model, title, detail, onClose }: {
+  vin: string; model?: string; title?: string; detail?: React.ReactNode; onClose: () => void
+}) {
   // onClose via ref + mount-only effect: the inline callback changed identity on
   // every parent render, restarting the 4.5s auto-close forever
   const onCloseRef = useRef(onClose)
@@ -342,11 +344,11 @@ function NotGatedInModal({ vin, model, onClose }: { vin: string; model?: string;
           style={{ background: 'rgba(245,158,11,0.15)' }}>
           <AlertTriangle size={34} style={{ color: '#f59e0b' }} />
         </div>
-        <div className="display text-[21px] font-bold" style={{ color: '#b45309' }}>รถยังไม่ Gate-in</div>
+        <div className="display text-[21px] font-bold" style={{ color: '#b45309' }}>{title ?? 'รถยังไม่ Gate-in'}</div>
         <div className="vin text-[13px] mt-2 font-bold" style={{ color: 'var(--text)' }}>{vin}</div>
         {model && <div className="text-[12.5px] mt-0.5" style={{ color: 'var(--muted)' }}>{model}</div>}
         <div className="text-[12.5px] mt-3 leading-relaxed" style={{ color: 'var(--muted)' }}>
-          กรุณานำรถผ่าน <b style={{ color: 'var(--brand)' }}>Gate-in</b> ก่อน จึงจะดำเนินการในขั้นตอนนี้ได้
+          {detail ?? <>กรุณานำรถผ่าน <b style={{ color: 'var(--brand)' }}>Gate-in</b> ก่อน จึงจะดำเนินการในขั้นตอนนี้ได้</>}
         </div>
         <button className="btn btn-primary w-full mt-5 py-2.5" onClick={onClose}>เข้าใจแล้ว</button>
       </div>
@@ -354,14 +356,18 @@ function NotGatedInModal({ vin, model, onClose }: { vin: string; model?: string;
   )
 }
 
-/** Hook that owns the not-gated-in popup state for a role view. */
+/** Hook that owns the "scan refused" popup state for a role view. */
 function useNotGatedIn() {
-  const [blocked, setBlocked] = useState<{ vin: string; model?: string } | null>(null)
+  const [blocked, setBlocked] = useState<{ vin: string; model?: string; title?: string; detail?: React.ReactNode } | null>(null)
   const block = (vin: string, model?: string) => setBlocked({ vin, model })
+  /** Refuse a scan for a different reason than "not gated in" (same popup). */
+  const blockWith = (vin: string, model: string | undefined, title: string, detail: React.ReactNode) =>
+    setBlocked({ vin, model, title, detail })
   const modal = blocked
-    ? <NotGatedInModal vin={blocked.vin} model={blocked.model} onClose={() => setBlocked(null)} />
+    ? <NotGatedInModal vin={blocked.vin} model={blocked.model} title={blocked.title} detail={blocked.detail}
+        onClose={() => setBlocked(null)} />
     : null
-  return { block, modal }
+  return { block, blockWith, modal }
 }
 
 // ── shared: mobile VIN input ──────────────────────────────────────────────────
@@ -2841,7 +2847,7 @@ function GateOutView() {
   const { loadFromIdb, updateCell } = useTracking()
   const { toast, currentUser, sites, currentSite, markDeparted } = useYard()
   const { confirmSeqGateOut } = useOps()
-  const { block: blockGate, modal: gateModal } = useNotGatedIn()
+  const { block: blockGate, blockWith, modal: gateModal } = useNotGatedIn()
   const [vin, setVin] = useState<string | null>(null)
   const [done, setDone] = useState<{ vin: string; label: string } | null>(null)
 
@@ -2861,11 +2867,24 @@ function GateOutView() {
       else if (hits.length > 1) { toast('err', `พบ ${hits.length} คัน — พิมพ์ให้ยาวขึ้น`); return }
     }
     if (!r) { toast('err', wrongSite(v) ?? `ไม่พบ VIN: ${v}`); return }
-    // cars in a delivery sequence may sit at Wash/lane statuses that aren't in
-    // the generic "gated-in" set — allow gate-out for them regardless. A car
-    // already Pre Gate-out is also scannable (to Confirm Preload before 09:30).
+    // Gate-out follows the delivery run: only a car listed in an open
+    // Grouping-to-Dealer queue may leave, so nothing walks out of the yard
+    // without being planned. (A car already Pre Gate-out stays scannable — its
+    // Preload still has to be confirmable before the 09:30 flush.)
+    const model = r.cells['Model name'] ?? r.cells['Model'] ?? ''
+    const status = (r.cells['Car Status'] ?? '').trim()
     const inSeq = !!findSeqItem(r.vin, queues)
-    if (!inSeq && !isGatedInStatus(r.cells['Car Status']) && r.cells['Car Status'] !== 'Pre Gate-out') { blockGate(r.vin, r.cells['Model name'] ?? r.cells['Model'] ?? ''); return }
+    // a car that already left keeps its scan, so the panel can say so plainly
+    const alreadyOut = status === 'Pre Gate-out' || status === 'Gate-out'
+    if (!inSeq && !alreadyOut) {
+      blockWith(r.vin, model, 'ไม่มีคิวงาน Gate-out',
+        <>รถคันนี้ไม่อยู่ในคิวงานส่งมอบ (<b style={{ color: 'var(--brand)' }}>Grouping to Dealer</b>)<br />
+          ต้องเพิ่มรถเข้าคิวงานที่หน้า Operation ก่อน จึงจะ Gate-out ได้</>)
+      return
+    }
+    // cars in a delivery sequence may sit at Wash/lane statuses that aren't in
+    // the generic "gated-in" set — those are fine; a car that never gated in is not
+    if (!isGatedInStatus(status) && !alreadyOut) { blockGate(r.vin, model); return }
     setVin(r.vin)
   }
 
