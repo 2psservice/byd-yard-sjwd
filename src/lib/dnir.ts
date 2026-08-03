@@ -201,8 +201,18 @@ const htmlDoc = (title: string, body: string, css: string = CSS): string =>
 /** Inspector Report (IR) — one image-backed sheet per VIN. */
 export const buildIrHtml = (rows: TrackRow[], siteName?: string): string =>
   htmlDoc(`IR — ${rows.length} VIN`, rows.map((r) => irSheetHtml(r, siteName)).join(''))
-/** Delivery Note (DN) — one manifest listing all selected VINs. */
-export const buildDnHtml = (rows: TrackRow[]): string => htmlDoc(`DN — ${rows.length} VIN`, dnSheetHtml(rows))
+/** Delivery Note (DN) — one manifest per grouping (a DN *is* one trip, so cars
+ *  from several groupings must never share a sheet). */
+export const buildDnHtml = (rows: TrackRow[]): string => {
+  const byGroup = new Map<string, TrackRow[]>()
+  for (const r of rows) {
+    const g = cell(r, 'Grouping  Number') || '—'
+    const list = byGroup.get(g)
+    if (list) list.push(r); else byGroup.set(g, [r])
+  }
+  const sheets = [...byGroup.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([, list]) => dnSheetHtml(list))
+  return htmlDoc(`DN — ${byGroup.size} Grouping · ${rows.length} VIN`, sheets.join(''))
+}
 /** IR paper overlay (data only) — to print onto pre-printed IR forms. */
 export const buildIrPaperHtml = (rows: TrackRow[], siteName?: string): string =>
   htmlDoc(`IR paper — ${rows.length} VIN`, rows.map((r) => irPaperSheetHtml(r, siteName)).join(''), CSS_IRP)
