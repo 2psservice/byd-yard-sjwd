@@ -16,7 +16,7 @@ import { compressImage } from '../lib/photo'
 import { CAR_STATUS_META } from '../lib/carStatus'
 import { MASTER_PARTS, MASTER_DEFECTS, resolvePart, resolveDefect } from '../lib/masterDefect'
 import { checkItemId, type CheckItemState, type CheckTab } from '../lib/checkSheet'
-import { MeasurementField } from './MeasurementField'
+import { MeasurementField, TirePressureField, TIRE_WHEELS, joinTirePressure } from './MeasurementField'
 import { CheckItemRow } from './CheckItemRow'
 import type { Unit } from '../types'
 import type { TrackRow } from '../lib/excelTracking'
@@ -25,13 +25,15 @@ import type { WorkQueue, QueueItem, QueueType } from '../store/useOps'
 /** One free NG line on the NG tab: ตำแหน่ง · ข้อบกพร่อง · หมายเหตุ. */
 interface NgEntry { id: string; position: string; defect: string; note: string; photos: string[] }
 
-/** The four measurements, each with the tracking cell it reads back / writes. */
+/** Single-value measurements, each with the tracking cell it reads / writes.
+ *  Tire pressure is measured per wheel and handled by TirePressureField. */
 const MEASUREMENTS = [
   { key: '% SOC', label: '% SOC', unit: '%' },
   { key: 'Mileage', label: 'Mileage (Km)', unit: 'กม.' },
   { key: 'Voltage of 12V', label: 'Voltage of 12V / Date', unit: 'V' },
-  { key: 'Tire Pressure', label: 'Tire Pressure (310–340 Kpal)', unit: 'Kpa' },
 ] as const
+
+const TIRE_LABEL = 'Tire Pressure (310–340 Kpal)'
 
 let ngSeq = 0
 
@@ -120,9 +122,16 @@ export default function StationSheet({ unit, row, activeProc, onSaved, stationTi
     }
     savedRef.current = true
 
-    if (row) for (const m of MEASUREMENTS) {
-      const v = (meas[m.key] ?? '').trim()
-      if (v) updateCell(row.vin, m.key, v)
+    if (row) {
+      for (const m of MEASUREMENTS) {
+        const v = (meas[m.key] ?? '').trim()
+        if (v) updateCell(row.vin, m.key, v)
+      }
+      // per-wheel readings, plus a combined "Tire Pressure" so the single-value
+      // history (and anything reading that cell) still shows the whole set
+      const wheels = TIRE_WHEELS.filter(w => (meas[w.key] ?? '').trim())
+      for (const w of wheels) updateCell(row.vin, w.key, meas[w.key].trim())
+      if (wheels.length) updateCell(row.vin, 'Tire Pressure', joinTirePressure(meas))
     }
 
     // checklist NG → Defect
@@ -223,6 +232,8 @@ export default function StationSheet({ unit, row, activeProc, onSaved, stationTi
           <MeasurementField key={m.key} label={m.label} cellKey={m.key} columnLabel={colLabel(m.key)} row={row}
             value={meas[m.key] ?? ''} onChange={v => setMeas(s => ({ ...s, [m.key]: v }))} />
         ))}
+        <TirePressureField label={TIRE_LABEL} row={row} values={meas}
+          onChange={(k, v) => setMeas(s => ({ ...s, [k]: v }))} />
       </div>
 
       {/* tabs — the three checklists plus the free NG page */}
