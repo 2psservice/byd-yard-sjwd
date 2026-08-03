@@ -13,6 +13,20 @@ const FOOT = `
   const page = await browser.newPage()
   await page.goto('file://' + process.cwd() + '/manual.html', { waitUntil: 'load' })
   await page.emulateMedia({ media: 'print' })
+
+  // A sub-section is kept whole (.sec = page-break-inside: avoid), but a section
+  // taller than this can never fit a page — leaving it "unbreakable" only pushes
+  // it wholesale and blanks out the page before it. Release those.
+  const released = await page.evaluate((maxPx) => {
+    let n = 0
+    for (const el of document.querySelectorAll('.sec')) {
+      // .keep blocks (long reference tables) hold together up to a full page
+      const limit = el.classList.contains('keep') ? 940 : maxPx
+      if (el.getBoundingClientRect().height > limit) { el.classList.remove('sec'); n++ }
+    }
+    return n
+  }, 520)
+  console.log(`sections released: ${released}`)
   await page.pdf({
     path: 'SJWD-Yard-Control-User-Manual.pdf',
     format: 'A4',

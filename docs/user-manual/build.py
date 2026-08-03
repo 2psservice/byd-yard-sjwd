@@ -94,7 +94,56 @@ CONTROL = '''
 '''
 
 
-MARK = '<span style="font-size:1px;color:#ffffff">[[{}]]</span>'
+def thead_wrap(html_body):
+    """Give every table a real <thead> so its header row repeats when the table
+    runs over a page break — written by hand the header is just the first <tr>."""
+    def one(m):
+        inner = m.group(2)
+        head = re.match(r'\s*(<tr>.*?</tr>)(.*)', inner, re.S)
+        if not head or '<th' not in head.group(1):
+            return m.group(0)
+        return f'{m.group(1)}<thead>{head.group(1)}</thead><tbody>{head.group(2)}</tbody></table>'
+    return re.sub(r'(<table class="[^"]*">)(.*?)</table>', one, html_body, flags=re.S)
+
+
+def sectioned(html_body):
+    """Keep a sub-section with its heading: wrap each h3 (and the run of content
+    under it) in a block the printer tries not to split. topdf.cjs releases the
+    ones too tall to fit a page, which would otherwise leave a half-empty page."""
+    out = []
+    for part in re.split(r'(?=<h[23] id=")', html_body):
+        if not part.strip():
+            continue
+        h2 = re.match(r'(<h2 id="[^"]*">.*?</h2>)(.*)', part, re.S)
+        if h2:
+            out.append(h2.group(1))
+            if h2.group(2).strip():
+                out.append(f'<section class="sec">{h4_blocks(h2.group(2))}</section>')
+        elif part.lstrip().startswith('<h3'):
+            out.append(f'<section class="sec">{h4_blocks(part)}</section>')
+        else:
+            out.append(part)
+    return ''.join(out)
+
+
+def h4_blocks(chunk):
+    """Same idea one level down, so a released (too-tall) sub-section still keeps
+    each h4 with the table under it."""
+    parts = re.split(r'(?=<h4[ >])', chunk)
+    out = []
+    for p in parts:
+        if not p.strip():
+            continue
+        if p.lstrip().startswith('<h4'):
+            # data-keep = never split this block, even if it fills most of a page
+            cls = 'sec keep' if re.match(r'\s*<h4[^>]*data-keep', p) else 'sec'
+            out.append(f'<section class="{cls}">{p}</section>')
+        else:
+            out.append(p)
+    return ''.join(out)
+
+
+MARK = '<span style="font-size:1px;color:#ffffff">[[{}]]</span>' 
 
 def marked(html_body):
     """Tag every heading with an invisible ASCII marker — Thai text extracts
@@ -107,18 +156,19 @@ def marked(html_body):
 
 
 def render(toc, mark=True):
+    page_body = sectioned(thead_wrap(body))
     html = f'''<!doctype html>
 <html lang="th"><head><meta charset="utf-8">
 <title>{TITLE}</title>
 <style>{css}</style>
 </head><body>
 {COVER}
-{CONTROL}
+{thead_wrap(CONTROL)}
 <h2 class="no-break">สารบัญ</h2>
 <div class="toc">
 {toc}
 </div>
-{marked(body) if mark else body}
+{marked(page_body) if mark else page_body}
 </body></html>'''
     open('manual.html', 'w').write(html)
     subprocess.run(['node', 'topdf.cjs'], check=True)

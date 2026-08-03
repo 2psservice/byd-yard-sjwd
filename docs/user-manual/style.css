@@ -50,7 +50,14 @@ body {
 /* ── page structure ──────────────────────────────────────────────── */
 .page-break { page-break-before: always; }
 h2, h3, h4 { page-break-after: avoid; }
-table, figure, .box { page-break-inside: avoid; }
+figure, .box { page-break-inside: avoid; }
+tr { page-break-inside: avoid; }
+thead { display: table-header-group; }   /* header row repeats over a page break */
+p, li { orphans: 2; widows: 2; }
+
+/* one sub-section = heading + its content, kept together. topdf.cjs strips the
+   class from any section too tall to fit a page. */
+.sec { page-break-inside: avoid; }
 
 h2 {
   font-size: 15pt; font-weight: 700; color: var(--brand);
@@ -78,7 +85,7 @@ table.t th {
   padding: 2mm 2.5mm; border: 1px solid var(--brand); font-size: 9.2pt;
 }
 table.t td { padding: 1.9mm 2.5mm; border: 1px solid var(--line); vertical-align: top; }
-table.t tr:nth-child(even) td { background: #f7f9fc; }
+table.t tbody tr:nth-child(odd) td { background: #f7f9fc; }
 table.t td.c, table.t th.c { text-align: center; }
 table.t .k { font-weight: 600; white-space: nowrap; }
 
