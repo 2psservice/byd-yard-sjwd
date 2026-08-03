@@ -10,6 +10,7 @@ import { makeT } from '../i18n'
 import type { View } from '../types'
 import { Segmented, cx } from './ui'
 import { LogoMark } from './Logo'
+import { isTouch } from '../lib/device'
 
 const NAV: { view: View; icon: ReactNode }[] = [
   { view: 'dashboard', icon: <LayoutDashboard size={18} /> },
@@ -159,43 +160,48 @@ export function Layout({ children }: { children: ReactNode }) {
   )
 
   return (
-    <div className="flex h-screen overflow-hidden">
-      {/* desktop rail — collapses to icons, expands on hover */}
-      <div className="hidden lg:block shrink-0 relative" style={{ width: RAIL }}>
-        <div
-          onMouseEnter={() => setRailHover(true)}
-          onMouseLeave={() => setRailHover(false)}
-          className="absolute top-0 left-0 h-full border-r hairline overflow-hidden"
-          style={{
-            width: railHover ? FULL : RAIL, zIndex: 50,
-            background: 'var(--glass)', backdropFilter: 'blur(22px) saturate(180%)', WebkitBackdropFilter: 'blur(22px) saturate(180%)',
-            transition: 'width 0.18s cubic-bezier(0.22,1,0.36,1)',
-            boxShadow: railHover ? '0 12px 40px -10px rgba(0,0,0,0.18)' : 'none',
-          }}
-        >
-          {renderSidebar(railHover)}
+    <div className="flex app-vh app-safe overflow-hidden">
+      {/* desktop rail — collapses to icons, expands on hover. A tablet has no
+          hover, so the labels would never appear: touch gets the slide-over. */}
+      {!isTouch && (
+        <div className="hidden lg:block shrink-0 relative" style={{ width: RAIL }}>
+          <div
+            onMouseEnter={() => setRailHover(true)}
+            onMouseLeave={() => setRailHover(false)}
+            className="absolute top-0 left-0 h-full border-r hairline overflow-hidden"
+            style={{
+              width: railHover ? FULL : RAIL, zIndex: 50,
+              background: 'var(--glass)', backdropFilter: 'blur(22px) saturate(180%)', WebkitBackdropFilter: 'blur(22px) saturate(180%)',
+              transition: 'width 0.18s cubic-bezier(0.22,1,0.36,1)',
+              boxShadow: railHover ? '0 12px 40px -10px rgba(0,0,0,0.18)' : 'none',
+            }}
+          >
+            {renderSidebar(railHover)}
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* mobile slide-over */}
+      {/* slide-over nav */}
       {mobileNav && (
-        <div className="lg:hidden fixed inset-0 z-50 flex">
-          <div className="panel-solid h-full" style={{ borderRadius: 0, width: FULL }} onClick={(e) => e.stopPropagation()}>{renderSidebar(true)}</div>
+        <div className={cx('fixed inset-0 z-50 flex', !isTouch && 'lg:hidden')}>
+          <div className="panel-solid h-full overflow-y-auto app-safe" style={{ borderRadius: 0, width: FULL }} onClick={(e) => e.stopPropagation()}>{renderSidebar(true)}</div>
           <div className="flex-1" style={{ background: 'rgba(15,23,42,0.4)' }} onClick={() => setMobileNav(false)} />
         </div>
       )}
 
       <div className="flex-1 flex flex-col min-w-0">
         {/* topbar */}
-        <header className="flex items-center gap-3 px-4 h-14 border-b hairline shrink-0" style={{ background: 'var(--glass)', backdropFilter: 'blur(22px) saturate(180%)', WebkitBackdropFilter: 'blur(22px) saturate(180%)' }}>
-          <button className="btn btn-ghost p-2 lg:hidden" onClick={() => setMobileNav(true)}><Menu size={18} /></button>
+        <header className="flex items-center gap-2 sm:gap-3 px-3 sm:px-4 h-14 border-b hairline shrink-0" style={{ background: 'var(--glass)', backdropFilter: 'blur(22px) saturate(180%)', WebkitBackdropFilter: 'blur(22px) saturate(180%)' }}>
+          <button className={cx('btn btn-ghost p-2 shrink-0', !isTouch && 'lg:hidden')} onClick={() => setMobileNav(true)}><Menu size={18} /></button>
 
-          <button className="btn flex-1 max-w-[320px] justify-start text-left" style={{ color: 'var(--muted)' }} onClick={() => setPalette(true)}>
-            <Search size={15} /> <span className="text-[13px]">{t('search')} VIN…</span>
-            <kbd className="k ml-auto">⌘K</kbd>
+          {/* the search box gives up its width first — every control to its right
+              is a live count or a switch and must stay reachable on a tablet */}
+          <button className="btn flex-1 min-w-0 max-w-[320px] justify-start text-left overflow-hidden" style={{ color: 'var(--muted)' }} onClick={() => setPalette(true)}>
+            <Search size={15} className="shrink-0" /> <span className="text-[13px] clip">{t('search')} VIN…</span>
+            <kbd className="k ml-auto hidden xl:inline-block">⌘K</kbd>
           </button>
 
-          <div className="ml-auto flex items-center gap-2.5">
+          <div className="ml-auto flex items-center gap-1.5 sm:gap-2.5 shrink-0">
             {/* site switcher */}
             <button onClick={openSiteModal} title="เปลี่ยน Site งาน"
               className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12.5px] font-semibold transition-all hover:shadow-sm whitespace-nowrap shrink-0"
@@ -206,10 +212,11 @@ export function Layout({ children }: { children: ReactNode }) {
               <span className="hidden sm:inline clip" style={{ maxWidth: 120 }}>{siteName ?? 'เลือก Site'}</span>
               <ChevronDown size={13} style={{ opacity: 0.6 }} className="shrink-0" />
             </button>
-            <div className="hidden sm:flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1 rounded-md" style={{ color: 'var(--st-yard)', background: '#e7f6ec' }}>
+            {/* the footer carries the same indicator, so this one goes first */}
+            <div className="hidden xl:flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1 rounded-md" style={{ color: 'var(--st-yard)', background: '#e7f6ec' }}>
               <span className="live">●</span> Connected
             </div>
-            <div className="hidden md:flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1 rounded-md" style={{ color: 'var(--muted)', background: 'var(--chip)' }}>
+            <div className="hidden lg:flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1 rounded-md" style={{ color: 'var(--muted)', background: 'var(--chip)' }}>
               <Plug size={12} /> {inYard.toLocaleString()} In Yard
             </div>
             <Segmented
@@ -223,7 +230,11 @@ export function Layout({ children }: { children: ReactNode }) {
             <button className="btn p-2" title="TH / EN" onClick={() => setLang(lang === 'th' ? 'en' : 'th')}>
               <Globe size={15} /> <span className="text-[12px] font-bold">{lang.toUpperCase()}</span>
             </button>
-            <button className="btn btn-ghost p-2 hidden sm:flex"><Bell size={16} style={{ color: 'var(--muted)' }} /></button>
+            {/* wrapper, not `hidden` on the button itself: `.btn` sets display
+                outside Tailwind's layer and would win — see index.css */}
+            <div className="hidden xl:block">
+              <button className="btn btn-ghost p-2"><Bell size={16} style={{ color: 'var(--muted)' }} /></button>
+            </div>
             <UserMenu onGoSettings={() => go('settings')} />
           </div>
         </header>

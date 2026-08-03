@@ -98,7 +98,7 @@ export function Tracking() {
 
       <div className="grid lg:grid-cols-[340px_1fr] gap-4">
         {/* ── left: searchable car list ── */}
-        <div className="panel flex flex-col overflow-hidden" style={{ maxHeight: 'calc(100vh - 180px)' }}>
+        <div className="panel flex flex-col overflow-hidden" style={{ maxHeight: 'calc(100dvh - 180px)' }}>
           <div className="p-3 border-b hairline">
             <div className="flex items-center gap-2 px-3 py-2 rounded-xl" style={{ background: 'var(--chip)' }}>
               <Search size={15} style={{ color: 'var(--muted)' }} />

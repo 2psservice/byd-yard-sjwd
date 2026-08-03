@@ -9,6 +9,7 @@ import { useYard, useMe, isOpsOnlyRole } from './store/useYard'
 import { useTrackingRows, useTracking } from './store/useTracking'
 import { useOps } from './store/useOps'
 import { startSyncBus, stopSyncBus } from './lib/syncBus'
+import { isPhone } from './lib/device'
 import { Dashboard } from './pages/Dashboard'
 import { ImportPage } from './pages/ImportPage'
 import { Report } from './pages/Report'
@@ -32,7 +33,9 @@ const sameDay = (a: number, b: number) => new Date(a).toDateString() === new Dat
 export default function App() {
   const loggedInUserId = useYard((s) => s.loggedInUserId)
   const me = useMe()
-  const opsOnly = isOpsOnlyRole(me?.role)
+  // a phone only ever gets the Yard Ops station — the admin screens are wide
+  // data tables, unusable on a handset — so the gate is the device, not the role
+  const opsOnly = isOpsOnlyRole(me?.role) || isPhone
   const view = useYard((s) => s.view)
   const ensureUnitSites = useYard((s) => s.ensureUnitSites)
   const purgeNonTracking = useYard((s) => s.purgeNonTracking)
@@ -184,8 +187,8 @@ export default function App() {
   if (booting || !trackingLoaded)
     return <><LogoLoaderOverlay label="กำลังโหลดข้อมูล" /><Toaster /></>
 
-  // field roles (driver / walk-around / PM / mechanic) live in Yard Ops only —
-  // no sidebar, no admin pages
+  // field roles (driver / walk-around / PM / mechanic) — and ANY account on a
+  // phone — live in Yard Ops only: no sidebar, no admin pages
   if (opsOnly)
     return (
       <>

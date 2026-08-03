@@ -329,7 +329,7 @@ export function Units() {
   ]
 
   return (
-    <div className="max-w-full -mt-1 flex flex-col" style={{ height: 'calc(100vh - 104px)' }}>
+    <div className="max-w-full -mt-1 flex flex-col" style={{ height: 'calc(100dvh - 104px)' }}>
       {/* tabs + toolbar — one compact row */}
       <div className="flex items-stretch gap-1 border-b hairline mb-1.5 shrink-0">
         {TABS.map((tb) => (
@@ -382,7 +382,12 @@ export function Units() {
               options={[['ALL', 'All'], ...(filterOptions[key] ?? []).map((m) => [m, m] as [string, string])]} />
           ))}
           {anyFilter && <button className="btn btn-ghost shrink-0" onClick={clearFilters}><X size={14} /> ล้าง</button>}
-          <button className={cx('btn btn-ghost shrink-0 ml-auto', filterMgr && 'btn-blue')} title="ปรับแต่งช่องกรอง" onClick={() => setFilterMgr((v) => !v)}><SlidersHorizontal size={14} /></button>
+          {/* pinned to the right edge: on a tablet the filter row scrolls
+              sideways and this button used to sit ~600px off-screen */}
+          <div className="sticky right-0 ml-auto shrink-0 pl-3"
+            style={{ background: 'linear-gradient(to right, rgba(255,255,255,0), var(--panel) 14px)' }}>
+            <button className={cx('btn btn-ghost shrink-0', filterMgr && 'btn-blue')} title="ปรับแต่งช่องกรอง" onClick={() => setFilterMgr((v) => !v)}><SlidersHorizontal size={14} /></button>
+          </div>
         </div>
       )}
 
