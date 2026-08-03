@@ -479,7 +479,7 @@ export function YardPlan() {
 
       <div>
         {/* ── board ── */}
-        <div className="panel p-0 overflow-auto" style={{ maxHeight: 'calc(100vh - 210px)', background: '#e7ebf1' }} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={onUp}>
+        <div className="panel p-0 overflow-auto" style={{ maxHeight: 'calc(100dvh - 210px)', background: '#e7ebf1' }} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={onUp}>
           <div
             className="relative"
             style={{

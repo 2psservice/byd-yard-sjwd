@@ -14,18 +14,20 @@ export function OpsShell({ children }: { children: ReactNode }) {
   const siteName = sites.find((s) => s.id === currentSite)?.name ?? null
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden">
+    <div className="ops-root flex flex-col app-vh app-safe overflow-hidden">
       <header className="flex items-center gap-2.5 px-3 h-14 border-b hairline shrink-0"
         style={{ background: 'var(--glass)', backdropFilter: 'blur(22px) saturate(180%)', WebkitBackdropFilter: 'blur(22px) saturate(180%)' }}>
         <LogoMark size={30} />
-        <div className="min-w-0">
-          <div className="font-bold text-[13.5px] leading-tight whitespace-nowrap">SJWD Yard Control</div>
-          <div className="text-[10.5px] leading-tight" style={{ color: 'var(--muted)' }}>{currentUser}</div>
+        {/* the wordmark yields its width first — the site chip and logout are
+            controls and must stay whole on a 320px phone */}
+        <div className="min-w-0 flex-1 overflow-hidden">
+          <div className="font-bold text-[13.5px] leading-tight clip">SJWD Yard Control</div>
+          <div className="text-[10.5px] leading-tight clip" style={{ color: 'var(--muted)' }}>{currentUser}</div>
         </div>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           {/* active yard — tap to switch (forces an explicit choice, never silent) */}
           <button onClick={openSiteModal} title="เปลี่ยน Site งาน"
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12.5px] font-semibold whitespace-nowrap"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12.5px] font-semibold whitespace-nowrap max-w-[46vw] overflow-hidden"
             style={siteName
               ? { background: 'var(--brand-soft, #eef4ff)', color: 'var(--brand)', border: '1px solid rgba(37,99,235,0.2)' }
               : { background: 'rgba(234,179,8,0.12)', color: '#a16207', border: '1px solid rgba(234,179,8,0.3)' }}>

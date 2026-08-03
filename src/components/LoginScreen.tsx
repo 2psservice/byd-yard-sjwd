@@ -30,8 +30,8 @@ export function LoginScreen() {
   if (loading) return <LogoLoaderOverlay label="กำลังเข้าสู่ระบบ" />
 
   return (
-    <div style={{
-      minHeight: '100vh',
+    <div className="app-safe" style={{
+      minHeight: '100dvh',
       background: 'linear-gradient(160deg, #f0f4fb 0%, #e6ecf7 60%, #dce5f3 100%)',
       display: 'flex',
       flexDirection: 'column',
@@ -65,14 +65,14 @@ export function LoginScreen() {
             <img
               src="/2ps-logo.png"
               alt="2PS Services Co.,Ltd"
-              style={{ height: 80, objectFit: 'contain', filter: 'drop-shadow(0 2px 8px rgba(0,0,0,0.10))' }}
+              style={{ height: 'clamp(56px, 16vw, 80px)', maxWidth: '100%', objectFit: 'contain', filter: 'drop-shadow(0 2px 8px rgba(0,0,0,0.10))' }}
               onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
             />
           </div>
 
           {/* Welcome heading */}
           <div style={{ marginBottom: 28, textAlign: 'center' }}>
-            <h1 style={{ fontSize: 30, fontWeight: 800, letterSpacing: '-0.5px', margin: 0, lineHeight: 1.2, color: '#111' }}>
+            <h1 style={{ fontSize: 'clamp(22px, 6.5vw, 30px)', fontWeight: 800, letterSpacing: '-0.5px', margin: 0, lineHeight: 1.2, color: '#111' }}>
               Welcome To&nbsp;<span style={{ color: BRAND }}>2PS YMS</span>
             </h1>
             <p style={{ margin: '8px 0 0', fontSize: 14, color: '#555', fontWeight: 400 }}>
@@ -84,7 +84,7 @@ export function LoginScreen() {
           <div style={{
             background: '#fff',
             borderRadius: 16,
-            padding: '32px 32px 28px',
+            padding: 'clamp(20px, 6vw, 32px) clamp(18px, 6vw, 32px) 28px',
             boxShadow: '0 8px 40px -8px rgba(27,79,168,0.18), 0 2px 8px rgba(0,0,0,0.06)',
           }}>
 
@@ -108,7 +108,7 @@ export function LoginScreen() {
                 style={{
                   width: '100%', boxSizing: 'border-box',
                   background: '#EEF2FB', border: '1.5px solid transparent',
-                  borderRadius: 9, padding: '11px 14px', fontSize: 14, color: '#111',
+                  borderRadius: 9, padding: '11px 14px', fontSize: 16, color: '#111',
                   outline: 'none', transition: 'border-color .15s',
                 }}
                 placeholder="username"
@@ -133,7 +133,7 @@ export function LoginScreen() {
                   style={{
                     width: '100%', boxSizing: 'border-box',
                     background: '#EEF2FB', border: '1.5px solid transparent',
-                    borderRadius: 9, padding: '11px 42px 11px 14px', fontSize: 14, color: '#111',
+                    borderRadius: 9, padding: '11px 42px 11px 14px', fontSize: 16, color: '#111',
                     outline: 'none', transition: 'border-color .15s',
                   }}
                   placeholder="••••••••"

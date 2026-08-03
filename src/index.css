@@ -72,6 +72,32 @@ input, textarea, select, [contenteditable='true'] {
   user-select: text;
 }
 
+/* ---------- device fit (iPhone / iPad / Android) ---------- */
+/* Mobile Safari counts the collapsing URL bar in 100vh, so a 100vh shell hides
+   its own bottom row; dvh is the actually-visible height. */
+.app-vh { height: 100vh; height: 100dvh; }
+/* Keep chrome clear of the notch, the rounded corners and the home indicator.
+   Every inset is 0 on a device without them, so this is inert elsewhere. */
+.app-safe {
+  padding-top: env(safe-area-inset-top);
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+}
+
+/* Coarse pointers can't reliably hit a 26px-tall control. Floor the height of
+   the interactive chrome — height only, so the dense toolbars keep their
+   spacing — and leave desktop untouched. */
+@media (pointer: coarse) {
+  .btn { min-height: 36px; }
+  .nav-item { min-height: 42px; }
+}
+/* iOS Safari zooms the page whenever a focused field is under 16px, and never
+   zooms back out. Only the phone station takes typed input on a phone. */
+@media (pointer: coarse) and (max-width: 640px) {
+  .ops-root input, .ops-root textarea, .ops-root select { font-size: max(16px, 1em); }
+}
+
 /* iOS overlay-style scrollbars */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -96,6 +122,10 @@ input, textarea, select, [contenteditable='true'] {
 .glow-ring { box-shadow: 0 24px 70px -18px rgba(0, 0, 0, 0.32), 0 0 0 0.5px rgba(0, 0, 0, 0.05); }
 
 /* ---------- buttons (iOS: rounded, tap-dim) ---------- */
+/* NOTE: these component rules are unlayered, so they outrank every Tailwind
+   utility (those live in @layer utilities). A class that sets `display` here
+   therefore beats `hidden` / `sm:flex` on the same element — to hide a .btn
+   responsively, put the breakpoint classes on a wrapper element. */
 .btn {
   display: inline-flex; align-items: center; gap: 7px;
   padding: 7px 14px; border-radius: var(--radius-sm);
