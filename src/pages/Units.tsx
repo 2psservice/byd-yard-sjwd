@@ -5,7 +5,7 @@ import {
   ArrowUpDown, ChevronUp, ChevronDown, ChevronRight, Plus, Database,
   FileText, List as ListIcon, ClipboardList, Eye, Copy, MapPin,
   Car, Clock, ShieldCheck, Route, Printer, CheckSquare, Check, History, Pencil,
-  SlidersHorizontal, Lock,
+  SlidersHorizontal, Lock, Square,
 } from 'lucide-react'
 import { CarTopView } from '../components/CarTopView'
 import { printIr, printDn, printIrPaper } from '../lib/dnir'
@@ -953,6 +953,7 @@ function GroupingView({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort
   const siteName = grpSites.find((x) => x.id === grpSite)?.name ?? ''
   const [search, setSearch] = useState('')
   const [active, setActive] = useState<string | null>(null)
+  const [picked, setPicked] = useState<Set<string>>(new Set())
 
   const groups = useMemo(() => {
     const m = new Map<string, TrackRow[]>()
@@ -972,13 +973,34 @@ function GroupingView({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort
   const activeRows = useMemo(() => groups.find(([g]) => g === activeKey)?.[1] ?? [], [groups, activeKey])
   const totalWithGroup = rows.length
 
-  // selection within the active group → drives DN IR printing
-  const selInGroup = useMemo(() => activeRows.filter((r) => sel.has(r.vin)), [activeRows, sel])
-  const toPrint = selInGroup.length ? selInGroup : activeRows // selected VINs, else the whole group
-  const allSel = activeRows.length > 0 && selInGroup.length === activeRows.length
+  // ── ticked groups: print several groupings in one go. Resolved against every
+  //    group (not the filtered list) so a tick survives changing the search. ──
+  const pickedGroups = useMemo(() => groups.filter(([g]) => picked.has(g)), [groups, picked])
+  const togglePick = (g: string) => setPicked((prev) => {
+    const n = new Set(prev)
+    n.has(g) ? n.delete(g) : n.add(g)
+    return n
+  })
+  const shownFilteredPicked = filteredGroups.length > 0 && filteredGroups.every(([g]) => picked.has(g))
+  const toggleAllFiltered = () => setPicked((prev) => {
+    const n = new Set(prev)
+    filteredGroups.forEach(([g]) => (shownFilteredPicked ? n.delete(g) : n.add(g)))
+    return n
+  })
+
+  // the grid (and printing) shows the ticked groups, or the open one when none is ticked
+  const shownRows = useMemo(
+    () => (pickedGroups.length ? pickedGroups.flatMap(([, list]) => list) : activeRows),
+    [pickedGroups, activeRows],
+  )
+
+  // selection within those rows → drives DN / IR printing
+  const selShown = useMemo(() => shownRows.filter((r) => sel.has(r.vin)), [shownRows, sel])
+  const toPrint = selShown.length ? selShown : shownRows // selected VINs, else everything shown
+  const allSel = shownRows.length > 0 && selShown.length === shownRows.length
   const toggleGroupSel = () => setSel((prev) => {
     const n = new Set(prev)
-    if (allSel) activeRows.forEach((r) => n.delete(r.vin)); else activeRows.forEach((r) => n.add(r.vin))
+    if (allSel) shownRows.forEach((r) => n.delete(r.vin)); else shownRows.forEach((r) => n.add(r.vin))
     return n
   })
 
@@ -992,23 +1014,44 @@ function GroupingView({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort
             <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: 'var(--faint)' }} />
             <input className="input pl-8 py-1.5 text-[12.5px]" placeholder="ค้นหา Grouping…" value={search} onChange={(e) => setSearch(e.target.value)} />
           </div>
-          <div className="text-[11px] mt-1.5" style={{ color: 'var(--muted)' }}>
+          <div className="text-[11px] mt-1.5 flex items-center gap-1.5" style={{ color: 'var(--muted)' }}>
             <b className="tabular" style={{ color: 'var(--text)' }}>{groups.length}</b> กลุ่ม · <b className="tabular">{totalWithGroup.toLocaleString()}</b> คัน
+            <button className="btn btn-ghost ml-auto px-1.5 py-0.5 text-[11px]" onClick={toggleAllFiltered} disabled={!filteredGroups.length}
+              title="ติ๊กทุกกลุ่มที่ค้นหาเจอ เพื่อพิมพ์พร้อมกัน">
+              {shownFilteredPicked ? 'ล้างที่ติ๊ก' : `ติ๊กทั้งหมด (${filteredGroups.length})`}
+            </button>
           </div>
+          {picked.size > 0 && (
+            <div className="text-[11px] mt-1.5 flex items-center gap-1.5 rounded-lg px-2 py-1"
+              style={{ background: 'var(--brand-soft)', color: 'var(--brand)' }}>
+              <CheckSquare size={12} />
+              <b className="tabular">{picked.size}</b> กลุ่มที่ติ๊ก · <b className="tabular">{pickedGroups.reduce((n, [, l]) => n + l.length, 0)}</b> คัน
+              <button className="btn btn-ghost ml-auto px-1.5 py-0.5 text-[11px]" onClick={() => setPicked(new Set())}>ล้าง</button>
+            </div>
+          )}
         </div>
         <div className="overflow-auto flex-1">
-          {filteredGroups.map(([g, list]) => (
-            <button key={g} onClick={() => setActive(g)}
-              className={cx('w-full text-left flex items-center gap-2 px-3 py-2 border-b hairline transition', g === activeKey ? 'sel-group' : 'row-hover')}
-              style={g === activeKey ? { background: 'var(--brand-soft)' } : undefined}>
-              <FileText size={14} style={{ color: g === activeKey ? 'var(--brand)' : 'var(--faint)', flex: 'none' }} />
-              <div className="flex-1 min-w-0">
-                <div className="text-[12.5px] font-semibold clip" style={{ color: g === activeKey ? 'var(--brand)' : 'var(--text)' }}>{g}</div>
-                <div className="text-[11px]" style={{ color: 'var(--muted)' }}>{list.length} คัน</div>
+          {filteredGroups.map(([g, list]) => {
+            const on = picked.has(g)
+            return (
+              // a row is BOTH a tick target (print several groupings) and a click
+              // target (open that grouping in the grid) — hence div, not button
+              <div key={g} role="button" tabIndex={0} onClick={() => setActive(g)}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setActive(g) } }}
+                className={cx('w-full text-left flex items-center gap-2 px-3 py-2 border-b hairline transition cursor-pointer', g === activeKey ? 'sel-group' : 'row-hover')}
+                style={g === activeKey ? { background: 'var(--brand-soft)' } : on ? { background: 'rgba(0,122,255,0.05)' } : undefined}>
+                <button onClick={(e) => { e.stopPropagation(); togglePick(g) }} className="shrink-0 flex items-center"
+                  title={on ? 'เอาออกจากรายการพิมพ์' : 'ติ๊กเพื่อพิมพ์พร้อมกลุ่มอื่น'}>
+                  {on ? <CheckSquare size={15} style={{ color: 'var(--brand)' }} /> : <Square size={15} style={{ color: 'var(--faint)' }} />}
+                </button>
+                <div className="flex-1 min-w-0">
+                  <div className="text-[12.5px] font-semibold clip" style={{ color: g === activeKey || on ? 'var(--brand)' : 'var(--text)' }}>{g}</div>
+                  <div className="text-[11px]" style={{ color: 'var(--muted)' }}>{list.length} คัน</div>
+                </div>
+                <span className="badge tabular" style={{ color: 'var(--brand)', background: '#fff', border: '1px solid var(--line)' }}>{list.length}</span>
               </div>
-              <span className="badge tabular" style={{ color: 'var(--brand)', background: '#fff', border: '1px solid var(--line)' }}>{list.length}</span>
-            </button>
-          ))}
+            )
+          })}
           {filteredGroups.length === 0 && <div className="text-center py-10 text-[12px]" style={{ color: 'var(--faint)' }}>— ไม่พบ —</div>}
         </div>
       </div>
@@ -1017,14 +1060,16 @@ function GroupingView({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort
       <div className="flex flex-col flex-1 min-w-0 gap-2">
         <div className="flex items-center gap-2 px-1 shrink-0">
           <FileText size={16} style={{ color: 'var(--brand)' }} />
-          <span className="display font-bold text-[15px]">{activeKey ?? '—'}</span>
-          <span className="badge" style={{ color: 'var(--brand)', background: 'var(--brand-soft)' }}>{activeRows.length} vehicles</span>
-          {selInGroup.length > 0 && <span className="badge" style={{ color: 'var(--brand)', background: '#fff', border: '1px solid var(--line)' }}>เลือก {selInGroup.length}</span>}
+          <span className="display font-bold text-[15px] clip" style={{ maxWidth: 360 }}>
+            {pickedGroups.length ? (pickedGroups.length === 1 ? pickedGroups[0][0] : `${pickedGroups.length} กลุ่มที่ติ๊ก`) : activeKey ?? '—'}
+          </span>
+          <span className="badge" style={{ color: 'var(--brand)', background: 'var(--brand-soft)' }}>{shownRows.length} vehicles</span>
+          {selShown.length > 0 && <span className="badge" style={{ color: 'var(--brand)', background: '#fff', border: '1px solid var(--line)' }}>เลือก {selShown.length}</span>}
           <div className="ml-auto flex items-center gap-2">
-            <button className="btn btn-ghost py-1.5 text-[12.5px]" onClick={toggleGroupSel} disabled={!activeRows.length}>
+            <button className="btn btn-ghost py-1.5 text-[12.5px]" onClick={toggleGroupSel} disabled={!shownRows.length}>
               <CheckSquare size={14} /> {allSel ? 'ยกเลิกทั้งกลุ่ม' : 'เลือกทั้งกลุ่ม'}
             </button>
-            <button className="btn py-1.5 text-[12.5px]" onClick={() => printDn(toPrint)} disabled={!toPrint.length} title="พิมพ์ใบส่งมอบรถ (Delivery Note) — 1 ใบ รวมรถที่เลือก">
+            <button className="btn py-1.5 text-[12.5px]" onClick={() => printDn(toPrint)} disabled={!toPrint.length} title="พิมพ์ใบส่งมอบรถ (Delivery Note) — 1 ใบ ต่อ 1 Grouping">
               <FileText size={14} /> พิมพ์ DN ({toPrint.length})
             </button>
             <button className="btn btn-primary py-1.5 text-[12.5px]" onClick={() => printIr(toPrint, siteName)} disabled={!toPrint.length} title="พิมพ์ใบตรวจรถ (Inspector Report) เต็มฟอร์ม — 1 หน้า ต่อ 1 คัน ลงกระดาษเปล่า">
@@ -1035,9 +1080,9 @@ function GroupingView({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort
             </button>
           </div>
         </div>
-        <DataGrid rows={sortRows(activeRows, sortKey, sortDir)} visCols={visCols} sel={sel} setSel={setSel}
+        <DataGrid rows={sortRows(shownRows, sortKey, sortDir)} visCols={visCols} sel={sel} setSel={setSel}
           sortKey={sortKey} sortDir={sortDir} toggleSort={toggleSort} optionsFor={optionsFor}
-          footer={<div className="px-3 py-1.5 border-t hairline text-[11.5px] shrink-0" style={{ color: 'var(--muted)' }}>เลือก: <b className="tabular" style={{ color: sel.size ? 'var(--brand)' : 'var(--text)' }}>{sel.size}</b> · ในกลุ่มนี้: <b className="tabular">{activeRows.length}</b></div>} />
+          footer={<div className="px-3 py-1.5 border-t hairline text-[11.5px] shrink-0" style={{ color: 'var(--muted)' }}>เลือก: <b className="tabular" style={{ color: sel.size ? 'var(--brand)' : 'var(--text)' }}>{sel.size}</b> · {pickedGroups.length > 1 ? <>{pickedGroups.length} กลุ่มที่ติ๊ก</> : 'ในกลุ่มนี้'}: <b className="tabular">{shownRows.length}</b></div>} />
       </div>
     </>
   )
