@@ -40,26 +40,53 @@ export const FINAL_CHECK_TABS: CheckTab[] = [
     key: 'stock',
     label: 'Control Stock Sheet',
     groups: [
-      // 6 items — labels pending the reference photo
-      { title: 'ภายในห้องโดยสาร', items: [] },
-      // 3 items — labels pending the reference photo
-      { title: 'ห้องเก็บสัมภาระท้ายรถ', items: [] },
+      {
+        title: 'Group 1 : ภายในห้องโดยสาร / Inside',
+        items: [
+          { th: "คู่มือการใช้รถ ฉบับภาษาไทย / Owner's Manual (Thai Version)" },
+          { th: 'สมุดรับประกัน / Warranty Book' },
+          { th: 'สติกเกอร์ หมายเลขตัวถัง สำหรับติดสมุดรับประกัน / Vin Barcode sticker' },
+          { th: 'ซองใส่คู่มือและสมุดรับประกัน' },
+          { en: 'Eco Sticker' },
+          { th: 'ฟิล์มกันรอยหน้าจอ infotainment' },
+        ],
+      },
+      {
+        title: 'Group 2 : ห้องเก็บสัมภาระท้ายรถ / Trunk Room',
+        items: [
+          { th: 'ถาดรองห้องเก็บสัมภาระท้ายรถ / Rear luggage compartment tray' },
+          { th: 'พรม / ผ้ายาง ประจำรถ / Floor Carpet' },
+          { th: 'กรอบป้ายทะเบียน / license plate frame' },
+        ],
+      },
     ],
   },
   {
     key: 'accessories',
     label: 'Additional Accessories',
     groups: [
-      // 4 items — labels pending the reference photo
-      { title: 'ภายในห้องโดยสาร', items: [] },
-      // 8 items — labels pending the reference photo
-      { title: 'ห้องเก็บสัมภาระท้ายรถ', items: [] },
+      {
+        title: 'Group 1 : ภายในห้องโดยสาร / Inside',
+        items: [
+          { en: 'NFC Card' },
+          { th: 'CF Card เฉพาะ Model Atto 3' },
+          { th: 'เลขตัวถัง / Chassis Number', spec: 'เลขตัวถัง' },
+          { th: 'เลขมอเตอร์ / Motor number', spec: 'เลขมอเตอร์' },
+        ],
+      },
+      {
+        title: 'Group 2 : ห้องเก็บสัมภาระท้ายรถ / Trunk Room',
+        items: [
+          { th: 'สายต่อไฟ / V2L Extension' },
+          { th: 'เครื่องชาร์จฉุกเฉิน / AC Portable' },
+          { th: 'ใบปัดน้ำฝน / Wiper Rubber' },
+          { th: 'ป้ายจราจรฉุกเฉิน / Emergency traffic sign' },
+          { th: 'เสื้อสะท้อนแสง / Reflective vest' },
+          { th: 'ชุดปะยาง / Air pump / Emergency tire repair' },
+          { th: 'แคลมป์ถอดฝาครอบน๊อตล้อ / Clamp' },
+          { th: 'ห่วงลากจูง / Tow Hook' },
+        ],
+      },
     ],
   },
 ]
-
-/** How many items each pending group is expected to hold, for the empty state. */
-export const PENDING_ITEM_COUNTS: Record<string, number[]> = {
-  stock: [6, 3],
-  accessories: [4, 8],
-}
