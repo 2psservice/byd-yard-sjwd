@@ -4,6 +4,7 @@ import { useYard, useUnits } from '../store/useYard'
 import { useTrackingRows } from '../store/useTracking'
 import { rowInSite } from '../lib/siteScope'
 import { PageHead } from '../components/ui'
+import { DailyStockReport } from '../components/DailyStockReport'
 import type { Unit } from '../types'
 import type { TrackRow } from '../lib/excelTracking'
 import { agingPmDays } from '../lib/trackingColumns'
@@ -232,8 +233,8 @@ export function Report() {
       <PageHead
         title={lang === 'th' ? 'รายงาน (Report)' : 'Report'}
         sub={lang === 'th'
-          ? 'ออกรายงาน Excel รูปแบบเดียวกับไฟล์ master 100% — Tracking Status + Defect-Yard / Defect-Factory / Defect-Whale 28 rai'
-          : 'Export an Excel report mirroring the master workbook — Tracking Status + Defect sheets'}
+          ? 'รายงานประจำวัน (ดูย้อนหลังได้ทุกวัน) และรายงาน Excel รูปแบบเดียวกับไฟล์ master 100%'
+          : 'Daily stock report for any past date, plus the Excel export mirroring the master workbook'}
         right={
           <button className="btn btn-primary px-4 py-2.5 text-[13.5px]" onClick={doExport} disabled={exporting}>
             <Download size={16} className="mr-1.5" />
@@ -241,6 +242,14 @@ export function Report() {
           </button>
         }
       />
+
+      {/* daily stock — one calendar day, any date back in time */}
+      <DailyStockReport />
+
+      {/* ── master-format Excel export ── */}
+      <div className="text-[12px] font-bold uppercase tracking-wider mb-2 mt-5" style={{ color: 'var(--muted)' }}>
+        {lang === 'th' ? 'ออกรายงาน Excel (รูปแบบไฟล์ master)' : 'Excel export (master format)'}
+      </div>
 
       {/* scope: current yard vs all yards */}
       <div className="panel p-3.5 mb-4 flex items-center gap-2 flex-wrap text-[13px]">
