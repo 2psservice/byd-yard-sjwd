@@ -4,25 +4,9 @@
 //  Each NG / NG Heavy item becomes a Defect in the damage system.
 // ============================================================
 
-export interface PdiCheckItem {
-  en: string
-  th?: string
-  spec?: string // optional "ระบุ" field label (e.g. Qty / Key Code)
-}
-export interface PdiCheckGroup {
-  title: string
-  items: PdiCheckItem[]
-}
-export interface PdiCheckCategory {
-  key: string
-  label: string
-  groups: PdiCheckGroup[]
-}
+import type { CheckTab } from './checkSheet'
 
-/** Stable id for one checklist item (category key + group index + item index). */
-export const pdiItemId = (catKey: string, gi: number, ii: number) => `${catKey}.${gi}.${ii}`
-
-export const PDI_CHECKLIST: PdiCheckCategory[] = [
+export const PDI_CHECKLIST: CheckTab[] = [
   {
     key: 'equip',
     label: 'Equipment & Tools',
@@ -193,4 +177,3 @@ export const PDI_CHECKLIST: PdiCheckCategory[] = [
   },
 ]
 
-export type PdiResult = 'OK' | 'NG' | 'NG Heavy'
