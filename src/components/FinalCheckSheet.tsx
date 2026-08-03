@@ -16,7 +16,7 @@ import { useOps, stampStationDate } from '../store/useOps'
 import { compressImage } from '../lib/photo'
 import { CAR_STATUS_META } from '../lib/carStatus'
 import { MASTER_PARTS, MASTER_DEFECTS, resolvePart, resolveDefect } from '../lib/masterDefect'
-import { FINAL_CHECK_TABS, PENDING_ITEM_COUNTS } from '../lib/finalCheckList'
+import { FINAL_CHECK_TABS } from '../lib/finalCheckList'
 import { checkItemId, type CheckItemState } from '../lib/checkSheet'
 import { CheckItemRow } from './CheckItemRow'
 import type { Unit } from '../types'
@@ -176,7 +176,6 @@ export default function FinalCheckSheet({ unit, row, activeProc, onSaved, statio
   }
 
   const activeTab = FINAL_CHECK_TABS[tab]
-  const pending = PENDING_ITEM_COUNTS[activeTab?.key ?? '']
   const isNgTab = tab === FINAL_CHECK_TABS.length
   const cells = row?.cells ?? {}
   const lastOf = (k: string) => (cells[k]?.trim() ? cells[k] : '—')
@@ -255,25 +254,17 @@ export default function FinalCheckSheet({ unit, row, activeProc, onSaved, statio
           <div key={gi}>
             <div className="text-[11px] font-bold uppercase tracking-wide mb-2 px-1" style={{ color: accent }}>
               {g.title}
-              {g.items.length === 0 && pending?.[gi] ? ` · ${pending[gi]} รายการ` : ''}
             </div>
-            {g.items.length === 0 ? (
-              <div className="rounded-xl px-3 py-3 text-[12px] leading-relaxed"
-                style={{ border: '1px dashed var(--line)', color: 'var(--muted)' }}>
-                ยังไม่ได้ตั้งรายการตรวจของหัวข้อนี้ — ส่งรูปแบบฟอร์มให้ผู้ดูแลระบบเพื่อเพิ่มรายการ
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {g.items.map((it, ii) => {
-                  const id = checkItemId(activeTab.key, gi, ii)
-                  return (
-                    <CheckItemRow key={ii} n={ii + 1} item={it} state={get(id)}
-                      onChange={patch => setItem(id, patch)}
-                      onPickPhoto={() => { pickingId.current = id; fileRef.current?.click() }} />
-                  )
-                })}
-              </div>
-            )}
+            <div className="space-y-2">
+              {g.items.map((it, ii) => {
+                const id = checkItemId(activeTab.key, gi, ii)
+                return (
+                  <CheckItemRow key={ii} n={ii + 1} item={it} state={get(id)}
+                    onChange={patch => setItem(id, patch)}
+                    onPickPhoto={() => { pickingId.current = id; fileRef.current?.click() }} />
+                )
+              })}
+            </div>
           </div>
         ))}
 
