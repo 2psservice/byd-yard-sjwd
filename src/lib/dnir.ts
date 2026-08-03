@@ -13,41 +13,64 @@ const cell = (r: TrackRow, ...keys: string[]): string => {
   return ''
 }
 
-// ── Inspector Report (IR) — real form image + data overlay (coords in PDF points) ──
-function irSheetHtml(r: TrackRow): string {
-  const eng = cell(r, 'Engine No.', 'Model Code')
-  const motor = cell(r, 'Front Motor no.', 'Rear Motor no.')
-  const engMotor = [eng, motor].filter(Boolean).join(' ')
-  // F(left, top, size, value, wrapWidth?) — absolute overlay field in pt
-  const F = (left: number, top: number, size: number, val: string, w?: number) =>
-    val ? `<div class="irf${w ? ' wrap' : ''}" style="left:${left}pt;top:${top}pt;font-size:${size}pt;${w ? `width:${w}pt;` : ''}">${esc(val)}</div>` : ''
+// ── IR field positions — measured 1:1 from the AMS example PDFs ──────────────
+// Every coordinate below is the text BASELINE origin (x, y) in PDF points,
+// extracted span-by-span from the reference files, and the font is the exact
+// TH Sarabun New the AMS embeds (bundled at /fonts/THSarabunNew.ttf). The CSS
+// converts baseline → div top with the font's own ascent, so what Chromium
+// prints lands on the same spot the AMS prints.
+
+/** div top offset for a baseline: TH Sarabun New hhea ascent 844, descent 457
+ *  (upm 1000) → with line-height:1 Chromium puts the baseline at
+ *  ((1 − 1.301) / 2 + 0.844) em = 0.6935 em below the line-box top. */
+const SARABUN_BASELINE_EM = 0.6935
+const irField = (cls: string, x: number, yBase: number, size: number, val: string) =>
+  val ? `<div class="${cls}" style="left:${x}pt;top:${(yBase - SARABUN_BASELINE_EM * size).toFixed(2)}pt;font-size:${size}pt">${esc(val)}</div>` : ''
+
+/** The values one IR sheet carries, shared by both print styles. */
+function irData(r: TrackRow, siteName?: string) {
+  return {
+    model: cell(r, 'Model name', 'Model'),
+    color: cell(r, 'Color'),
+    engMotor: [cell(r, 'Engine No.', 'Model Code'), cell(r, 'Front Motor no.', 'Rear Motor no.')].filter(Boolean).join(' '),
+    yard: cell(r, 'Location yard', 'storage Yard') || siteName || '',
+    dealer: cell(r, 'Dealer Location', 'Dealer Code'),
+  }
+}
+
+const TRAILER_LICENSE = 'Trailer License Plate No.:..............................'
+const TRAILER_COMPANY = 'Trailer Company Name:................................'
+
+// ── Inspector Report (IR) — official form image + data overlay (A4) ──────────
+function irSheetHtml(r: TrackRow, siteName?: string): string {
+  const d = irData(r, siteName)
+  const F = (x: number, y: number, size: number, val: string) => irField('irf', x, y, size, val)
   return `<section class="ir-sheet">
     <img class="ir-bg" src="/ir-form.png" alt="">
-    ${F(180, 68.5, 12, r.vin)}
-    ${F(25, 101.5, 10, cell(r, 'Model name', 'Model'), 150)}
-    ${F(290, 102, 12, engMotor)}
-    ${F(397, 102, 12, cell(r, 'Color'))}
-    ${F(471, 102, 12, cell(r, 'Location yard', 'storage Yard'))}
-    ${F(100, 114, 12, 'Rayong yard')}
-    ${F(325, 115, 9.5, cell(r, 'Dealer Location', 'Dealer Code'), 262)}
+    ${F(180, 78.68, 12, r.vin)}
+    ${F(25, 109.68, 10, d.model)}
+    ${F(290, 111.68, 12, d.engMotor)}
+    ${F(397, 111.68, 12, d.color)}
+    ${F(100, 123.68, 12, d.yard)}
+    ${F(325, 123.68, 12, d.dealer)}
+    ${F(350, 581.68, 12, TRAILER_LICENSE)}
+    ${F(350, 596.68, 12, TRAILER_COMPANY)}
   </section>`
 }
 
-// ── IR "paper" overlay — data only, to print onto pre-printed IR forms ──
-// 1:1 with the AMS export: US Letter, TH Sarabun New 12pt, exact coordinates.
-function irPaperSheetHtml(r: TrackRow): string {
-  const engMotor = [cell(r, 'Engine No.', 'Model Code'), cell(r, 'Front Motor no.', 'Rear Motor no.')].filter(Boolean).join(' ')
-  const P = (left: number, top: number, val: string, wrap = false) =>
-    val ? `<div class="irpf${wrap ? ' wrap' : ''}" style="left:${left}pt;top:${top}pt">${esc(val)}</div>` : ''
+// ── IR "paper" overlay — data only, printed onto pre-printed IR forms (Letter) ──
+function irPaperSheetHtml(r: TrackRow, siteName?: string): string {
+  const d = irData(r, siteName)
+  const P = (x: number, y: number, val: string) => irField('irpf', x, y, 12, val)
   return `<section class="irp-sheet">
-    ${P(15, 102.9, cell(r, 'Model name', 'Model'))}
-    ${P(130, 102.9, cell(r, 'Color'))}
-    ${P(198, 102.9, r.vin)}
-    ${P(293, 102.9, engMotor)}
-    ${P(119, 118.9, 'Rayong yard')}
-    ${P(289, 118.9, cell(r, 'Dealer Location', 'Dealer Code'), true)}
-    <div class="irpf" style="left:385pt;top:520.9pt">Trailer License Plate No.:..............................</div>
-    <div class="irpf" style="left:385pt;top:545.9pt">Trailer Company Name:................................</div>
+    ${P(15, 113, d.model)}
+    ${P(130, 113, d.color)}
+    ${P(198, 113, r.vin)}
+    ${P(293, 113, d.engMotor)}
+    ${P(119, 129, d.yard)}
+    ${P(289, 129, d.dealer)}
+    ${P(385, 531, TRAILER_LICENSE)}
+    ${P(385, 556, TRAILER_COMPANY)}
   </section>`
 }
 
@@ -117,17 +140,22 @@ function dnSheetHtml(rows: TrackRow[]): string {
   </section>`
 }
 
-const CSS = `
+/* The AMS's own TH Sarabun New — same file the reference PDFs embed. A unique
+ * family name so an installed system font can never shadow it with different
+ * metrics. */
+const SARABUN_FACE = `
+@font-face { font-family:'THSarabunNew AMS'; src:url('/fonts/THSarabunNew.ttf') format('truetype'); font-weight:400; font-style:normal; }`
+
+const CSS = `${SARABUN_FACE}
 @page { size: A4 portrait; margin: 0; }
 * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 body { margin:0; font-family:'Sarabun','Noto Sans Thai',Tahoma,'Leelawadee UI',sans-serif; color:#111; }
 
-/* ── Inspector Report (image-backed, data overlaid in PDF points) ── */
+/* ── Inspector Report (image-backed, data overlaid at AMS baselines) ── */
 .ir-sheet { position:relative; width:595.2pt; height:841.68pt; overflow:hidden; page-break-after:always; }
 .ir-sheet:last-child { page-break-after:auto; }
 .ir-bg { position:absolute; left:0; top:0; width:595.2pt; height:841.68pt; }
-.irf { position:absolute; line-height:1; white-space:nowrap; color:#000; font-family:'Arial Narrow',Arial,'Tahoma',sans-serif; }
-.irf.wrap { white-space:normal; line-height:1.05; }
+.irf { position:absolute; line-height:1; white-space:nowrap; color:#000; font-family:'THSarabunNew AMS'; }
 
 /* ── Delivery Note (AMS trip manifest) ── */
 .dn-sheet { width:210mm; min-height:297mm; padding:9mm; page-break-after:always; }
@@ -156,28 +184,28 @@ body { margin:0; font-family:'Sarabun','Noto Sans Thai',Tahoma,'Leelawadee UI',s
 .dn-foot .th { font-size:7.5px; color:#333; margin-top:1px; }
 `
 
-// IR paper overlay — US Letter, TH Sarabun New 12pt (matches the AMS data export 1:1)
-const CSS_IRP = `
-@import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600&display=swap');
+// IR paper overlay — US Letter, the AMS's TH Sarabun New (matches the export 1:1)
+const CSS_IRP = `${SARABUN_FACE}
 @page { size: Letter portrait; margin: 0; }
 * { box-sizing:border-box; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
 body { margin:0; }
 .irp-sheet { position:relative; width:612pt; height:792pt; overflow:hidden; page-break-after:always; color:#000;
-  font-family:'TH Sarabun New','THSarabunNew','TH SarabunPSK','Sarabun',sans-serif; }
+  font-family:'THSarabunNew AMS'; }
 .irp-sheet:last-child { page-break-after:auto; }
-.irpf { position:absolute; font-size:12pt; line-height:1; white-space:nowrap; }
-.irpf.wrap { white-space:normal; width:186pt; word-break:break-all; }
+.irpf { position:absolute; line-height:1; white-space:nowrap; }
 `
 
 const htmlDoc = (title: string, body: string, css: string = CSS): string =>
   `<!doctype html><html lang="th"><head><meta charset="utf-8"><title>${title}</title><style>${css}</style></head><body>${body}</body></html>`
 
 /** Inspector Report (IR) — one image-backed sheet per VIN. */
-export const buildIrHtml = (rows: TrackRow[]): string => htmlDoc(`IR — ${rows.length} VIN`, rows.map(irSheetHtml).join(''))
+export const buildIrHtml = (rows: TrackRow[], siteName?: string): string =>
+  htmlDoc(`IR — ${rows.length} VIN`, rows.map((r) => irSheetHtml(r, siteName)).join(''))
 /** Delivery Note (DN) — one manifest listing all selected VINs. */
 export const buildDnHtml = (rows: TrackRow[]): string => htmlDoc(`DN — ${rows.length} VIN`, dnSheetHtml(rows))
 /** IR paper overlay (data only) — to print onto pre-printed IR forms. */
-export const buildIrPaperHtml = (rows: TrackRow[]): string => htmlDoc(`IR paper — ${rows.length} VIN`, rows.map(irPaperSheetHtml).join(''), CSS_IRP)
+export const buildIrPaperHtml = (rows: TrackRow[], siteName?: string): string =>
+  htmlDoc(`IR paper — ${rows.length} VIN`, rows.map((r) => irPaperSheetHtml(r, siteName)).join(''), CSS_IRP)
 
 /** Render HTML in a hidden iframe, wait for images, then open the print dialog. */
 function printHtml(html: string): void {
@@ -194,17 +222,21 @@ function printHtml(html: string): void {
     try { iframe.contentWindow?.focus(); iframe.contentWindow?.print() } catch { /* noop */ }
     setTimeout(() => iframe.remove(), 1500)
   }
+  // wait for images AND the embedded TH Sarabun New — printing before the font
+  // loads falls back to a system font with different widths, off the boxes
   const imgs = Array.from(idoc.images || [])
-  if (!imgs.length) { setTimeout(fire, 250); return }
-  let pending = imgs.length
+  let pending = imgs.length + 1
   const one = () => { if (--pending <= 0) setTimeout(fire, 120) }
   imgs.forEach((im) => { if (im.complete) one(); else { im.onload = one; im.onerror = one } })
-  setTimeout(fire, 2500) // fallback if an image stalls
+  const fonts = (idoc as Document & { fonts?: FontFaceSet }).fonts
+  if (fonts?.ready) fonts.ready.then(one, one)
+  else one()
+  setTimeout(fire, 3500) // fallback if an image or the font stalls
 }
 
 /** Print the Inspector Report (IR) — one A4 page per VIN. */
-export const printIr = (rows: TrackRow[]): void => { if (rows.length) printHtml(buildIrHtml(rows)) }
+export const printIr = (rows: TrackRow[], siteName?: string): void => { if (rows.length) printHtml(buildIrHtml(rows, siteName)) }
 /** Print the Delivery Note (DN) — one manifest for the selected VINs. */
 export const printDn = (rows: TrackRow[]): void => { if (rows.length) printHtml(buildDnHtml(rows)) }
 /** Print the IR paper overlay (data only) onto pre-printed IR forms. */
-export const printIrPaper = (rows: TrackRow[]): void => { if (rows.length) printHtml(buildIrPaperHtml(rows)) }
+export const printIrPaper = (rows: TrackRow[], siteName?: string): void => { if (rows.length) printHtml(buildIrPaperHtml(rows, siteName)) }
