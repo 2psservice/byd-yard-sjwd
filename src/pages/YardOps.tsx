@@ -28,8 +28,9 @@ import { slotToLatLng } from '../lib/geo'
 import { cx, PhotoLightbox } from '../components/ui'
 import { rowInSite } from '../lib/siteScope'
 import { compressImage } from '../lib/photo'
-import PdiChecklistPanel from '../components/PdiChecklistPanel'
-import FinalCheckSheet from '../components/FinalCheckSheet'
+import StationSheet from '../components/StationSheet'
+import { PDI_CHECKLIST } from '../lib/pdiChecklist'
+import { FINAL_CHECK_TABS } from '../lib/finalCheckList'
 import { siteGroupingConfig, yardLocCode, byYardLocation } from '../lib/groupingImport'
 import { fmtSerialToDate } from '../lib/trackingColumns'
 import { matchModel } from '../lib/sampleData'
@@ -2619,24 +2620,13 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
             </div>
           )}
 
-          {/* Inspection form — PDI and FINAL CHECK each have their own sheet;
-              PM keeps the lighter measurements + free-NG panel. */}
+          {/* Inspection form — PDI and FINAL CHECK share the full station sheet
+              (only their checklists differ); PM keeps the lighter panel. */}
           {/* key={vin} — the panels hold local form state (checklist ticks,
               measurements); without a key, scanning the next car keeps the
               previous car's entries and saves them onto the wrong VIN. */}
-          {types.includes('PDI') ? (
-            <PdiChecklistPanel
-              key={unit.vin}
-              unit={unit}
-              row={trackingRows.find(r => r.vin === unit.vin) ?? null}
-              activeProc={activeProc}
-              canRecord={canRecord}
-              onSaved={onSaved}
-              stationTitle={title}
-              accent={accent}
-            />
-          ) : types.includes('FINAL') ? (
-            <FinalCheckSheet
+          {types.includes('PDI') || types.includes('FINAL') ? (
+            <StationSheet
               key={unit.vin}
               unit={unit}
               row={trackingRows.find(r => r.vin === unit.vin) ?? null}
@@ -2644,6 +2634,8 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
               onSaved={onSaved}
               stationTitle={title}
               accent={accent}
+              tabs={types.includes('PDI') ? PDI_CHECKLIST : FINAL_CHECK_TABS}
+              stationType={types.includes('PDI') ? 'PDI' : 'FINAL'}
             />
           ) : (
             <FinalCheckPanel

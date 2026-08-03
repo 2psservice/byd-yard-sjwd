@@ -1,12 +1,11 @@
 /**
- * FINAL CHECK sheet — the paper form the yard signs off with, on one screen:
- * vehicle identity, the four measurements (with the previous reading beside
- * each), and the four tabs Overall inspection · Control Stock Sheet ·
- * Additional Accessories · NG.
+ * Station inspection sheet — the paper form on one screen, shared by PDI and
+ * FINAL CHECK: vehicle identity, the four measurements (with every previous
+ * reading beside each), the station's checklist tabs, and a free NG tab.
  *
  * Saving writes the measurements onto the tracking row, turns every NG (both
  * checklist items and free NG entries) into a Defect, and records the station's
- * verdict — which stamps "Final check date" on the car's Overview.
+ * verdict — which stamps the station's date on the car's Overview.
  */
 import { useMemo, useRef, useState } from 'react'
 import { ShieldCheck, CheckCircle2, AlertTriangle, Plus, Trash2, Camera, X } from 'lucide-react'
@@ -16,12 +15,12 @@ import { useOps, stampStationDate } from '../store/useOps'
 import { compressImage } from '../lib/photo'
 import { CAR_STATUS_META } from '../lib/carStatus'
 import { MASTER_PARTS, MASTER_DEFECTS, resolvePart, resolveDefect } from '../lib/masterDefect'
-import { FINAL_CHECK_TABS } from '../lib/finalCheckList'
-import { checkItemId, type CheckItemState } from '../lib/checkSheet'
+import { checkItemId, type CheckItemState, type CheckTab } from '../lib/checkSheet'
+import { MeasurementField } from './MeasurementField'
 import { CheckItemRow } from './CheckItemRow'
 import type { Unit } from '../types'
 import type { TrackRow } from '../lib/excelTracking'
-import type { WorkQueue, QueueItem } from '../store/useOps'
+import type { WorkQueue, QueueItem, QueueType } from '../store/useOps'
 
 /** One free NG line on the NG tab: ตำแหน่ง · ข้อบกพร่อง · หมายเหตุ. */
 interface NgEntry { id: string; position: string; defect: string; note: string; photos: string[] }
@@ -36,16 +35,21 @@ const MEASUREMENTS = [
 
 let ngSeq = 0
 
-export default function FinalCheckSheet({ unit, row, activeProc, onSaved, stationTitle, accent }: {
+export default function StationSheet({ unit, row, activeProc, onSaved, stationTitle, accent, tabs, stationType }: {
   unit: Unit
   row: TrackRow | null
   activeProc: { queue: WorkQueue; item: QueueItem } | null
   onSaved: (label: string, result: 'OK' | 'NG') => void
   stationTitle: string
   accent: string
+  /** The station's checklist tabs — the NG tab is added after them. */
+  tabs: CheckTab[]
+  /** Which date ladder a queue-less save stamps (PDI → RE-PDI, FINAL → Final check date). */
+  stationType: Extract<QueueType, 'PDI' | 'FINAL'>
 }) {
   const { addDamage, setInspected, currentUser, toast } = useYard()
   const { updateCell } = useTracking()
+  const columns = useTracking(st => st.columns)
   const { recordCheck } = useOps()
 
   const [meas, setMeas] = useState<Record<string, string>>({})
@@ -61,7 +65,7 @@ export default function FinalCheckSheet({ unit, row, activeProc, onSaved, statio
     setState(s => ({ ...s, [id]: { ...(s[id] ?? { result: 'OK' }), ...patch } }))
 
   // NG counts per tab, for the tab badges and the save summary
-  const ngByTab = useMemo(() => FINAL_CHECK_TABS.map((t) => {
+  const ngByTab = useMemo(() => tabs.map((t) => {
     let n = 0
     t.groups.forEach((g, gi) => g.items.forEach((_, ii) => {
       const r = state[checkItemId(t.key, gi, ii)]?.result
@@ -102,7 +106,7 @@ export default function FinalCheckSheet({ unit, row, activeProc, onSaved, statio
 
     // every NG needs evidence — this sheet is what a claim is argued from
     const noPhoto: string[] = []
-    FINAL_CHECK_TABS.forEach((t) => t.groups.forEach((g, gi) => g.items.forEach((it, ii) => {
+    tabs.forEach((t) => t.groups.forEach((g, gi) => g.items.forEach((it, ii) => {
       const st = state[checkItemId(t.key, gi, ii)]
       if (st && (st.result === 'NG' || st.result === 'NG Heavy') && !st.photos?.length)
         noPhoto.push(it.th ?? it.en ?? '')
@@ -122,7 +126,7 @@ export default function FinalCheckSheet({ unit, row, activeProc, onSaved, statio
     }
 
     // checklist NG → Defect
-    FINAL_CHECK_TABS.forEach((t) => t.groups.forEach((g, gi) => g.items.forEach((it, ii) => {
+    tabs.forEach((t) => t.groups.forEach((g, gi) => g.items.forEach((it, ii) => {
       const st = state[checkItemId(t.key, gi, ii)]
       if (!st || (st.result !== 'NG' && st.result !== 'NG Heavy')) return
       addDamage(unit.vin, {
@@ -168,17 +172,18 @@ export default function FinalCheckSheet({ unit, row, activeProc, onSaved, statio
       recordCheck(activeProc.queue.id, unit.vin, result, currentUser)
     } else {
       setInspected(unit.vin, result === 'OK')
-      stampStationDate(unit.vin, 'FINAL') // no queue → still record the date
+      stampStationDate(unit.vin, stationType) // no queue → still record the date
     }
     // Car Status stays a lifecycle value; only heal a legacy station string
     if (row && !CAR_STATUS_META[(row.cells['Car Status'] || '').trim()]) updateCell(row.vin, 'Car Status', 'In Yard')
     onSaved(`${stationName} ${result}`, result)
   }
 
-  const activeTab = FINAL_CHECK_TABS[tab]
-  const isNgTab = tab === FINAL_CHECK_TABS.length
+  const activeTab = tabs[tab]
+  const isNgTab = tab === tabs.length
   const cells = row?.cells ?? {}
-  const lastOf = (k: string) => (cells[k]?.trim() ? cells[k] : '—')
+  // history entries are logged under the COLUMN LABEL, not the cell key
+  const colLabel = (k: string) => columns.find(c => c.key === k)?.label
 
   return (
     <div className="panel overflow-hidden">
@@ -196,7 +201,9 @@ export default function FinalCheckSheet({ unit, row, activeProc, onSaved, statio
       <div className="px-4 py-3 border-b hairline space-y-1.5 text-[12.5px]">
         {([
           ['Vin No.', unit.vin],
-          ['Brand Name', cells['company']?.trim() || 'BYD'],
+          // 'company' is the handling company (it reads "Auto…" on these rows),
+          // not the vehicle brand — this yard handles BYD only
+          ['Brand Name', 'BYD'],
           ['Model Code', cells['Model Code']?.trim() || '—'],
           ['Model Name', unit.modelName || cells['Model name'] || cells['Model'] || '—'],
         ] as [string, string][]).map(([k, v]) => (
@@ -207,26 +214,20 @@ export default function FinalCheckSheet({ unit, row, activeProc, onSaved, statio
         ))}
       </div>
 
-      {/* measurements — entered on the left, previous reading on the right */}
+      {/* measurements — entered on the left, the reading history on the right */}
       <div className="p-4 space-y-2.5 border-b hairline">
         <div className="text-[10.5px] font-bold uppercase tracking-wider" style={{ color: 'var(--muted)' }}>
-          ค่าที่วัดได้ <span style={{ color: 'var(--faint)' }}>· ล่าสุดทางขวา</span>
+          ค่าที่วัดได้ <span style={{ color: 'var(--faint)' }}>· ล่าสุดทางขวา — แตะเพื่อดูค่าที่บันทึกไว้ทั้งหมด</span>
         </div>
         {MEASUREMENTS.map(m => (
-          <div key={m.key} className="flex items-center gap-2">
-            <span className="text-[11.5px] shrink-0" style={{ color: 'var(--muted)', width: 118 }}>{m.label}</span>
-            <input value={meas[m.key] ?? ''} onChange={e => setMeas(s => ({ ...s, [m.key]: e.target.value }))}
-              inputMode="decimal" placeholder="กรอกค่า…"
-              className="flex-1 min-w-0 rounded-lg px-2.5 py-2 text-[13px] outline-none"
-              style={{ background: 'var(--chip)', border: '1px solid var(--line)' }} />
-            <span className="text-[11.5px] tabular text-right shrink-0" style={{ color: 'var(--faint)', width: 74 }}>{lastOf(m.key)}</span>
-          </div>
+          <MeasurementField key={m.key} label={m.label} cellKey={m.key} columnLabel={colLabel(m.key)} row={row}
+            value={meas[m.key] ?? ''} onChange={v => setMeas(s => ({ ...s, [m.key]: v }))} />
         ))}
       </div>
 
       {/* tabs — the three checklists plus the free NG page */}
       <div className="flex gap-1.5 overflow-x-auto px-3 py-2.5 border-b hairline" style={{ background: '#fbfaff' }}>
-        {FINAL_CHECK_TABS.map((t, ti) => (
+        {tabs.map((t, ti) => (
           <button key={t.key} onClick={() => setTab(ti)}
             className="shrink-0 px-3 py-1.5 rounded-lg text-[12px] font-bold transition flex items-center gap-1.5"
             style={ti === tab ? { background: accent, color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>
@@ -237,7 +238,7 @@ export default function FinalCheckSheet({ unit, row, activeProc, onSaved, statio
             )}
           </button>
         ))}
-        <button onClick={() => setTab(FINAL_CHECK_TABS.length)}
+        <button onClick={() => setTab(tabs.length)}
           className="shrink-0 px-3 py-1.5 rounded-lg text-[12px] font-bold transition flex items-center gap-1.5"
           style={isNgTab ? { background: '#dc2626', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>
           NG
