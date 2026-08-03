@@ -947,6 +947,10 @@ function GridFooter({ sel, shown, total, lastImport }: { sel: Set<string>; shown
 
 // ============================ B/L NO. (Grouping) view ============================
 function GroupingView({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, optionsFor }: GridProps) {
+  // yard name for the IR "Delivery Form" field, when a row has no Location-yard cell
+  const grpSites = useYard((s) => s.sites)
+  const grpSite = useYard((s) => s.currentSite)
+  const siteName = grpSites.find((x) => x.id === grpSite)?.name ?? ''
   const [search, setSearch] = useState('')
   const [active, setActive] = useState<string | null>(null)
 
@@ -1023,10 +1027,10 @@ function GroupingView({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort
             <button className="btn py-1.5 text-[12.5px]" onClick={() => printDn(toPrint)} disabled={!toPrint.length} title="พิมพ์ใบส่งมอบรถ (Delivery Note) — 1 ใบ รวมรถที่เลือก">
               <FileText size={14} /> พิมพ์ DN ({toPrint.length})
             </button>
-            <button className="btn btn-primary py-1.5 text-[12.5px]" onClick={() => printIr(toPrint)} disabled={!toPrint.length} title="พิมพ์ใบตรวจรถ (Inspector Report) เต็มฟอร์ม — 1 หน้า ต่อ 1 คัน ลงกระดาษเปล่า">
+            <button className="btn btn-primary py-1.5 text-[12.5px]" onClick={() => printIr(toPrint, siteName)} disabled={!toPrint.length} title="พิมพ์ใบตรวจรถ (Inspector Report) เต็มฟอร์ม — 1 หน้า ต่อ 1 คัน ลงกระดาษเปล่า">
               <Printer size={14} /> พิมพ์ IR ({toPrint.length})
             </button>
-            <button className="btn py-1.5 text-[12.5px]" onClick={() => printIrPaper(toPrint)} disabled={!toPrint.length} title="พิมพ์เฉพาะข้อมูลลงบนกระดาษฟอร์ม IR ที่พิมพ์ไว้ล่วงหน้า (ตรงตำแหน่ง AMS 100%)">
+            <button className="btn py-1.5 text-[12.5px]" onClick={() => printIrPaper(toPrint, siteName)} disabled={!toPrint.length} title="พิมพ์เฉพาะข้อมูลลงบนกระดาษฟอร์ม IR ที่พิมพ์ไว้ล่วงหน้า (ตรงตำแหน่ง AMS 100%)">
               <Printer size={14} /> พิมพ์กระดาษ IR ({toPrint.length})
             </button>
           </div>
