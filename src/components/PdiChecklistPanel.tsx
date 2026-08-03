@@ -3,13 +3,14 @@
 // note + photo capture, and on Save every NG / NG Heavy item is written as a
 // Defect (source 'pdi') so it flows into the damage / repair system.
 import { useMemo, useRef, useState } from 'react'
-import { ShieldCheck, CheckCircle2, Camera, X, AlertTriangle } from 'lucide-react'
+import { ShieldCheck, CheckCircle2, AlertTriangle } from 'lucide-react'
 import { useYard } from '../store/useYard'
 import { useTracking } from '../store/useTracking'
 import { useOps, stampStationDate } from '../store/useOps'
 import { compressImage } from '../lib/photo'
 import { CAR_STATUS_META } from '../lib/carStatus'
 import { PDI_CHECKLIST, pdiItemId, type PdiResult } from '../lib/pdiChecklist'
+import { CheckItemRow } from './CheckItemRow'
 import type { Unit } from '../types'
 import type { TrackRow } from '../lib/excelTracking'
 import type { WorkQueue, QueueItem } from '../store/useOps'
@@ -125,14 +126,6 @@ export default function PdiChecklistPanel({ unit, row, activeProc, canRecord, on
 
   const category = PDI_CHECKLIST[cat]
 
-  const RESULTS: PdiResult[] = ['OK', 'NG', 'NG Heavy']
-  const resultStyle = (r: PdiResult, active: boolean) => {
-    if (!active) return { background: 'var(--chip)', color: 'var(--muted)' }
-    if (r === 'OK') return { background: '#16a34a', color: '#fff' }
-    if (r === 'NG') return { background: '#f59e0b', color: '#fff' }
-    return { background: '#dc2626', color: '#fff' } // NG Heavy
-  }
-
   return (
     <div className="panel overflow-hidden">
       <input ref={fileRef} type="file" accept="image/*" capture="environment" multiple hidden onChange={e => onPick(e.target.files)} />
@@ -182,55 +175,10 @@ export default function PdiChecklistPanel({ unit, row, activeProc, canRecord, on
             <div className="space-y-2">
               {g.items.map((it, ii) => {
                 const id = pdiItemId(category.key, gi, ii)
-                const st = get(id)
-                const isNg = st.result === 'NG' || st.result === 'NG Heavy'
                 return (
-                  <div key={ii} className="rounded-xl p-2.5" style={{ border: '1px solid var(--line)', background: isNg ? '#fff8f5' : 'var(--panel)' }}>
-                    <div className="flex items-start gap-2">
-                      <span className="text-[11px] font-bold tabular mt-1 shrink-0" style={{ color: 'var(--faint)', minWidth: 18 }}>{ii + 1}</span>
-                      <div className="flex-1 min-w-0">
-                        <div className="font-semibold text-[12.5px] leading-snug">{it.en}</div>
-                        {it.th && <div className="text-[11px]" style={{ color: 'var(--muted)' }}>{it.th}</div>}
-                      </div>
-                    </div>
-                    {/* OK / NG / NG Heavy */}
-                    <div className="flex gap-1.5 mt-2">
-                      {RESULTS.map(r => (
-                        <button key={r} onClick={() => setItem(id, { result: r })}
-                          className="flex-1 py-1.5 rounded-lg text-[11.5px] font-bold transition active:scale-95"
-                          style={resultStyle(r, st.result === r)}>
-                          {r}
-                        </button>
-                      ))}
-                    </div>
-                    {/* spec field (Qty / Key Code) */}
-                    {it.spec && (
-                      <input value={st.spec ?? ''} onChange={e => setItem(id, { spec: e.target.value })} placeholder={`ระบุ ${it.spec}…`}
-                        className="w-full mt-2 rounded-lg px-2.5 py-2 text-[12px] outline-none" style={{ background: 'var(--chip)', border: '1px solid var(--line)' }} />
-                    )}
-                    {/* note + photos — only when NG / NG Heavy */}
-                    {isNg && (
-                      <div className="mt-2 space-y-2">
-                        <input value={st.note ?? ''} onChange={e => setItem(id, { note: e.target.value })} placeholder="หมายเหตุ…"
-                          className="w-full rounded-lg px-2.5 py-2 text-[12px] outline-none" style={{ background: '#fff', border: '1px solid var(--line)' }} />
-                        <div className="flex items-center gap-2 flex-wrap">
-                          {(st.photos ?? []).map((p, pi) => (
-                            <div key={pi} className="relative">
-                              <img src={p} className="w-12 h-12 rounded-lg object-cover" alt="" />
-                              <button onClick={() => setItem(id, { photos: (st.photos ?? []).filter((_, x) => x !== pi) })}
-                                className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full flex items-center justify-center" style={{ background: '#dc2626', color: '#fff' }}>
-                                <X size={11} />
-                              </button>
-                            </div>
-                          ))}
-                          <button onClick={() => { pickingId.current = id; fileRef.current?.click() }}
-                            className="w-12 h-12 rounded-lg flex items-center justify-center" style={{ border: '1px dashed var(--line)', color: 'var(--muted)' }}>
-                            <Camera size={16} />
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
+                  <CheckItemRow key={ii} n={ii + 1} item={it} state={get(id)}
+                    onChange={patch => setItem(id, patch)}
+                    onPickPhoto={() => { pickingId.current = id; fileRef.current?.click() }} />
                 )
               })}
             </div>
