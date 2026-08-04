@@ -170,6 +170,10 @@ interface YardState {
   removeUnit: (vin: string) => void
   /** Gate-out: mark the car DEPARTED and release its parking slot. */
   markDeparted: (vin: string) => void
+  /** Gate-out a whole DN in one shot — same as markDeparted per car, but ONE
+   *  state update + ONE cloud write, so a 124-car delivery run does not fire
+   *  124 renders and 124 upserts. */
+  markDepartedMany: (vins: string[]) => void
   markTrailerArrived: (no: number, arrived?: boolean) => void
   gateIn: (vin: string) => void
   setInspected: (vin: string, v: boolean) => void
@@ -565,6 +569,22 @@ export const useYard = create<YardState>()(
         const updated: Unit = { ...u, status: 'DEPARTED', block: undefined, row: undefined, slot: undefined }
         set((s) => ({ units: { ...s.units, [vin]: updated } }))
         db.upsertUnit(updated).catch((e) => console.error('[db] markDeparted', e))
+      },
+
+      markDepartedMany: (vins) => {
+        const changed: Unit[] = []
+        set((s) => {
+          const units = { ...s.units }
+          for (const vin of vins) {
+            const u = units[vin]
+            if (!u) continue // sheet-only car (no yard unit) — nothing to release
+            const updated: Unit = { ...u, status: 'DEPARTED', block: undefined, row: undefined, slot: undefined }
+            units[vin] = updated
+            changed.push(updated)
+          }
+          return changed.length ? { units } : s
+        })
+        if (changed.length) db.upsertUnits(changed).catch((e) => console.error('[db] markDepartedMany', e))
       },
 
       markTrailerArrived: (no, arrived = true) => {
