@@ -32,8 +32,9 @@ import StationSheet from '../components/StationSheet'
 import { PDI_CHECKLIST } from '../lib/pdiChecklist'
 import { FINAL_CHECK_TABS } from '../lib/finalCheckList'
 import { yardLocCode, yardLocFull, blockCode, byYardLocation } from '../lib/groupingImport'
-import { resolveBlock, parseLane } from '../lib/laneImport'
+import { parseLane } from '../lib/laneImport'
 import { LOCATION_KEY } from '../lib/trackingColumns'
+import { blockTag, blockKeyOfTag, resolveBlockByName } from '../lib/format'
 import { fmtSerialToDate } from '../lib/trackingColumns'
 import { matchModel } from '../lib/sampleData'
 import type { Damage, DamageInput, Unit } from '../types'
@@ -3031,24 +3032,16 @@ function RelocationView() {
     [...(row?.history ?? [])].filter(e => e.field === 'Location' || e.field === LOCATION_KEY).reverse(),
   [row])
 
-  /** The block ids + names this yard actually draws, for resolveBlock — NYB2
-   *  names its blocks "AA"/"NN"/"OO" while the paperwork writes "A"/"N"/"O". */
-  const drawn = useMemo(() => {
-    const s = new Set<string>()
-    for (const b of blocks) { s.add(b.id.trim().toUpperCase()); if (b.name) s.add(b.name.trim().toUpperCase()) }
-    return s
-  }, [blocks])
-
   // one field, written the way the upload file writes a lane: "R14" (block +
-  // column). The yard prefix is fixed — the station never types the "N-".
+  // column). The token resolves to the block it NAMES — name-first, so an
+  // internal id can never hijack another block's letter.
   const parsed = parseLane(fLoc.trim())
-  // the block as this yard draws it — storing the typed letter would file the car
-  // under a block the plan has no grid for, and it would vanish off the plan
-  const blockId = parsed ? resolveBlock(parsed.block, drawn) : ''
   const blk = useMemo(
-    () => blocks.find(x => x.id.trim().toUpperCase() === blockId || x.name.trim().toUpperCase() === blockId),
-    [blockId, blocks],
+    () => (parsed ? resolveBlockByName(parsed.block, blocks) : null),
+    [parsed?.block, blocks], // eslint-disable-line react-hooks/exhaustive-deps
   )
+  // the canonical tag stamped on the car — the block's name, one letter
+  const blockId = parsed ? (blk ? blockTag(blk) : blockKeyOfTag(parsed.block)) : ''
 
   // the digits after the block letter are the COLUMN — the numbers across the
   // top of the plan, 1…cols. Depth down the column is assigned automatically.
@@ -3062,7 +3055,7 @@ function RelocationView() {
     const depth = blk?.rows ?? 8
     const taken = new Set(
       siteUnits
-        .filter(u => u.vin !== vin && u.block && u.slot === slotNo && u.block.trim().toUpperCase() === blockId)
+        .filter(u => u.vin !== vin && u.block && u.slot === slotNo && blockKeyOfTag(u.block) === blockId)
         .map(u => u.row),
     )
     for (let r = 1; r <= depth; r++) if (!taken.has(r)) return r
@@ -3166,12 +3159,12 @@ function RelocationView() {
             )}
             {laneFull && (
               <div className="mt-2.5 text-[12px] font-semibold flex items-center gap-1.5" style={{ color: '#dc2626' }}>
-                <AlertTriangle size={13} /> Block {blockCode(blockId)} ช่อง {slotNo} เต็มแล้ว ({blk?.rows ?? 8} คัน)
+                <AlertTriangle size={13} /> Block {blockId} ช่อง {slotNo} เต็มแล้ว ({blk?.rows ?? 8} คัน)
               </div>
             )}
             {!!parsed && blockOk && !slotOk && (
               <div className="mt-2.5 text-[12px] font-semibold flex items-center gap-1.5" style={{ color: '#dc2626' }}>
-                <AlertTriangle size={13} /> {blk ? `Block ${blockCode(blk.id)} มีช่อง 1–${blk.cols}` : 'เลขช่องไม่ถูกต้อง'}
+                <AlertTriangle size={13} /> {blk ? `Block ${blockTag(blk)} มีช่อง 1–${blk.cols}` : 'เลขช่องไม่ถูกต้อง'}
               </div>
             )}
             {/* a block the plan has no grid for → the car would sit off-plan */}

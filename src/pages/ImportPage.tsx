@@ -8,10 +8,10 @@ import { useTracking } from '../store/useTracking'
 import { useOps } from '../store/useOps'
 import { downloadTemplate } from '../lib/excel'
 import { parseTrackingWorkbook, parseImportWorkbook, type ParseResult } from '../lib/excelTracking'
-import { parseLane, resolveBlock, parseLaneWorkbook, type LaneParseResult, type LaneRow } from '../lib/laneImport'
+import { parseLane, parseLaneWorkbook, type LaneParseResult, type LaneRow } from '../lib/laneImport'
 import { coInspectionAccepts, rowInSite, siteForRow } from '../lib/siteScope'
 import { deriveCarStatus } from '../lib/carStatus'
-import { pos } from '../lib/format'
+import { pos, blockKeyOfTag, blockTag, resolveBlockByName } from '../lib/format'
 import { PageHead } from '../components/ui'
 
 /** group key for a row's date — Pre Gate-in files date by "Gate In Date",
@@ -115,25 +115,23 @@ export function ImportPage() {
       // only THIS yard's cars occupy this yard's lanes — every yard has blocks
       // named A/O/WCL, so a car parked at NYB2 A|15 was blocking 20Rai's A|15
       if (u.site && currentSite && u.site !== currentSite) continue
-      const k = `${u.block}|${u.slot}`
+      const k = `${blockKeyOfTag(u.block)}|${u.slot}`
       if (!occ.has(k)) occ.set(k, new Set())
       occ.get(k)!.add(u.row)
     }
-    // this yard's blocks (match by internal id OR display name, e.g. name "NN").
-    // Needed BEFORE placing: the file's lane token is resolved against these, since
-    // yards name blocks differently ("A" here vs "AA" at NYB2).
-    const drawn = new Set<string>()
-    for (const b of blocksBySite[currentSite ?? '_global'] ?? []) {
-      drawn.add(b.id.trim().toUpperCase())
-      if (b.name) drawn.add(b.name.trim().toUpperCase())
-    }
+    // this yard's blocks — the file's lane token resolves to the block it NAMES
+    // (name-first, so an internal id can never hijack another block's letter)
+    const yardBlocks = blocksBySite[currentSite ?? '_global'] ?? []
     const placements: { vin: string; block: string; row: number; slot: number; modelName?: string; color?: string; gateInAt?: number }[] = []
     const badLane: LaneRow[] = []
     const rowFull: LaneRow[] = []
     for (const r of rows) {
       const lane = parseLane(r.lane)
       if (!lane) { badLane.push(r); continue }
-      const block = resolveBlock(lane.block, drawn)
+      const hit = resolveBlockByName(lane.block, yardBlocks)
+      // the car is tagged with the block's canonical NAME; an undrawn token
+      // keeps its collapsed form so it still surfaces in the warnings below
+      const block = hit ? blockTag(hit) : blockKeyOfTag(lane.block)
       const k = `${block}|${lane.row}`
       if (!occ.has(k)) occ.set(k, new Set())
       const used = occ.get(k)!
@@ -147,7 +145,8 @@ export function ImportPage() {
     for (const p of placements) byBlock.set(p.block, (byBlock.get(p.block) ?? 0) + 1)
     const matched = placements.filter((p) => yardUnits[p.vin]).length
     // blocks referenced by the file but not yet drawn in this yard's plan
-    const missingBlocks = [...byBlock.keys()].filter((b) => !drawn.has(b)).sort()
+    const drawnTags = new Set(yardBlocks.map((b) => blockTag(b)))
+    const missingBlocks = [...byBlock.keys()].filter((b) => !drawnTags.has(b)).sort()
     return { placements, badLane, rowFull, dup, matched, byBlock: [...byBlock.entries()].sort(), missingBlocks }
   }, [locParsed, yardUnits, blocksBySite, currentSite])
 

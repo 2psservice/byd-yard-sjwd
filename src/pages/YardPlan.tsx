@@ -8,7 +8,7 @@ import { useYard, useUnits, useBlocks } from '../store/useYard'
 import { useTrackingRows } from '../store/useTracking'
 import { deriveCarStatus, IN_YARD_STATUSES, CAR_STATUS_META } from '../lib/carStatus'
 import { rowInSite } from '../lib/siteScope'
-import { blockTag } from '../lib/format'
+import { blockTag, blockKeyOfTag } from '../lib/format'
 import { rowsToCsv, type TrackRow } from '../lib/excelTracking'
 import { matchVins, toFindListRows } from '../lib/findCar'
 import { printFindList, exportFindListXlsx } from '../lib/groupingPrint'
@@ -203,23 +203,20 @@ export function YardPlan() {
   const vinCells = useMemo(() => new Map(trackingRows.map((r) => [r.vin, r.cells])), [trackingRows])
   // stable colour per model name, sorted so it doesn't shuffle as cars move
   const modelColors = useMemo(() => buildModelPalette(units.map((u) => u.modelName)), [units])
-  // keyed by the unit's block tag (internal id OR block name — the Update
-  // Location import tags cars by block name, e.g. "NN")
+  // keyed by the CANONICAL block key (collapsed name). A block belongs to the
+  // tile whose NAME it carries — matching the internal id as well used to pull
+  // a car tagged "N" into the tile NAMED "Q" (internal id N).
   const occByBlock = useMemo(() => {
     const m = new Map<string, Unit[]>()
     for (const u of units) {
       if (u.block && (u.status === 'PARKED' || u.status === 'ASSIGNED' || u.status === 'LOADED')) {
-        const k = u.block.trim().toUpperCase()
+        const k = blockKeyOfTag(u.block)
         const a = m.get(k) ?? []; a.push(u); m.set(k, a)
       }
     }
     return m
   }, [units])
-  const occFor = (b: { id: string; name: string }): Unit[] => {
-    const id = b.id.trim().toUpperCase(), name = b.name.trim().toUpperCase()
-    const byId = occByBlock.get(id) ?? []
-    return name && name !== id ? [...byId, ...(occByBlock.get(name) ?? [])] : byId
-  }
+  const occFor = (b: { id: string; name: string }): Unit[] => occByBlock.get(blockTag(b)) ?? []
   // headline total across every park block in this plan (matches the per-tile numbers)
   const totals = useMemo(() => {
     let filled = 0, cap = 0
@@ -246,8 +243,7 @@ export function YardPlan() {
     const drawnKeys = new Set<string>()
     for (const b of blocks) {
       if ((b.kind ?? 'park') !== 'park') continue
-      drawnKeys.add(b.id.trim().toUpperCase())
-      if (b.name) drawnKeys.add(b.name.trim().toUpperCase())
+      drawnKeys.add(blockTag(b)) // canonical: same key occByBlock groups by
     }
     // per parked VIN: its block tag + whether that tag is a drawn tile
     const blockOfVin = new Map<string, string>()

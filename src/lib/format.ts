@@ -65,19 +65,34 @@ export function pos(u: { block?: string; row?: number; slot?: number }): string 
 
 const normBlockTag = (s?: string) => (s ?? '').trim().toUpperCase()
 
-/** Unit ↔ drawn-block matcher. A unit's block tag can be the block's internal
- *  id (auto A–Z from the layout editor) or its display name — the Update
- *  Location import tags cars by the block NAME (e.g. "NN"). */
-export function unitInBlock(u: { block?: string }, b: { id: string; name: string }): boolean {
-  const t = normBlockTag(u.block)
-  return !!t && (t === normBlockTag(b.id) || t === normBlockTag(b.name))
-}
+/** Canonical key of a unit's block tag — collapsed, uppercased. */
+export const blockKeyOfTag = (tag?: string) => blockCode(normBlockTag(tag))
 
 /** Display name for a block — the single letter the yard says out loud: a short
  *  code name/id ("TT", "KK") collapses to one letter, a real name ("WCL") stays. */
 export function blockTag(b: { id: string; name: string }): string {
   const n = normBlockTag(b.name)
   return blockCode(/^[A-Z0-9]{1,4}$/.test(n) ? n : normBlockTag(b.id))
+}
+
+/** Unit ↔ drawn-block matcher: the collapsed tag must equal the block's NAME
+ *  (blockTag). Matching the internal id as well used to cross-wire yards where
+ *  one block's id ("N") is another block's name — a car tagged "N" showed up
+ *  inside the block NAMED "Q" (internal id N) while its Location said N0401. */
+export function unitInBlock(u: { block?: string }, b: { id: string; name: string }): boolean {
+  const t = blockKeyOfTag(u.block)
+  return !!t && t === blockTag(b)
+}
+
+/** Resolve a typed / imported block token to the drawn block it names —
+ *  the NAME wins over any internal id, exact before collapsed. */
+export function resolveBlockByName<T extends { id: string; name: string }>(token: string, blocks: T[]): T | null {
+  const t = normBlockTag(token)
+  if (!t) return null
+  return blocks.find((b) => normBlockTag(b.name) === t)
+    ?? blocks.find((b) => blockTag(b) === blockCode(t))
+    ?? blocks.find((b) => normBlockTag(b.id) === t)
+    ?? null
 }
 
 export function pct(a: number, b: number): number {
