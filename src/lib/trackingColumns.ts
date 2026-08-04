@@ -38,8 +38,8 @@ const DEFAULT_VISIBLE = new Set([
   'Status Tax', 'PIC (PDI)', 'หมายเหตุ',
 ])
 
-/** Synthetic column key for the computed yard-location code (prefix-block+row+slot,
- *  e.g. "N-R0905"). Not a sheet cell — resolved from the car's placement. */
+/** Synthetic column key for the computed yard-location code (prefix-block+ช่อง+ลำดับ,
+ *  e.g. "N-R1402"). Not a sheet cell — resolved from the car's placement. */
 export const LOCATION_KEY = '__location'
 
 /** The 15 PM date columns, in order (PM1 … PM15). */
@@ -187,7 +187,7 @@ const SPECS: Spec[] = [
   { key: 'Gate In (Rayong yard)', label: 'Gate In', group: 'location', width: 110 },
   { key: 'Final check date', group: 'status', width: 110 },
   { key: 'Final Status', group: 'status', width: 120 },
-  { key: '__location', label: 'Location', group: 'location', width: 110 }, // computed: prefix-block+row+slot
+  { key: '__location', label: 'Location', group: 'location', width: 110 }, // computed: prefix-block+ช่อง+ลำดับ
   { key: 'Location yard', group: 'location', width: 130 },
   { key: 'Status Tax', group: 'location', width: 150 },
   { key: 'Stock of Status', group: 'location', width: 170 },

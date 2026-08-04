@@ -186,7 +186,7 @@ export function Units() {
   )
   const visCols = useVisibleColumns()
   const { lastImport, loadFromIdb } = useTracking()
-  // computed yard-location code (prefix-block+row+slot), for the Location column.
+  // computed yard-location code (prefix-block+ช่อง+ลำดับ, e.g. "N-R1402"), for the Location column.
   // ONLY the real placement code — no cell fallback (storage Yard / Location yard
   // are junk / the site name, not a position → they showed stray numbers).
   const allUnits = useYard((s) => s.units)
@@ -427,7 +427,7 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
   const columns = useTracking((s) => s.columns)
   const reorderColumn = useTracking((s) => s.reorderColumn)
   const toast = useYard((s) => s.toast)
-  // computed "Location" column: prefix-block+row+slot from the car's placement,
+  // computed "Location" column: prefix-block+ช่อง+ลำดับ from the car's placement,
   // falling back to the storage / Location-yard cell when the car isn't placed
   const units = useYard((s) => s.units)
   const sites = useYard((s) => s.sites)
