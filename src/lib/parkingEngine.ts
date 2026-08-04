@@ -1,4 +1,5 @@
 import type { Block, ParkingPolicy, SlotCandidate, Unit, UnitStatus } from '../types'
+import { blockKeyOfTag, blockTag } from './format'
 
 // A slot is considered occupied (or reserved) for these statuses.
 const OCCUPYING: UnitStatus[] = ['ASSIGNED', 'PARKED', 'LOADED']
@@ -20,13 +21,15 @@ interface RowInfo {
   models: Set<string>
 }
 
-/** Map "<block>#<row>" -> occupancy info, considering only occupying statuses. */
+/** Map "<blockKey>#<row>" -> occupancy info, considering only occupying
+ *  statuses. Keys use the canonical block key (collapsed name) so a unit
+ *  tagged "Q" and one tagged "QQ" count into the same lane. */
 export function buildOccupancy(units: Unit[]): Map<string, RowInfo> {
   const rows = new Map<string, RowInfo>()
   for (const u of units) {
     if (!u.block || !u.row || !u.slot) continue
     if (!OCCUPYING.includes(u.status)) continue
-    const k = `${u.block}#${u.row}`
+    const k = `${blockKeyOfTag(u.block)}#${u.row}`
     let ri = rows.get(k)
     if (!ri) {
       ri = { occupants: [], filled: new Set(), models: new Set() }
@@ -79,12 +82,16 @@ export function candidates(
   const lanes = new Map<string, LaneInfo>()
   const rowModels = new Map<string, Set<string>>()
   for (const u of others) {
-    const lk = `${u.block}#${u.slot}`
+    // canonical key: tags written as the id, the name or a collapsed letter all
+    // land on the same lane — an id-keyed scan used to miss name-tagged cars
+    // and propose their occupied cells
+    const bk = blockKeyOfTag(u.block)
+    const lk = `${bk}#${u.slot}`
     let li = lanes.get(lk)
     if (!li) { li = { rows: new Set(), models: new Set() }; lanes.set(lk, li) }
     li.rows.add(u.row!)
     li.models.add(u.model)
-    const rk = `${u.block}#${u.row}`
+    const rk = `${bk}#${u.row}`
     let rm = rowModels.get(rk)
     if (!rm) { rm = new Set(); rowModels.set(rk, rm) }
     rm.add(u.model)
@@ -99,6 +106,7 @@ export function candidates(
   const out: SlotCandidate[] = []
 
   allowed.forEach((b, bi) => {
+    const bk = blockTag(b) // the block's NAME — what gets stamped on the car
     const rFrom = Math.max(1, policy.rowFrom ?? 1)
     // depth cap = per-model Row-window (advanced override) or the global lane
     // depth (default 7). Once a lane is full to this depth the loop finds no
@@ -108,7 +116,7 @@ export function candidates(
     // admissible) depth, then stop — one proposal per lane so cycling the
     // alternatives walks lane 1, lane 2, lane 3 … in order.
     for (let slot = 1; slot <= b.cols; slot++) {
-      const lane = lanes.get(`${b.id}#${slot}`)
+      const lane = lanes.get(`${bk}#${slot}`)
       const laneModels = lane?.models ?? new Set<string>()
       const laneEmpty = !lane || lane.rows.size === 0
       const laneOnlyThis = !laneEmpty && laneModels.size === 1 && laneModels.has(unit.model)
@@ -123,7 +131,7 @@ export function candidates(
         if (lane?.rows.has(row)) continue // this depth in the lane is taken
 
         // ---- row-level exclusiveRow (แถว reserved for a single model) ----
-        const rowMs = rowModels.get(`${b.id}#${row}`) ?? new Set<string>()
+        const rowMs = rowModels.get(`${bk}#${row}`) ?? new Set<string>()
         const rowEmpty = rowMs.size === 0
         const rowOnlyThis = !rowEmpty && rowMs.size === 1 && rowMs.has(unit.model)
         if (!rowEmpty) {
@@ -136,12 +144,12 @@ export function candidates(
         let score = 1000 - (bi * 1000 + slot * 10 + row)
         if (laneOnlyThis) score += 5
         const reason = laneEmpty
-          ? `เลนว่าง · ${b.id} ช่อง ${slot}`
+          ? `เลนว่าง · ${bk} ช่อง ${slot}`
           : laneOnlyThis
-            ? `ต่อเลนรุ่นเดียวกัน · ${b.id} ช่อง ${slot}`
-            : `จอดคละรุ่น · ${b.id} ช่อง ${slot}`
+            ? `ต่อเลนรุ่นเดียวกัน · ${bk} ช่อง ${slot}`
+            : `จอดคละรุ่น · ${bk} ช่อง ${slot}`
 
-        out.push({ block: b.id, row, slot, score, reason })
+        out.push({ block: bk, row, slot, score, reason })
         break // next lane
       }
     }
@@ -179,7 +187,7 @@ export function rowOptions(
     const key = `${c.block}#${c.row}`
     if (seen.has(key)) continue
     seen.add(key)
-    const block = blocks.find((b) => b.id === c.block)!
+    const block = blocks.find((b) => blockTag(b) === c.block)!
     const filled = occ.get(key)?.filled.size ?? 0
     res.push({ block: c.block, row: c.row, slot: c.slot, free: block.cols - filled, reason: c.reason })
   }
