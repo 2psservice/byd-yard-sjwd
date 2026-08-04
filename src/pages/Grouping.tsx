@@ -127,7 +127,9 @@ export function Grouping() {
 
   const doCreateSequence = () => {
     if (!rows || !rows.length || !seqName) return
-    const items = rows.map((r) => ({ vin: r.vin, laneLoad: r.laneLoad, dest: r.deliveryLocation }))
+    // the grouping code travels with the item: the run keeps following it, so a
+    // car whose number is cleared later drops out and a car stamped with it joins
+    const items = rows.map((r) => ({ vin: r.vin, laneLoad: r.laneLoad, dest: r.deliveryLocation, group: r.grouping }))
     createSequence(seqName, currentUser, items)
     toast('ok', `สร้างลำดับงาน "${seqName}" · ${items.length} คัน — ไปที่ Operation / Yard Ops ได้เลย`)
     setView('operation')
