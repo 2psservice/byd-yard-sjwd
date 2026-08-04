@@ -31,7 +31,7 @@ import { compressImage } from '../lib/photo'
 import StationSheet from '../components/StationSheet'
 import { PDI_CHECKLIST } from '../lib/pdiChecklist'
 import { FINAL_CHECK_TABS } from '../lib/finalCheckList'
-import { siteGroupingConfig, yardLocCode, byYardLocation } from '../lib/groupingImport'
+import { siteGroupingConfig, yardLocCode, yardLocFull, blockCode, byYardLocation } from '../lib/groupingImport'
 import { fmtSerialToDate } from '../lib/trackingColumns'
 import { matchModel } from '../lib/sampleData'
 import type { Damage, DamageInput, Unit } from '../types'
@@ -2861,6 +2861,12 @@ function GateOutView() {
   const seqQueues = useMemo(() => queues.filter(q => isSequenceQueue(q) && !isQueueComplete(q)), [queues])
   const row = vin ? (trackingRows.find(r => r.vin === vin) ?? null) : null
   const seqHit = useMemo(() => findSeqItem(vin, queues), [vin, queues])
+  // where the car actually stands, so the gate can go fetch it — the yard name
+  // alone ("NYB2 Phase 2") never told anyone which lane to walk to
+  const parked = vin ? units.find(u => u.vin === vin) : undefined
+  const parkedAt = parked?.block && parked.row && parked.slot
+    ? `${parked.block}${String(parked.slot).padStart(2, '0')}.${parked.row}`
+    : ''
 
   const onScan = (v: string) => {
     let r = trackingRows.find(x => x.vin === v)
@@ -2965,7 +2971,7 @@ function GateOutView() {
             {([
               ['Model',    row.cells['Model name'] ?? row.cells['Model'] ?? '—'],
               ['Company',  row.cells['company'] ?? '—'],
-              ['Location', row.cells['Location yard'] ?? row.cells['storage Yard'] ?? '—'],
+              ['Location', parkedAt || row.cells['Location yard'] || row.cells['storage Yard'] || '—'],
               ['Lot',      row.cells['Lot transfer'] ?? '—'],
             ] as [string, string][]).map(([k, v]) => (
               <div key={k}>
@@ -3004,21 +3010,56 @@ function GateOutView() {
 // ── Re-location view ──────────────────────────────────────────────────────────
 function RelocationView() {
   const trackingRows = useSiteRows()
+  const siteUnits = useSiteUnits()
+  const blocks = useBlocks()
   const wrongSite = useWrongSiteHint()
-  const { loadFromIdb, updateCell } = useTracking()
-  const { toast } = useYard()
+  const { loadFromIdb } = useTracking()
+  const { toast, sites, currentSite, updateLocations } = useYard()
   const { block: blockGate, modal: gateModal } = useNotGatedIn()
   const [vin, setVin] = useState<string | null>(null)
-  const [newLoc, setNewLoc] = useState('')
+  const [fBlock, setFBlock] = useState('')
+  const [fRow, setFRow] = useState('')
   const [saved, setSaved] = useState(false)
 
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
 
+  const siteName = sites.find(s => s.id === currentSite)?.name ?? ''
+  const locPrefix = siteGroupingConfig(siteName).prefix
   const row = vin ? (trackingRows.find(r => r.vin === vin) ?? null) : null
-  const curLoc = row ? (row.cells['Location yard'] || row.cells['storage Yard'] || '—') : ''
+  const unit = vin ? siteUnits.find(u => u.vin === vin) : undefined
+  // the yard the car is in (a site name — "NYB2 Phase 2") vs. where it stands
+  // inside that yard (block + row + slot). The card used to show only the first.
+  const curYard = row ? (row.cells['Location yard'] || row.cells['storage Yard'] || siteName || '—') : ''
+  const placed = !!(unit?.block && unit.row && unit.slot)
+
+  const blk = useMemo(() => {
+    const b = fBlock.trim().toUpperCase()
+    if (!b) return undefined
+    return blocks.find(x => blockCode(x.id).toUpperCase() === blockCode(b) || x.name.trim().toUpperCase() === b)
+  }, [fBlock, blocks])
+
+  const rowNo = Number(fRow.trim())
+  const rowOk = Number.isInteger(rowNo) && rowNo >= 1 && (!blk || rowNo <= blk.rows)
+
+  /** Where the car will land: the first free space in that lane. The station
+   *  enters block + row only — which space in the lane is whichever is open. */
+  const nextSlot = useMemo(() => {
+    if (!fBlock.trim() || !rowOk) return null
+    const cap = blk?.cols ?? 8
+    const taken = new Set(
+      siteUnits
+        .filter(u => u.vin !== vin && u.block && u.row === rowNo && blockCode(u.block).toUpperCase() === blockCode(fBlock.trim().toUpperCase()))
+        .map(u => u.slot),
+    )
+    for (let s = 1; s <= cap; s++) if (!taken.has(s)) return s
+    return null // lane full
+  }, [fBlock, rowNo, rowOk, blk, siteUnits, vin])
+
+  const laneFull = !!fBlock.trim() && rowOk && nextSlot === null
+  const canSave = !!row && !!fBlock.trim() && rowOk && nextSlot !== null && !saved
 
   const onScan = (v: string) => {
-    setSaved(false); setNewLoc('')
+    setSaved(false); setFBlock(''); setFRow('')
     let r = trackingRows.find(x => x.vin === v)
     if (!r && v.length <= 8) {
       const hits = trackingRows.filter(x => x.vin.endsWith(v))
@@ -3031,10 +3072,18 @@ function RelocationView() {
   }
 
   const doSave = () => {
-    if (!row || !newLoc.trim()) return
-    updateCell(row.vin, 'Location yard', newLoc.trim())
+    if (!canSave || !row || nextSlot === null) return
+    const b = fBlock.trim().toUpperCase()
+    // move the CAR, not the "Location yard" cell — that cell names the yard and
+    // is what scopes a row to its site, so a slot code written into it used to
+    // drop the car out of its own yard
+    updateLocations([{
+      vin: row.vin, block: b, row: rowNo, slot: nextSlot,
+      modelName: row.cells['Model name'] || row.cells['Model'] || undefined,
+      color: row.cells['Color'] || undefined,
+    }])
     setSaved(true)
-    toast('ok', `ย้ายตำแหน่งแล้ว · ${row.vin}`)
+    toast('ok', `ย้ายไป ${b}${String(nextSlot).padStart(2, '0')}.${rowNo} · ${row.vin.slice(-6)}`)
     setTimeout(() => { setVin(null); setSaved(false) }, 1600)
   }
 
@@ -3048,23 +3097,88 @@ function RelocationView() {
             <span className="vin text-[13.5px] font-bold">{row.vin}</span>
             <span className="ml-auto text-[12px]" style={{ color: 'var(--muted)' }}>{row.cells['Model name'] ?? ''}</span>
           </div>
+
           <div className="rounded-2xl p-3.5" style={{ background: 'var(--chip)' }}>
             <div className="text-[11px] font-semibold mb-1" style={{ color: 'var(--muted)' }}>ตำแหน่งปัจจุบัน</div>
-            <div className="font-bold text-[15px]">{curLoc}</div>
+            {placed ? (
+              <>
+                {/* spelled out, in the same order as the two fields below — the
+                    bare code reads "block K, slot 05" to a driver, not "row 10" */}
+                <div className="font-bold text-[19px] leading-tight">Block {unit!.block} · แถว {unit!.row}</div>
+                <div className="text-[11.5px] mt-0.5 font-semibold tabular" style={{ color: 'var(--muted)' }}>
+                  ช่อง {unit!.slot} · {unit!.block}{String(unit!.slot).padStart(2, '0')}.{unit!.row}
+                </div>
+              </>
+            ) : (
+              <div className="font-bold text-[15px]" style={{ color: 'var(--faint)' }}>ยังไม่ระบุตำแหน่งในลาน</div>
+            )}
+            <div className="text-[11.5px] mt-1.5 flex items-center gap-1" style={{ color: 'var(--muted)' }}>
+              <MapPin size={11} /> {curYard}{placed ? ` · ${yardLocFull(unit, locPrefix)}` : ''}
+            </div>
           </div>
+
           <div>
             <div className="text-[11px] font-semibold mb-2" style={{ color: 'var(--muted)' }}>ตำแหน่งใหม่</div>
-            <input
-              className="input w-full font-semibold"
-              placeholder="เช่น Zone A Row 3 Slot 05…"
-              value={newLoc}
-              onChange={e => setNewLoc(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && doSave()}
-            />
+            {/* two fields, the way the yard says it out loud: "Block K แถว 10" */}
+            <div className="grid grid-cols-2 gap-2.5">
+              <div>
+                <div className="text-[10.5px] font-bold mb-1" style={{ color: 'var(--faint)' }}>BLOCK</div>
+                <input
+                  className="input w-full font-bold text-center text-[17px] uppercase"
+                  placeholder="K" autoCapitalize="characters" autoCorrect="off" spellCheck={false}
+                  value={fBlock}
+                  onChange={e => setFBlock(e.target.value.toUpperCase())}
+                />
+              </div>
+              <div>
+                <div className="text-[10.5px] font-bold mb-1" style={{ color: 'var(--faint)' }}>แถว</div>
+                <input
+                  className="input w-full font-bold text-center text-[17px] tabular"
+                  placeholder="10" inputMode="numeric" pattern="[0-9]*"
+                  value={fRow}
+                  onChange={e => setFRow(e.target.value.replace(/\D/g, ''))}
+                  onKeyDown={e => e.key === 'Enter' && doSave()}
+                />
+              </div>
+            </div>
+
+            {/* tap a block from this yard's plan instead of typing it */}
+            {blocks.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mt-2.5">
+                {blocks.filter(b => b.kind !== 'area').map(b => (
+                  <button key={b.id} onClick={() => setFBlock(blockCode(b.id).toUpperCase())}
+                    className="px-2.5 py-1 rounded-lg text-[12px] font-bold transition active:scale-95"
+                    style={blk?.id === b.id
+                      ? { background: '#0ea5e9', color: '#fff' }
+                      : { background: 'var(--chip)', color: 'var(--muted)' }}>
+                    {blockCode(b.id).toUpperCase()}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* say where it will actually land — the lane slot is picked for them */}
+            {canSave && (
+              <div className="mt-2.5 text-[12px] font-semibold flex items-center gap-1.5" style={{ color: '#0284c7' }}>
+                <ArrowRight size={13} /> {fBlock.trim()}{String(nextSlot).padStart(2, '0')}.{rowNo}
+                <span style={{ color: 'var(--muted)', fontWeight: 500 }}>· ช่องว่างถัดไปในแถวนี้ (ช่อง {nextSlot})</span>
+              </div>
+            )}
+            {laneFull && (
+              <div className="mt-2.5 text-[12px] font-semibold flex items-center gap-1.5" style={{ color: '#dc2626' }}>
+                <AlertTriangle size={13} /> Block {fBlock.trim()} แถว {rowNo} เต็มแล้ว
+              </div>
+            )}
+            {!!fRow.trim() && !rowOk && (
+              <div className="mt-2.5 text-[12px] font-semibold flex items-center gap-1.5" style={{ color: '#dc2626' }}>
+                <AlertTriangle size={13} /> {blk ? `Block ${blk.id} มีแถว 1–${blk.rows}` : 'เลขแถวไม่ถูกต้อง'}
+              </div>
+            )}
           </div>
+
           <button
             onClick={doSave}
-            disabled={!newLoc.trim() || saved}
+            disabled={!canSave}
             className="w-full py-3 rounded-2xl text-[15px] font-bold text-white flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-40"
             style={{ background: saved ? '#16a34a' : '#0ea5e9' }}>
             {saved ? <><CheckCircle2 size={18} /> บันทึกแล้ว!</> : <><MapPin size={18} /> บันทึกตำแหน่งใหม่</>}
