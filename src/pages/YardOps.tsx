@@ -31,7 +31,8 @@ import { compressImage } from '../lib/photo'
 import StationSheet from '../components/StationSheet'
 import { PDI_CHECKLIST } from '../lib/pdiChecklist'
 import { FINAL_CHECK_TABS } from '../lib/finalCheckList'
-import { siteGroupingConfig, yardLocCode, yardLocFull, blockCode, byYardLocation } from '../lib/groupingImport'
+import { siteGroupingConfig, yardLocCode, yardLocFull, byYardLocation } from '../lib/groupingImport'
+import { resolveBlock } from '../lib/laneImport'
 import { fmtSerialToDate } from '../lib/trackingColumns'
 import { matchModel } from '../lib/sampleData'
 import type { Damage, DamageInput, Unit } from '../types'
@@ -3028,35 +3029,50 @@ function RelocationView() {
   const row = vin ? (trackingRows.find(r => r.vin === vin) ?? null) : null
   const unit = vin ? siteUnits.find(u => u.vin === vin) : undefined
   // the yard the car is in (a site name — "NYB2 Phase 2") vs. where it stands
-  // inside that yard (block + row + slot). The card used to show only the first.
+  // inside that yard (block + slot + row). The card used to show only the first.
   const curYard = row ? (row.cells['Location yard'] || row.cells['storage Yard'] || siteName || '—') : ''
   const placed = !!(unit?.block && unit.row && unit.slot)
 
-  const blk = useMemo(() => {
-    const b = fBlock.trim().toUpperCase()
-    if (!b) return undefined
-    return blocks.find(x => blockCode(x.id).toUpperCase() === blockCode(b) || x.name.trim().toUpperCase() === b)
-  }, [fBlock, blocks])
+  /** The block ids + names this yard actually draws, for resolveBlock — NYB2
+   *  names its blocks "AA"/"NN"/"OO" while the paperwork writes "A"/"N"/"O". */
+  const drawn = useMemo(() => {
+    const s = new Set<string>()
+    for (const b of blocks) { s.add(b.id.trim().toUpperCase()); if (b.name) s.add(b.name.trim().toUpperCase()) }
+    return s
+  }, [blocks])
 
-  const rowNo = Number(fRow.trim())
-  const rowOk = Number.isInteger(rowNo) && rowNo >= 1 && (!blk || rowNo <= blk.rows)
+  // the block as this yard draws it — storing the typed letter would file the car
+  // under a block the plan has no grid for, and it would vanish off the plan
+  const blockId = fBlock.trim() ? resolveBlock(fBlock.trim(), drawn) : ''
+  const blk = useMemo(
+    () => blocks.find(x => x.id.trim().toUpperCase() === blockId || x.name.trim().toUpperCase() === blockId),
+    [blockId, blocks],
+  )
 
-  /** Where the car will land: the first free space in that lane. The station
-   *  enters block + row only — which space in the lane is whichever is open. */
-  const nextSlot = useMemo(() => {
-    if (!fBlock.trim() || !rowOk) return null
-    const cap = blk?.cols ?? 8
+  // the number the yard writes after the block ("N-O15") is the block's COLUMN —
+  // the axis across the top of the plan, 1…cols. Depth down the column is 1…rows.
+  const slotNo = Number(fRow.trim())
+  const slotOk = Number.isInteger(slotNo) && slotNo >= 1 && (!blk || slotNo <= blk.cols)
+
+  /** Which space down that column: the first free one, exactly how the Update
+   *  Location import stacks cars into a lane. */
+  const nextRow = useMemo(() => {
+    if (!blockId || !slotOk) return null
+    const depth = blk?.rows ?? 8
     const taken = new Set(
       siteUnits
-        .filter(u => u.vin !== vin && u.block && u.row === rowNo && blockCode(u.block).toUpperCase() === blockCode(fBlock.trim().toUpperCase()))
-        .map(u => u.slot),
+        .filter(u => u.vin !== vin && u.block && u.slot === slotNo && u.block.trim().toUpperCase() === blockId)
+        .map(u => u.row),
     )
-    for (let s = 1; s <= cap; s++) if (!taken.has(s)) return s
-    return null // lane full
-  }, [fBlock, rowNo, rowOk, blk, siteUnits, vin])
+    for (let r = 1; r <= depth; r++) if (!taken.has(r)) return r
+    return null // column full
+  }, [blockId, slotNo, slotOk, blk, siteUnits, vin])
 
-  const laneFull = !!fBlock.trim() && rowOk && nextSlot === null
-  const canSave = !!row && !!fBlock.trim() && rowOk && nextSlot !== null && !saved
+  const laneFull = !!blockId && slotOk && nextRow === null
+  // a block this plan does not draw has no grid to land in, so refuse it rather
+  // than park the car somewhere that only exists in the typo
+  const blockOk = !!blockId && (blocks.length === 0 || !!blk)
+  const canSave = !!row && blockOk && slotOk && nextRow !== null && !saved
 
   const onScan = (v: string) => {
     setSaved(false); setFBlock(''); setFRow('')
@@ -3072,18 +3088,17 @@ function RelocationView() {
   }
 
   const doSave = () => {
-    if (!canSave || !row || nextSlot === null) return
-    const b = fBlock.trim().toUpperCase()
+    if (!canSave || !row || nextRow === null) return
     // move the CAR, not the "Location yard" cell — that cell names the yard and
     // is what scopes a row to its site, so a slot code written into it used to
     // drop the car out of its own yard
     updateLocations([{
-      vin: row.vin, block: b, row: rowNo, slot: nextSlot,
+      vin: row.vin, block: blockId, row: nextRow, slot: slotNo,
       modelName: row.cells['Model name'] || row.cells['Model'] || undefined,
       color: row.cells['Color'] || undefined,
     }])
     setSaved(true)
-    toast('ok', `ย้ายไป ${b}${String(nextSlot).padStart(2, '0')}.${rowNo} · ${row.vin.slice(-6)}`)
+    toast('ok', `ย้ายไป ${blockId}${String(slotNo).padStart(2, '0')}.${nextRow} · ${row.vin.slice(-6)}`)
     setTimeout(() => { setVin(null); setSaved(false) }, 1600)
   }
 
@@ -3102,11 +3117,11 @@ function RelocationView() {
             <div className="text-[11px] font-semibold mb-1" style={{ color: 'var(--muted)' }}>ตำแหน่งปัจจุบัน</div>
             {placed ? (
               <>
-                {/* spelled out, in the same order as the two fields below — the
-                    bare code reads "block K, slot 05" to a driver, not "row 10" */}
-                <div className="font-bold text-[19px] leading-tight">Block {unit!.block} · แถว {unit!.row}</div>
+                {/* spelled out, in the same order as the fields below — the bare
+                    code reads "block K slot 05" to a driver, not "column 10" */}
+                <div className="font-bold text-[19px] leading-tight">Block {unit!.block} · ช่อง {unit!.slot}</div>
                 <div className="text-[11.5px] mt-0.5 font-semibold tabular" style={{ color: 'var(--muted)' }}>
-                  ช่อง {unit!.slot} · {unit!.block}{String(unit!.slot).padStart(2, '0')}.{unit!.row}
+                  แถวที่ {unit!.row} ในช่องนี้ · {unit!.block}{String(unit!.slot).padStart(2, '0')}.{unit!.row}
                 </div>
               </>
             ) : (
@@ -3119,59 +3134,71 @@ function RelocationView() {
 
           <div>
             <div className="text-[11px] font-semibold mb-2" style={{ color: 'var(--muted)' }}>ตำแหน่งใหม่</div>
-            {/* two fields, the way the yard says it out loud: "Block K แถว 10" */}
+            {/* two fields, the way the yard writes a lane on paper: "N-O15" */}
             <div className="grid grid-cols-2 gap-2.5">
               <div>
                 <div className="text-[10.5px] font-bold mb-1" style={{ color: 'var(--faint)' }}>BLOCK</div>
                 <input
                   className="input w-full font-bold text-center text-[17px] uppercase"
-                  placeholder="K" autoCapitalize="characters" autoCorrect="off" spellCheck={false}
+                  placeholder="N" autoCapitalize="characters" autoCorrect="off" spellCheck={false}
                   value={fBlock}
                   onChange={e => setFBlock(e.target.value.toUpperCase())}
                 />
               </div>
               <div>
-                <div className="text-[10.5px] font-bold mb-1" style={{ color: 'var(--faint)' }}>แถว</div>
+                <div className="text-[10.5px] font-bold mb-1" style={{ color: 'var(--faint)' }}>
+                  ช่อง{blk ? ` (1–${blk.cols})` : ''}
+                </div>
                 <input
                   className="input w-full font-bold text-center text-[17px] tabular"
-                  placeholder="10" inputMode="numeric" pattern="[0-9]*"
+                  placeholder="30" inputMode="numeric" pattern="[0-9]*"
                   value={fRow}
                   onChange={e => setFRow(e.target.value.replace(/\D/g, ''))}
                   onKeyDown={e => e.key === 'Enter' && doSave()}
                 />
               </div>
             </div>
+            <div className="text-[11px] mt-1.5" style={{ color: 'var(--faint)' }}>
+              เลขช่อง = แถวตัวเลขด้านบนของผังบล็อก · รถจะลงแถวว่างแรกในช่องนั้น
+            </div>
 
-            {/* tap a block from this yard's plan instead of typing it */}
+            {/* tap a block from this yard's plan instead of typing it — the id
+                as the plan draws it ("NN"), so the car lands on the plan */}
             {blocks.length > 0 && (
               <div className="flex flex-wrap gap-1.5 mt-2.5">
-                {blocks.filter(b => b.kind !== 'area').map(b => (
-                  <button key={b.id} onClick={() => setFBlock(blockCode(b.id).toUpperCase())}
+                {blocks.filter(b => (b.kind ?? 'park') === 'park').map(b => (
+                  <button key={b.id} onClick={() => setFBlock(b.id.trim().toUpperCase())}
                     className="px-2.5 py-1 rounded-lg text-[12px] font-bold transition active:scale-95"
                     style={blk?.id === b.id
                       ? { background: '#0ea5e9', color: '#fff' }
                       : { background: 'var(--chip)', color: 'var(--muted)' }}>
-                    {blockCode(b.id).toUpperCase()}
+                    {b.id.trim().toUpperCase()}
                   </button>
                 ))}
               </div>
             )}
 
-            {/* say where it will actually land — the lane slot is picked for them */}
+            {/* say where it will actually land — the depth is picked for them */}
             {canSave && (
               <div className="mt-2.5 text-[12px] font-semibold flex items-center gap-1.5" style={{ color: '#0284c7' }}>
-                <ArrowRight size={13} /> {fBlock.trim()}{String(nextSlot).padStart(2, '0')}.{rowNo}
-                <span style={{ color: 'var(--muted)', fontWeight: 500 }}>· ช่องว่างถัดไปในแถวนี้ (ช่อง {nextSlot})</span>
+                <ArrowRight size={13} /> {blockId}{String(slotNo).padStart(2, '0')}.{nextRow}
+                <span style={{ color: 'var(--muted)', fontWeight: 500 }}>· แถวว่างแรกในช่องนี้ (แถวที่ {nextRow})</span>
               </div>
             )}
             {laneFull && (
               <div className="mt-2.5 text-[12px] font-semibold flex items-center gap-1.5" style={{ color: '#dc2626' }}>
-                <AlertTriangle size={13} /> Block {fBlock.trim()} แถว {rowNo} เต็มแล้ว
+                <AlertTriangle size={13} /> Block {blockId} ช่อง {slotNo} เต็มแล้ว ({blk?.rows ?? 8} แถว)
               </div>
             )}
-            {!!fRow.trim() && !rowOk && (
+            {!!fRow.trim() && !slotOk && (
               <div className="mt-2.5 text-[12px] font-semibold flex items-center gap-1.5" style={{ color: '#dc2626' }}>
-                <AlertTriangle size={13} /> {blk ? `Block ${blk.id} มีแถว 1–${blk.rows}` : 'เลขแถวไม่ถูกต้อง'}
+                <AlertTriangle size={13} /> {blk ? `Block ${blk.id} มีช่อง 1–${blk.cols}` : 'เลขช่องไม่ถูกต้อง'}
+              </div>
+            )}
+            {/* a block the plan has no grid for → the car would sit off-plan */}
+            {!!fBlock.trim() && !blk && blocks.length > 0 && (
+              <div className="mt-2.5 text-[12px] font-semibold flex items-center gap-1.5" style={{ color: '#dc2626' }}>
+                <AlertTriangle size={13} /> ไม่มี Block {fBlock.trim()} ในผังลานนี้
               </div>
             )}
           </div>
