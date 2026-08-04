@@ -53,12 +53,13 @@ export function yardLocCode(u: { block?: string; slot?: number } | undefined | n
   return `${prefix}-${blockCode(u.block)}${String(u.slot).padStart(2, '0')}`
 }
 
-/** Full yard location: site prefix + block + 2-digit row + 2-digit slot —
- *  e.g. "N-R0905" (block R, row 09, slot 05), "20-B1005". Empty when unplaced.
- *  Used by the Unit List "Location" column; a car is one of ≤8 in its row. */
+/** Full yard location: site prefix + block + 2-digit column (ช่อง) + 2-digit
+ *  depth — e.g. "N-R1402" = block R, column 14, 2nd car down that column.
+ *  Matches how the yard extends its lane codes ("N-R14" → R1401, R1402, …).
+ *  Empty when unplaced. Used by the Unit List "Location" column. */
 export function yardLocFull(u: { block?: string; row?: number; slot?: number } | undefined | null, prefix: string): string {
   if (!u || !u.block || !u.row || !u.slot) return ''
-  return `${prefix}-${blockCode(u.block)}${String(u.row).padStart(2, '0')}${String(u.slot).padStart(2, '0')}`
+  return `${prefix}-${blockCode(u.block)}${String(u.slot).padStart(2, '0')}${String(u.row).padStart(2, '0')}`
 }
 
 /** Sort key for a yard location code ("20-A28" → ["A", 28], "N-O15" → ["O", 15]).
