@@ -1,4 +1,5 @@
 import type { UnitStatus } from '../types'
+import { blockCode } from './groupingImport'
 
 export function timeAgo(ts: number | undefined, lang: 'th' | 'en' = 'th'): string {
   if (!ts) return '—'
@@ -54,11 +55,12 @@ export function tState(status: UnitStatus): { key: string; th: string; en: strin
 
 // Yard address, column-first: block + COLUMN(slot) + row-in-column. A lane block
 // stores the LaneNo column in `slot` and the 1..8 stack position in `row`, so the
-// column is the primary identifier and comes first (e.g. RR3805 = block RR,
-// column 38, car 5). Padded, dotless — the compact code used in detail/plan cards.
+// column is the primary identifier and comes first (e.g. T1201 = block T,
+// column 12, car 1). The block reads as its NAME — a doubled drawn id ("TT")
+// collapses to the single letter the yard writes. Padded, dotless.
 export function pos(u: { block?: string; row?: number; slot?: number }): string {
   if (!u.block) return '—'
-  return `${u.block}${String(u.slot).padStart(2, '0')}${String(u.row).padStart(2, '0')}`
+  return `${blockCode(u.block)}${String(u.slot).padStart(2, '0')}${String(u.row).padStart(2, '0')}`
 }
 
 const normBlockTag = (s?: string) => (s ?? '').trim().toUpperCase()
@@ -71,10 +73,11 @@ export function unitInBlock(u: { block?: string }, b: { id: string; name: string
   return !!t && (t === normBlockTag(b.id) || t === normBlockTag(b.name))
 }
 
-/** Short display tag for a block — its name when it's a short code (AA/NN), else its id. */
+/** Display name for a block — the single letter the yard says out loud: a short
+ *  code name/id ("TT", "KK") collapses to one letter, a real name ("WCL") stays. */
 export function blockTag(b: { id: string; name: string }): string {
   const n = normBlockTag(b.name)
-  return /^[A-Z0-9]{1,4}$/.test(n) ? n : b.id
+  return blockCode(/^[A-Z0-9]{1,4}$/.test(n) ? n : normBlockTag(b.id))
 }
 
 export function pct(a: number, b: number): number {

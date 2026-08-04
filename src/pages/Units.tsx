@@ -12,7 +12,7 @@ import { printIr, printDn, printIrPaper } from '../lib/dnir'
 import { useYard } from '../store/useYard'
 import { useTracking, useTrackingRows, useVisibleColumns } from '../store/useTracking'
 import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, LOCATION_KEY, MAX_FILTERS, DEFAULT_FILTER_COLS, agingPmDays, cleanStorage, isDateColumn, fmtSerialToDate, type ColGroup, type Column } from '../lib/trackingColumns'
-import { siteGroupingConfig, yardLocFull } from '../lib/groupingImport'
+import { yardLocFull } from '../lib/groupingImport'
 import { CAR_STATUS_META, deriveCarStatus, IN_YARD_STATUSES, PARKED_STATUSES, isWaitingRepair, finalColor, vinOfStatusColor, taxStatusColor } from '../lib/carStatus'
 import { rowsToCsv, type TrackRow, type RowEvent } from '../lib/excelTracking'
 import { printFindList, exportFindListXlsx } from '../lib/groupingPrint'
@@ -190,8 +190,7 @@ export function Units() {
   // ONLY the real placement code — no cell fallback (storage Yard / Location yard
   // are junk / the site name, not a position → they showed stray numbers).
   const allUnits = useYard((s) => s.units)
-  const locPrefix = siteGroupingConfig(sites.find((x) => x.id === currentSite)?.name ?? '').prefix
-  const locOf = (r: TrackRow) => yardLocFull(allUnits[r.vin], locPrefix)
+  const locOf = (r: TrackRow) => yardLocFull(allUnits[r.vin])
 
   const [tab, setTab] = useState<Tab>('units')
   const [q, setQ] = useState('')
@@ -247,10 +246,10 @@ export function Units() {
     const o: Record<string, string[]> = {}
     for (const key of activeFilterCols) o[key] = distinctFor(key)
     return o
-  // allUnits/locPrefix feed locOf() for the Location options — without them the
+  // allUnits feeds locOf() for the Location options — without it the
   // dropdown kept a stale list after an Update-Location import / park confirm
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, activeFilterCols, allUnits, locPrefix])
+  }, [rows, activeFilterCols, allUnits])
 
   const liveOpts = useMemo(() => {
     const o: Record<string, string[]> = {}
@@ -294,7 +293,7 @@ export function Units() {
       return av < bv ? -sortDir : av > bv ? sortDir : 0
     })
     return arr
-  }, [rows, searchIndex, q, fGroup, colFilters, activeFilterCols, allUnits, locPrefix, unitPreset, vinFilterSet, sortKey, sortDir])
+  }, [rows, searchIndex, q, fGroup, colFilters, activeFilterCols, allUnits, unitPreset, vinFilterSet, sortKey, sortDir])
 
   const toggleSort = (key: string) => {
     if (sortKey === key) setSortDir((d) => (d * -1) as SortDir)
@@ -432,8 +431,7 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
   const units = useYard((s) => s.units)
   const sites = useYard((s) => s.sites)
   const currentSite = useYard((s) => s.currentSite)
-  const locPrefix = siteGroupingConfig(sites.find((x) => x.id === currentSite)?.name ?? '').prefix
-  const locFor = (r: TrackRow) => yardLocFull(units[r.vin], locPrefix)
+  const locFor = (r: TrackRow) => yardLocFull(units[r.vin])
   const [dragCol, setDragCol] = useState<string | null>(null)
   const [overCol, setOverCol] = useState<string | null>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
@@ -1440,7 +1438,6 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
   const unit = useYard((s) => s.units[vin])
   const sites = useYard((s) => s.sites)
   const currentSite = useYard((s) => s.currentSite)
-  const locPrefix = siteGroupingConfig(sites.find((x) => x.id === currentSite)?.name ?? '').prefix
   const damages = unit?.damages ?? []
   const updateRepairStatus = useYard((s) => s.updateRepairStatus)
   const updateDamage = useYard((s) => s.updateDamage)
@@ -1650,7 +1647,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                           // "No" → "Last update" (timestamp), "__location" → the
                           // computed yard code; everything else is a raw sheet cell
                           const val = col.key === 'No' ? fmtUpdated(row.updatedAt)
-                            : col.key === LOCATION_KEY ? yardLocFull(unit, locPrefix)
+                            : col.key === LOCATION_KEY ? yardLocFull(unit)
                             : col.key === 'Aging PM' ? fmtAgingPm(c)
                             : col.key === 'storage Yard' ? cleanStorage(c[col.key])
                             : isDateColumn(col.key, col.label) ? fmtSerialToDate(c[col.key])

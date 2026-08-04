@@ -92,7 +92,7 @@ export function BlockPopup({
       <div className="flex items-center gap-2.5 px-3 py-2 select-none" style={{ background: 'linear-gradient(135deg,#0d1726,#1b2c45)', cursor: 'grab' }}
         onPointerDown={onTitleDown} onPointerMove={onTitleMove} onPointerUp={onTitleUp}>
         <div className="min-w-0">
-          <div className="font-bold text-[14px] text-white leading-tight">{block.name}</div>
+          <div className="font-bold text-[14px] text-white leading-tight">{blockTag(block)}</div>
           <div className="text-[10.5px]" style={{ color: 'rgba(255,255,255,0.55)' }}>
             {transposed ? 'แถวด้านบน · ช่องด้านซ้าย' : 'ช่องด้านบน · แถวด้านซ้าย'} · ลากเพื่อคลุมเลือก
           </div>

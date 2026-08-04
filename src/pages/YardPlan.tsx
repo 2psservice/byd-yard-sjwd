@@ -8,6 +8,7 @@ import { useYard, useUnits, useBlocks } from '../store/useYard'
 import { useTrackingRows } from '../store/useTracking'
 import { deriveCarStatus, IN_YARD_STATUSES, CAR_STATUS_META } from '../lib/carStatus'
 import { rowInSite } from '../lib/siteScope'
+import { blockTag } from '../lib/format'
 import { rowsToCsv, type TrackRow } from '../lib/excelTracking'
 import { matchVins, toFindListRows } from '../lib/findCar'
 import { printFindList, exportFindListXlsx } from '../lib/groupingPrint'
@@ -571,7 +572,7 @@ export function YardPlan() {
                       borderRadius: 8, padding: isArea ? undefined : '2px 7px',
                       boxShadow: isArea ? undefined : '0 1px 5px rgba(16,24,40,0.18)',
                     }}>
-                    <div className="font-extrabold leading-tight" style={{ fontSize: Math.min(18, b.h / 5.5), color: '#0f172a' }}>{b0.name}</div>
+                    <div className="font-extrabold leading-tight" style={{ fontSize: Math.min(18, b.h / 5.5), color: '#0f172a' }}>{isArea ? b0.name : blockTag(b0)}</div>
                     {!isArea && (
                       <>
                         <div className="font-semibold mt-0.5" style={{ fontSize: 11 }}>
