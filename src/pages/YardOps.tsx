@@ -9,7 +9,7 @@ import {
   CheckCircle2, XCircle, AlertTriangle, Navigation, Clock,
   User, RefreshCw, Plus, Trash2,
   ArrowRight, Zap, Hand, X, Camera, Pencil, Gauge, Route, Crosshair,
-  LogOut, MapPin, ClipboardList, ListChecks,
+  LogOut, MapPin, ClipboardList, ListChecks, Copy,
 } from 'lucide-react'
 import { useYard, useUnits, useTrips, useBlocks, useMe } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
@@ -38,6 +38,21 @@ import { blockTag, blockKeyOfTag, resolveBlockByName } from '../lib/format'
 import { useRecentOps } from '../store/useRecentOps'
 
 const recordRecent = (key: string, vin: string, note?: string) => useRecentOps.getState().record(key, vin, note)
+
+/** Copy a VIN to the clipboard — falls back to a hidden textarea where the
+ *  Clipboard API is unavailable (older Android WebView). */
+async function copyVin(vin: string, toast: (k: 'ok' | 'err', m: string) => void) {
+  try {
+    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(vin)
+    else {
+      const ta = document.createElement('textarea')
+      ta.value = vin; ta.style.position = 'fixed'; ta.style.opacity = '0'
+      document.body.appendChild(ta); ta.select()
+      document.execCommand('copy'); ta.remove()
+    }
+    toast('ok', `คัดลอก VIN แล้ว · ${vin.slice(-6)}`)
+  } catch { toast('err', 'คัดลอกไม่สำเร็จ') }
+}
 import { fmtSerialToDate } from '../lib/trackingColumns'
 import { matchModel } from '../lib/sampleData'
 import type { Damage, DamageInput, Unit } from '../types'
@@ -3488,7 +3503,19 @@ function CheckView() {
                 <span className="badge text-[11px] font-bold px-2.5 py-1"
                   style={{ background: '#0891b2', color: '#fff' }}>{carStatus}</span>
               )}
+              {/* where the car stands, in the yard's lane code (e.g. R0502) */}
+              {unit?.block && unit.row && unit.slot && (
+                <span className="badge text-[11px] font-bold px-2.5 py-1 tabular flex items-center gap-1"
+                  style={{ background: '#0f172a', color: '#fff' }}>
+                  <MapPin size={10} /> {yardLocFull(unit)}
+                </span>
+              )}
               <span className="vin text-[12.5px] font-bold">{vin}</span>
+              <button onClick={() => copyVin(vin, toast)} title="คัดลอก VIN"
+                className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 transition active:scale-90"
+                style={{ background: 'rgba(8,145,178,0.12)', color: '#0891b2' }}>
+                <Copy size={13} />
+              </button>
             </div>
           </div>
 
@@ -3520,8 +3547,8 @@ function CheckView() {
             {row?.cells['Gate In (Rayong yard)'] && <Row label="Gate In Date" value={row.cells['Gate In (Rayong yard)']} />}
             {row?.cells['Gate In Inspector']      && <Row label="ผู้ตรวจรับ"  value={row.cells['Gate In Inspector']} />}
             {row?.cells['Gate Out time stamp']     && <Row label="Gate Out"    value={row.cells['Gate Out time stamp']} />}
-            {(row?.cells['Location yard'] || row?.cells['storage Yard'] || unit?.block) && (
-              <Row label="Location" value={row?.cells['Location yard'] ?? row?.cells['storage Yard'] ?? `${unit?.block ?? ''}-${unit?.row ?? ''}-${unit?.slot ?? ''}`} />
+            {(unit?.block || row?.cells['Location yard'] || row?.cells['storage Yard']) && (
+              <Row label="Location" value={yardLocFull(unit) || row?.cells['Location yard'] || row?.cells['storage Yard'] || '—'} />
             )}
             {unit?.lastPos && (
               <div className="flex items-center px-4 py-2.5 gap-3 border-b hairline">
