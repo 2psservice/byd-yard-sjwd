@@ -40,17 +40,27 @@ export function Grouping() {
   const [meta, setMeta] = useState<GroupPrintMeta | null>(null)
   const [seqName, setSeqName] = useState('') // queue name = the uploaded sheet title
   const [stats, setStats] = useState<{ found: number; notFound: number; placed: number; assigned: number } | null>(null)
+  const [shortRead, setShortRead] = useState<
+    { got: number; want: number; noGrouping: number; sheet: string; others: { sheet: string; vins: number }[] } | null>(null)
   const [busy, setBusy] = useState(false)
+  const [lastFile, setLastFile] = useState<File | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
   const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     e.target.value = ''
     if (!file) return
+    void importFile(file)
+  }
+
+  /** @param sheet read this sheet instead of the site-matched one — a plan
+   *  continued on a second sheet is imported by picking it here. */
+  const importFile = async (file: File, sheet?: string) => {
     if (!currentSite) { toast('err', 'กรุณาเลือก Site ก่อน'); openSiteModal(); return }
     setBusy(true)
+    setLastFile(file)
     try {
-      const res = await parseGroupingWorkbook(file, siteName)
+      const res = await parseGroupingWorkbook(file, siteName, sheet)
 
       // group order (first-seen) → Lane load O1, O2, …
       const order: string[] = []
@@ -96,7 +106,15 @@ export function Grouping() {
       setSeqName(res.title.trim() || `${m.siteLabel} - Grouping to Dealer ( ${m.totalUnits} Units / ${m.groupCount} Group) Date ${m.date}`)
       setRows(printRows)
       setStats({ found, notFound, placed, assigned })
-      toast('ok', `นำเข้า ${printRows.length} คัน · ${order.length} group · ใส่เลข grouping ${assigned} คัน`)
+      // the sheet's own title states how many units it carries — if fewer rows
+      // were read, say so loudly instead of quietly building a short queue
+      const short = res.titleUnits > 0 && printRows.length < res.titleUnits
+      setShortRead(short
+        ? { got: printRows.length, want: res.titleUnits, noGrouping: res.skipped.noGrouping,
+            sheet: res.sheetName, others: res.sheetVinCounts.filter((x) => x.sheet !== res.sheetName && x.vins > 0) }
+        : null)
+      if (short) toast('err', `อ่านได้ ${printRows.length} คัน แต่หัวไฟล์ระบุ ${res.titleUnits} คัน — ดูรายละเอียดด้านล่าง`)
+      else toast('ok', `นำเข้า ${printRows.length} คัน · ${order.length} group · ใส่เลข grouping ${assigned} คัน`)
     } catch (err) {
       console.error('[grouping] import', err)
       toast('err', (err as Error)?.message ?? 'อ่านไฟล์ไม่สำเร็จ')
@@ -139,6 +157,33 @@ export function Grouping() {
           </div>
         }
       />
+
+      {/* the read came up short of what the sheet says it holds */}
+      {shortRead && (
+        <div className="panel p-3.5 mb-3 flex items-start gap-2.5" style={{ background: '#fff7ed', border: '1px solid rgba(217,119,6,0.35)' }}>
+          <AlertTriangle size={16} className="shrink-0 mt-0.5" style={{ color: '#d97706' }} />
+          <div className="text-[12.5px] leading-relaxed">
+            <b style={{ color: '#b45309' }}>อ่านได้ {shortRead.got} คัน แต่หัวไฟล์ระบุ {shortRead.want} คัน</b>
+            <div style={{ color: 'var(--muted)' }}>
+              อ่านจาก sheet <b>{shortRead.sheet}</b>
+              {shortRead.noGrouping > 0 && <> · ข้าม {shortRead.noGrouping} แถวที่ยังไม่มีเลข grouping ก่อนเลขแรกของไฟล์</>}
+            </div>
+            {shortRead.others.length > 0 && (
+              <div className="mt-1.5">
+                <div style={{ color: 'var(--muted)' }}>แผนถูกแบ่งหลาย sheet — กดเพื่ออ่าน sheet อื่นในไฟล์เดิม:</div>
+                <div className="flex flex-wrap gap-1.5 mt-1.5">
+                  {shortRead.others.map((o) => (
+                    <button key={o.sheet} className="btn py-1 text-[12px]" disabled={busy || !lastFile}
+                      onClick={() => lastFile && importFile(lastFile, o.sheet)}>
+                      {o.sheet} · {o.vins} คัน
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* summary after import */}
       {stats && meta && (

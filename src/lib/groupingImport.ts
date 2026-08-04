@@ -22,6 +22,14 @@ export interface GroupingParseResult {
   title: string           // sheet title row, e.g. "NYB2 - Grouping to Dealer ( 17 Units / 5 Group) Date 06 July 2026"
   headerDate: string      // date pulled from the title, else ''
   rows: GroupingParseRow[]
+  /** Unit count the sheet's own title claims (0 when the title has none) —
+   *  compared against rows.length so a short read is never silent. */
+  titleUnits: number
+  /** VIN-looking rows skipped, by reason. */
+  skipped: { noGrouping: number }
+  /** VIN row counts for every sheet in the workbook — names a sheet holding
+   *  data we did not read (a plan split across continuation sheets). */
+  sheetVinCounts: { sheet: string; vins: number }[]
 }
 
 /** Per-site config: which workbook sheet to read + the yard-location prefix
@@ -95,13 +103,17 @@ function pickSheet(sheetNames: string[], keys: string[]): string | null {
   return null
 }
 
-export async function parseGroupingWorkbook(file: File, siteName: string): Promise<GroupingParseResult> {
+/** @param sheetOverride read this sheet instead of the one matched by site —
+ *  used to pull in a plan continued on a second sheet. */
+export async function parseGroupingWorkbook(file: File, siteName: string, sheetOverride?: string): Promise<GroupingParseResult> {
   const XLSX = await import('xlsx')
   const buf = await file.arrayBuffer()
   const wb = XLSX.read(buf, { type: 'array' })
 
   const { sheetKeys } = siteGroupingConfig(siteName)
-  const sheetName = pickSheet(wb.SheetNames, sheetKeys)
+  const sheetName = sheetOverride && wb.SheetNames.includes(sheetOverride)
+    ? sheetOverride
+    : pickSheet(wb.SheetNames, sheetKeys)
   if (!sheetName) {
     throw new Error(`ไม่พบ sheet สำหรับ site "${siteName}" (มองหา: ${sheetKeys.join(', ')}) — sheet ในไฟล์: ${wb.SheetNames.join(', ')}`)
   }
@@ -132,12 +144,21 @@ export async function parseGroupingWorkbook(file: File, siteName: string): Promi
   const dateI = idx('วันที่ในการเข้ารับ', 'วันที่รับ', 'date')
 
   const rows: GroupingParseRow[] = []
+  let skipNoGrouping = 0
+  // The Grouping Number is written once per group and the rest of that group's
+  // rows are left blank (a merged cell). Reading each row on its own therefore
+  // kept only the first car of every group — carry the last number down instead,
+  // which is what the merged cell means. Only rows before the FIRST number have
+  // no group to inherit and are genuinely un-assignable.
+  let lastGrouping = ''
   for (let r = headerAt + 1; r < aoa.length; r++) {
     const row = aoa[r] as any[]
+    const cellGroup = String(row[groupI] ?? '').trim()
+    if (cellGroup) lastGrouping = cellGroup
     const vin = String(row[vinI] ?? '').trim().toUpperCase()
     if (!isVin(vin)) continue
-    const grouping = String(row[groupI] ?? '').trim()
-    if (!grouping) continue
+    const grouping = cellGroup || lastGrouping
+    if (!grouping) { skipNoGrouping++; continue }
     rows.push({
       vin,
       modelName: modelNameI >= 0 ? String(row[modelNameI] ?? '').trim() : '',
@@ -149,5 +170,15 @@ export async function parseGroupingWorkbook(file: File, siteName: string): Promi
     })
   }
   if (!rows.length) throw new Error(`sheet "${sheetName}" ไม่พบแถวข้อมูล VIN`)
-  return { sheetName, title, headerDate, rows }
+
+  // "( 124 Units / 25 Groups)" — the sheet's own claim, to check the read against
+  const titleUnits = +(title.match(/\(\s*(\d+)\s*units?/i)?.[1] ?? 0)
+  // how many VINs each sheet holds, so a plan continued on another sheet is named
+  const sheetVinCounts = wb.SheetNames.map((nm) => {
+    const a = XLSX.utils.sheet_to_json<any[]>(wb.Sheets[nm], { header: 1, defval: '', raw: false, blankrows: false })
+    let vins = 0
+    for (const rw of a) for (const c of rw as any[]) if (isVin(String(c ?? '').trim().toUpperCase())) { vins++; break }
+    return { sheet: nm, vins }
+  })
+  return { sheetName, title, headerDate, rows, titleUnits, skipped: { noGrouping: skipNoGrouping }, sheetVinCounts }
 }
