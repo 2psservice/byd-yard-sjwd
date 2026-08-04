@@ -229,6 +229,15 @@ const isGatedInStatus = (s?: string) => {
   return v !== '' && !PRE_GATEIN_STATUSES.has(v)
 }
 
+/** Has the car already left the yard? "Gate-out" passes isGatedInStatus (it IS
+ *  past gate-in), so a station that must not touch a departed car needs this
+ *  test as well. Resolved through deriveCarStatus so every gate-out signal the
+ *  app knows counts — the explicit status, a bare Gate Out time stamp or Gate
+ *  Out Date, a pickup plan whose date lapsed, and Pre Gate-out past the 09:30
+ *  flush. A car still staged in preload (Pre Gate-out before the flush) has not
+ *  left and stays movable. */
+const hasGoneOut = (c?: Record<string, string>) => !!c && deriveCarStatus(c) === 'Gate-out'
+
 /** Resolve a typed VIN for unit-based roles (Driver / PDI / Mechanic).
  *  Prefers a yard unit (exact → unique suffix); falls back to a tracking row
  *  to tell "not gated-in yet" apart from "unknown VIN". */
@@ -3071,7 +3080,7 @@ function RelocationView() {
   const wrongSite = useWrongSiteHint()
   const { loadFromIdb, appendHistory } = useTracking()
   const { toast, sites, currentSite, currentUser, updateLocations } = useYard()
-  const { block: blockGate, modal: gateModal } = useNotGatedIn()
+  const { block: blockGate, blockWith: blockGate2, modal: gateModal } = useNotGatedIn()
   const [vin, setVin] = useState<string | null>(null)
   const [fLoc, setFLoc] = useState('')
   const [saved, setSaved] = useState(false)
@@ -3137,6 +3146,15 @@ function RelocationView() {
       else if (hits.length > 1) { toast('err', `พบ ${hits.length} คัน — พิมพ์ให้ยาวขึ้น`); return }
     }
     if (!r) { toast('err', wrongSite(v) ?? `ไม่พบ VIN: ${v}`); return }
+    // "has left" is tested BEFORE "never arrived": a row whose Car Status cell is
+    // blank but whose Gate-Out stamp is set is a departed car, and the
+    // not-gated-in popup would name the wrong reason
+    if (hasGoneOut(r.cells)) {
+      blockGate2(r.vin, r.cells['Model name'] ?? r.cells['Model'] ?? '', 'รถออกจากลานแล้ว',
+        <>รถคันนี้ <b style={{ color: '#dc2626' }}>Gate-out</b> ไปแล้ว จึงไม่มีตำแหน่งในลานให้ย้าย<br />
+          หากรถกลับเข้าลาน ต้องทำ <b>Gate-in</b> ใหม่ก่อน</>)
+      return
+    }
     if (!isGatedInStatus(r.cells['Car Status'])) { blockGate(r.vin, r.cells['Model name'] ?? r.cells['Model'] ?? ''); return }
     setVin(r.vin)
     recordRecent('reloc:search', r.vin)
