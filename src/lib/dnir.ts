@@ -74,77 +74,161 @@ function irPaperSheetHtml(r: TrackRow, siteName?: string): string {
   </section>`
 }
 
-// ── Code 128 (code-set B) → inline SVG bars (no deps, prints crisply) ──
+// ── Code 128 → inline SVG bars (no deps, prints crisply) ─────────────────────
+// Starts in code-set B and switches to code-set C for a trailing digit run of
+// ≥4 (an odd-length run keeps its first digit in B) — decoded module-for-module
+// from the AMS reference barcodes, so the same data draws the same bars.
 const C128 = ['212222','222122','222221','121223','121322','131222','122213','122312','132212','221213','221312','231212','112232','122132','122231','113222','123122','123221','223211','221132','221231','213212','223112','312131','311222','321122','321221','312212','322112','322211','212123','212321','232121','111323','131123','131321','112313','132113','132311','211313','231113','231311','112133','112331','132131','113123','113321','133121','313121','211331','231131','213113','213311','213131','311123','311321','331121','312113','312311','332111','314111','221411','431111','111224','111422','121124','121421','141122','141221','112214','112412','122114','122411','142112','142211','241211','221114','413111','241112','134111','111242','121142','121241','114212','124112','124211','411212','421112','421211','212141','214121','412121','111143','111341','131141','114113','114311','411113','411311','113141','114131','311141','411131','211412','211214','211232','2331112']
-function barcodeSvg(text: string, height: number): string {
+function barcodeSvg(text: string): string {
   if (!text) return ''
   const vals = [104] // Start B
-  for (const ch of text) { const v = ch.charCodeAt(0) - 32; vals.push(v >= 0 && v < 95 ? v : 0) }
-  let sum = 104
-  for (let i = 1; i < vals.length; i++) sum += vals[i] * i
+  let i = 0
+  while (i < text.length) {
+    const rest = text.length - i
+    if (/^\d+$/.test(text.slice(i)) && rest >= 4) {
+      if (rest % 2) { vals.push(text.charCodeAt(i) - 32); i++ }
+      vals.push(99) // Code C
+      for (; i < text.length; i += 2) vals.push(+text.slice(i, i + 2))
+      break
+    }
+    const v = text.charCodeAt(i) - 32
+    vals.push(v >= 0 && v < 95 ? v : 0)
+    i++
+  }
+  let sum = vals[0]
+  for (let k = 1; k < vals.length; k++) sum += vals[k] * k
   vals.push(sum % 103, 106) // checksum + Stop
   const w = vals.map((v) => C128[v]).join('')
   let x = 0; const rects: string[] = []
-  for (let i = 0; i < w.length; i++) { const bw = +w[i]; if (i % 2 === 0 && bw) rects.push(`<rect x="${x}" width="${bw}" height="${height}"/>`); x += bw }
-  return `<svg class="bc" viewBox="0 0 ${x} ${height}" preserveAspectRatio="none">${rects.join('')}</svg>`
+  for (let k = 0; k < w.length; k++) { const bw = +w[k]; if (k % 2 === 0 && bw) rects.push(`<rect x="${x}" width="${bw}" height="10"/>`); x += bw }
+  return `<svg class="bc" viewBox="0 0 ${x} 10" preserveAspectRatio="none">${rects.join('')}</svg>`
 }
 
-const DN_FOOT: { en: string; th: string; fill: boolean; sig: boolean }[] = [
-  { en: 'Release Approval', th: 'ผู้ตรวจปล่อย', fill: false, sig: true },
-  { en: 'Trailer No.', th: 'หมายเลขทะเบียนรถเทรลเลอร์', fill: true, sig: true },
-  { en: 'Trailer Company', th: 'บริษัทรถเทรลเลอร์', fill: true, sig: false },
-  { en: 'Security', th: 'หน่วยรักษาความปลอดภัย', fill: true, sig: true },
-  { en: 'Receiver', th: 'ผู้รับ', fill: true, sig: true },
-]
+// ── DN geometry — measured span-by-span from the AMS reference PDF ───────────
+// Same technique as the IR: every coordinate is the PDF value in points.
+// Vertical column-line centers; column i spans DN_COLS[i]..DN_COLS[i+1].
+const DN_COLS = [10.5, 39.5, 188.5, 287.5, 387.5, 456.5, 525.5, 584.5]
+const DN_HEAD_TOP = 157.89   // table header top line (center)
+const DN_HEAD_BOT = 194.12   // header bottom = first data row top
+const DN_ROW_H = 43.945      // data row height
+const DN_LINE_H = 15.61      // multi-line cell line height
+const DN_ROWS_MAX = 8        // rows per sheet — keeps the signature block on-page
+
+/** Thai footer labels — 600-dpi crops from the reference PDF itself. The AMS
+ *  bold face only survives as a subset whose Thai needs the GSUB table the PDF
+ *  stripped, so the browser would misplace tone marks; the crops are the
+ *  reference's own rendering. dx/dy place the crop against the label's
+ *  (x, baseline) anchor. */
+const DN_TH: Record<string, { f: number; dx: number; dy: number; w: number; h: number }> = {
+  'ผู้ตรวจปล่อย':             { f: 0, dx: 0.52, dy: -7.93, w: 41.40, h: 10.92 },
+  'ลายเซ็น':                 { f: 1, dx: 0.28, dy: -8.41, w: 25.68, h: 8.52 },
+  'วันที่':                   { f: 2, dx: 0.28, dy: -9.49, w: 14.16, h: 9.60 },
+  'เวลา':                    { f: 3, dx: 0.64, dy: -4.93, w: 14.64, h: 5.04 },
+  'หมายเลขทะเบียนรถเทรลเลอร์': { f: 4, dx: 0.16, dy: -8.05, w: 99.00, h: 8.16 },
+  'บริษัทรถเทรลเลอร์':         { f: 5, dx: 0.16, dy: -8.05, w: 60.84, h: 8.16 },
+  'หน่วยรักษาความปลอดภัย':     { f: 6, dx: 0.16, dy: -7.57, w: 84.96, h: 7.80 },
+  'ผู้รับ':                   { f: 7, dx: 0.52, dy: -7.81, w: 13.20, h: 10.92 },
+}
+
 const dots = (n: number) => '.'.repeat(n)
+/** Chromium's print engine quantises a line box's baseline offset to whole CSS
+ *  pixels (0.75pt) — measured per font size with a probe sheet, TH Sarabun New,
+ *  line-height:1 (and 15.61pt for .dnk). Aiming the box top so that snapped
+ *  offset lands the baseline on the PDF's own value leaves only the 0.75pt-grid
+ *  rounding of the top itself (≤0.375pt). */
+const DN_BASE_OFF: Record<number, number> = { 10: 6.75, 12: 8.25, 14: 9.0, 18: 12.0 }
+const DN_CELL_OFF = 9.75 // .dnk first-line baseline offset
+const dnTop = (yBase: number, off: number) => (Math.round((yBase - off) / 0.75) * 0.75).toFixed(2)
+/** absolute single-line text at a PDF baseline (r = regular, b = bold) */
+const dnT = (bold: boolean, x: number, yBase: number, size: number, text: string) =>
+  `<div class="${bold ? 'dnb' : 'dnr'}" style="left:${x}pt;top:${dnTop(yBase, DN_BASE_OFF[size])}pt;font-size:${size}pt">${esc(text)}</div>`
+/** centered (page-wide) single-line text at a baseline */
+const dnC = (yBase: number, size: number, html: string, bold = true) =>
+  `<div class="${bold ? 'dnb' : 'dnr'} dnc" style="top:${dnTop(yBase, DN_BASE_OFF[size])}pt;font-size:${size}pt">${html}</div>`
+/** column-wide centered block (wraps at DN_LINE_H); firstBase = 1st line baseline */
+const dnCell = (col: number, firstBase: number, text: string) =>
+  text ? `<div class="dnk" style="left:${DN_COLS[col]}pt;width:${(DN_COLS[col + 1] - DN_COLS[col]).toFixed(2)}pt;top:${dnTop(firstBase, DN_CELL_OFF)}pt">${esc(text)}</div>` : ''
+/** Thai footer label crop at its measured anchor */
+const dnTh = (label: string, x: number, yBase: number) => {
+  const m = DN_TH[label]
+  return `<img class="dnth" src="/dn-th/${m.f}.png" alt="${esc(label)}" style="left:${(x + m.dx).toFixed(2)}pt;top:${(yBase + m.dy).toFixed(2)}pt;width:${m.w}pt;height:${m.h}pt">`
+}
+const dnLine = (x: number, y: number, w: number, h: number) =>
+  `<div class="dnl" style="left:${x.toFixed(2)}pt;top:${y.toFixed(2)}pt;width:${w.toFixed(2)}pt;height:${h.toFixed(2)}pt"></div>`
 
-/** Delivery Note (ใบส่งมอบรถยนต์) — AMS trip manifest with VIN barcodes. */
-function dnSheetHtml(rows: TrackRow[]): string {
-  const first = rows[0]
-  const grouping = esc(cell(first, 'Grouping  Number')) || '—'
-  const trip = cell(first, 'Grouping  Number') || first.vin
-  const d = new Date()
-  const mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()]
-  const pad = (n: number) => String(n).padStart(2, '0')
-  const printDate = `${pad(d.getDate())}/${mon}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`
-  const body = rows.map((r, i) => `
-    <tr>
-      <td class="c">${i + 1}</td>
-      <td class="bcell">${barcodeSvg(r.vin, 30)}<div class="bv">${esc(r.vin)}</div></td>
-      <td class="dest">${esc(cell(r, 'Dealer Location', 'Dealer Code'))}</td>
-      <td class="c">${esc(cell(r, 'Model Code', 'Model'))}</td>
-      <td class="c">${esc(cell(r, 'Engine No.'))}</td>
-      <td class="c">${esc(cell(r, 'Color'))}</td>
-      <td></td>
-    </tr>`).join('')
-  const foot = DN_FOOT.map((f) => `
-    <div class="fr">
-      <div class="fl"><div>${f.en}${f.fill ? ' ' + dots(48) : ''}</div><div class="th">${f.th}</div></div>
-      ${f.sig ? `<div class="fs"><div>Signature ${dots(20)}</div><div class="th">ลายเซ็น</div></div>
-      <div class="fs"><div>Date ${dots(20)}</div><div class="th">วันที่</div></div>
-      <div class="fs"><div>Time ${dots(18)}</div><div class="th">เวลา</div></div>` : ''}
-    </div>`).join('')
-  return `<section class="dn-sheet">
-    <div class="dn-head"><span>Grouping : ${grouping}</span><span>Print Date ${printDate}</span></div>
-    <div class="dn-title">Delivery Note</div>
-    <div class="dn-trip">${barcodeSvg(trip, 46)}<div class="tn">Trip No : ${esc(trip)}</div></div>
-    <div class="dn-vt">Vehicle List</div>
-    <table class="dn">
-      <thead><tr>
-        <th class="w-seq">Seq.</th><th class="w-bc">Vin No. Barcode</th><th class="w-dest">Destination</th>
-        <th class="w-mc">Model Code</th><th class="w-en">Engine No.</th><th class="w-cc">Color Code</th><th class="w-loc">Location on the trailer</th>
-      </tr></thead>
-      <tbody>${body}</tbody>
-    </table>
-    <div class="dn-foot">${foot}</div>
-  </section>`
+/** Delivery Note (ใบส่งมอบรถยนต์) — rebuilt 1:1 against the AMS reference:
+ *  same TH Sarabun New faces, same coordinates, same dot-leader runs. */
+function dnSheetHtml(rows: TrackRow[], seq0: number, grouping: string, trip: string, printDate: string): string {
+  const parts: string[] = []
+  // ── page header ──
+  parts.push(dnT(false, 20, 18.44, 10, `Grouping : ${grouping || '—'}`))
+  parts.push(dnT(false, 440, 18.44, 10, `Print Date ${printDate}`))
+  parts.push(dnC(55.19, 18, 'Delivery Note'))
+  parts.push(`<div class="dnbc" style="left:202.90pt;top:69.07pt;width:189.00pt;height:28.30pt">${barcodeSvg(trip)}</div>`)
+  parts.push(dnC(114.78, 14, `Trip No : <span class="dnr-in">${esc(trip)}</span>`))
+  // Vehicle List band
+  parts.push('<div class="dnbox" style="left:10pt;top:126.18pt;width:575.28pt;height:26.21pt"></div>')
+  parts.push(dnC(143.00, 14, 'Vehicle List'))
+
+  // ── table grid ──
+  const n = rows.length
+  const tblBot = DN_HEAD_BOT + n * DN_ROW_H            // bottom line center
+  parts.push(dnLine(10, DN_HEAD_TOP - 0.5, 574.28, 1)) // header top
+  for (let i = 0; i <= n; i++) parts.push(dnLine(10, DN_HEAD_BOT + i * DN_ROW_H - 0.5, 574.28, 1))
+  for (const x of DN_COLS) parts.push(dnLine(x - 0.5, DN_HEAD_TOP - 0.5, 1, tblBot - DN_HEAD_TOP + 1))
+
+  // ── table header (regular 12pt, first baseline 12.63pt under the top line) ──
+  const headBase = DN_HEAD_TOP + 12.63
+  // the last header breaks exactly where the AMS breaks it
+  const HEADS = ['Seq.', 'Vin No. Barcode', 'Destination', 'Model Code', 'Engine No.', 'Color Code', 'Location on\nthe trailer']
+  HEADS.forEach((h, c) => parts.push(dnCell(c, headBase, h)))
+
+  // ── rows ──
+  rows.forEach((r, i) => {
+    const T = DN_HEAD_BOT + i * DN_ROW_H
+    parts.push(dnCell(0, T + 12.63, String(seq0 + i + 1)))
+    parts.push(`<div class="dnbc" style="left:47.01pt;top:${(T + 5.43).toFixed(2)}pt;width:133.83pt;height:17.26pt">${barcodeSvg(r.vin)}</div>`)
+    parts.push(dnCell(1, T + 35.96, r.vin))
+    parts.push(dnCell(2, T + 12.63, cell(r, 'Dealer Location', 'Dealer Code')))
+    parts.push(dnCell(3, T + 12.63, cell(r, 'Model Code', 'Model')))
+    parts.push(dnCell(4, T + 12.63, cell(r, 'Engine No.')))
+    parts.push(dnCell(5, T + 12.63, cell(r, 'Color')))
+    parts.push(dnCell(6, T + 12.63, cell(r, 'Location on the trailer')))
+  })
+
+  // ── signature block — flows under the table (reference offsets from its
+  //    bottom line), every x/dot-count verbatim from the measured spans ──
+  const B = tblBot
+  parts.push(`<img class="dnth" src="/dn-logo.png" alt="SIAM JWD" style="left:100pt;top:${(B + 18.50).toFixed(2)}pt;width:90pt;height:45pt">`)
+  // per-row signature groups: rows 1-2 sit at x=210, rows 4-5 at x=208
+  const sig = (y: number, o: number) => [
+    dnT(true, 210 - o, y, 12, 'Signature'), dnT(false, 245.56 - o, y, 12, ' ' + dots(42)),
+    dnT(true, 329.15 - o, y, 12, ' Date'), dnT(false, 357.50 - o, y, 12, dots(42)),
+    dnT(true, 439.15 - o, y, 12, ' Time'), dnT(false, 467.50 - o, y, 12, dots(42)),
+  ].join('')
+  const y1 = B + 40.63, y2 = B + 91.24, y3 = B + 137.47, y4 = B + 183.69, y5 = B + 229.92
+  parts.push(dnT(true, 20, y1, 12, 'Release Approval'), sig(y1, 0))
+  parts.push(dnTh('ผู้ตรวจปล่อย', 20, y1 + 15.00), dnTh('ลายเซ็น', 210, y1 + 15.00), dnTh('วันที่', 333, y1 + 15.00), dnTh('เวลา', 443, y1 + 15.00))
+  parts.push(dnT(true, 20, y2, 12, 'Trailer No.'), dnT(false, 60, y2, 12, dots(75)), sig(y2, 0))
+  parts.push(dnTh('หมายเลขทะเบียนรถเทรลเลอร์', 20, y2 + 15.62), dnTh('ลายเซ็น', 210, y2 + 15.62), dnTh('วันที่', 332, y2 + 15.62), dnTh('เวลา', 444, y2 + 15.62))
+  parts.push(dnT(true, 20, y3, 12, 'Trailer Company'), dnT(false, 83.66, y3, 12, dots(138)))
+  parts.push(dnTh('บริษัทรถเทรลเลอร์', 20, y3 + 15.61))
+  parts.push(dnT(true, 20, y4, 12, 'Security'), dnT(false, 58, y4, 12, dots(77)), sig(y4, 2))
+  parts.push(dnTh('หน่วยรักษาความปลอดภัย', 20, y4 + 15.61), dnTh('ลายเซ็น', 208, y4 + 15.61), dnTh('วันที่', 330, y4 + 15.61), dnTh('เวลา', 442, y4 + 15.61))
+  parts.push(dnT(true, 20, y5, 12, 'Receiver'), dnT(false, 58, y5, 12, dots(77)), sig(y5, 2))
+  parts.push(dnTh('ผู้รับ', 20, y5 + 15.61), dnTh('ลายเซ็น', 210, y5 + 15.61), dnTh('วันที่', 332, y5 + 15.61), dnTh('เวลา', 444, y5 + 15.61))
+
+  return `<section class="dn-sheet">${parts.join('')}</section>`
 }
 
-/* The AMS's own TH Sarabun New — same file the reference PDFs embed. A unique
+/* The AMS's own TH Sarabun New — same files the reference PDFs embed. A unique
  * family name so an installed system font can never shadow it with different
- * metrics. */
+ * metrics. The bold face is the DN reference's embedded subset (its exact
+ * outlines) with a rebuilt cmap — it carries every glyph of the DN's static
+ * bold labels. */
 const SARABUN_FACE = `
-@font-face { font-family:'THSarabunNew AMS'; src:url('/fonts/THSarabunNew.ttf') format('truetype'); font-weight:400; font-style:normal; }`
+@font-face { font-family:'THSarabunNew AMS'; src:url('/fonts/THSarabunNew.ttf') format('truetype'); font-weight:400; font-style:normal; }
+@font-face { font-family:'THSarabunNew AMS Bold'; src:url('/fonts/THSarabunNewBold.ttf') format('truetype'); font-weight:400; font-style:normal; }`
 
 const CSS = `${SARABUN_FACE}
 @page { size: A4 portrait; margin: 0; }
@@ -157,31 +241,21 @@ body { margin:0; font-family:'Sarabun','Noto Sans Thai',Tahoma,'Leelawadee UI',s
 .ir-bg { position:absolute; left:0; top:0; width:595.2pt; height:841.68pt; }
 .irf { position:absolute; line-height:1; white-space:nowrap; color:#000; font-family:'THSarabunNew AMS'; }
 
-/* ── Delivery Note (AMS trip manifest) ── */
-.dn-sheet { width:210mm; min-height:297mm; padding:9mm; page-break-after:always; }
+/* ── Delivery Note — absolute layout at the AMS reference coordinates ── */
+.dn-sheet { position:relative; width:595.28pt; height:841.89pt; overflow:hidden; page-break-after:always; color:#000; }
 .dn-sheet:last-child { page-break-after:auto; }
-.dn-head { display:flex; justify-content:space-between; font-size:8px; padding:0 1px 6px; }
-.dn-title { text-align:center; font-size:16px; font-weight:700; margin:2px 0; }
-.dn-trip { text-align:center; margin:6px 0 10px; }
+.dnr, .dnb { position:absolute; line-height:1; white-space:pre; }
+.dnr { font-family:'THSarabunNew AMS'; }
+.dnb { font-family:'THSarabunNew AMS Bold'; }
+.dnc { left:0; right:0; text-align:center; }
+.dnr-in { font-family:'THSarabunNew AMS'; }
+.dnk { position:absolute; text-align:center; font-size:12pt; line-height:${DN_LINE_H}pt; font-family:'THSarabunNew AMS'; white-space:pre-line; }
+.dnl { position:absolute; background:#000; }
+.dnbox { position:absolute; border:1pt solid #000; }
+.dnbc { position:absolute; }
+.dnbc .bc { display:block; width:100%; height:100%; }
 .bc rect { fill:#000; }
-.dn-trip .bc { height:46px; width:240px; }
-.dn-trip .tn { font-size:9px; font-weight:600; margin-top:3px; }
-.dn-vt { border:1px solid #111; border-bottom:0; text-align:center; font-weight:700; font-size:9px; padding:3px; }
-.dn { width:100%; border-collapse:collapse; }
-.dn th, .dn td { border:1px solid #111; font-size:7.5px; padding:2px 3px; vertical-align:middle; }
-.dn th { background:#fff; font-weight:700; text-align:center; line-height:1.15; }
-.dn td.c { text-align:center; }
-.dn .bcell { text-align:center; padding:3px 2px; }
-.dn .bcell .bc { height:28px; width:97%; display:block; margin:0 auto; }
-.dn .bv { font-size:7px; font-weight:600; margin-top:1px; letter-spacing:.3px; }
-.dn .dest { font-size:7px; text-align:center; line-height:1.25; }
-.dn .w-seq { width:5%; } .dn .w-bc { width:21%; } .dn .w-dest { width:25%; } .dn .w-mc { width:12%; } .dn .w-en { width:11%; } .dn .w-cc { width:10%; } .dn .w-loc { width:12%; }
-.dn thead { display:table-header-group; }
-.dn-foot { margin-top:22px; font-size:8px; }
-.dn-foot .fr { display:flex; align-items:flex-start; gap:6px; margin-bottom:11px; }
-.dn-foot .fl { width:36%; }
-.dn-foot .fs { flex:1; white-space:nowrap; overflow:hidden; }
-.dn-foot .th { font-size:7.5px; color:#333; margin-top:1px; }
+.dnth { position:absolute; }
 `
 
 // IR paper overlay — US Letter, the AMS's TH Sarabun New (matches the export 1:1)
@@ -202,7 +276,8 @@ const htmlDoc = (title: string, body: string, css: string = CSS): string =>
 export const buildIrHtml = (rows: TrackRow[], siteName?: string): string =>
   htmlDoc(`IR — ${rows.length} VIN`, rows.map((r) => irSheetHtml(r, siteName)).join(''))
 /** Delivery Note (DN) — one manifest per grouping (a DN *is* one trip, so cars
- *  from several groupings must never share a sheet). */
+ *  from several groupings must never share a sheet). Long trips continue onto
+ *  extra sheets with the sequence running on. */
 export const buildDnHtml = (rows: TrackRow[]): string => {
   const byGroup = new Map<string, TrackRow[]>()
   for (const r of rows) {
@@ -210,7 +285,16 @@ export const buildDnHtml = (rows: TrackRow[]): string => {
     const list = byGroup.get(g)
     if (list) list.push(r); else byGroup.set(g, [r])
   }
-  const sheets = [...byGroup.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([, list]) => dnSheetHtml(list))
+  const d = new Date()
+  const mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()]
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const printDate = `${pad(d.getDate())}/${mon}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+  const sheets: string[] = []
+  for (const [g, list] of [...byGroup.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const trip = cell(list[0], 'Trip No', 'Trip No.', 'TripNo') || cell(list[0], 'Grouping  Number') || list[0].vin
+    for (let i = 0; i < list.length; i += DN_ROWS_MAX)
+      sheets.push(dnSheetHtml(list.slice(i, i + DN_ROWS_MAX), i, g === '—' ? '' : g, trip, printDate))
+  }
   return htmlDoc(`DN — ${byGroup.size} Grouping · ${rows.length} VIN`, sheets.join(''))
 }
 /** IR paper overlay (data only) — to print onto pre-printed IR forms. */
