@@ -178,6 +178,9 @@ interface OpsState {
   markAtWash: (id: string, vin: string, by?: string) => void        // driver scan #1
   markAtLane: (id: string, vin: string, by?: string) => void        // driver scan #2
   confirmSeqGateOut: (id: string, vin: string, by?: string) => void // gate-out confirmed
+  /** Close many cars of the same sequence at once (scan-DN bulk gate-out) —
+   *  ONE state update + ONE cloud push for the whole run. */
+  confirmSeqGateOutMany: (id: string, vins: string[], by?: string) => void
   /** Pull queues from the cloud. authoritative=true replaces local even when the cloud is empty
    *  (broadcast refetch); false = boot merge (cloud wins when non-empty, else seed local up). */
   loadFromCloud: (authoritative?: boolean) => Promise<void>
@@ -433,6 +436,19 @@ export const useOps = create<OpsState>()(
           queues: s.queues.map((q) =>
             q.id === id
               ? { ...q, items: q.items.map((i) => (i.vin === vin ? { ...i, gatedOut: true, done: true, doneAt: Date.now(), doneBy: by ?? i.doneBy } : i)) }
+              : q,
+          ),
+        }))
+        pushQueue(get, id)
+      },
+
+      confirmSeqGateOutMany: (id, vins, by) => {
+        const want = new Set(vins)
+        const at = Date.now()
+        set((s) => ({
+          queues: s.queues.map((q) =>
+            q.id === id
+              ? { ...q, items: q.items.map((i) => (want.has(i.vin) ? { ...i, gatedOut: true, done: true, doneAt: at, doneBy: by ?? i.doneBy } : i)) }
               : q,
           ),
         }))
