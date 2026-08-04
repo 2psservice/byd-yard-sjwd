@@ -35,6 +35,9 @@ import { yardLocCode, yardLocFull, blockCode, byYardLocation } from '../lib/grou
 import { parseLane } from '../lib/laneImport'
 import { LOCATION_KEY } from '../lib/trackingColumns'
 import { blockTag, blockKeyOfTag, resolveBlockByName } from '../lib/format'
+import { useRecentOps } from '../store/useRecentOps'
+
+const recordRecent = (key: string, vin: string, note?: string) => useRecentOps.getState().record(key, vin, note)
 import { fmtSerialToDate } from '../lib/trackingColumns'
 import { matchModel } from '../lib/sampleData'
 import type { Damage, DamageInput, Unit } from '../types'
@@ -376,6 +379,48 @@ function useNotGatedIn() {
 }
 
 // ── shared: mobile VIN input ──────────────────────────────────────────────────
+/** ประวัติของสถานีนี้บนเครื่องนี้ — VIN ที่เพิ่งค้นหา + รายการที่เพิ่งบันทึก
+ *  (ใหม่สุดบน, แตะเพื่อเรียกคันนั้นขึ้นมาอีกครั้ง) */
+function RecentPanel({ station, accent, onPick }: { station: string; accent: string; onPick: (vin: string) => void }) {
+  const searches = useRecentOps(s => s.lists[`${station}:search`])
+  const saves = useRecentOps(s => s.lists[`${station}:save`])
+  const clear = useRecentOps(s => s.clear)
+  const fmt = (ts: number) => {
+    const d = new Date(ts); const p2 = (n: number) => String(n).padStart(2, '0')
+    return `${p2(d.getDate())}/${p2(d.getMonth() + 1)} ${p2(d.getHours())}:${p2(d.getMinutes())}`
+  }
+  const section = (title: string, items: typeof searches, key: string) => !items?.length ? null : (
+    <div className="panel overflow-hidden fade-up">
+      <div className="px-3.5 py-2 border-b hairline flex items-center gap-1.5">
+        <Clock size={12} style={{ color: accent }} />
+        <span className="text-[11.5px] font-bold" style={{ color: 'var(--muted)' }}>{title} ({items.length})</span>
+        <button className="ml-auto text-[11px] font-semibold" style={{ color: 'var(--faint)' }}
+          onClick={() => clear(key)}>ล้าง</button>
+      </div>
+      <div>
+        {items.map((e, i) => (
+          <button key={e.vin} onClick={() => onPick(e.vin)}
+            className="w-full px-3.5 py-2 flex items-center gap-2 text-left transition active:scale-[0.99]"
+            style={{ borderTop: i ? '1px solid var(--line)' : undefined }}>
+            <div className="min-w-0 flex-1">
+              <div className="vin text-[12px] font-bold truncate">{e.vin}</div>
+              {e.note && <div className="text-[11px] mt-0.5" style={{ color: accent }}>{e.note}</div>}
+            </div>
+            <span className="text-[10.5px] tabular shrink-0" style={{ color: 'var(--faint)' }}>{fmt(e.at)}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+  if (!searches?.length && !saves?.length) return null
+  return (
+    <div className="space-y-3">
+      {section('ประวัติการบันทึก', saves, `${station}:save`)}
+      {section('ประวัติการค้นหา', searches, `${station}:search`)}
+    </div>
+  )
+}
+
 function VinInput({ onScan, accent = 'var(--brand)' }: { onScan: (vin: string) => void; accent?: string }) {
   const [val, setVal] = useState('')
   const [camOpen, setCamOpen] = useState(false)
@@ -3079,6 +3124,7 @@ function RelocationView() {
     if (!r) { toast('err', wrongSite(v) ?? `ไม่พบ VIN: ${v}`); return }
     if (!isGatedInStatus(r.cells['Car Status'])) { blockGate(r.vin, r.cells['Model name'] ?? r.cells['Model'] ?? ''); return }
     setVin(r.vin)
+    recordRecent('reloc:search', r.vin)
   }
 
   /** "T1201" — block name + column + which car down it, the yard's own form. */
@@ -3102,6 +3148,7 @@ function RelocationView() {
       from: placed ? yardLocFull(unit) : '',
       to: codeOf(blockId, slotNo, nextRow),
     })
+    recordRecent('reloc:save', row.vin, `ย้ายไป ${codeOf(blockId, slotNo, nextRow)}`)
     setSaved(true)
     toast('ok', `ย้ายไป ${codeOf(blockId, slotNo, nextRow)} · ${row.vin.slice(-6)}`)
     setTimeout(() => { setVin(null); setSaved(false) }, 1600)
@@ -3111,6 +3158,7 @@ function RelocationView() {
     <div className="space-y-4">
       <VinInput onScan={onScan} accent="#0ea5e9" />
       {gateModal}
+      {!row && <RecentPanel station="reloc" accent="#0ea5e9" onPick={onScan} />}
       {row && (
         <div className="panel p-4 space-y-4 fade-up">
           <div className="flex items-center gap-2">
@@ -3260,6 +3308,7 @@ function UpdateDamageView() {
     const gated = (fu && fu.status !== 'EXPECTED') || (fr && isGatedInStatus(fr.cells['Car Status']))
     if (!gated) { blockGate(found, fu?.modelName ?? fr?.cells['Model name'] ?? fr?.cells['Model'] ?? ''); return }
     setVin(found); setShowAdd(false)
+    recordRecent('damage:search', found)
   }
 
   const fmt = (ts: number) => {
@@ -3271,6 +3320,7 @@ function UpdateDamageView() {
     <div className="space-y-4">
       <VinInput onScan={onScan} accent="#dc2626" />
       {gateModal}
+      {!vin && <RecentPanel station="damage" accent="#dc2626" onPick={onScan} />}
 
       {(unit || trackRow) && vin && (
         <div className="panel overflow-hidden fade-up">
@@ -3328,6 +3378,7 @@ function UpdateDamageView() {
                     return
                   }
                   dmgs.forEach(d => addDamage(unit.vin, { ...d, source: 'update', station: 'Update Damage' }))
+                  recordRecent('damage:save', unit.vin, dmgs.length > 1 ? `บันทึก Defect ${dmgs.length} รายการ` : 'บันทึก Defect 1 รายการ')
                   setShowAdd(false)
                   toast('ok', dmgs.length > 1 ? `บันทึก Defect ${dmgs.length} รายการ` : 'บันทึก Defect แล้ว')
                 }}
@@ -3380,6 +3431,7 @@ function CheckView() {
     }
     if (!found) { toast('err', wrongSite(v) ?? `ไม่พบ VIN: ${v}`); return }
     setVin(found)
+    recordRecent('check:search', found)
   }
 
   // derived data
@@ -3422,6 +3474,7 @@ function CheckView() {
   return (
     <div className="space-y-4">
       <VinInput onScan={onScan} accent="#0891b2" />
+      {!vin && <RecentPanel station="check" accent="#0891b2" onPick={onScan} />}
 
       {(row || unit) && vin && (
         <div className="panel overflow-hidden fade-up">
