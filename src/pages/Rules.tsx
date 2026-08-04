@@ -5,6 +5,7 @@ import { useTrackingRows } from '../store/useTracking'
 import { makeT } from '../i18n'
 import { matchModel } from '../lib/sampleData'
 import { getPolicy } from '../lib/parkingEngine'
+import { blockTag } from '../lib/format'
 import { PageHead, Segmented, Toggle, cx } from '../components/ui'
 import type { ParkingPolicy, VehicleModel } from '../types'
 
@@ -126,13 +127,16 @@ export function Rules() {
                       style={isAll ? { background: 'var(--brand)', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>
                       {t('allBlocks')}
                     </button>
-                    {blocks.map((b) => {
-                      const on = !isAll && list.includes(b.id)
+                    {blocks.filter((b) => (b.kind ?? 'park') === 'park').map((b) => {
+                      // the block's NAME is its identity — legacy policies that
+                      // stored the internal id still count as selected
+                      const tag = blockTag(b)
+                      const on = !isAll && (list.includes(tag) || list.includes(b.id))
                       return (
-                        <button key={b.id} onClick={() => toggleBlock(b.id)}
-                          className="text-[12px] w-8 py-1 rounded-lg font-semibold transition"
+                        <button key={b.id} onClick={() => toggleBlock(tag)}
+                          className="text-[12px] min-w-8 px-1.5 py-1 rounded-lg font-semibold transition"
                           style={on ? { background: 'var(--brand-2)', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>
-                          {b.id}
+                          {tag}
                         </button>
                       )
                     })}

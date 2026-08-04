@@ -196,7 +196,6 @@ interface YardState {
   updateBlock: (id: string, patch: Partial<Block>) => void
   removeBlock: (id: string) => void
   /** Rename a block's internal id (badge letter). Returns the applied id, or null when empty/duplicate. */
-  renameBlockId: (id: string, newId: string) => string | null
   // --- gps ---
   startTrip: (vin: string, driver: string, from: string, to: string) => void
   appendGps: (vin: string, p: GpsPoint, sim?: boolean) => void
@@ -901,42 +900,6 @@ export const useYard = create<YardState>()(
         scheduleBlockSync(get)
       },
 
-      // Rename a block's internal id (the badge letter). Units in this site
-      // parked under the old id are re-tagged so their cars follow the block.
-      renameBlockId: (id, newId) => {
-        const next = newId.trim().toUpperCase()
-        if (!next) return null
-        if (next === id) return next
-        const s = get()
-        // locate the bucket that actually holds this block — usually the current
-        // site, but fall back to any bucket (e.g. '_global', or a layout loaded
-        // under a different key) so the rename never silently no-ops.
-        let key = siteKey(s.currentSite)
-        if (!(s.blocksBySite[key] ?? []).some((b) => b.id === id)) {
-          const hit = Object.keys(s.blocksBySite).find((k) => (s.blocksBySite[k] ?? []).some((b) => b.id === id))
-          if (hit) key = hit
-        }
-        const cur = s.blocksBySite[key] ?? []
-        if (!cur.some((b) => b.id === id) || cur.some((b) => b.id === next)) return null
-        // re-tag parked units: scope to the bucket's site (the real site id; the
-        // '_global' bucket has no site so re-tag any unit parked under the old id)
-        const bucketSite = key === '_global' ? null : key
-        const units = { ...s.units }
-        const changed: Unit[] = []
-        for (const [vin, u] of Object.entries(units)) {
-          if (u.block === id && (!bucketSite || u.site === bucketSite)) {
-            const nu = { ...u, block: next }
-            units[vin] = nu; changed.push(nu)
-          }
-        }
-        set({
-          blocksBySite: { ...s.blocksBySite, [key]: cur.map((b) => (b.id === id ? { ...b, id: next } : b)) },
-          ...(changed.length ? { units } : {}),
-        })
-        if (changed.length) db.upsertUnits(changed).catch((e) => console.error('[db] renameBlockId', e))
-        scheduleBlockSync(get) // replaceBlocks prunes the old-id cloud row
-        return next
-      },
 
       // ── gps ──────────────────────────────────────────────────────────────
       startTrip: (vin, driver, from, to) =>

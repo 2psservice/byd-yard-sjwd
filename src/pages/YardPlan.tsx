@@ -121,7 +121,7 @@ export function YardPlan() {
   const blocks = useBlocks()
   const currentSite = useYard((s) => s.currentSite)
   const sites = useYard((s) => s.sites)
-  const { autoParkAll, addBlock, updateBlock, removeBlock, renameBlockId, toast } = useYard()
+  const { autoParkAll, addBlock, updateBlock, removeBlock, toast } = useYard()
   const t = makeT(lang)
   const siteName = sites.find((x) => x.id === currentSite)?.name
 
@@ -635,13 +635,6 @@ export function YardPlan() {
           key={panelBlock.id}
           block={panelBlock}
           onChange={(patch) => updateBlock(panelBlock.id, patch)}
-          onRenameId={(nid) => {
-            const applied = renameBlockId(panelBlock.id, nid)
-            if (!applied) { toast('err', `ใช้รหัส "${nid.trim().toUpperCase()}" ไม่ได้ — ว่างหรือซ้ำกับบล็อกอื่น`); return false }
-            setPanelId(applied); setSelId(applied)
-            toast('ok', `เปลี่ยนรหัสบล็อกเป็น ${applied} · รถที่จอดอยู่ย้ายตามแล้ว`)
-            return true
-          }}
           onDelete={() => { if (confirm(`ลบบล็อก "${panelBlock.name}" ?`)) { removeBlock(panelBlock.id); setPanelId(null); setSelId(null) } }}
           onDuplicate={() => { const id = addBlock({ ...panelBlock, id: undefined, name: `${panelBlock.name} (สำเนา)`, x: (panelBlock.x ?? 40) + 30, y: (panelBlock.y ?? 40) + 30 } as Partial<Block>); setSelId(id); setPanelId(id) }}
           onClose={() => setPanelId(null)}
@@ -838,16 +831,14 @@ function FindCarPanel({ units, siteName, onClose }: { units: Unit[]; siteName: s
 }
 
 // ── centered popup to edit one block ──────────────────────────────────────────
-function BlockEditModal({ block, onChange, onRenameId, onDelete, onDuplicate, onClose }: {
+function BlockEditModal({ block, onChange, onDelete, onDuplicate, onClose }: {
   block: Block & { x: number; y: number; w: number; h: number }
   onChange: (p: Partial<Block>) => void
-  onRenameId: (newId: string) => boolean
   onDelete: () => void
   onDuplicate: () => void
   onClose: () => void
 }) {
   // block-id edit is committed on blur/Enter (live rename would remount the panel per keystroke)
-  const [idDraft, setIdDraft] = useState(block.id)
   // stacked label + full-width input so the value is always visible
   const Field = ({ label, children }: { label: string; children: React.ReactNode }) => (
     <div>
@@ -863,22 +854,16 @@ function BlockEditModal({ block, onChange, onRenameId, onDelete, onDuplicate, on
     // docked on the right (no backdrop) so the board stays draggable while editing the shape
     <div className="fixed top-0 right-0 bottom-0 z-[70] flex flex-col panel-solid" style={{ width: 372, maxWidth: '92vw', borderRadius: 0, borderLeft: '1px solid var(--line-strong)', boxShadow: '-14px 0 44px -16px rgba(15,23,42,0.5)' }}>
       <div className="flex items-center justify-between px-4 py-3 border-b hairline shrink-0">
-        <span className="font-bold text-[16px] flex items-center gap-1.5"><MousePointer2 size={16} style={{ color: 'var(--brand)' }} /> แก้ไขบล็อก {block.id}</span>
+        <span className="font-bold text-[16px] flex items-center gap-1.5"><MousePointer2 size={16} style={{ color: 'var(--brand)' }} /> แก้ไขบล็อก {blockTag(block)}</span>
         <button className="btn btn-ghost p-1.5" onClick={onClose}><X size={17} /></button>
       </div>
 
       <div className="space-y-3.5 p-4 overflow-auto flex-1">
-          <div className="grid grid-cols-[92px_1fr] gap-3">
-            <Field label="รหัส (badge)">
-              <input className="input w-full text-[14px] py-2 text-center font-bold" value={idDraft}
-                onChange={(e) => setIdDraft(e.target.value.toUpperCase())}
-                onBlur={() => { const v = idDraft.trim().toUpperCase(); if (!v || v === block.id || !onRenameId(v)) setIdDraft(block.id) }}
-                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }} />
-            </Field>
-            <Field label="ชื่อบล็อก">
-              <input className="input w-full text-[14px] py-2" value={block.name} onChange={(e) => onChange({ name: e.target.value })} />
-            </Field>
-          </div>
+          {/* the NAME is the block's one identity (occupancy, codes, parking all
+              key on it) — the old internal "badge" id is storage-only now */}
+          <Field label="ชื่อบล็อก">
+            <input className="input w-full text-[14px] py-2 font-bold" value={block.name} onChange={(e) => onChange({ name: e.target.value })} />
+          </Field>
 
           <Field label="ชนิด">
             <div className="inline-flex p-0.5 rounded-xl gap-0.5 w-full" style={{ background: 'var(--chip)' }}>
