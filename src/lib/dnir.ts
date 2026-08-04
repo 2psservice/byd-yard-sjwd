@@ -101,7 +101,10 @@ function barcodeSvg(text: string): string {
   const w = vals.map((v) => C128[v]).join('')
   let x = 0; const rects: string[] = []
   for (let k = 0; k < w.length; k++) { const bw = +w[k]; if (k % 2 === 0 && bw) rects.push(`<rect x="${x}" width="${bw}" height="10"/>`); x += bw }
-  return `<svg class="bc" viewBox="0 0 ${x} 10" preserveAspectRatio="none">${rects.join('')}</svg>`
+  // shape-rendering: an anti-aliased edge greys ~1 device pixel either side of
+  // every bar — at the AMS's 0.24 mm module that is enough width error to lose
+  // a scan, so the edges are snapped to the pixel grid instead.
+  return `<svg class="bc" viewBox="0 0 ${x} 10" preserveAspectRatio="none" shape-rendering="crispEdges">${rects.join('')}</svg>`
 }
 
 // ── DN geometry — measured span-by-span from the AMS reference PDF ───────────
@@ -165,7 +168,7 @@ function dnSheetHtml(rows: TrackRow[], seq0: number, grouping: string, trip: str
   parts.push(dnT(false, 440, 18.44, 10, `Print Date ${printDate}`))
   parts.push(dnC(55.19, 18, 'Delivery Note'))
   parts.push(`<div class="dnbc" style="left:202.90pt;top:69.07pt;width:189.00pt;height:28.30pt">${barcodeSvg(trip)}</div>`)
-  parts.push(dnC(114.78, 14, `Trip No : <span class="dnr-in">${esc(trip)}</span>`))
+  parts.push(dnC(114.78, 14, `Trip No : <span class="dnr-in">${esc(trip || '—')}</span>`))
   // Vehicle List band
   parts.push('<div class="dnbox" style="left:10pt;top:126.18pt;width:575.28pt;height:26.21pt"></div>')
   parts.push(dnC(143.00, 14, 'Vehicle List'))
@@ -291,9 +294,13 @@ export const buildDnHtml = (rows: TrackRow[]): string => {
   const printDate = `${pad(d.getDate())}/${mon}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`
   const sheets: string[] = []
   for (const [g, list] of [...byGroup.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-    const trip = cell(list[0], 'Trip No', 'Trip No.', 'TripNo') || cell(list[0], 'Grouping  Number') || list[0].vin
+    // a DN *is* one grouping, so the trip it names is that grouping number
+    // ("ATL260803-12") — printed and encoded in the barcode. Only a sheet with
+    // no grouping at all looks for a Trip No column; a VIN is never a trip.
+    const grouping = g === '—' ? '' : g
+    const trip = grouping || cell(list[0], 'Trip No', 'Trip No.', 'TripNo')
     for (let i = 0; i < list.length; i += DN_ROWS_MAX)
-      sheets.push(dnSheetHtml(list.slice(i, i + DN_ROWS_MAX), i, g === '—' ? '' : g, trip, printDate))
+      sheets.push(dnSheetHtml(list.slice(i, i + DN_ROWS_MAX), i, grouping, trip, printDate))
   }
   return htmlDoc(`DN — ${byGroup.size} Grouping · ${rows.length} VIN`, sheets.join(''))
 }
