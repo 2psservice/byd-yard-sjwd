@@ -8,7 +8,6 @@ import type { WorkQueue } from '../store/useOps'
 import { isGateOutStamp } from '../lib/carStatus'
 import { rowInSite } from '../lib/siteScope'
 import { MONTH_ABBR, parseLooseDate, dateKey, todayKey, fmtDateTh, gateInDateKey, gateOutDateKey } from '../lib/dayKey'
-import { siteGroupingConfig } from '../lib/groupingImport'
 import { SeqQueuePicker } from '../components/SeqQueueList'
 import type { TrackRow } from '../lib/excelTracking'
 
@@ -368,7 +367,6 @@ function SeqQueues({ filterDate }: { filterDate: string | null }) {
     () => (currentSite ? allRows.filter((r) => rowInSite(r, currentSite, sites)) : allRows),
     [allRows, currentSite, sites],
   )
-  const locPrefix = siteGroupingConfig(sites.find((s) => s.id === currentSite)?.name ?? '').prefix
   if (queues.length === 0) return null
   return (
     <div className="space-y-2.5">
@@ -377,7 +375,7 @@ function SeqQueues({ filterDate }: { filterDate: string | null }) {
         <span className="text-[13px] font-bold">คิวส่งออก · Grouping to Dealer</span>
         <span className="badge ml-auto" style={{ background: 'rgba(22,163,74,0.1)', color: '#166534' }}>{queues.length} คิว</span>
       </div>
-      <SeqQueuePicker queues={queues} units={units} trackingRows={siteRows} locPrefix={locPrefix} queuedLabel="รอจ่าย" />
+      <SeqQueuePicker queues={queues} units={units} trackingRows={siteRows} queuedLabel="รอจ่าย" />
     </div>
   )
 }

@@ -11,7 +11,7 @@ import {
 import { useOps, useActiveQueues, queueProgress, isSequenceQueue, queueTypeOf, QUEUE_TYPES, type QueueType, type WorkQueue } from '../store/useOps'
 import { useTrackingRows } from '../store/useTracking'
 import { useYard, useUnits } from '../store/useYard'
-import { siteGroupingConfig, yardLocCode, byYardLocation } from '../lib/groupingImport'
+import { yardLocCode, byYardLocation } from '../lib/groupingImport'
 import { PageHead, cx } from '../components/ui'
 
 const typeIcon = (type: QueueType, size = 18) => {
@@ -261,10 +261,6 @@ function QueueDetail({ q, onClose }: { q: WorkQueue; onClose: () => void }) {
   // Same per-car detail the Gate-out queue shows — model · color · grouping + the
   // yard location and loading lane — so the office reads one consistent card
   // everywhere, ordered the way a driver walks the yard (block A→B→…→WCL, col ↑).
-  const locPrefix = useMemo(
-    () => siteGroupingConfig(sites.find((s) => s.id === currentSite)?.name ?? '').prefix,
-    [sites, currentSite],
-  )
   const shown = useMemo(() => {
     const rowByVin = new Map(rows.map((r) => [r.vin, r]))
     const unitByVin = new Map(units.map((u) => [u.vin, u]))
@@ -278,13 +274,13 @@ function QueueDetail({ q, onClose }: { q: WorkQueue; onClose: () => void }) {
           model: r?.cells['Model'] || r?.cells['Model name'] || u?.modelName || '—',
           color: r?.cells['Color'] || u?.color || '—',
           grouping: r?.cells['Grouping  Number'] || '—',
-          location: yardLocCode(u, locPrefix) || '—',
+          location: yardLocCode(u) || '—',
           lane: it.laneLoad || '—',
         }
       })
       .filter((c) => !s || c.it.vin.toUpperCase().includes(s))
       .sort((a, b) => byYardLocation(a.location, b.location))
-  }, [q.items, rows, units, locPrefix, search])
+  }, [q.items, rows, units, search])
 
   const doAdd = () => {
     const tokens = bulk.toUpperCase().match(/[A-Z0-9]{5,20}/g) ?? []

@@ -25,8 +25,8 @@ const SEQ_STAGE_META: Record<string, { label: string; c: string; bg: string }> =
  * the gate-out overview reads them as "รอจ่าย" (pending dispatch) rather than the
  * driver-facing "รอย้าย" (pending move to wash).
  */
-export function SeqQueuePicker({ queues, units, trackingRows, locPrefix, queuedLabel }: {
-  queues: WorkQueue[]; units: Unit[]; trackingRows: TrackRow[]; locPrefix: string; queuedLabel?: string
+export function SeqQueuePicker({ queues, units, trackingRows, queuedLabel }: {
+  queues: WorkQueue[]; units: Unit[]; trackingRows: TrackRow[]; queuedLabel?: string
 }) {
   const [openId, setOpenId] = useState<string | null>(null)
   // a car counts as gated-out by its LIVE Car Status — so cars gated out any way
@@ -55,7 +55,7 @@ export function SeqQueuePicker({ queues, units, trackingRows, locPrefix, queuedL
         model: row?.cells['Model'] ?? row?.cells['Model name'] ?? u?.modelName ?? '—',
         color: row?.cells['Color'] ?? u?.color ?? '—',
         grouping: row?.cells['Grouping  Number'] ?? '—',
-        location: yardLocCode(u, locPrefix) || '—',
+        location: yardLocCode(u) || '—',
         lane: i.laneLoad ?? '—',
         stage: gone ? 'gateout' : seqStageOf(i),
         done: gone || i.done,
@@ -64,7 +64,7 @@ export function SeqQueuePicker({ queues, units, trackingRows, locPrefix, queuedL
         by: step.by,
       }
     }).sort((a, b) => byYardLocation(a.location, b.location))
-  }, [openSeq, units, trackingRows, locPrefix, goneVins]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [openSeq, units, trackingRows, goneVins]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!queues.length) return null
   return (

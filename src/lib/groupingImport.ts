@@ -46,20 +46,21 @@ export function blockCode(block: string): string {
   return /^([A-Z])\1?$/.test(b) ? b.charAt(0) : b
 }
 
-/** Yard location code for a placed unit: site prefix + block code + zero-padded
- *  column — e.g. "20-A28", "20-B05", "20-WCL28", "N-O15". Empty when unplaced. */
-export function yardLocCode(u: { block?: string; slot?: number } | undefined | null, prefix: string): string {
+/** Yard lane code for a placed unit: block name + zero-padded column —
+ *  e.g. "A28", "T12", "WCL28". The code reads from the block NAME (a doubled
+ *  drawn id "TT" collapses to "T"), no yard prefix. Empty when unplaced. */
+export function yardLocCode(u: { block?: string; slot?: number } | undefined | null): string {
   if (!u || !u.block || !u.slot) return ''
-  return `${prefix}-${blockCode(u.block)}${String(u.slot).padStart(2, '0')}`
+  return `${blockCode(u.block)}${String(u.slot).padStart(2, '0')}`
 }
 
-/** Full yard location: site prefix + block + 2-digit column (ช่อง) + 2-digit
- *  depth — e.g. "N-R1402" = block R, column 14, 2nd car down that column.
- *  Matches how the yard extends its lane codes ("N-R14" → R1401, R1402, …).
- *  Empty when unplaced. Used by the Unit List "Location" column. */
-export function yardLocFull(u: { block?: string; row?: number; slot?: number } | undefined | null, prefix: string): string {
+/** Full yard location: block name + 2-digit column (ช่อง) + 2-digit order —
+ *  e.g. "T1201" = block T, column 12, 1st car down that column. Matches how
+ *  the yard extends its lane codes (T12 → T1201, T1202, …). Empty when
+ *  unplaced. Used by the Unit List "Location" column. */
+export function yardLocFull(u: { block?: string; row?: number; slot?: number } | undefined | null): string {
   if (!u || !u.block || !u.row || !u.slot) return ''
-  return `${prefix}-${blockCode(u.block)}${String(u.slot).padStart(2, '0')}${String(u.row).padStart(2, '0')}`
+  return `${blockCode(u.block)}${String(u.slot).padStart(2, '0')}${String(u.row).padStart(2, '0')}`
 }
 
 /** Sort key for a yard location code ("20-A28" → ["A", 28], "N-O15" → ["O", 15]).

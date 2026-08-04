@@ -50,7 +50,6 @@ export function Grouping() {
     if (!currentSite) { toast('err', 'กรุณาเลือก Site ก่อน'); openSiteModal(); return }
     setBusy(true)
     try {
-      const { prefix } = siteGroupingConfig(siteName)
       const res = await parseGroupingWorkbook(file, siteName)
 
       // group order (first-seen) → Lane load O1, O2, …
@@ -67,7 +66,7 @@ export function Grouping() {
         const u = unitByVin.get(r.vin)
         const inSystem = trackVins.has(r.vin) || !!u
         inSystem ? found++ : notFound++
-        const loc = yardLocCode(u, prefix)
+        const loc = yardLocCode(u)
         if (loc) placed++
         return {
           no: i + 1, vin: r.vin, modelName: r.modelName, model: r.model, color: r.color,

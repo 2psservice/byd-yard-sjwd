@@ -31,7 +31,7 @@ import { compressImage } from '../lib/photo'
 import StationSheet from '../components/StationSheet'
 import { PDI_CHECKLIST } from '../lib/pdiChecklist'
 import { FINAL_CHECK_TABS } from '../lib/finalCheckList'
-import { siteGroupingConfig, yardLocCode, yardLocFull, blockCode, byYardLocation } from '../lib/groupingImport'
+import { yardLocCode, yardLocFull, blockCode, byYardLocation } from '../lib/groupingImport'
 import { resolveBlock, parseLane } from '../lib/laneImport'
 import { LOCATION_KEY } from '../lib/trackingColumns'
 import { fmtSerialToDate } from '../lib/trackingColumns'
@@ -273,7 +273,7 @@ const stationResultLabel = (queue: string, r: 'OK' | 'NG') => `${queue} ${r}` //
 // blocks store the LaneNo column in `slot` and the 1..8 stack position in `row`,
 // so the column leads (e.g. RR38.5 = block RR, column 38, car 5).
 const slotLabelOf = (u: { block?: string; row?: number; slot?: number }) =>
-  u.block ? `${u.block}${u.slot}.${u.row}` : '—'
+  u.block ? `${blockCode(u.block)}${u.slot}.${u.row}` : '—'
 
 /**
  * Live status pill for one car in a station queue. Blue = a driver has it right
@@ -976,7 +976,6 @@ function WalkView() {
   const queues = useSiteQueues()
   const sites = useYard(s => s.sites)
   const currentSite = useYard(s => s.currentSite)
-  const locPrefix = siteGroupingConfig(sites.find(s => s.id === currentSite)?.name ?? '').prefix
   const [vin, setVin] = useState<string | null>(null)
   const [trackingVin, setTrackingVin] = useState<string | null>(null)
   const [selectedQueueId, setSelectedQueueId] = useState<string | null>(null)
@@ -1022,14 +1021,14 @@ function WalkView() {
         model: row?.cells['Model'] ?? row?.cells['Model name'] ?? u?.modelName ?? '—',
         color: row?.cells['Color'] ?? u?.color ?? '—',
         grouping: row?.cells['Grouping  Number'] || '—',
-        location: yardLocCode(u, locPrefix) || '—',
+        location: yardLocCode(u) || '—',
         done: i.done,
         ng: ngVins.has(i.vin),
         doneAt: i.doneAt ?? (gitCell ? parseInt(gitCell) || undefined : undefined),
         doneBy: i.doneBy ?? row?.cells['Gate In Inspector'] ?? '',
       }
     }).sort((a, b) => Number(a.done) - Number(b.done)) // ยังไม่สแกน ขึ้นก่อน
-  }, [selectedQueue, trackingRows, allUnits, ngVins, locPrefix])
+  }, [selectedQueue, trackingRows, allUnits, ngVins])
 
   const unit = vin ? units.find(u => u.vin === vin) ?? null : null
   const trackRow = trackingVin ? (trackingRows.find(r => r.vin === trackingVin) ?? null) : null
@@ -1633,8 +1632,8 @@ function ProcRouteCard({ fromLabel, toLabel, result, badge, reason, accent, onSt
 /** Browsable list of every station work queue (PDI / PM / FINAL CHECK / งานพิเศษ).
  *  Driver-only: a driver moves cars for all stations, so they need to see them
  *  all — the stations themselves stay strictly scoped to their own type. */
-function AllQueuesBrowser({ queues, units, trackingRows, locPrefix, onPick }: {
-  queues: WorkQueue[]; units: Unit[]; trackingRows: TrackRow[]; locPrefix: string; onPick: (vin: string) => void
+function AllQueuesBrowser({ queues, units, trackingRows, onPick }: {
+  queues: WorkQueue[]; units: Unit[]; trackingRows: TrackRow[]; onPick: (vin: string) => void
 }) {
   const [openId, setOpenId] = useState<string | null>(null)
   if (!queues.length) return null
@@ -1650,7 +1649,7 @@ function AllQueuesBrowser({ queues, units, trackingRows, locPrefix, onPick }: {
           return {
             vin: i.vin,
             model: u?.modelName ?? row?.cells['Model name'] ?? row?.cells['Model'] ?? '—',
-            location: yardLocCode(u, locPrefix) || '—',
+            location: yardLocCode(u) || '—',
             stage: stageOf(i),
             drivingBy: drivingNow(i),
           }
@@ -1712,8 +1711,6 @@ function DriverView() {
   const { deliverToStation, returnToSlot, markAtWash, markAtLane, setDriving } = useOps()
   const { block: blockGate, modal: gateModal } = useNotGatedIn()
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
-  const siteName = sites.find((s) => s.id === currentSite)?.name ?? ''
-  const locPrefix = siteGroupingConfig(siteName).prefix
   const [vin, setVin] = useState<string | null>(null)
   const [altIdx, setAltIdx] = useState(0)
   const [justParked, setJustParked] = useState<{ vin: string; sec: number } | null>(null)
@@ -1802,8 +1799,8 @@ function DriverView() {
   const doAssign = (slot: { block: string; row: number; slot: number }) => {
     if (!unit) return
     assign(unit.vin, slot, driverName, planMode)
-    startTrip(unit.vin, driverName, 'Gate', `${slot.block}${slot.slot}.${slot.row}`)
-    toast('ok', `${unit.vin.slice(-6)} → ${slot.block}${slot.slot}.${slot.row}`)
+    startTrip(unit.vin, driverName, 'Gate', `${blockCode(slot.block)}${slot.slot}.${slot.row}`)
+    toast('ok', `${unit.vin.slice(-6)} → ${blockCode(slot.block)}${slot.slot}.${slot.row}`)
   }
   const doPark = () => {
     if (!unit) return
@@ -1833,7 +1830,7 @@ function DriverView() {
     const cur = trackingRows.find(r => r.vin === unit.vin)?.cells['Car Status'] ?? ''
     const prevStatus = CAR_STATUS_META[cur] ? cur : YARD_STATUS
     const fromLabel = kind === 'to-station' ? slotLabelOf(unit) : activeProc.queue.name
-    const destLabel = kind === 'to-station' ? activeProc.queue.name : `${slot!.block}${slot!.slot}.${slot!.row}`
+    const destLabel = kind === 'to-station' ? activeProc.queue.name : `${blockCode(slot!.block)}${slot!.slot}.${slot!.row}`
     const dest = kind === 'to-slot' && slot ? slotToLatLng(slot.block, slot.row, slot.slot) : null
     updateCell(unit.vin, 'Car Status', MOVING_STATUS)
     startTrip(unit.vin, driverName, fromLabel, destLabel)
@@ -1899,9 +1896,9 @@ function DriverView() {
         <div className="panel p-4 text-center">
           <div className="text-[10.5px] font-bold uppercase tracking-wider" style={{ color: 'var(--muted)' }}>ตำแหน่งจอด</div>
           <div className="display text-[36px] font-black leading-none mt-1" style={{ color: 'var(--brand)' }}>
-            {unit.block}{unit.slot}.{unit.row}
+            {blockCode(unit.block ?? '')}{unit.slot}.{unit.row}
           </div>
-          <div className="text-[11px] mt-1.5" style={{ color: 'var(--faint)' }}>Block {unit.block} · ช่อง {unit.slot} · แถว {unit.row}</div>
+          <div className="text-[11px] mt-1.5" style={{ color: 'var(--faint)' }}>Block {blockCode(unit.block ?? '')} · ช่อง {unit.slot} · แถว {unit.row}</div>
         </div>
 
         {/* driving summary */}
@@ -1910,7 +1907,7 @@ function DriverView() {
             <Gauge size={15} style={{ color: 'var(--st-yard)' }} />
             <span className="font-semibold text-[13.5px]">สรุปการขับขี่</span>
             <span className="ml-auto text-[11px] flex items-center gap-1" style={{ color: 'var(--muted)' }}>
-              <Navigation size={11} /> Gate → {unit.block}{unit.slot}.{unit.row}
+              <Navigation size={11} /> Gate → {blockCode(unit.block ?? '')}{unit.slot}.{unit.row}
             </span>
           </div>
           <div className="grid grid-cols-4 divide-x" style={{ borderColor: 'var(--line)' }}>
@@ -1935,7 +1932,7 @@ function DriverView() {
             <div className="p-2 pt-0">
               <div className="relative">
                 <LiveTrackingMap
-                  markers={[{ vin: unit.vin, lat: lastPt.lat, lng: lastPt.lng, color: 'var(--brand)', label: `${unit.block}${unit.slot}.${unit.row}` }]}
+                  markers={[{ vin: unit.vin, lat: lastPt.lat, lng: lastPt.lng, color: 'var(--brand)', label: `${blockCode(unit.block ?? '')}${unit.slot}.${unit.row}` }]}
                   path={path} focusVin={unit.vin} height={140} compact
                 />
                 <div className="absolute top-2.5 left-2.5 px-2 py-1 rounded-md text-[10px] font-bold flex items-center gap-1 z-[500]"
@@ -2067,19 +2064,19 @@ function DriverView() {
 
       {/* ── delivery-sequence queues (browse the run + car details before scanning) ── */}
       {!unit && !seqHit && (
-        <SeqQueuePicker queues={seqQueues} units={units} trackingRows={trackingRows} locPrefix={locPrefix} />
+        <SeqQueuePicker queues={seqQueues} units={units} trackingRows={trackingRows} />
       )}
 
       {/* ── every station work queue — the driver serves them all ── */}
       {!unit && !seqHit && (
-        <AllQueuesBrowser queues={allWorkQueues} units={units} trackingRows={trackingRows} locPrefix={locPrefix}
+        <AllQueuesBrowser queues={allWorkQueues} units={units} trackingRows={trackingRows}
           onPick={v => setVin(v)} />
       )}
 
       {/* ── delivery-sequence step (takes over from the normal parking flow) ── */}
       {unit && seqHit && (() => {
         const st = seqStageOf(seqHit.item)
-        const curSlot = unit.block ? `${unit.block}${unit.slot}.${unit.row}` : '—'
+        const curSlot = unit.block ? `${blockCode(unit.block)}${unit.slot}.${unit.row}` : '—'
         const lane = seqHit.item.laneLoad || 'preload'
         const from = st === 'queued' ? curSlot : 'Wash for sale'
         const to = st === 'queued' ? 'Wash for sale' : `Preload ${lane}`
@@ -2148,9 +2145,9 @@ function DriverView() {
                   <div className="text-center">
                     <div className="text-[10.5px] font-bold uppercase mb-1" style={{ color: 'rgba(255,255,255,0.45)' }}>TO</div>
                     <div className="text-[28px] font-black leading-none" style={{ color: '#4ade80' }}>
-                      {proposal.block}{proposal.slot}.{proposal.row}
+                      {blockCode(proposal.block)}{proposal.slot}.{proposal.row}
                     </div>
-                    <div className="text-[11px] mt-0.5" style={{ color: 'rgba(255,255,255,0.45)' }}>Block {proposal.block} · ช่อง {proposal.slot} · แถว {proposal.row}</div>
+                    <div className="text-[11px] mt-0.5" style={{ color: 'rgba(255,255,255,0.45)' }}>Block {blockCode(proposal.block)} · ช่อง {proposal.slot} · แถว {proposal.row}</div>
                   </div>
                 </div>
                 {proposal.reason && (
@@ -2161,7 +2158,7 @@ function DriverView() {
                 <button onClick={() => doAssign(proposal)}
                   className="w-full h-14 rounded-2xl text-[16px] font-bold flex items-center justify-center gap-2 transition-all active:scale-95"
                   style={{ background: 'var(--st-yard)', color: '#fff', boxShadow: '0 6px 20px -4px rgba(22,163,74,0.5)' }}>
-                  <Navigation size={20} /> เริ่มขับ → {proposal.block}{proposal.slot}.{proposal.row}
+                  <Navigation size={20} /> เริ่มขับ → {blockCode(proposal.block)}{proposal.slot}.{proposal.row}
                 </button>
                 <button onClick={() => setAltIdx(i => (i + 1) % Math.max(1, cands.length))}
                   disabled={cands.length < 2}
@@ -2185,7 +2182,7 @@ function DriverView() {
               unit={unit}
               driverName={unit.driver ?? driverName}
               dest={slotToLatLng(unit.block, unit.row, unit.slot)}
-              destLabel={`${unit.block}${unit.slot}.${unit.row}`}
+              destLabel={`${blockCode(unit.block ?? '')}${unit.slot}.${unit.row}`}
               onArrive={doPark}
               onCancel={cancelDrive}
             />
@@ -2217,7 +2214,7 @@ function DriverView() {
             <ProcRouteCard
               badge={`${activeProc.queue.name} เสร็จ · นำกลับไปจอด`}
               fromLabel={activeProc.queue.name}
-              toLabel={`${proposal.block}${proposal.slot}.${proposal.row}`}
+              toLabel={`${blockCode(proposal.block)}${proposal.slot}.${proposal.row}`}
               result={activeProc.item.result}
               reason={proposal.reason}
               accent="var(--st-yard)"
@@ -2390,7 +2387,6 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
   const allQueues = useSiteQueues()
   const sites = useYard(s => s.sites)
   const currentSite = useYard(s => s.currentSite)
-  const locPrefix = siteGroupingConfig(sites.find(s => s.id === currentSite)?.name ?? '').prefix
   const { loadFromIdb } = useTracking()
   const { setInspected, removeDamage, updateRepairStatus, toast, loadFromSupabase } = useYard()
   const { block: blockGate, modal: gateModal } = useNotGatedIn()
@@ -2427,12 +2423,12 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
         model: u?.modelName ?? row?.cells['Model name'] ?? row?.cells['Model'] ?? '—',
         color: row?.cells['Color'] ?? u?.color ?? '—',
         grouping: row?.cells['Grouping  Number'] || '—',
-        location: yardLocCode(u, locPrefix) || '—',
+        location: yardLocCode(u) || '—',
         stage: stageOf(i),
         drivingBy: drivingNow(i),
       }
     }).sort((a, b) => byYardLocation(a.location, b.location))
-  }, [selectedQueue, units, trackingRows, locPrefix])
+  }, [selectedQueue, units, trackingRows])
 
   const unit = vin ? units.find(u => u.vin === vin) ?? null : null
   // the station task this car is currently in (PDI / FINAL PM / Wash …)
@@ -2684,7 +2680,6 @@ function MechanicView() {
   const { block: blockGate, modal: gateModal } = useNotGatedIn()
   const sites = useYard(s => s.sites)
   const currentSite = useYard(s => s.currentSite)
-  const locPrefix = siteGroupingConfig(sites.find(s => s.id === currentSite)?.name ?? '').prefix
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
   const [vin, setVin] = useState<string | null>(null)
   const [showForm, setShowForm] = useState(false)
@@ -2711,11 +2706,11 @@ function MechanicView() {
         model: u.modelName || '—',
         color: u.color || '—',
         grouping: trackingRows.find(r => r.vin === u.vin)?.cells['Grouping  Number'] || '—',
-        location: yardLocCode(u, locPrefix) || '—',
+        location: yardLocCode(u) || '—',
         open,
       }))
       .sort((a, b) => byYardLocation(a.location, b.location))
-  }, [units, trackingRows, locPrefix])
+  }, [units, trackingRows])
 
   // assigned repair queues created on the Operation page (type "ช่าง (ซ่อม)") —
   // same behaviour as the PDI / PM / FINAL CHECK stations
@@ -2752,7 +2747,7 @@ function MechanicView() {
       {/* assigned repair queues from the Operation page — listed first, above the
           auto-generated "every car with an open NG" list */}
       {!unit && repairQueues.length > 0 && (
-        <AllQueuesBrowser queues={repairQueues} units={units} trackingRows={trackingRows} locPrefix={locPrefix}
+        <AllQueuesBrowser queues={repairQueues} units={units} trackingRows={trackingRows}
           onPick={v => { setVin(v); setShowForm(false) }} />
       )}
 
@@ -2858,8 +2853,6 @@ function GateOutView() {
 
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
 
-  const siteName = sites.find((s) => s.id === currentSite)?.name ?? ''
-  const locPrefix = siteGroupingConfig(siteName).prefix
   const seqQueues = useMemo(() => queues.filter(q => isSequenceQueue(q) && !isQueueComplete(q)), [queues])
   const row = vin ? (trackingRows.find(r => r.vin === vin) ?? null) : null
   const seqHit = useMemo(() => findSeqItem(vin, queues), [vin, queues])
@@ -2867,7 +2860,7 @@ function GateOutView() {
   // alone ("NYB2 Phase 2") never told anyone which lane to walk to
   const parked = vin ? units.find(u => u.vin === vin) : undefined
   const parkedAt = parked?.block && parked.row && parked.slot
-    ? `${parked.block}${String(parked.slot).padStart(2, '0')}.${parked.row}`
+    ? `${blockCode(parked.block)}${String(parked.slot).padStart(2, '0')}.${parked.row}`
     : ''
 
   const onScan = (v: string) => {
@@ -2947,7 +2940,7 @@ function GateOutView() {
 
       {/* delivery-sequence runs — see remaining cars to gate-out (before scanning) */}
       {!row && (
-        <SeqQueuePicker queues={seqQueues} units={units} trackingRows={trackingRows} locPrefix={locPrefix} />
+        <SeqQueuePicker queues={seqQueues} units={units} trackingRows={trackingRows} />
       )}
 
       {row && (
@@ -3025,7 +3018,6 @@ function RelocationView() {
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
 
   const siteName = sites.find(s => s.id === currentSite)?.name ?? ''
-  const locPrefix = siteGroupingConfig(siteName).prefix
   const row = vin ? (trackingRows.find(r => r.vin === vin) ?? null) : null
   const unit = vin ? siteUnits.find(u => u.vin === vin) : undefined
   // the yard the car is in (a site name — "NYB2 Phase 2") vs. where it stands
@@ -3096,9 +3088,9 @@ function RelocationView() {
     setVin(r.vin)
   }
 
-  /** "N-R1402" — lane code + which car down the column, the yard's own form. */
+  /** "T1201" — block name + column + which car down it, the yard's own form. */
   const codeOf = (b: string, col: number, depth: number) =>
-    `${locPrefix}-${blockCode(b)}${String(col).padStart(2, '0')}${String(depth).padStart(2, '0')}`
+    `${blockCode(b)}${String(col).padStart(2, '0')}${String(depth).padStart(2, '0')}`
 
   const doSave = () => {
     if (!canSave || !row || nextRow === null) return
@@ -3114,7 +3106,7 @@ function RelocationView() {
     // trail this screen and the admin's Event tab show
     appendHistory(row.vin, {
       at: Date.now(), by: currentUser, field: 'Location',
-      from: placed ? yardLocFull(unit, locPrefix) : '',
+      from: placed ? yardLocFull(unit) : '',
       to: codeOf(blockId, slotNo, nextRow),
     })
     setSaved(true)
@@ -3137,9 +3129,9 @@ function RelocationView() {
             <div className="text-[11px] font-semibold mb-1" style={{ color: 'var(--muted)' }}>ตำแหน่งปัจจุบัน</div>
             {placed ? (
               <>
-                <div className="font-bold text-[20px] leading-tight tabular">{yardLocFull(unit, locPrefix)}</div>
+                <div className="font-bold text-[20px] leading-tight tabular">{yardLocFull(unit)}</div>
                 <div className="text-[11.5px] mt-0.5 font-semibold" style={{ color: 'var(--muted)' }}>
-                  Block {unit!.block} · ช่อง {unit!.slot} · คันที่ {unit!.row} ในช่อง
+                  Block {blockCode(unit!.block ?? '')} · ช่อง {unit!.slot} · คันที่ {unit!.row} ในช่อง
                 </div>
               </>
             ) : (
@@ -3152,21 +3144,14 @@ function RelocationView() {
 
           <div>
             <div className="text-[11px] font-semibold mb-2" style={{ color: 'var(--muted)' }}>ตำแหน่งใหม่</div>
-            {/* one field, written the way the upload file writes a lane ("R14") —
-                the yard prefix is fixed chrome, never typed */}
-            <div className="flex items-stretch gap-2">
-              <div className="flex items-center px-3 rounded-lg font-bold text-[17px] shrink-0"
-                style={{ background: 'var(--chip)', border: '1px solid var(--line)', color: 'var(--muted)' }}>
-                {locPrefix}-
-              </div>
-              <input
-                className="input flex-1 min-w-0 font-bold text-center text-[17px] uppercase tabular"
-                placeholder="R14" autoCapitalize="characters" autoCorrect="off" spellCheck={false}
-                value={fLoc}
-                onChange={e => setFLoc(e.target.value.toUpperCase())}
-                onKeyDown={e => e.key === 'Enter' && doSave()}
-              />
-            </div>
+            {/* one field, written the way the upload file writes a lane: "R14" */}
+            <input
+              className="input w-full font-bold text-center text-[17px] uppercase tabular"
+              placeholder="R14" autoCapitalize="characters" autoCorrect="off" spellCheck={false}
+              value={fLoc}
+              onChange={e => setFLoc(e.target.value.toUpperCase())}
+              onKeyDown={e => e.key === 'Enter' && doSave()}
+            />
             <div className="text-[11px] mt-1.5" style={{ color: 'var(--faint)' }}>
               Block + เลขช่อง เช่น R14 · รถจะต่อท้ายคันที่มีอยู่ในช่องนั้นอัตโนมัติ
             </div>
@@ -3181,12 +3166,12 @@ function RelocationView() {
             )}
             {laneFull && (
               <div className="mt-2.5 text-[12px] font-semibold flex items-center gap-1.5" style={{ color: '#dc2626' }}>
-                <AlertTriangle size={13} /> Block {blockId} ช่อง {slotNo} เต็มแล้ว ({blk?.rows ?? 8} คัน)
+                <AlertTriangle size={13} /> Block {blockCode(blockId)} ช่อง {slotNo} เต็มแล้ว ({blk?.rows ?? 8} คัน)
               </div>
             )}
             {!!parsed && blockOk && !slotOk && (
               <div className="mt-2.5 text-[12px] font-semibold flex items-center gap-1.5" style={{ color: '#dc2626' }}>
-                <AlertTriangle size={13} /> {blk ? `Block ${blk.id} มีช่อง 1–${blk.cols}` : 'เลขช่องไม่ถูกต้อง'}
+                <AlertTriangle size={13} /> {blk ? `Block ${blockCode(blk.id)} มีช่อง 1–${blk.cols}` : 'เลขช่องไม่ถูกต้อง'}
               </div>
             )}
             {/* a block the plan has no grid for → the car would sit off-plan */}
