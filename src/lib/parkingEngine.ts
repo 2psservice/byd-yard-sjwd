@@ -100,7 +100,9 @@ export function candidates(
   const allowed =
     policy.allowedBlocks === 'ALL'
       ? blocks
-      : blocks.filter((b) => (policy.allowedBlocks as string[]).includes(b.id))
+      // match by the block's NAME; legacy policies that stored internal ids
+      // keep working until they are next edited
+      : blocks.filter((b) => (policy.allowedBlocks as string[]).some((a) => a === blockTag(b) || a === b.id))
 
   const exclusiveOf = (m: string) => getPolicy(m, policies).exclusiveRow
   const out: SlotCandidate[] = []
