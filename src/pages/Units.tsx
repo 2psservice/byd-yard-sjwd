@@ -1153,9 +1153,17 @@ function sortRows(rows: TrackRow[], sortKey: string, sortDir: SortDir): TrackRow
 }
 
 /** "Last update" display — date + time in Thai locale (empty when never updated). */
+const MON_EN = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
+
+/** "Last update" stamp in the yard's paperwork form: 03AUG26 08.03. English
+ *  month, 2-digit Gregorian year — the Thai locale printed "03 ส.ค. 69", whose
+ *  Buddhist year reads as a different date to anyone matching it against a
+ *  shipping document. */
 function fmtUpdated(ts?: number): string {
   if (!ts) return ''
-  return new Date(ts).toLocaleString('th-TH', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' })
+  const d = new Date(ts)
+  const p2 = (n: number) => String(n).padStart(2, '0')
+  return `${p2(d.getDate())}${MON_EN[d.getMonth()]}${p2(d.getFullYear() % 100)} ${p2(d.getHours())}.${p2(d.getMinutes())}`
 }
 
 /** "Aging PM" display: whole days since the last PM (PM1…PM15), e.g. "125 วัน".
