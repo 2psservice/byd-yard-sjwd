@@ -56,6 +56,10 @@ export interface QueueItem {
   // ── delivery sequence (Grouping to Dealer) ──
   laneLoad?: string        // loading-lane target, from the grouping Lane load (e.g. "O1")
   dest?: string            // delivery / dealer location
+  /** Grouping code this car was imported under ("ATL260803-071"). Records which
+   *  codes the run covers, so a car re-stamped with one joins it even after the
+   *  last car of that group was taken out. Absent on pre-existing queues. */
+  group?: string
   atWashAt?: number        // driver scan #1: car moved to Wash for sale
   atLaneAt?: number        // driver scan #2: car moved from Wash for sale to its loading lane
   gatedOut?: boolean       // gate-out confirmed → Car Status set to Gate-out
@@ -174,7 +178,7 @@ interface OpsState {
   recordCheck: (id: string, vin: string, result: 'OK' | 'NG', by?: string) => void
   returnToSlot: (id: string, vin: string, by?: string) => void
   // ── delivery sequence (Grouping to Dealer) ──
-  createSequence: (name: string, by: string, items: { vin: string; laneLoad?: string; dest?: string }[]) => string
+  createSequence: (name: string, by: string, items: { vin: string; laneLoad?: string; dest?: string; group?: string }[]) => string
   markAtWash: (id: string, vin: string, by?: string) => void        // driver scan #1
   markAtLane: (id: string, vin: string, by?: string) => void        // driver scan #2
   confirmSeqGateOut: (id: string, vin: string, by?: string) => void // gate-out confirmed
@@ -397,9 +401,9 @@ export const useOps = create<OpsState>()(
         const site = useYard.getState().currentSite ?? undefined
         const now = Date.now()
         const rows: QueueItem[] = items
-          .map((it) => ({ vin: it.vin.trim().toUpperCase(), laneLoad: it.laneLoad, dest: it.dest }))
+          .map((it) => ({ vin: it.vin.trim().toUpperCase(), laneLoad: it.laneLoad, dest: it.dest, group: it.group?.trim().toUpperCase() || undefined }))
           .filter((it) => it.vin)
-          .map((it) => ({ vin: it.vin, addedAt: now, done: false, laneLoad: it.laneLoad, dest: it.dest }))
+          .map((it) => ({ vin: it.vin, addedAt: now, done: false, laneLoad: it.laneLoad, dest: it.dest, group: it.group }))
         const existing = get().queues.find((q) => q.name.toLowerCase() === n.toLowerCase())
         if (existing) {
           // re-uploading the same sequence: replace its items, keep the id
@@ -482,15 +486,20 @@ onSync('ops', () => { useOps.getState().loadFromCloud(true).catch((e) => console
 //  • Gate-in: a car in a PRE GATE-IN queue "(yard·date·N)" whose status is no
 //    longer 'Pre Gate-in' has entered the yard → mark that item done, so the
 //    "0/117" progress updates as cars gate in (regardless of the scan path).
+//  • Grouping: a delivery run's membership IS the Grouping Number on the
+//    tracking rows. Clear a car's grouping and it leaves the run (124 → 123);
+//    stamp a run's grouping onto another car and it joins (124 → 125).
 const GROUPING_KEY = 'Grouping  Number' // header carries two spaces
-/** A car pulled back out of its delivery group: the sheet replaces the grouping
- *  code with a leftover note ("เศษรอ Mix"). It is no longer part of any delivery
- *  run, so it must drop out of the sequence — otherwise that run can never reach
+/** The delivery group a car currently belongs to, '' when it belongs to none:
+ *  the cell is blank (the number was taken off), or it holds a leftover note
+ *  ("เศษรอ Mix") that the sheet writes in place of a real grouping code. A car
+ *  with no group must drop out of its run — otherwise the run can never reach
  *  100% and sits "คา" on the Gate-out board forever. */
-function isUngrouped(cells: Record<string, string>): boolean {
-  const g = (cells[GROUPING_KEY] || '').trim().toLowerCase()
-  if (!g) return false // blank = data not filled in yet, NOT a removal signal
-  return g.includes('เศษ') || g.includes('mix')
+function groupOf(cells: Record<string, string>): string {
+  const g = (cells[GROUPING_KEY] || '').trim()
+  if (!g) return ''
+  const l = g.toLowerCase()
+  return l.includes('เศษ') || l.includes('mix') ? '' : g.toUpperCase()
 }
 
 let reconcileTimer: ReturnType<typeof setTimeout> | null = null
@@ -498,16 +507,33 @@ function reconcileGateOuts() {
   const rows = useTracking.getState().rows
   const gone = new Set<string>()
   const gatedIn = new Set<string>() // no longer Pre Gate-in → has entered the yard
-  const ungrouped = new Set<string>() // pulled out of its delivery group
+  const group = new Map<string, string>() // vin → delivery group ('' = none)
   for (const vin in rows) {
     const cs = (rows[vin].cells['Car Status'] || '').trim()
     if (isGoneStatus(cs)) gone.add(vin)
     else if (cs && cs.toLowerCase() !== 'pre gate-in') gatedIn.add(vin)
-    if (isUngrouped(rows[vin].cells)) ungrouped.add(vin)
+    group.set(vin, groupOf(rows[vin].cells))
   }
-  if (!gone.size && !gatedIn.size && !ungrouped.size) return
+  const queues = useOps.getState().queues
+  // The grouping codes each run covers: what the import recorded on its items,
+  // falling back to what its cars carry now (queues created before the code was
+  // stored). One code belongs to ONE run — first wins — so a car stamped with it
+  // joins exactly one sequence.
+  const groupsOfRun = new Map<string, Set<string>>()
+  const runOfGroup = new Map<string, string>()
+  for (const q of queues) {
+    if (!isSequenceQueue(q)) continue
+    const gs = new Set<string>()
+    for (const i of q.items) {
+      const g = i.group || group.get(i.vin)
+      if (!g) continue
+      gs.add(g)
+      if (!runOfGroup.has(g)) runOfGroup.set(g, q.id)
+    }
+    groupsOfRun.set(q.id, gs)
+  }
   const dirty: string[] = []
-  const next = useOps.getState().queues.map((q) => {
+  const next = queues.map((q) => {
     const isPreGateIn = q.name.trim().startsWith('(')
     let changed = false
     let items = q.items.map((i) => {
@@ -521,12 +547,35 @@ function reconcileGateOuts() {
       }
       return i
     })
-    // delivery runs only: drop cars that left the group. Keep any car that has
-    // already gated out — it really was delivered on this run, and the sequence
-    // deliberately keeps gated-out cars so progress reads 17/17, not a shrinking total.
+    // delivery runs only: the run's membership IS the grouping numbers, followed
+    // both ways so the counter tracks what the sheet actually says today.
     if (isSequenceQueue(q)) {
-      const kept = items.filter((i) => !(ungrouped.has(i.vin) && !i.gatedOut && !i.done))
+      const runGroups = groupsOfRun.get(q.id) ?? new Set<string>()
+      // OUT — the car's grouping was taken off (or moved to another run). Keep a
+      // car that has already gated out: it really was delivered on this run, and
+      // the sequence deliberately keeps gated-out cars so progress reads 17/17
+      // instead of the total shrinking. A car with no tracking row at all is left
+      // alone — there is nothing to read its grouping from.
+      const kept = items.filter((i) => {
+        if (i.gatedOut || i.done || !rows[i.vin]) return true
+        const g = group.get(i.vin)
+        return !!g && runGroups.has(g)
+      })
       if (kept.length !== items.length) { changed = true; items = kept }
+      // IN — a car newly stamped with one of this run's grouping codes joins it,
+      // inheriting that group's loading lane + dealer. Cars that already left the
+      // yard are not pulled back in.
+      const held = new Set(items.map((i) => i.vin))
+      const added: QueueItem[] = []
+      for (const vin in rows) {
+        const g = group.get(vin)
+        if (!g || held.has(vin) || gone.has(vin)) continue
+        if (runOfGroup.get(g) !== q.id) continue
+        if (q.site && rows[vin].site && rows[vin].site !== q.site) continue
+        const mate = q.items.find((i) => (i.group || group.get(i.vin)) === g)
+        added.push({ vin, addedAt: Date.now(), done: false, group: g, laneLoad: mate?.laneLoad, dest: mate?.dest })
+      }
+      if (added.length) { changed = true; items = [...items, ...added] }
     }
     if (!changed) return q
     dirty.push(q.id)
