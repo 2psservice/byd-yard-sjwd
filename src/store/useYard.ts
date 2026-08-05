@@ -1415,6 +1415,23 @@ export const useYard = create<YardState>()(
   ),
 )
 
+// ── realtime lane compaction ─────────────────────────────────────────────────
+// Lanes must never sit with holes, no matter which device caused them: a
+// gate-out on another phone arrives here through the units realtime channel,
+// and this debounced pass closes the gap moments later. compactAllLanes is
+// deterministic and writes nothing when lanes are already tight, so the
+// subscription can't loop (its own set() triggers one more pass that no-ops)
+// and every device converges on the same layout.
+let compactTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleCompact(delay = 900) {
+  if (compactTimer) clearTimeout(compactTimer)
+  compactTimer = setTimeout(() => {
+    try { useYard.getState().compactAllLanes() } catch { /* store mid-teardown */ }
+  }, delay)
+}
+useYard.subscribe((s, prev) => { if (s.units !== prev.units) scheduleCompact() })
+scheduleCompact(1500) // heal once shortly after boot, without waiting for the cloud load
+
 // ── syncBus receivers: another device changed the layout / trailers → refetch ──
 onSync('blocks', async (p: { siteId?: string }) => {
   const siteId = p?.siteId
