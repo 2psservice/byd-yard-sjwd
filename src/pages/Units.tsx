@@ -22,7 +22,7 @@ import { zoneLabel } from '../components/CarDiagramMultiView'
 import { partLabel, defectLabel, partBilingual, defectBilingual } from '../lib/damageLabel'
 import { resolvePart, resolveDefect, MASTER_PARTS, MASTER_DEFECTS } from '../lib/masterDefect'
 import { cx, PhotoLightbox } from '../components/ui'
-import { useQueues } from '../store/useOps'
+import { useQueues, queueTypeOf } from '../store/useOps'
 
 const DMG_SRC: Record<string, string> = { walkaround: 'Walk-around', pdi: 'PDI', mechanic: 'ช่าง', update: 'Update', yardDefect: 'Defect-Yard', factoryDefect: 'Defect-Factory', whaleDefect: 'Defect-Whale', manual: 'เพิ่มเอง' }
 
@@ -1462,7 +1462,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
   // form, so removing a row now takes edit-first + confirm.
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editForm, setEditForm] = useState(BLANK_DMG_FORM)
-  const [tab, setTab] = useState<'overview' | 'timeline' | 'location' | 'damages' | 'event'>('overview')
+  const [tab, setTab] = useState<'overview' | 'work' | 'timeline' | 'location' | 'pdi' | 'final' | 'pm' | 'damages' | 'event'>('overview')
   const [lightbox, setLightbox] = useState<{ photos: string[]; index: number } | null>(null)
   const queues = useQueues()
   // distinct values per column from all loaded units → combobox dropdown suggestions
@@ -1509,6 +1509,72 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
     const from = c[`Move from  ${i}`] || '', to = c[`Transfer ${i}`] || ''
     if (from || to) moves.push({ from, to })
   }
+
+  // ── Work / station-tab data ─────────────────────────────────────────────────
+  // history entries are logged under the COLUMN LABEL (fallback: raw key), so a
+  // lookup must accept both spellings of every field it cares about
+  const labelOf = (key: string) => columns.find((cc) => cc.key === key)?.label ?? key
+  const histOf = (...keys: string[]) => {
+    const names = new Set(keys.flatMap((k) => [k, labelOf(k)]))
+    return (row.history ?? []).filter((h) => names.has(h.field))
+  }
+  const lastHist = (...keys: string[]) => { const a = histOf(...keys); return a.length ? a[a.length - 1] : null }
+  const fmtAt = (t: number) => new Date(t).toLocaleString('th-TH', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' })
+
+  /** Every value a measurement cell has held — one line per save (SOC / tire). */
+  const readingsHist = (key: string): { value: string; at?: number; by?: string }[] => {
+    const out: { value: string; at?: number; by?: string }[] =
+      histOf(key).filter((h) => (h.to ?? '').trim()).map((h) => ({ value: h.to, at: h.at, by: h.by }))
+    const cur = (c[key] ?? '').trim()
+    if (cur && out[out.length - 1]?.value !== cur) out.push({ value: cur }) // imported value — no log entry
+    return out
+  }
+  const socHist = readingsHist('% SOC')
+  const tireHist = readingsHist('Tire Pressure')
+
+  // station date ladders (stamped by stampStationDate on every sheet save)
+  const PDI_DATE_KEYS = ['PDI', ...Array.from({ length: 8 }, (_, i) => `RE PDI  Date #${i + 1}`)]
+  const PM_DATE_KEYS = Array.from({ length: 15 }, (_, i) => `PM${i + 1}`)
+  const filledDates = (keys: string[]) => keys.map((k) => ({ k, v: (c[k] || '').trim() })).filter((x) => x.v)
+  const pdiDates = filledDates(PDI_DATE_KEYS)
+  const pmDates = filledDates(PM_DATE_KEYS)
+  const fcDate = (c['Final check date'] || '').trim()
+
+  // yard-position moves recorded by Re-location / Update Location (who + when)
+  const posMoves = histOf(LOCATION_KEY, 'Location')
+
+  type WorkRow = { code: string; name: string; done: boolean; date?: string; user?: string; note?: string; sub?: { value: string; at?: number; by?: string }[] }
+  const locHist = lastHist(LOCATION_KEY, 'Location')
+  const grpHist = lastHist('Grouping  Number')
+  const workRows: WorkRow[] = [
+    { code: 'GAI', name: 'Gate In', done: !!((c['Gate In (Rayong yard)'] || '').trim() || unit?.gateInAt),
+      date: (c['Gate In (Rayong yard)'] || '').trim() || (unit?.gateInAt ? fmtAt(unit.gateInAt) : ''),
+      user: c['Gate In Inspector'] || unit?.gateInBy },
+    { code: 'CNL', name: 'Confirm Location', done: !!(unit?.block && unit.row && unit.slot) || !!locHist,
+      date: locHist ? fmtAt(locHist.at) : unit?.parkedAt ? fmtAt(unit.parkedAt) : '',
+      user: locHist?.by, note: yardLocFull(unit) || undefined },
+    { code: 'PDI', name: 'PDI', done: pdiDates.length > 0, date: pdiDates[pdiDates.length - 1]?.v, user: lastHist(...PDI_DATE_KEYS)?.by },
+    { code: 'FNC', name: 'Final Check', done: !!fcDate, date: fcDate, user: lastHist('Final check date')?.by },
+    { code: 'PM',  name: 'PM', done: pmDates.length > 0, date: pmDates[pmDates.length - 1]?.v, user: lastHist(...PM_DATE_KEYS)?.by },
+    { code: 'SOC', name: '% SOC', done: socHist.length > 0, sub: socHist },
+    { code: 'TPS', name: 'Tire Pressure', done: tireHist.length > 0, sub: tireHist },
+    { code: 'ORD', name: 'Allocate', done: !!(c['Allocation Date'] || '').trim(), date: (c['Allocation Date'] || '').trim(), user: lastHist('Allocation Date')?.by },
+    { code: 'ACS', name: 'Addition Accessories', done: pdiDates.length > 0 || !!fcDate,
+      date: fcDate || pdiDates[pdiDates.length - 1]?.v, note: 'บันทึกพร้อมใบตรวจ PDI / Final Check' },
+    { code: 'GOD', name: 'Grouping Order', done: !!(c['Grouping  Number'] || '').trim(),
+      date: grpHist ? fmtAt(grpHist.at) : '', user: grpHist?.by, note: (c['Grouping  Number'] || '').trim() || undefined },
+    { code: 'GOT', name: 'Gate Out', done: !!(c['Gate Out time stamp'] || '').trim() || /gate-?out/i.test(c['Car Status'] || ''),
+      date: (c['Gate Out time stamp'] || '').trim(), user: lastHist('Gate Out time stamp')?.by },
+  ]
+  const workDone = workRows.filter((w) => w.done).length
+
+  // NG defects a station recorded (StationSheet tags them source:'pdi' + station name)
+  const stationDmgs = (match: string) =>
+    damages.filter((d) => d.source === 'pdi' && (d.station ?? '').toUpperCase().includes(match))
+  // queue verdicts of one station type for this car
+  const stationChecks = (types: string[]) => queues
+    .map((q) => ({ q, item: q.items.find((i) => i.vin === vin) }))
+    .filter((x) => x.item && types.includes(queueTypeOf(x.q)))
 
   // ── unified "Event" log — every station's cell edits (Gate-in / Driver /
   // PDI-PM-FC / Gate-out / Relocation, plus admin edits from the context menu —
@@ -1574,11 +1640,111 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
 
   const TABS = [
     { id: 'overview' as const, label: 'Overview', icon: <Car size={14} /> },
+    { id: 'work' as const, label: 'Work', icon: <CheckSquare size={14} />, n: workDone },
     { id: 'timeline' as const, label: 'Timeline', icon: <Clock size={14} />, n: events.length },
-    { id: 'location' as const, label: 'Location History', icon: <Route size={14} />, n: moves.length },
+    { id: 'location' as const, label: 'Location', icon: <Route size={14} />, n: moves.length + posMoves.length },
+    { id: 'pdi' as const, label: 'PDI', icon: <ShieldCheck size={14} />, n: pdiDates.length },
+    { id: 'final' as const, label: 'Final Check', icon: <ShieldCheck size={14} />, n: fcDate ? 1 : 0 },
+    { id: 'pm' as const, label: 'PM', icon: <ShieldCheck size={14} />, n: pmDates.length },
     { id: 'damages' as const, label: 'Damages', icon: <ShieldCheck size={14} />, n: damages.length },
     { id: 'event' as const, label: 'Event', icon: <History size={14} />, n: eventLog.length },
   ]
+
+  /** One station tab (PDI / Final Check / PM): dates stamped, measurements with
+   *  full per-save history, queue verdicts, and the NGs the station recorded. */
+  const StationTab = ({ title, dates, types, match }: { title: string; dates: { k: string; v: string }[]; types: string[]; match: string }) => {
+    const dmgs = stationDmgs(match)
+    const checks = stationChecks(types)
+    const meas: [string, { value: string; at?: number; by?: string }[]][] = [
+      ['% SOC', socHist], ['Mileage (Km)', readingsHist('Mileage')],
+      ['Voltage of 12V', readingsHist('Voltage of 12V')], ['Tire Pressure (FL/FR/RL/RR)', tireHist],
+    ]
+    return (
+      <div className="space-y-4">
+        <section className="panel-solid p-4">
+          <div className="text-[11px] font-bold uppercase mb-2" style={{ color: 'var(--faint)' }}>วันที่ตรวจ {title}</div>
+          {dates.length === 0 ? <Empty>ยังไม่มีการบันทึก</Empty> : (
+            <div className="flex flex-wrap gap-2">
+              {dates.map((d) => (
+                <span key={d.k} className="badge text-[12px] px-2.5 py-1" style={{ background: 'var(--brand-soft)', color: 'var(--brand)' }}>
+                  {d.k} · {d.v}
+                </span>
+              ))}
+            </div>
+          )}
+          {checks.length > 0 && (
+            <div className="mt-3 space-y-1.5">
+              {checks.map(({ q, item }) => item && (
+                <div key={q.id} className="flex items-center gap-2 text-[12.5px]">
+                  <span className="badge" style={item.result === 'NG'
+                    ? { background: '#fee2e2', color: '#b91c1c' } : { background: 'rgba(22,163,74,0.12)', color: '#16a34a' }}>
+                    {item.result ?? (item.done ? 'เสร็จ' : 'รอ')}
+                  </span>
+                  <span className="font-semibold">{q.name}</span>
+                  {item.checkedBy && <span style={{ color: 'var(--muted)' }}>· {item.checkedBy}{item.checkedAt ? ` · ${fmtAt(item.checkedAt)}` : ''}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="panel-solid p-4">
+          <div className="text-[11px] font-bold uppercase mb-2" style={{ color: 'var(--faint)' }}>ค่าที่วัดได้ · ประวัติทุกครั้งที่บันทึก</div>
+          <div className="grid sm:grid-cols-2 gap-x-7 gap-y-3">
+            {meas.map(([label, list]) => (
+              <div key={label}>
+                <div className="text-[12px] font-semibold mb-1" style={{ color: 'var(--muted)' }}>{label}</div>
+                {list.length === 0 ? <div className="text-[12px]" style={{ color: 'var(--faint)' }}>—</div> : (
+                  <div className="space-y-1">
+                    {[...list].reverse().map((v, i) => (
+                      <div key={i} className="flex items-baseline gap-2 text-[12.5px] border-b hairline pb-1">
+                        <span className="font-bold tabular">{v.value}</span>
+                        <span className="ml-auto text-[11px] text-right" style={{ color: 'var(--faint)' }}>
+                          {v.at ? fmtAt(v.at) : 'จากไฟล์นำเข้า'}{v.by ? ` · ${v.by}` : ''}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="panel-solid p-4">
+          <div className="text-[11px] font-bold uppercase mb-2" style={{ color: 'var(--faint)' }}>
+            NG ที่บันทึกจากสถานี ({dmgs.length}) <span style={{ color: 'var(--faint)', fontWeight: 400 }}>· Overall inspection / Control Stock Sheet / Additional Accessories / NG</span>
+          </div>
+          {dmgs.length === 0 ? <Empty>ไม่มี NG จากสถานีนี้</Empty> : (
+            <div className="space-y-2">
+              {dmgs.map((d) => (
+                <div key={d.id} className="rounded-xl p-3" style={{ border: '1px solid var(--line)', background: '#fff8f5' }}>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[13px] font-bold" style={{ color: '#dc2626' }}>{zoneLabel(d.area)}{d.item ? ` // ${d.item}` : ''}</span>
+                    {d.categoryNG && <span className="badge" style={{ background: '#fee2e2', color: '#b91c1c', fontSize: 10.5 }}>{d.categoryNG}</span>}
+                    <span className="badge ml-auto" style={{ background: d.statusRepair && d.statusRepair !== 'Waiting Repair' ? 'rgba(22,163,74,0.12)' : '#fef3c7', color: d.statusRepair && d.statusRepair !== 'Waiting Repair' ? '#16a34a' : '#b45309', fontSize: 10.5 }}>
+                      {d.statusRepair || 'Waiting Repair'}
+                    </span>
+                  </div>
+                  {(d.areaTh || d.itemTh) && <div className="text-[11.5px] mt-0.5" style={{ color: 'var(--muted)' }}>{[d.areaTh, d.itemTh].filter(Boolean).join(' // ')}</div>}
+                  {d.remark && <div className="text-[11.5px] mt-0.5" style={{ color: 'var(--muted)' }}>หมายเหตุ: {d.remark}</div>}
+                  <div className="text-[11px] mt-1" style={{ color: 'var(--faint)' }}>{d.by} · {fmtAt(d.at)}{d.station ? ` · ${d.station}` : ''}</div>
+                  {(d.photos?.length || d.photo) && (
+                    <div className="flex gap-1.5 mt-2 flex-wrap">
+                      {(d.photos ?? [d.photo!]).map((p, pi) => (
+                        <img key={pi} src={p} alt="" className="w-14 h-14 rounded-lg object-cover cursor-zoom-in"
+                          onClick={() => setLightbox({ photos: d.photos ?? [d.photo!], index: pi })} />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+    )
+  }
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: 'rgba(15,23,42,0.5)', backdropFilter: 'blur(3px)' }} onClick={onClose}>
@@ -1692,10 +1858,62 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
             </div>
           )}
 
+          {tab === 'work' && (
+            <div className="panel-solid overflow-hidden">
+              <div className="flex items-center gap-3 px-3.5 py-2 border-b hairline text-[12px]" style={{ background: 'var(--app-bg)' }}>
+                <span className="font-bold">Work Flow</span>
+                <span className="badge tabular" style={{ background: 'var(--brand-soft)', color: 'var(--brand)' }}>{workDone}/{workRows.length}</span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-[12.5px]" style={{ borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ background: 'var(--chip)' }}>
+                      {['No.', 'Work Flow', 'Work', 'Work Date', 'Status', 'User'].map((h) => (
+                        <th key={h} className="px-3 py-2 text-left font-bold whitespace-nowrap" style={{ color: 'var(--muted)' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {workRows.map((w, i) => (
+                      <Fragment key={w.code}>
+                        <tr className="border-t hairline">
+                          <td className="px-3 py-2 tabular" style={{ color: 'var(--muted)' }}>{i + 1}</td>
+                          <td className="px-3 py-2 font-bold tabular" style={{ color: 'var(--brand)' }}>{w.code}</td>
+                          <td className="px-3 py-2 font-semibold whitespace-nowrap">
+                            {w.name}
+                            {w.note && <span className="ml-2 text-[11px] font-normal" style={{ color: 'var(--faint)' }}>{w.note}</span>}
+                          </td>
+                          <td className="px-3 py-2 whitespace-nowrap">{w.date || '—'}</td>
+                          <td className="px-3 py-2">
+                            {w.done
+                              ? <span className="inline-flex w-5 h-5 rounded-full items-center justify-center" style={{ background: '#16a34a' }}><Check size={13} color="#fff" strokeWidth={3} /></span>
+                              : <span className="inline-flex w-5 h-5 rounded-full items-center justify-center" style={{ background: '#ef4444' }}><X size={12} color="#fff" strokeWidth={3} /></span>}
+                          </td>
+                          <td className="px-3 py-2 whitespace-nowrap" style={{ color: 'var(--muted)' }}>{w.user || '—'}</td>
+                        </tr>
+                        {/* SOC / Tire Pressure — every recorded value, one line per save */}
+                        {w.sub && w.sub.length > 0 && [...w.sub].reverse().map((v, vi) => (
+                          <tr key={vi} style={{ background: 'var(--app-bg)' }}>
+                            <td />
+                            <td colSpan={2} className="px-3 py-1 text-[11.5px] text-right" style={{ color: 'var(--faint)' }}>{vi === 0 ? 'ล่าสุด' : ''}</td>
+                            <td className="px-3 py-1 text-[12px] whitespace-nowrap" style={{ color: 'var(--muted)' }}>{v.at ? fmtAt(v.at) : 'จากไฟล์นำเข้า'}</td>
+                            <td className="px-3 py-1 font-bold tabular text-[12px]">{v.value}</td>
+                            <td className="px-3 py-1 text-[12px] whitespace-nowrap" style={{ color: 'var(--muted)' }}>{v.by || '—'}</td>
+                          </tr>
+                        ))}
+                      </Fragment>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           {tab === 'location' && (
             <div className="panel-solid p-5">
-              {moves.length === 0 && !c['Location yard'] ? <Empty>ไม่มีประวัติการย้าย</Empty> : (
+              {moves.length === 0 && posMoves.length === 0 && !c['Location yard'] ? <Empty>ไม่มีประวัติการย้าย</Empty> : (
                 <div className="space-y-2">
+                  {/* sheet-recorded yard moves (Move from → Transfer) */}
                   {moves.map((m, i) => (
                     <div key={i} className="flex items-center gap-2 text-[13px]">
                       <span className="badge" style={{ background: 'var(--chip)', color: 'var(--muted)' }}>{i + 1}</span>
@@ -1704,15 +1922,29 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                       <span className="font-medium" style={{ color: 'var(--brand)' }}>{m.to || '—'}</span>
                     </div>
                   ))}
+                  {/* in-yard position moves (Re-location / Update Location) — who + when */}
+                  {posMoves.map((h, i) => (
+                    <div key={`p${i}`} className="flex items-center gap-2 text-[13px] flex-wrap">
+                      <span className="badge" style={{ background: 'var(--chip)', color: 'var(--muted)' }}>{moves.length + i + 1}</span>
+                      <span className="font-medium tabular">{h.from || '—'}</span>
+                      <ChevronRight size={14} style={{ color: 'var(--faint)' }} />
+                      <span className="font-medium tabular" style={{ color: 'var(--brand)' }}>{h.to || '—'}</span>
+                      <span className="text-[11.5px] ml-auto" style={{ color: 'var(--faint)' }}>{fmtAt(h.at)} · {h.by || '—'}</span>
+                    </div>
+                  ))}
                   <div className="flex items-center gap-2 text-[13px] pt-1 border-t hairline mt-1">
                     <MapPin size={14} style={{ color: 'var(--st-yard)' }} />
                     <span style={{ color: 'var(--muted)' }}>ปัจจุบัน:</span>
-                    <span className="font-semibold">{c['Location yard'] || '—'}{c['storage Yard'] ? ` · ${c['storage Yard']}` : ''}</span>
+                    <span className="font-semibold">{yardLocFull(unit) ? `${yardLocFull(unit)} · ` : ''}{c['Location yard'] || '—'}{c['storage Yard'] ? ` · ${c['storage Yard']}` : ''}</span>
                   </div>
                 </div>
               )}
             </div>
           )}
+
+          {tab === 'pdi' && <StationTab title="PDI" dates={pdiDates} types={['PDI']} match="PDI" />}
+          {tab === 'final' && <StationTab title="Final Check" dates={fcDate ? [{ k: 'Final check date', v: fcDate }] : []} types={['FINAL']} match="FINAL" />}
+          {tab === 'pm' && <StationTab title="PM" dates={pmDates} types={['PM']} match="PM" />}
 
           {tab === 'damages' && (() => {
               // normalise imported spellings ("OK-Repaired", "waiting repair") onto the
