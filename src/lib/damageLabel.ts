@@ -5,6 +5,14 @@ import { zoneLabel } from '../components/CarDiagramMultiView'
 import { resolvePart, resolveDefect } from './masterDefect'
 import type { Damage } from '../types'
 
+/** A defect still waiting for repair (blank status counts as waiting). */
+export const isOpenDefect = (d: Damage) => !d.statusRepair || d.statusRepair === 'Waiting Repair'
+
+/** Unrepaired defects always FIRST — resolved ones sink below. Stable, so the
+ *  original order (usually record time) is kept within each group. */
+export const openDefectsFirst = <T extends Damage>(list: T[]): T[] =>
+  [...list].sort((a, b) => Number(isOpenDefect(b)) - Number(isOpenDefect(a)))
+
 // the 5 legacy defect ids used before the master Defect list
 const LEGACY_TYPES: Record<string, { en: string; th: string }> = {
   scratch: { en: 'Scratch', th: 'รอยขีดข่วน' },

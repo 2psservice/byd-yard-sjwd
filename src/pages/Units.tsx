@@ -19,7 +19,7 @@ import { printFindList, exportFindListXlsx } from '../lib/groupingPrint'
 import { matchVins, toFindListRows } from '../lib/findCar'
 import { rowInSite } from '../lib/siteScope'
 import { zoneLabel } from '../components/CarDiagramMultiView'
-import { partLabel, defectLabel, partBilingual, defectBilingual } from '../lib/damageLabel'
+import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirst } from '../lib/damageLabel'
 import { resolvePart, resolveDefect, MASTER_PARTS, MASTER_DEFECTS } from '../lib/masterDefect'
 import { cx, PhotoLightbox } from '../components/ui'
 import { useQueues, queueTypeOf } from '../store/useOps'
@@ -1629,7 +1629,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
           </div>
           {dmgs.length === 0 ? <Empty>ไม่มี NG จากสถานีนี้</Empty> : (
             <div className="space-y-2">
-              {dmgs.map((d) => (
+              {openDefectsFirst(dmgs).map((d) => (
                 <div key={d.id} className="rounded-xl p-3" style={{ border: '1px solid var(--line)', background: '#fff8f5' }}>
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-[13px] font-bold" style={{ color: '#dc2626' }}>{zoneLabel(d.area)}{d.item ? ` // ${d.item}` : ''}</span>
