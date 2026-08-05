@@ -88,7 +88,10 @@ export default function App() {
     // units + damages are heavy (~8 MB / ~15k rows) — load them in the BACKGROUND.
     // The Unit List + Dashboard render from tracking rows, so the splash only needs
     // a brief beat; it also lifts as soon as trackingLoaded flips (local-first).
-    loadFromSupabase().catch((e) => console.error('[App] background units load', e))
+    loadFromSupabase()
+      .catch((e) => console.error('[App] background units load', e))
+      // heal lane holes left from before auto-compaction existed (idempotent)
+      .finally(() => { try { useYard.getState().compactAllLanes() } catch { /* noop */ } })
     useOps.getState().loadFromCloud().catch((e) => console.error('[App] ops queues load', e))
     useYard.getState().loadPolicies().catch((e) => console.error('[App] parking policies load', e))
     const t = setTimeout(() => { if (!cancelled) setBooting(false) }, 600)
