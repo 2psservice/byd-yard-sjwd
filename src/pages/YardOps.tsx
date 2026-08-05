@@ -37,7 +37,7 @@ import { parseLane } from '../lib/laneImport'
 import { LOCATION_KEY } from '../lib/trackingColumns'
 import { blockTag, blockKeyOfTag, resolveBlockByName } from '../lib/format'
 import { useRecentOps } from '../store/useRecentOps'
-import { buildWorkRows, buildEventLog, fmtHistAt } from '../lib/carHistory'
+import { buildWorkRows, buildEventLog, fmtHistAt, histOf } from '../lib/carHistory'
 
 const recordRecent = (key: string, vin: string, note?: string) => useRecentOps.getState().record(key, vin, note)
 
@@ -3693,7 +3693,7 @@ function CheckView() {
   const columns = useTracking(s => s.columns)
   const { toast, loadFromSupabase } = useYard()
   const [vin, setVin] = useState<string | null>(null)
-  const [ctab, setCtab] = useState<'info' | 'work' | 'event'>('info')
+  const [ctab, setCtab] = useState<'info' | 'location' | 'work' | 'event'>('info')
 
   // pull units + damages from the cloud too — Check is read-only and often sits
   // open while OTHER devices record PDI defects; local state alone showed
@@ -3730,6 +3730,14 @@ function CheckView() {
   // built by the shared lib so หน้างาน reads the identical history
   const workData = row ? buildWorkRows(row, unit ?? undefined, columns) : null
   const eventLog = row ? buildEventLog(row, unit?.damages ?? [], queues, row.vin, zoneLabel) : []
+  // movement history: sheet yard-moves (Move from → Transfer) + in-yard position
+  // moves from Re-location / Update Location (who + when)
+  const sheetMoves: { from: string; to: string }[] = []
+  if (row) for (let i = 1; i <= 4; i++) {
+    const from = row.cells[`Move from  ${i}`] || '', to = row.cells[`Transfer ${i}`] || ''
+    if (from || to) sheetMoves.push({ from, to })
+  }
+  const posMoves = row ? histOf(row, columns, LOCATION_KEY, 'Location') : []
 
   // derived data
   const vinTrips   = vin ? allTrips.filter(t => t.vin === vin).sort((a, b) => b.startedAt - a.startedAt) : []
@@ -3776,13 +3784,55 @@ function CheckView() {
       {/* tabs — ข้อมูล / Work / Event, same history the admin detail shows */}
       {(row || unit) && vin && (
         <div className="flex gap-1.5">
-          {([['info', 'ข้อมูล'], ['work', `Work${workData ? ` ${workData.done}/${workData.rows.length}` : ''}`], ['event', `Event${eventLog.length ? ` ${eventLog.length}` : ''}`]] as ['info' | 'work' | 'event', string][]).map(([id, label]) => (
+          {([['info', 'ข้อมูล'], ['location', 'Location'], ['work', `Work${workData ? ` ${workData.done}/${workData.rows.length}` : ''}`], ['event', `Event${eventLog.length ? ` ${eventLog.length}` : ''}`]] as ['info' | 'location' | 'work' | 'event', string][]).map(([id, label]) => (
             <button key={id} onClick={() => setCtab(id)}
               className="flex-1 py-2 rounded-xl text-[12.5px] font-bold transition"
               style={ctab === id ? { background: '#0891b2', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>
               {label}
             </button>
           ))}
+        </div>
+      )}
+
+      {/* ── Location tab — current position + every move ── */}
+      {(row || unit) && vin && ctab === 'location' && (
+        <div className="panel p-4 fade-up space-y-2.5">
+          {/* current position first — what the driver actually walks to */}
+          <div className="rounded-xl px-3.5 py-3 flex items-center gap-2.5" style={{ background: 'rgba(8,145,178,0.08)', border: '1px solid rgba(8,145,178,0.2)' }}>
+            <MapPin size={16} style={{ color: '#0891b2' }} />
+            <div>
+              <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>ตำแหน่งปัจจุบัน</div>
+              <div className="text-[15px] font-extrabold tabular" style={{ color: '#0891b2' }}>
+                {(unit && yardLocFull(unit)) || row?.cells['Location yard'] || '—'}
+                {unit && yardLocFull(unit) && row?.cells['Location yard'] ? <span className="text-[11.5px] font-semibold ml-1.5" style={{ color: 'var(--muted)' }}>· {row.cells['Location yard']}</span> : null}
+              </div>
+            </div>
+          </div>
+          {sheetMoves.length === 0 && posMoves.length === 0 ? (
+            <div className="py-4 text-center text-[12.5px]" style={{ color: 'var(--faint)' }}>— ไม่มีประวัติการย้าย —</div>
+          ) : (
+            <div className="space-y-2">
+              {sheetMoves.map((m, i) => (
+                <div key={i} className="flex items-center gap-2 text-[13px]">
+                  <span className="badge" style={{ background: 'var(--chip)', color: 'var(--muted)' }}>{i + 1}</span>
+                  <span className="font-medium">{m.from || '—'}</span>
+                  <ArrowRight size={13} style={{ color: 'var(--faint)' }} />
+                  <span className="font-medium" style={{ color: '#0891b2' }}>{m.to || '—'}</span>
+                </div>
+              ))}
+              {posMoves.map((h, i) => (
+                <div key={`p${i}`} className="text-[13px]">
+                  <div className="flex items-center gap-2">
+                    <span className="badge" style={{ background: 'var(--chip)', color: 'var(--muted)' }}>{sheetMoves.length + i + 1}</span>
+                    <span className="font-medium tabular">{h.from || '—'}</span>
+                    <ArrowRight size={13} style={{ color: 'var(--faint)' }} />
+                    <span className="font-medium tabular" style={{ color: '#0891b2' }}>{h.to || '—'}</span>
+                  </div>
+                  <div className="text-[11px] mt-0.5 pl-8" style={{ color: 'var(--faint)' }}>{fmtHistAt(h.at)} · {h.by || '—'}</div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
