@@ -29,7 +29,6 @@ import { cx, PhotoLightbox } from '../components/ui'
 import { rowInSite } from '../lib/siteScope'
 import { compressImage } from '../lib/photo'
 import StationSheet from '../components/StationSheet'
-import { PDI_CHECKLIST } from '../lib/pdiChecklist'
 import { FINAL_CHECK_TABS } from '../lib/finalCheckList'
 import { yardLocCode, yardLocFull, blockCode, byYardLocation } from '../lib/groupingImport'
 import { parseLane } from '../lib/laneImport'
@@ -2711,7 +2710,8 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
           )}
 
           {/* Inspection form — PDI and FINAL CHECK share the full station sheet
-              (only their checklists differ); PM keeps the lighter panel. */}
+              AND the same checklist tabs (Overall inspection · Control Stock
+              Sheet · Additional Accessories · NG); PM keeps the lighter panel. */}
           {/* key={vin} — the panels hold local form state (checklist ticks,
               measurements); without a key, scanning the next car keeps the
               previous car's entries and saves them onto the wrong VIN. */}
@@ -2724,7 +2724,7 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
               onSaved={onSaved}
               stationTitle={title}
               accent={accent}
-              tabs={types.includes('PDI') ? PDI_CHECKLIST : FINAL_CHECK_TABS}
+              tabs={FINAL_CHECK_TABS}
               stationType={types.includes('PDI') ? 'PDI' : 'FINAL'}
             />
           ) : (
