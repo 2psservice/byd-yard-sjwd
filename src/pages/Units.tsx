@@ -1543,7 +1543,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
   // yard-position moves recorded by Re-location / Update Location (who + when)
   const posMoves = histOf(LOCATION_KEY, 'Location')
 
-  type WorkRow = { code: string; name: string; done: boolean; date?: string; user?: string; note?: string; sub?: { value: string; at?: number; by?: string }[] }
+  type WorkRow = { code: string; name: string; done: boolean; date?: string; user?: string; note?: string; value?: string; sub?: { value: string; at?: number; by?: string }[] }
   const locHist = lastHist(LOCATION_KEY, 'Location')
   const grpHist = lastHist('Grouping  Number')
   const workRows: WorkRow[] = [
@@ -1556,8 +1556,16 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
     { code: 'PDI', name: 'PDI', done: pdiDates.length > 0, date: pdiDates[pdiDates.length - 1]?.v, user: lastHist(...PDI_DATE_KEYS)?.by },
     { code: 'FNC', name: 'Final Check', done: !!fcDate, date: fcDate, user: lastHist('Final check date')?.by },
     { code: 'PM',  name: 'PM', done: pmDates.length > 0, date: pmDates[pmDates.length - 1]?.v, user: lastHist(...PM_DATE_KEYS)?.by },
-    { code: 'SOC', name: '% SOC', done: socHist.length > 0, sub: socHist },
-    { code: 'TPS', name: 'Tire Pressure', done: tireHist.length > 0, sub: tireHist },
+    // the CURRENT value sits on the main row — the sub-rows underneath are the
+    // full save history (every station that recorded one: PDI / Final Check / PM)
+    { code: 'SOC', name: '% SOC', done: socHist.length > 0, sub: socHist,
+      value: socHist[socHist.length - 1]?.value,
+      date: socHist[socHist.length - 1]?.at ? fmtAt(socHist[socHist.length - 1].at!) : '',
+      user: socHist[socHist.length - 1]?.by },
+    { code: 'TPS', name: 'Tire Pressure', done: tireHist.length > 0, sub: tireHist,
+      value: tireHist[tireHist.length - 1]?.value,
+      date: tireHist[tireHist.length - 1]?.at ? fmtAt(tireHist[tireHist.length - 1].at!) : '',
+      user: tireHist[tireHist.length - 1]?.by },
     { code: 'ORD', name: 'Allocate', done: !!(c['Allocation Date'] || '').trim(), date: (c['Allocation Date'] || '').trim(), user: lastHist('Allocation Date')?.by },
     { code: 'ACS', name: 'Addition Accessories', done: pdiDates.length > 0 || !!fcDate,
       date: fcDate || pdiDates[pdiDates.length - 1]?.v, note: 'บันทึกพร้อมใบตรวจ PDI / Final Check' },
@@ -1881,6 +1889,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                           <td className="px-3 py-2 font-bold tabular" style={{ color: 'var(--brand)' }}>{w.code}</td>
                           <td className="px-3 py-2 font-semibold whitespace-nowrap">
                             {w.name}
+                            {w.value && <span className="ml-2 tabular font-bold" style={{ color: 'var(--brand)' }}>{w.value}</span>}
                             {w.note && <span className="ml-2 text-[11px] font-normal" style={{ color: 'var(--faint)' }}>{w.note}</span>}
                           </td>
                           <td className="px-3 py-2 whitespace-nowrap">{w.date || '—'}</td>
@@ -1895,7 +1904,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                         {w.sub && w.sub.length > 0 && [...w.sub].reverse().map((v, vi) => (
                           <tr key={vi} style={{ background: 'var(--app-bg)' }}>
                             <td />
-                            <td colSpan={2} className="px-3 py-1 text-[11.5px] text-right" style={{ color: 'var(--faint)' }}>{vi === 0 ? 'ล่าสุด' : ''}</td>
+                            <td colSpan={2} className="px-3 py-1 text-[11.5px] text-right whitespace-nowrap" style={{ color: 'var(--faint)' }}>{vi === 0 ? 'ประวัติทุกครั้ง (ทุกสถานี) · ล่าสุด' : ''}</td>
                             <td className="px-3 py-1 text-[12px] whitespace-nowrap" style={{ color: 'var(--muted)' }}>{v.at ? fmtAt(v.at) : 'จากไฟล์นำเข้า'}</td>
                             <td className="px-3 py-1 font-bold tabular text-[12px]">{v.value}</td>
                             <td className="px-3 py-1 text-[12px] whitespace-nowrap" style={{ color: 'var(--muted)' }}>{v.by || '—'}</td>
