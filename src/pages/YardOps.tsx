@@ -3841,6 +3841,9 @@ function CheckView() {
             {(unit?.color || row?.cells['Color']) && <Row label="Color" value={unit?.color ?? row?.cells['Color'] ?? '—'} />}
             {row?.cells['Lot transfer'] && <Row label="Lot" value={row.cells['Lot transfer']} />}
             {row?.cells['moving date']  && <Row label="Moving Date" value={row.cells['moving date']} />}
+            {/* always shown — the gate uses this screen to CHECK whether the car
+                has an allocation yet, so an empty date must read "—", not vanish */}
+            {row && <Row label="Allocation Date" value={row.cells['Allocation Date']?.trim() || '—'} />}
             {row?.cells['Grouping  Number'] && <Row label="Group No." value={row.cells['Grouping  Number']} />}
           </Sec>
 
