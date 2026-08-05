@@ -107,13 +107,12 @@ export default function StationSheet({ unit, row, activeProc, onSaved, stationTi
   const save = () => {
     if (savedRef.current) return
 
-    // every NG needs evidence — this sheet is what a claim is argued from
+    // Photo policy (by request): checklist NGs (Overall inspection / Control
+    // Stock Sheet / Additional Accessories) save WITHOUT a photo — ticking
+    // NG/NG Heavy there is routine and the camera stop slowed the line. Only
+    // the free NG tab (เพิ่มรายการ NG) still demands evidence, since those
+    // entries are the body-damage claims argued from later.
     const noPhoto: string[] = []
-    tabs.forEach((t) => t.groups.forEach((g, gi) => g.items.forEach((it, ii) => {
-      const st = state[checkItemId(t.key, gi, ii)]
-      if (st && (st.result === 'NG' || st.result === 'NG Heavy') && !st.photos?.length)
-        noPhoto.push(it.th ?? it.en ?? '')
-    })))
     for (const e of ngList) {
       if ((e.position.trim() || e.defect.trim()) && !e.photos.length) noPhoto.push(e.position || e.defect)
     }
