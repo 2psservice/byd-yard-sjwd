@@ -2,8 +2,8 @@
  * Reads an "Update Location" export (gate-in receive file) — needs VinNo + LaneNo
  * columns. LaneNo is either "N-O15" (yard "N", block "OO", column 15) or the
  * block-name form "WCL21" (block "WCL", column 21). Digits = the block's COLUMN
- * (ช่องด้านบน); cars stack down that column's rows 1..8 — assigned later by the
- * import planner (max 8 cars per column). See parseLane.
+ * (ช่องด้านบน); cars stack down that column's rows — assigned later by the
+ * import planner, up to the block's own row count. See parseLane.
  */
 
 export interface LaneRow {
@@ -22,7 +22,7 @@ export interface LaneParseResult {
 }
 
 /** Parse a LaneNo into { prefix, block, row } — `row` is the lane digits, used
- *  as the block's column by the planner (cars stack down that column's rows 1..8).
+ *  as the block's column by the planner (cars stack down that column's rows).
  *
  *  `block` is the RAW token exactly as written in the file ("A", "O", "WCL") —
  *  NEVER guessed/expanded here, because yards name their blocks differently:
