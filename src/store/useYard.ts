@@ -8,6 +8,7 @@ import { BLOCKS, DEFAULT_POLICIES, MODELS, generateSample, matchModel, paintHex 
 import { autoAssign } from '../lib/parkingEngine'
 import { haversineM, makeDemoTrip, mulberry32, slotToLatLng } from '../lib/geo'
 import { IN_YARD_STATUSES } from '../lib/carStatus'
+import { blockKeyOfTag } from '../lib/format'
 import type { RawRow } from '../lib/excel'
 import type { DefectRow, TrackRow } from '../lib/excelTracking'
 import * as db from '../lib/db'
@@ -58,6 +59,49 @@ function withModelId(u: Unit): Unit {
  *  each block is still limited by its OWN row count (`block.rows`), so raising
  *  this alone does not make a 8-row block stack 20 deep. */
 export const MAX_LANE_DEPTH = 20
+
+// ── lane compaction ──────────────────────────────────────────────────────────
+/** One lane = block name + yard + column. */
+const laneKey = (u: { block?: string; slot?: number; site?: string }) =>
+  `${blockKeyOfTag(u.block)}|${u.site ?? ''}|${u.slot ?? 0}`
+
+/** Lanes these (pre-move) units were parked in. */
+function lanesOf(list: (Unit | undefined)[]): Set<string> {
+  const s = new Set<string>()
+  for (const u of list) if (u?.block && u.row && u.slot) s.add(laneKey(u))
+  return s
+}
+
+/** Re-pack the given lanes so positions read 1,2,3… with no holes: when the
+ *  2nd car of a lane leaves, cars 3-4-5 shift up one place (คันที่ 3 4 5
+ *  เลื่อนขึ้น). MUTATES `units` in place and returns the changed cars. Because
+ *  lanes never keep holes, every "first free position" scan (re-location,
+ *  parking engine, Update Location import) now lands a returning car at the
+ *  END of its lane — exactly the yard's rule for a car that comes back. */
+function compactLanes(units: Record<string, Unit>, lanes: Set<string>): Unit[] {
+  if (!lanes.size) return []
+  const byLane = new Map<string, Unit[]>()
+  for (const vin in units) {
+    const u = units[vin]
+    if (!u.block || !u.row || !u.slot || u.status === 'DEPARTED') continue
+    const k = laneKey(u)
+    if (!lanes.has(k)) continue
+    const arr = byLane.get(k)
+    if (arr) arr.push(u); else byLane.set(k, [u])
+  }
+  const changed: Unit[] = []
+  for (const arr of byLane.values()) {
+    arr.sort((a, b) => a.row! - b.row!)
+    arr.forEach((u, i) => {
+      if (u.row !== i + 1) {
+        const nu = { ...u, row: i + 1 }
+        units[u.vin] = nu
+        changed.push(nu)
+      }
+    })
+  }
+  return changed
+}
 
 // ── Defect import helpers (Defect-Yard / Defect-Factory → Damage) ───────────
 function defHash(s: string): string {
@@ -556,13 +600,14 @@ export const useYard = create<YardState>()(
       },
 
       removeUnit: (vin) => {
-        set((s) => {
-          if (!s.units[vin]) return s
-          const units = { ...s.units }
-          delete units[vin]
-          return { units, trips: s.trips.filter((t) => t.vin !== vin) }
-        })
+        const old = get().units[vin]
+        if (!old) return
+        const units = { ...get().units }
+        delete units[vin]
+        const compacted = compactLanes(units, lanesOf([old]))
+        set((s) => ({ units, trips: s.trips.filter((t) => t.vin !== vin) }))
         db.deleteUnit(vin).catch((e) => console.error('[db] removeUnit', e))
+        if (compacted.length) db.upsertUnits(compacted).catch((e) => console.error('[db] removeUnit compact', e))
       },
 
       markDeparted: (vin) => {
@@ -571,25 +616,30 @@ export const useYard = create<YardState>()(
         // after enough gate-outs the auto-plan reported a full yard.
         const u = get().units[vin]
         if (!u) return // sheet-only car (no yard unit) — nothing to release
-        const updated: Unit = { ...u, status: 'DEPARTED', block: undefined, row: undefined, slot: undefined }
-        set((s) => ({ units: { ...s.units, [vin]: updated } }))
-        db.upsertUnit(updated).catch((e) => console.error('[db] markDeparted', e))
+        const units = { ...get().units }
+        units[vin] = { ...u, status: 'DEPARTED', block: undefined, row: undefined, slot: undefined }
+        // the lane it left closes up behind it (คันถัดไปเลื่อนขึ้น)
+        const changed = [units[vin], ...compactLanes(units, lanesOf([u]))]
+        set({ units })
+        db.upsertUnits(changed).catch((e) => console.error('[db] markDeparted', e))
       },
 
       markDepartedMany: (vins) => {
+        const units = { ...get().units }
+        const old: Unit[] = []
         const changed: Unit[] = []
-        set((s) => {
-          const units = { ...s.units }
-          for (const vin of vins) {
-            const u = units[vin]
-            if (!u) continue // sheet-only car (no yard unit) — nothing to release
-            const updated: Unit = { ...u, status: 'DEPARTED', block: undefined, row: undefined, slot: undefined }
-            units[vin] = updated
-            changed.push(updated)
-          }
-          return changed.length ? { units } : s
-        })
-        if (changed.length) db.upsertUnits(changed).catch((e) => console.error('[db] markDepartedMany', e))
+        for (const vin of vins) {
+          const u = units[vin]
+          if (!u) continue // sheet-only car (no yard unit) — nothing to release
+          old.push(u)
+          const updated: Unit = { ...u, status: 'DEPARTED', block: undefined, row: undefined, slot: undefined }
+          units[vin] = updated
+          changed.push(updated)
+        }
+        if (!changed.length) return
+        changed.push(...compactLanes(units, lanesOf(old)))
+        set({ units })
+        db.upsertUnits(changed).catch((e) => console.error('[db] markDepartedMany', e))
       },
 
       markTrailerArrived: (no, arrived = true) => {
@@ -809,15 +859,16 @@ export const useYard = create<YardState>()(
           return { units: { ...s.units, [vin]: updated } }
         }),
 
-      resetParking: (vin) =>
-        set((s) => {
-          const u = s.units[vin]
-          if (!u) return s
-          const { block, row, slot, assignedAt, drivingStartedAt, parkedAt, ...rest } = u
-          const updated: Unit = { ...rest, status: 'GATE_IN' }
-          db.upsertUnit(updated).catch((e) => console.error('[db] resetParking', e))
-          return { units: { ...s.units, [vin]: updated } }
-        }),
+      resetParking: (vin) => {
+        const u = get().units[vin]
+        if (!u) return
+        const { block, row, slot, assignedAt, drivingStartedAt, parkedAt, ...rest } = u
+        const units = { ...get().units }
+        units[vin] = { ...rest, status: 'GATE_IN' }
+        const changed = [units[vin], ...compactLanes(units, lanesOf([u]))]
+        set({ units })
+        db.upsertUnits(changed).catch((e) => console.error('[db] resetParking', e))
+      },
 
       // Update Location import: place each car into its lane's block/row at the
       // given slot. Creates a minimal unit for VINs not in the system yet.
@@ -826,6 +877,8 @@ export const useYard = create<YardState>()(
         const units = { ...s.units }
         const changed: Unit[] = []
         const now = Date.now()
+        // lanes the moved cars are leaving — they close up after the move
+        const fromLanes = lanesOf(items.map((it) => units[it.vin]))
         for (const it of items) {
           const existed = units[it.vin]
           const m = matchModel(it.modelName || existed?.modelName || '')
@@ -851,9 +904,17 @@ export const useYard = create<YardState>()(
           changed.push(u)
         }
         if (!changed.length) return 0
+        // a lane a car moved OUT of keeps no hole — cars behind it shift up.
+        // (Lanes cars moved INTO are excluded automatically: their occupants sit
+        // at 1..n already, and the mover was appended at first-free = n+1.)
+        const moved = changed.length
+        changed.push(...compactLanes(units, fromLanes))
         set({ units })
-        db.upsertUnits(changed).catch((e) => console.error('[db] updateLocations', e))
-        return changed.length
+        // one write per car — a car both placed AND re-rowed by compaction must
+        // not appear twice in the same upsert batch (Postgres rejects that)
+        const batch = [...new Set(changed.map((u) => u.vin))].map((v) => units[v])
+        db.upsertUnits(batch).catch((e) => console.error('[db] updateLocations', e))
+        return moved
       },
 
       autoParkAll: () => {
