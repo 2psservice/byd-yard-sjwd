@@ -529,49 +529,91 @@ function VinInput({
   useEffect(() => {
     if (!camOpen) return
     let cancelled = false
+
+    // ask for a real capture size: the default 640×480 left a windshield QR
+    // only ~40 px wide, below what any decoder can read
+    const VIDEO: MediaTrackConstraints = { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+
+    // zoom + torch, where the hardware offers them. A slight starting zoom
+    // (2×, capped) puts far more pixels on the small sticker code.
+    const setupTrack = (video: HTMLVideoElement) => {
+      const track = (video.srcObject as MediaStream | null)?.getVideoTracks?.()[0] ?? null
+      trackRef.current = track
+      const caps = (track?.getCapabilities?.() ?? {}) as MediaTrackCapabilities & { zoom?: { min?: number; max?: number; step?: number }; torch?: boolean }
+      if (caps.zoom && typeof caps.zoom.max === 'number' && caps.zoom.max > (caps.zoom.min ?? 1)) {
+        const cap = { min: caps.zoom.min ?? 1, max: caps.zoom.max, step: caps.zoom.step || 0.1 }
+        setZoomCap(cap)
+        const z = Math.min(2, cap.max)
+        track!.applyConstraints({ advanced: [{ zoom: z } as MediaTrackConstraintSet] })
+          .then(() => setZoom(z)).catch(() => setZoom(cap.min))
+      }
+      setTorchCap(!!caps.torch)
+    }
+
+    const hit = (text?: string | null) => {
+      const t = text?.trim().toUpperCase()
+      if (t) { closeCamera(); go(t) }
+    }
+
+    // Path 1 — native BarcodeDetector (Android Chrome): hardware-accelerated and
+    // markedly better than JS decoding at glare / angle / focus hunting. Detects
+    // straight off the <video> ~8×/sec.
+    const startNative = async (): Promise<boolean> => {
+      const BD = (window as unknown as { BarcodeDetector?: { new (o: { formats: string[] }): { detect: (v: HTMLVideoElement) => Promise<{ rawValue?: string }[]> }; getSupportedFormats?: () => Promise<string[]> } }).BarcodeDetector
+      if (!BD) return false
+      try {
+        const supported = (await BD.getSupportedFormats?.()) ?? []
+        const want = ['qr_code', 'code_128', 'code_39', 'ean_13', 'data_matrix'].filter(f => supported.includes(f))
+        if (!want.includes('qr_code')) return false
+        const video = videoRef.current
+        if (!video || cancelled) return false
+        const stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO })
+        if (cancelled) { stream.getTracks().forEach(t => t.stop()); return true }
+        video.srcObject = stream
+        await video.play().catch(() => {})
+        const det = new BD({ formats: want })
+        const iv = setInterval(async () => {
+          if (video.readyState < 2) return
+          try {
+            const codes = await det.detect(video)
+            if (codes.length) hit(codes[0].rawValue)
+          } catch { /* detector hiccup — next tick */ }
+        }, 120)
+        controlsRef.current = { stop: () => clearInterval(iv) }
+        setupTrack(video)
+        return true
+      } catch { return false } // permission error falls through to ZXing for its message
+    }
+
+    // Path 2 — ZXing (iOS Safari + anything without BarcodeDetector)
+    const startZxing = async () => {
+      const [{ BrowserMultiFormatReader }, { DecodeHintType, BarcodeFormat }] = await Promise.all([
+        import('@zxing/browser'),
+        import('@zxing/library'),
+      ])
+      const video = videoRef.current
+      if (!video || cancelled) return
+      const hints = new Map<number, unknown>()
+      hints.set(DecodeHintType.POSSIBLE_FORMATS, [
+        BarcodeFormat.QR_CODE, BarcodeFormat.CODE_128, BarcodeFormat.CODE_39,
+        BarcodeFormat.EAN_13, BarcodeFormat.DATA_MATRIX,
+      ])
+      // spend more CPU per frame to catch small / skewed / low-contrast codes —
+      // the VIN sticker sits BEHIND the windshield glass, tiny and full of glare
+      hints.set(DecodeHintType.TRY_HARDER, true)
+      // the library waits 500 ms between attempts by default — only two tries a
+      // second made every scan feel like it "doesn't stick". Scan ~12×/sec.
+      const reader = new BrowserMultiFormatReader(hints as never, { delayBetweenScanAttempts: 80 })
+      const controls = await reader.decodeFromConstraints({ video: VIDEO }, video,
+        (result) => { if (result) hit(result.getText()) })
+      if (cancelled) { controls.stop(); return }
+      controlsRef.current = controls
+      setupTrack(video)
+    }
+
     ;(async () => {
       try {
-        const [{ BrowserMultiFormatReader }, { DecodeHintType, BarcodeFormat }] = await Promise.all([
-          import('@zxing/browser'),
-          import('@zxing/library'),
-        ])
-        const video = videoRef.current
-        if (!video || cancelled) return
-        const hints = new Map<number, unknown>()
-        hints.set(DecodeHintType.POSSIBLE_FORMATS, [
-          BarcodeFormat.QR_CODE, BarcodeFormat.CODE_128, BarcodeFormat.CODE_39,
-          BarcodeFormat.EAN_13, BarcodeFormat.DATA_MATRIX,
-        ])
-        // spend more CPU per frame to catch small / skewed / low-contrast codes —
-        // the VIN sticker sits BEHIND the windshield glass, tiny and full of glare
-        hints.set(DecodeHintType.TRY_HARDER, true)
-        const reader = new BrowserMultiFormatReader(hints as never)
-        const controls = await reader.decodeFromConstraints(
-          // ask for a real capture size: the default 640×480 left a windshield QR
-          // only ~40 px wide, below what any decoder can read
-          { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } } },
-          video,
-          (result) => {
-            if (!result) return
-            const text = result.getText()?.trim().toUpperCase()
-            if (text) { closeCamera(); go(text) }
-          },
-        )
-        if (cancelled) { controls.stop(); return }
-        controlsRef.current = controls
-        // zoom + torch, where the hardware offers them. A slight starting zoom
-        // (2×, capped) puts far more pixels on the small sticker code.
-        const track = (video.srcObject as MediaStream | null)?.getVideoTracks?.()[0] ?? null
-        trackRef.current = track
-        const caps = (track?.getCapabilities?.() ?? {}) as MediaTrackCapabilities & { zoom?: { min?: number; max?: number; step?: number }; torch?: boolean }
-        if (caps.zoom && typeof caps.zoom.max === 'number' && caps.zoom.max > (caps.zoom.min ?? 1)) {
-          const cap = { min: caps.zoom.min ?? 1, max: caps.zoom.max, step: caps.zoom.step || 0.1 }
-          setZoomCap(cap)
-          const z = Math.min(2, cap.max)
-          track!.applyConstraints({ advanced: [{ zoom: z } as MediaTrackConstraintSet] })
-            .then(() => setZoom(z)).catch(() => setZoom(cap.min))
-        }
-        setTorchCap(!!caps.torch)
+        if (!(await startNative())) await startZxing()
       } catch (e) {
         console.error('[scan] camera', e)
         if (!cancelled) setCamErr('เปิดกล้องไม่สำเร็จ — โปรดอนุญาตสิทธิ์กล้องในเบราว์เซอร์ แล้วลองใหม่')
