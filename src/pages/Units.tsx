@@ -23,6 +23,7 @@ import { partLabel, defectLabel, partBilingual, defectBilingual } from '../lib/d
 import { resolvePart, resolveDefect, MASTER_PARTS, MASTER_DEFECTS } from '../lib/masterDefect'
 import { cx, PhotoLightbox } from '../components/ui'
 import { useQueues, queueTypeOf } from '../store/useOps'
+import { buildWorkRows, buildEventLog, readingsHist as libReadingsHist, histOf, fmtHistAt, filledDates, PDI_DATE_KEYS, PM_DATE_KEYS } from '../lib/carHistory'
 
 const DMG_SRC: Record<string, string> = { walkaround: 'Walk-around', pdi: 'PDI', mechanic: 'ช่าง', update: 'Update', yardDefect: 'Defect-Yard', factoryDefect: 'Defect-Factory', whaleDefect: 'Defect-Whale', manual: 'เพิ่มเอง' }
 
@@ -1510,71 +1511,20 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
     if (from || to) moves.push({ from, to })
   }
 
-  // ── Work / station-tab data ─────────────────────────────────────────────────
-  // history entries are logged under the COLUMN LABEL (fallback: raw key), so a
-  // lookup must accept both spellings of every field it cares about
-  const labelOf = (key: string) => columns.find((cc) => cc.key === key)?.label ?? key
-  const histOf = (...keys: string[]) => {
-    const names = new Set(keys.flatMap((k) => [k, labelOf(k)]))
-    return (row.history ?? []).filter((h) => names.has(h.field))
-  }
-  const lastHist = (...keys: string[]) => { const a = histOf(...keys); return a.length ? a[a.length - 1] : null }
-  const fmtAt = (t: number) => new Date(t).toLocaleString('th-TH', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' })
-
-  /** Every value a measurement cell has held — one line per save (SOC / tire). */
-  const readingsHist = (key: string): { value: string; at?: number; by?: string }[] => {
-    const out: { value: string; at?: number; by?: string }[] =
-      histOf(key).filter((h) => (h.to ?? '').trim()).map((h) => ({ value: h.to, at: h.at, by: h.by }))
-    const cur = (c[key] ?? '').trim()
-    if (cur && out[out.length - 1]?.value !== cur) out.push({ value: cur }) // imported value — no log entry
-    return out
-  }
+  // ── Work / station-tab data — built by the shared lib (same data the field
+  // Check station shows, so หน้างาน and admin read one truth) ────────────────
+  const readingsHist = (key: string) => libReadingsHist(row, columns, key)
+  const fmtAt = fmtHistAt
   const socHist = readingsHist('% SOC')
   const tireHist = readingsHist('Tire Pressure')
-
-  // station date ladders (stamped by stampStationDate on every sheet save)
-  const PDI_DATE_KEYS = ['PDI', ...Array.from({ length: 8 }, (_, i) => `RE PDI  Date #${i + 1}`)]
-  const PM_DATE_KEYS = Array.from({ length: 15 }, (_, i) => `PM${i + 1}`)
-  const filledDates = (keys: string[]) => keys.map((k) => ({ k, v: (c[k] || '').trim() })).filter((x) => x.v)
-  const pdiDates = filledDates(PDI_DATE_KEYS)
-  const pmDates = filledDates(PM_DATE_KEYS)
+  const pdiDates = filledDates(c, PDI_DATE_KEYS)
+  const pmDates = filledDates(c, PM_DATE_KEYS)
   const fcDate = (c['Final check date'] || '').trim()
 
   // yard-position moves recorded by Re-location / Update Location (who + when)
-  const posMoves = histOf(LOCATION_KEY, 'Location')
+  const posMoves = histOf(row, columns, LOCATION_KEY, 'Location')
 
-  type WorkRow = { code: string; name: string; done: boolean; date?: string; user?: string; note?: string; value?: string; sub?: { value: string; at?: number; by?: string }[] }
-  const locHist = lastHist(LOCATION_KEY, 'Location')
-  const grpHist = lastHist('Grouping  Number')
-  const workRows: WorkRow[] = [
-    { code: 'GAI', name: 'Gate In', done: !!((c['Gate In (Rayong yard)'] || '').trim() || unit?.gateInAt),
-      date: (c['Gate In (Rayong yard)'] || '').trim() || (unit?.gateInAt ? fmtAt(unit.gateInAt) : ''),
-      user: c['Gate In Inspector'] || unit?.gateInBy },
-    { code: 'CNL', name: 'Confirm Location', done: !!(unit?.block && unit.row && unit.slot) || !!locHist,
-      date: locHist ? fmtAt(locHist.at) : unit?.parkedAt ? fmtAt(unit.parkedAt) : '',
-      user: locHist?.by, note: yardLocFull(unit) || undefined },
-    { code: 'PDI', name: 'PDI', done: pdiDates.length > 0, date: pdiDates[pdiDates.length - 1]?.v, user: lastHist(...PDI_DATE_KEYS)?.by },
-    { code: 'FNC', name: 'Final Check', done: !!fcDate, date: fcDate, user: lastHist('Final check date')?.by },
-    { code: 'PM',  name: 'PM', done: pmDates.length > 0, date: pmDates[pmDates.length - 1]?.v, user: lastHist(...PM_DATE_KEYS)?.by },
-    // the CURRENT value sits on the main row — the sub-rows underneath are the
-    // full save history (every station that recorded one: PDI / Final Check / PM)
-    { code: 'SOC', name: '% SOC', done: socHist.length > 0, sub: socHist,
-      value: socHist[socHist.length - 1]?.value,
-      date: socHist[socHist.length - 1]?.at ? fmtAt(socHist[socHist.length - 1].at!) : '',
-      user: socHist[socHist.length - 1]?.by },
-    { code: 'TPS', name: 'Tire Pressure', done: tireHist.length > 0, sub: tireHist,
-      value: tireHist[tireHist.length - 1]?.value,
-      date: tireHist[tireHist.length - 1]?.at ? fmtAt(tireHist[tireHist.length - 1].at!) : '',
-      user: tireHist[tireHist.length - 1]?.by },
-    { code: 'ORD', name: 'Allocate', done: !!(c['Allocation Date'] || '').trim(), date: (c['Allocation Date'] || '').trim(), user: lastHist('Allocation Date')?.by },
-    { code: 'ACS', name: 'Addition Accessories', done: pdiDates.length > 0 || !!fcDate,
-      date: fcDate || pdiDates[pdiDates.length - 1]?.v, note: 'บันทึกพร้อมใบตรวจ PDI / Final Check' },
-    { code: 'GOD', name: 'Grouping Order', done: !!(c['Grouping  Number'] || '').trim(),
-      date: grpHist ? fmtAt(grpHist.at) : '', user: grpHist?.by, note: (c['Grouping  Number'] || '').trim() || undefined },
-    { code: 'GOT', name: 'Gate Out', done: !!(c['Gate Out time stamp'] || '').trim() || /gate-?out/i.test(c['Car Status'] || ''),
-      date: (c['Gate Out time stamp'] || '').trim(), user: lastHist('Gate Out time stamp')?.by },
-  ]
-  const workDone = workRows.filter((w) => w.done).length
+  const { rows: workRows, done: workDone } = buildWorkRows(row, unit, columns)
 
   // NG defects a station recorded (StationSheet tags them source:'pdi' + station name)
   const stationDmgs = (match: string) =>
@@ -1584,54 +1534,8 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
     .map((q) => ({ q, item: q.items.find((i) => i.vin === vin) }))
     .filter((x) => x.item && types.includes(queueTypeOf(x.q)))
 
-  // ── unified "Event" log — every station's cell edits (Gate-in / Driver /
-  // PDI-PM-FC / Gate-out / Relocation, plus admin edits from the context menu —
-  // all logged in row.history by updateCell/bulkUpdate) merged with damage
-  // creation, repair-status history, and ops-queue station processing
-  // (deliver/check/return), newest first.
-  const eventLog = (() => {
-    type LogEntry = { at: number; by: string; station?: string; text: string; accent?: string }
-    const DAMAGE_STATION_FALLBACK: Record<string, string> = {
-      walkaround: 'Gate-in', pdi: 'PDI', mechanic: 'ช่าง (Mechanic)', update: 'Update Damage',
-      yardDefect: 'Co-Inspection (Yard)', factoryDefect: 'Co-Inspection (Factory)', whaleDefect: 'Co-Inspection (Whale)',
-      manual: 'เพิ่มเอง (Manual)',
-    }
-    const log: LogEntry[] = []
-    for (const h of row.history ?? []) {
-      if (h.field === '__damage') { log.push({ at: h.at, by: h.by, station: 'Damage', text: h.to, accent: '#dc2626' }); continue }
-      log.push({ at: h.at, by: h.by, text: `แก้ไข ${h.field}: ${h.from || '(ว่าง)'} → ${h.to}` })
-    }
-    for (const d of damages) {
-      const station = d.station || DAMAGE_STATION_FALLBACK[d.source ?? ''] || 'Gate-in'
-      log.push({
-        at: d.at, by: d.by, station,
-        text: `บันทึก Defect ${zoneLabel(d.area)} · ${d.item ?? d.type}${d.severity === 'major' ? ' (Heavy NG)' : ''}`,
-        accent: '#dc2626',
-      })
-      for (const h of d.repairHistory ?? []) {
-        log.push({
-          at: h.at, by: h.by, station: 'ซ่อม (Repair)',
-          text: `เปลี่ยนสถานะซ่อม ${zoneLabel(d.area)}: ${h.from ? `${h.from} → ` : ''}${h.status}`,
-          accent: '#16a34a',
-        })
-      }
-    }
-    for (const q of queues) {
-      const item = q.items.find((i) => i.vin === vin)
-      if (!item) continue
-      if (item.deliveredAt) log.push({ at: item.deliveredAt, by: item.deliveredBy || '—', station: q.name, text: `นำรถเข้าสถานี ${q.name}${item.fromSlot ? ` (จาก ${item.fromSlot})` : ''}` })
-      if (item.checkedAt) log.push({ at: item.checkedAt, by: item.checkedBy || '—', station: q.name, text: `ตรวจสอบที่ ${q.name} · ผล ${item.result ?? '—'}`, accent: item.result === 'NG' ? '#dc2626' : '#16a34a' })
-      if (item.returnedAt) log.push({ at: item.returnedAt, by: item.returnedBy || '—', station: q.name, text: 'นำรถกลับเข้าจอด' })
-      else if (item.doneAt && !item.checkedAt) {
-        // Pre Gate-in queues rarely carry the item's doneBy (auto-reconciled) —
-        // fall back to the Gate In Inspector stamped on the tracking row.
-        const isGateIn = q.name.trim().startsWith('(')
-        const by = item.doneBy || (isGateIn ? c['Gate In Inspector'] : '') || '—'
-        log.push({ at: item.doneAt, by, station: q.name, text: isGateIn ? `Gate-in เสร็จ · ${q.name}` : `ทำรายการเสร็จที่ ${q.name}` })
-      }
-    }
-    return log.sort((a, b) => b.at - a.at)
-  })()
+  // ── unified "Event" log — shared with the field Check station (lib/carHistory)
+  const eventLog = buildEventLog(row, damages, queues, vin, zoneLabel)
 
   const heroFields: [string, string, string][] = [
     ['MODEL', head, '#ffffff'],
