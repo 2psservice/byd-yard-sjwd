@@ -477,6 +477,28 @@ function VinInput({
   // ZXing scanner controls — decodes QR + 1D barcodes (Code128/39, EAN, DataMatrix)
   // in pure JS so it works on iOS Safari too (native BarcodeDetector is missing there).
   const controlsRef = useRef<{ stop: () => void } | null>(null)
+  // live camera track — zoom / torch are applied straight onto it where the
+  // device supports them (Android Chrome: both · iOS 17+: zoom only)
+  const trackRef = useRef<MediaStreamTrack | null>(null)
+  const [zoomCap, setZoomCap] = useState<{ min: number; max: number; step: number } | null>(null)
+  const [zoom, setZoom] = useState(1)
+  const [torchCap, setTorchCap] = useState(false)
+  const [torchOn, setTorchOn] = useState(false)
+
+  const applyZoom = (z: number) => {
+    const t = trackRef.current
+    if (!t || !zoomCap) return
+    const v = Math.min(zoomCap.max, Math.max(zoomCap.min, z))
+    setZoom(v)
+    t.applyConstraints({ advanced: [{ zoom: v } as MediaTrackConstraintSet] }).catch(() => {})
+  }
+  const toggleTorch = () => {
+    const t = trackRef.current
+    if (!t) return
+    const on = !torchOn
+    t.applyConstraints({ advanced: [{ torch: on } as MediaTrackConstraintSet] })
+      .then(() => setTorchOn(on)).catch(() => {})
+  }
 
   const go = (raw?: string) => {
     const v = (raw ?? val).trim().toUpperCase()
@@ -494,6 +516,8 @@ function VinInput({
     const s = v?.srcObject as MediaStream | null
     s?.getTracks().forEach(t => t.stop())
     if (v) v.srcObject = null
+    trackRef.current = null
+    setZoomCap(null); setZoom(1); setTorchCap(false); setTorchOn(false)
   }
 
   const openCamera = () => { setCamErr(''); setCamOpen(true) }
@@ -518,9 +542,14 @@ function VinInput({
           BarcodeFormat.QR_CODE, BarcodeFormat.CODE_128, BarcodeFormat.CODE_39,
           BarcodeFormat.EAN_13, BarcodeFormat.DATA_MATRIX,
         ])
+        // spend more CPU per frame to catch small / skewed / low-contrast codes —
+        // the VIN sticker sits BEHIND the windshield glass, tiny and full of glare
+        hints.set(DecodeHintType.TRY_HARDER, true)
         const reader = new BrowserMultiFormatReader(hints as never)
         const controls = await reader.decodeFromConstraints(
-          { video: { facingMode: { ideal: 'environment' } } },
+          // ask for a real capture size: the default 640×480 left a windshield QR
+          // only ~40 px wide, below what any decoder can read
+          { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } } },
           video,
           (result) => {
             if (!result) return
@@ -530,6 +559,19 @@ function VinInput({
         )
         if (cancelled) { controls.stop(); return }
         controlsRef.current = controls
+        // zoom + torch, where the hardware offers them. A slight starting zoom
+        // (2×, capped) puts far more pixels on the small sticker code.
+        const track = (video.srcObject as MediaStream | null)?.getVideoTracks?.()[0] ?? null
+        trackRef.current = track
+        const caps = (track?.getCapabilities?.() ?? {}) as MediaTrackCapabilities & { zoom?: { min?: number; max?: number; step?: number }; torch?: boolean }
+        if (caps.zoom && typeof caps.zoom.max === 'number' && caps.zoom.max > (caps.zoom.min ?? 1)) {
+          const cap = { min: caps.zoom.min ?? 1, max: caps.zoom.max, step: caps.zoom.step || 0.1 }
+          setZoomCap(cap)
+          const z = Math.min(2, cap.max)
+          track!.applyConstraints({ advanced: [{ zoom: z } as MediaTrackConstraintSet] })
+            .then(() => setZoom(z)).catch(() => setZoom(cap.min))
+        }
+        setTorchCap(!!caps.torch)
       } catch (e) {
         console.error('[scan] camera', e)
         if (!cancelled) setCamErr('เปิดกล้องไม่สำเร็จ — โปรดอนุญาตสิทธิ์กล้องในเบราว์เซอร์ แล้วลองใหม่')
@@ -574,8 +616,31 @@ function VinInput({
               </div>
             )}
           </div>
-          <div className="px-4 py-4 text-center text-white/60 text-[13px] shrink-0">
-            {camHint}
+          {/* zoom / torch — only when the camera reports the capability */}
+          {(zoomCap || torchCap) && (
+            <div className="px-5 py-2 flex items-center gap-3 shrink-0" style={{ touchAction: 'pan-x' }}>
+              {zoomCap && (
+                <>
+                  <span className="text-white/70 text-[12px] shrink-0">ซูม</span>
+                  <input
+                    type="range" className="flex-1" style={{ accentColor: accent }}
+                    min={zoomCap.min} max={zoomCap.max} step={zoomCap.step}
+                    value={zoom} onChange={e => applyZoom(Number(e.target.value))}
+                  />
+                  <span className="text-white/70 text-[12px] tabular shrink-0" style={{ width: 36, textAlign: 'right' }}>{zoom.toFixed(1)}×</span>
+                </>
+              )}
+              {torchCap && (
+                <button onClick={toggleTorch}
+                  className="shrink-0 px-3 py-1.5 rounded-full text-[12.5px] font-bold flex items-center gap-1.5"
+                  style={torchOn ? { background: '#fbbf24', color: '#000' } : { background: 'rgba(255,255,255,0.15)', color: '#fff' }}>
+                  <Zap size={14} /> ไฟฉาย
+                </button>
+              )}
+            </div>
+          )}
+          <div className="px-4 py-3 text-center text-white/60 text-[13px] shrink-0">
+            {camHint}{zoomCap ? ' · เลื่อนซูมถ้าโค้ดเล็ก' : ''}
           </div>
         </div>
       )}
