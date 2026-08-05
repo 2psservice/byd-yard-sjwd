@@ -9,7 +9,7 @@ import {
   CheckCircle2, XCircle, AlertTriangle, Navigation, Clock,
   User, RefreshCw, Plus, Trash2,
   ArrowRight, Zap, Hand, X, Camera, Pencil, Gauge, Route, Crosshair,
-  LogOut, MapPin, ClipboardList, ListChecks, Copy,
+  LogOut, MapPin, ClipboardList, ListChecks, Copy, Check,
 } from 'lucide-react'
 import { useYard, useUnits, useTrips, useBlocks, useMe } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
@@ -3851,7 +3851,7 @@ function CheckView() {
                     {w.note && <span className="ml-1.5 text-[10.5px]" style={{ color: 'var(--faint)' }}>{w.note}</span>}
                   </div>
                   {w.done
-                    ? <span className="inline-flex w-5 h-5 rounded-full items-center justify-center shrink-0" style={{ background: '#16a34a' }}><CheckCircle2 size={13} color="#fff" /></span>
+                    ? <span className="inline-flex w-5 h-5 rounded-full items-center justify-center shrink-0" style={{ background: '#16a34a' }}><Check size={13} color="#fff" strokeWidth={3} /></span>
                     : <span className="inline-flex w-5 h-5 rounded-full items-center justify-center shrink-0" style={{ background: '#ef4444' }}><X size={12} color="#fff" strokeWidth={3} /></span>}
                 </div>
                 {(w.date || w.user) && (
