@@ -3943,6 +3943,33 @@ export function YardOps() {
     try { r ? localStorage.setItem(STATION_KEY, r) : localStorage.removeItem(STATION_KEY) } catch { /* private mode */ }
   }
 
+  // pending-work count per station menu — the iOS-style red badge on each tile
+  const queues = useSiteQueues()
+  const menuBadges = useMemo(() => {
+    const n: Partial<Record<RoleKey, number>> = {}
+    const add = (k: RoleKey, v: number) => { if (v > 0) n[k] = (n[k] ?? 0) + v }
+    for (const q of queues) {
+      if (isQueueComplete(q)) continue
+      if (isSequenceQueue(q)) {
+        // delivery run: cars not yet gated out → Gate-out; not yet at their
+        // loading lane → Driver still has moves to make
+        add('gateout', q.items.filter(i => !i.done && !i.gatedOut).length)
+        add('driver', q.items.filter(i => !i.done && !i.atLaneAt).length)
+        continue
+      }
+      if (isPreGateInQueue(q.name)) { add('walk', q.items.filter(i => !i.done).length); continue }
+      const t = queueTypeOf(q)
+      // the station's own count: cars whose check hasn't been recorded yet
+      const unchecked = q.items.filter(i => !i.done && stageOf(i) !== 'checked').length
+      if (t === 'PDI') add('pdi', unchecked)
+      else if (t === 'PM') add('pm', unchecked)
+      else if (t === 'FINAL') add('fc', unchecked)
+      // the driver moves cars in (queued) and back out (checked)
+      add('driver', q.items.filter(i => !i.done && (stageOf(i) === 'queued' || stageOf(i) === 'checked')).length)
+    }
+    return n
+  }, [queues])
+
   const activeRole = ROLES.find(r => r.key === role)
 
   return (
@@ -3986,9 +4013,17 @@ export function YardOps() {
               <button
                 key={r.key}
                 onClick={() => setRole(r.key)}
-                className="panel p-5 text-left flex flex-col gap-3 transition-all hover:shadow-md active:scale-95"
+                className="panel p-5 text-left flex flex-col gap-3 transition-all hover:shadow-md active:scale-95 relative"
                 style={{ touchAction: 'manipulation' }}
               >
+                {/* pending-work badge — iOS-style red count, top-right of the tile */}
+                {(menuBadges[r.key] ?? 0) > 0 && (
+                  <span className="absolute flex items-center justify-center font-bold text-white tabular"
+                    style={{ top: 10, right: 10, minWidth: 24, height: 24, borderRadius: 12, padding: '0 7px',
+                      fontSize: 12.5, background: '#ef4444', boxShadow: '0 2px 8px -2px rgba(239,68,68,0.6)' }}>
+                    {menuBadges[r.key]! > 999 ? '999+' : menuBadges[r.key]}
+                  </span>
+                )}
                 <div className="w-14 h-14 rounded-2xl flex items-center justify-center"
                   style={{ background: r.color + '18', color: r.color }}>
                   {r.icon}

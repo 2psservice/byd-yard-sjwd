@@ -223,6 +223,10 @@ interface YardState {
    *  state update + ONE cloud write, so a 124-car delivery run does not fire
    *  124 renders and 124 upserts. */
   markDepartedMany: (vins: string[]) => void
+  /** One pass over EVERY lane: close all holes left by departures that happened
+   *  before compaction existed. Runs after boot / site-switch loads; idempotent
+   *  and deterministic, so concurrent devices converge on the same layout. */
+  compactAllLanes: () => number
   markTrailerArrived: (no: number, arrived?: boolean) => void
   gateIn: (vin: string) => void
   setInspected: (vin: string, v: boolean) => void
@@ -514,8 +518,11 @@ export const useYard = create<YardState>()(
       },
       setCurrentSite: (id) => {
         set({ currentSite: id, siteModalOpen: false })
-        // units/trailers are loaded per-site → fetch the newly selected yard
-        get().loadFromSupabase().catch((e) => console.error('[db] setCurrentSite load', e))
+        // units/trailers are loaded per-site → fetch the newly selected yard,
+        // then close up any lane holes left from before compaction existed
+        get().loadFromSupabase()
+          .catch((e) => console.error('[db] setCurrentSite load', e))
+          .finally(() => { try { get().compactAllLanes() } catch { /* noop */ } })
       },
       openSiteModal: () => set({ siteModalOpen: true }),
       closeSiteModal: () => set({ siteModalOpen: false }),
@@ -640,6 +647,16 @@ export const useYard = create<YardState>()(
         changed.push(...compactLanes(units, lanesOf(old)))
         set({ units })
         db.upsertUnits(changed).catch((e) => console.error('[db] markDepartedMany', e))
+      },
+
+      compactAllLanes: () => {
+        const units = { ...get().units }
+        const lanes = lanesOf(Object.values(units))
+        const changed = compactLanes(units, lanes)
+        if (!changed.length) return 0
+        set({ units })
+        db.upsertUnits(changed).catch((e) => console.error('[db] compactAllLanes', e))
+        return changed.length
       },
 
       markTrailerArrived: (no, arrived = true) => {
