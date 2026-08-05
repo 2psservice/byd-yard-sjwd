@@ -100,6 +100,7 @@ export function Grouping() {
         date: res.headerDate || todayLong(),
         totalUnits: printRows.length,
         groupCount: order.length,
+        locPrefix: siteGroupingConfig(siteName).prefix, // find-car prints "N-P38"
       }
       setMeta(m)
       // queue name = the sheet title, else a constructed one
