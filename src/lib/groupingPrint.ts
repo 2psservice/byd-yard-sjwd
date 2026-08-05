@@ -28,6 +28,8 @@ export interface GroupPrintMeta {
   date: string        // "06 July 2026"
   totalUnits: number
   groupCount: number
+  /** Yard prefix for find-car Location codes ("N" → prints "N-P38"). */
+  locPrefix?: string
 }
 
 const esc = (s: unknown) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -55,9 +57,10 @@ tr.grp-alt td { background: #fff3d6; }
  * the yard with the sheet in hand. Overrides come last so they win on specificity.
  */
 const CSS_PORTRAIT = CSS.replace('A4 landscape', 'A4 portrait') + `
+body, th, td { font-family: 'Aptos Narrow','Aptos','Arial Narrow','Sarabun','Noto Sans Thai',Tahoma,sans-serif; }
 .title { font-size: 18.24pt; margin: 0 0 10px; }
 th, td { font-size: 14.24pt; padding: 2px 6px; }
-td.vin { font-size: 14.24pt; letter-spacing: 0; }
+td.vin { font-family: 'Aptos Narrow','Aptos','Arial Narrow','Consolas',monospace; font-size: 14.24pt; letter-spacing: 0; }
 .note { font-size: 14.24pt; }
 `
 
@@ -123,12 +126,15 @@ export function buildFindCarHtml(rows: GroupPrintRow[], meta: GroupPrintMeta): s
   // byYardLocation is shared with the Driver / Gate-out queues so the printed sheet
   // and the on-screen list walk the yard in the exact same order.
   const sorted = [...rows].sort((a, b) => byYardLocation(a.yardLocation, b.yardLocation))
+  // print with the yard prefix ("P38" → "N-P38") — the code itself stays
+  // unprefixed for sorting and for the landscape dealer sheet
+  const locOf = (l: string) => (l && meta.locPrefix ? `${meta.locPrefix}-${l}` : l)
   const body = sorted.map((r, i) => `<tr>
     <td class="c">${i + 1}</td>
     <td class="vin">${esc(r.vin)}</td>
     <td class="c">${esc(r.model)}</td>
     <td class="c">${esc(r.color)}</td>
-    <td class="c"><b>${esc(r.yardLocation || '—')}</b></td>
+    <td class="c"><b>${esc(locOf(r.yardLocation) || '—')}</b></td>
     <td class="c">${esc(r.laneLoad)}</td>
     <td>${esc(r.remark)}</td>
   </tr>`).join('')

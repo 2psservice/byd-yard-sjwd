@@ -11,7 +11,7 @@
  */
 import type { TrackRow } from './excelTracking'
 import type { FindListRow } from './groupingPrint'
-import { yardLocFull } from './groupingImport'
+import { yardLocCode, siteGroupingConfig } from './groupingImport'
 
 export interface MatchResult {
   found: TrackRow[]
@@ -72,13 +72,17 @@ export interface UnitLite { block?: string; row?: number; slot?: number; modelNa
 export function toFindListRows(
   found: TrackRow[],
   unitByVin: (vin: string) => UnitLite | undefined,
-  _siteName: string,
+  siteName: string,
 ): FindListRow[] {
+  // the sheet reads yard-prefix + block + column ("N-P38") — the depth digits
+  // ("…02") are dropped by request: a driver walks to the lane, not a stack slot
+  const prefix = siteGroupingConfig(siteName).prefix
   return found.map((r) => {
     const u = unitByVin(r.vin)
-    // real placement code only (prefix-block+row+slot, same as the Location
-    // column) — no cell fallback (storage Yard / Location yard aren't a position)
-    const loc = yardLocFull(u ? { block: u.block, row: u.row, slot: u.slot } : null)
+    // real placement code only — no cell fallback (storage Yard / Location yard
+    // aren't a position)
+    const code = yardLocCode(u ? { block: u.block, slot: u.slot } : null)
+    const loc = code ? `${prefix}-${code}` : ''
     return {
       vin: r.vin,
       model: r.cells['Model'] || u?.modelName || r.cells['Model name'] || '',
