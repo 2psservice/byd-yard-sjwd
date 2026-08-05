@@ -22,7 +22,7 @@ import { DrivingScreen } from '../components/DrivingScreen'
 import { LiveTrackingMap } from '../components/LiveTrackingMap'
 import { ALL_ZONES, zoneLabel } from '../components/CarDiagramMultiView'
 import { MASTER_PARTS, MASTER_DEFECTS, resolvePart, resolveDefect } from '../lib/masterDefect'
-import { partLabel, defectLabel, partBilingual, defectBilingual } from '../lib/damageLabel'
+import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirst } from '../lib/damageLabel'
 import { candidates } from '../lib/parkingEngine'
 import { slotToLatLng } from '../lib/geo'
 import { cx, PhotoLightbox } from '../components/ui'
@@ -819,7 +819,7 @@ function UnitCard({ unit, accent = 'var(--brand)' }: { unit: Unit; accent?: stri
               <button className="ml-auto p-1.5 rounded-lg" style={{ color: 'var(--muted)' }} onClick={() => setWalkOpen(false)}><X size={17} /></button>
             </div>
             <div className="overflow-auto p-3 space-y-2.5">
-              {walkDmgs.map(d => <DefectCard key={d.id} d={d} />)}
+              {openDefectsFirst(walkDmgs).map(d => <DefectCard key={d.id} d={d} />)}
             </div>
           </div>
         </div>, document.body)
@@ -1631,7 +1631,7 @@ function WalkView() {
                 onCancel={() => setShowDmg(false)}
               />
             )}
-            {unit.damages.map(d => (
+            {openDefectsFirst(unit.damages).map(d => (
               editId === d.id ? (
                 <div key={d.id} className="rounded-xl mb-2 overflow-hidden" style={{ background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.14)' }}>
                   <div className="p-3 space-y-2">
@@ -2514,7 +2514,7 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved, stationTit
         )}
         {stationDmgs.length === 0 && !showNgForm
           ? <div className="py-6 text-center text-[12.5px]" style={{ color: 'var(--faint)' }}>— ยังไม่มีรายการ NG —</div>
-          : stationDmgs.map(d => (
+          : openDefectsFirst(stationDmgs).map(d => (
               <DefectCard key={d.id} d={d}
                 right={<DefectStatusSelect d={d} onChange={s => updateRepairStatus(unit.vin, d.id, s)} />} />
             ))}
@@ -2762,7 +2762,7 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
                 <AlertTriangle size={14} /> Walk around · NG ({walkDmgs.length})
               </div>
               <div className="p-3 space-y-2">
-                {walkDmgs.map(d => (
+                {openDefectsFirst(walkDmgs).map(d => (
                   <DefectCard key={d.id} d={d}
                     right={<DefectStatusSelect d={d} onChange={s => updateRepairStatus(unit.vin, d.id, s)} />} />
                 ))}
@@ -2809,7 +2809,7 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
                 <AlertTriangle size={13} /> NG เพิ่มเติม · PDI / ช่าง ({otherDmgs.length})
               </div>
               <div className="p-3 space-y-2">
-                {otherDmgs.map(d => (
+                {openDefectsFirst(otherDmgs).map(d => (
                   <DefectCard key={d.id} d={d}
                     right={<DefectStatusSelect d={d} onChange={s => updateRepairStatus(unit.vin, d.id, s)} />} />
                 ))}
@@ -2959,7 +2959,7 @@ function MechanicView() {
                 </span>
               </div>
               <div className="p-3 space-y-2">
-                {unit.damages.map(d => (
+                {openDefectsFirst(unit.damages).map(d => (
                   <DefectCard key={d.id} d={d}
                     right={<DefectStatusSelect d={d} onChange={s => updateRepairStatus(unit.vin, d.id, s)} />} />
                 ))}
@@ -3624,7 +3624,7 @@ function UpdateDamageView() {
           {/* existing damages */}
           {damages.length > 0 && (
             <div className="p-3 space-y-2">
-              {damages.map(d => (
+              {openDefectsFirst(damages).map(d => (
                 <DefectCard key={d.id} d={d} right={
                   <div className="flex items-center gap-1.5">
                     <DefectStatusSelect d={d} onChange={s => updateRepairStatus(vin, d.id, s)} />
@@ -3982,7 +3982,7 @@ function CheckView() {
                 full-screen lightbox, and a read-only repair-status badge */}
             {unit && unit.damages.length > 0 && (
               <div className="p-3 space-y-2">
-                {unit.damages.map(d => (
+                {openDefectsFirst(unit.damages).map(d => (
                   <DefectCard key={d.id} d={d} right={
                     <span className="font-bold rounded-lg px-2.5 py-1.5 whitespace-nowrap shrink-0"
                       style={{ ...defectStatusStyle(d.statusRepair || 'Waiting Repair'), fontSize: 11.5 }}>
