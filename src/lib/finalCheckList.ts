@@ -1,6 +1,8 @@
 /**
  * FINAL CHECK inspection sheet — the four tabs of the paper form:
  * Overall inspection · Control Stock Sheet · Additional Accessories · NG.
+ * The PDI station uses this SAME sheet (same tabs, same items) by request;
+ * only the station stamp / queue type differs.
  *
  * The NG tab is not a checklist: it is free defect entry (ตำแหน่ง / ข้อบกพร่อง /
  * หมายเหตุ) and is rendered by the sheet itself, so it has no entry here.
