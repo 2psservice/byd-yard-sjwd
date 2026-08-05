@@ -37,6 +37,7 @@ export function ImportPage() {
   const blocksBySite = useYard((s) => s.blocksBySite)
   const sites = useYard((s) => s.sites)
   const currentSite = useYard((s) => s.currentSite)
+  const laneDepth = useYard((s) => s.laneDepth)
   const curSiteName = sites.find((s) => s.id === currentSite)?.name ?? '—'
   const yardUnits = useYard((s) => s.units)
   const { commitImport, commitCoInspection, deleteRows, lastImport, loadFromIdb } = useTracking()
@@ -135,8 +136,11 @@ export function ImportPage() {
       const k = `${block}|${lane.row}`
       if (!occ.has(k)) occ.set(k, new Set())
       const used = occ.get(k)!
+      // how deep this column may stack: the block's own row count, or the global
+      // lane depth when the file names a block this yard has not drawn yet
+      const depth = hit?.rows ?? laneDepth
       let posn = 0
-      for (let i = 1; i <= 8; i++) if (!used.has(i)) { posn = i; break }
+      for (let i = 1; i <= depth; i++) if (!used.has(i)) { posn = i; break }
       if (!posn) { rowFull.push(r); continue }
       used.add(posn)
       placements.push({ vin: r.vin, block, row: posn, slot: lane.row, modelName: r.modelName, color: r.colorName, gateInAt: r.gateInAt })
@@ -148,7 +152,7 @@ export function ImportPage() {
     const drawnTags = new Set(yardBlocks.map((b) => blockTag(b)))
     const missingBlocks = [...byBlock.keys()].filter((b) => !drawnTags.has(b)).sort()
     return { placements, badLane, rowFull, dup, matched, byBlock: [...byBlock.entries()].sort(), missingBlocks }
-  }, [locParsed, yardUnits, blocksBySite, currentSite])
+  }, [locParsed, yardUnits, blocksBySite, currentSite, laneDepth])
 
   const confirmLoc = () => {
     if (!locPlan || !locPlan.placements.length) return

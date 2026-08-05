@@ -1,6 +1,6 @@
 import { Zap, Hand, Info, Layers, Lock } from 'lucide-react'
 import { useMemo } from 'react'
-import { useYard, useBlocks } from '../store/useYard'
+import { useYard, useBlocks, MAX_LANE_DEPTH } from '../store/useYard'
 import { useTrackingRows } from '../store/useTracking'
 import { makeT } from '../i18n'
 import { matchModel } from '../lib/sampleData'
@@ -68,14 +68,16 @@ export function Rules() {
           <div className="flex-1">
             <div className="text-[13.5px] font-semibold flex items-center gap-2"><Layers size={15} style={{ color: 'var(--brand)' }} /> {lang === 'th' ? 'ความลึกต่อช่อง (เลน)' : 'Cars per lane (depth)'}</div>
             <p className="text-[12px] mt-1.5" style={{ color: 'var(--faint)' }}>
-              {lang === 'th' ? 'จอดได้ลึกสุดกี่คันต่อ 1 ช่อง ก่อนที่ระบบจะข้ามไปช่องว่างถัดไป · ใช้กับทุกบล็อก' : 'Max cars stacked per lane before the engine opens the next lane. Applies to every block.'}
+              {lang === 'th'
+                ? `จอดได้ลึกสุดกี่คันต่อ 1 ช่อง ก่อนที่ระบบจะข้ามไปช่องว่างถัดไป · ใช้กับทุกบล็อก แต่ไม่เกินจำนวนแถวของบล็อกนั้น (ตั้งได้ที่หน้า Yard Plan) · สูงสุด ${MAX_LANE_DEPTH}`
+                : `Max cars stacked per lane before the engine opens the next lane. Applies to every block, but never deeper than that block's own row count (set in Yard Plan). Max ${MAX_LANE_DEPTH}.`}
             </p>
           </div>
           <div className="flex items-center gap-1.5">
             <button onClick={() => setLaneDepth(laneDepth - 1)} disabled={laneDepth <= 1}
               className="w-9 h-9 rounded-xl btn text-[18px] font-bold disabled:opacity-40">−</button>
             <div className="w-12 text-center text-[20px] font-black tabular-nums" style={{ color: 'var(--brand)' }}>{laneDepth}</div>
-            <button onClick={() => setLaneDepth(laneDepth + 1)} disabled={laneDepth >= 8}
+            <button onClick={() => setLaneDepth(laneDepth + 1)} disabled={laneDepth >= MAX_LANE_DEPTH}
               className="w-9 h-9 rounded-xl btn text-[18px] font-bold disabled:opacity-40">+</button>
           </div>
         </div>

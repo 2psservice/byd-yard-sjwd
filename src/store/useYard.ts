@@ -54,6 +54,11 @@ function withModelId(u: Unit): Unit {
   return model === u.model ? u : { ...u, model }
 }
 
+/** Deepest lane the parking engine may fill. The setting is a global ceiling —
+ *  each block is still limited by its OWN row count (`block.rows`), so raising
+ *  this alone does not make a 8-row block stack 20 deep. */
+export const MAX_LANE_DEPTH = 20
+
 // ── Defect import helpers (Defect-Yard / Defect-Factory → Damage) ───────────
 function defHash(s: string): string {
   let h = 5381
@@ -110,7 +115,7 @@ interface YardState {
   currentUser: string
   currentDriver: string
   groupModelsInRow: boolean
-  laneDepth: number // max cars stacked per lane (ช่อง) before the engine opens the next lane
+  laneDepth: number // max cars stacked per lane (ช่อง) before the engine opens the next lane, 1…MAX_LANE_DEPTH
   appUsers: AppUser[]
   view: View
   unitPreset: string | null // dashboard → Unit List quick filter ('inYard'|'parked'|'gatein'|'expected'|'damage')
@@ -421,7 +426,7 @@ export const useYard = create<YardState>()(
       logout: () => set({ loggedInUserId: null, loginAt: null, currentSite: null, siteModalOpen: false }),
       setGroupModels: (groupModelsInRow) => set({ groupModelsInRow }),
       setLaneDepth: (n) => {
-        const laneDepth = Math.max(1, Math.min(8, Math.round(n || 0)))
+        const laneDepth = Math.max(1, Math.min(MAX_LANE_DEPTH, Math.round(n || 0)))
         set({ laneDepth })
         // lane depth is shared across every device/yard — persist to the cloud
         // and broadcast so open phones/tablets reload it right away.
@@ -893,7 +898,7 @@ export const useYard = create<YardState>()(
         const cloud = await db.fetchAppConfig<ParkingPolicy[]>('parking_policies').catch(() => null)
         if (Array.isArray(cloud) && cloud.length) set({ policies: cloud })
         const depth = await db.fetchAppConfig<{ laneDepth?: number }>('lane_depth').catch(() => null)
-        if (depth && typeof depth.laneDepth === 'number') set({ laneDepth: Math.max(1, Math.min(8, depth.laneDepth)) })
+        if (depth && typeof depth.laneDepth === 'number') set({ laneDepth: Math.max(1, Math.min(MAX_LANE_DEPTH, depth.laneDepth)) })
       },
 
       // ── yard layout editor ─────────────────────────────────────────────────
