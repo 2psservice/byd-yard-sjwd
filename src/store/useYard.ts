@@ -1378,13 +1378,15 @@ export const useYard = create<YardState>()(
         }
         return s
       },
-      // NOTE: currentSite is deliberately NOT persisted — the operator must pick
-      // their yard on every entry (login or fresh page load) so work is never
-      // recorded into a site left selected by the previous shift.
+      // NOTE: currentSite IS persisted, but only within a login session. Field
+      // tablets reload the page every time the operator switches apps (LINE →
+      // back), and re-picking the yard mid-shift lost the screen they were on.
+      // The previous-shift safety still holds: sessions expire at midnight and
+      // logout() clears currentSite, so every LOGIN still re-picks the yard.
       partialize: (s) => ({
         lang: s.lang, planMode: s.planMode, currentUser: s.currentUser, currentDriver: s.currentDriver,
         groupModelsInRow: s.groupModelsInRow, laneDepth: s.laneDepth, view: s.view, appUsers: s.appUsers, loggedInUserId: s.loggedInUserId,
-        loginAt: s.loginAt,
+        loginAt: s.loginAt, currentSite: s.currentSite,
         units: s.units, trailers: s.trailers, policies: s.policies, blocksBySite: s.blocksBySite, models: s.models,
         // trips grew forever (full GPS path per drive) until localStorage hit its
         // quota and EVERY state change silently stopped persisting. Keep the 30
