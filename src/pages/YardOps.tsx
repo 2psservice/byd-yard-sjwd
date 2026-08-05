@@ -9,7 +9,7 @@ import {
   CheckCircle2, XCircle, AlertTriangle, Navigation, Clock,
   User, RefreshCw, Plus, Trash2,
   ArrowRight, Zap, Hand, X, Camera, Pencil, Gauge, Route, Crosshair,
-  LogOut, MapPin, ClipboardList, ListChecks, Copy, Check,
+  LogOut, MapPin, ClipboardList, ListChecks, Copy,
 } from 'lucide-react'
 import { useYard, useUnits, useTrips, useBlocks, useMe } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
@@ -2990,33 +2990,21 @@ function MechanicView() {
   )
 }
 
-/** Tick box for the DN car list — drawn, not a native <input>, so it matches
- *  the app's touch targets and never inherits the browser's blue. */
-function CheckBox({ on }: { on: boolean }) {
-  return (
-    <span className="w-[18px] h-[18px] rounded-[5px] flex items-center justify-center shrink-0 transition-all"
-      style={on
-        ? { background: '#f59e0b', border: '2px solid #f59e0b' }
-        : { background: '#fff', border: '2px solid var(--line)' }}>
-      {on && <Check size={12} color="#fff" strokeWidth={3.5} />}
-    </span>
-  )
-}
-
 // ── Gate-out view ────────────────────────────────────────────────────────────
 function GateOutView() {
   const trackingRows = useSiteRows()
   const units = useSiteUnits()
   const wrongSite = useWrongSiteHint()
   const queues = useSiteQueues()
-  const { loadFromIdb, updateCell, bulkUpdate } = useTracking()
-  const { toast, currentUser, sites, currentSite, markDeparted, markDepartedMany } = useYard()
-  const { confirmSeqGateOut, confirmSeqGateOutMany } = useOps()
+  const { loadFromIdb, updateCell } = useTracking()
+  const { toast, currentUser, sites, currentSite, markDeparted } = useYard()
+  const { confirmSeqGateOut } = useOps()
   const { block: blockGate, blockWith, modal: gateModal } = useNotGatedIn()
   const [vin, setVin] = useState<string | null>(null)
   const [dn, setDn] = useState<string | null>(null)      // scanned DN / grouping number
-  const [picked, setPicked] = useState<string[]>([])     // VINs ticked inside that DN
-  const [askBulk, setAskBulk] = useState(false)
+  // a scanned car that belongs to a DIFFERENT grouping — the popup that stops a
+  // driver from dispatching a car with the wrong group
+  const [wrongGroup, setWrongGroup] = useState<{ vin: string; group: string } | null>(null)
   const [done, setDone] = useState<{ vin: string; label: string } | null>(null)
 
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
@@ -3060,13 +3048,7 @@ function GateOutView() {
       .sort((a, b) => byYardLocation(a.location, b.location))
   }, [dn, trackingRows, units, queues])
 
-  const dnReady = dnCars.filter(c => c.ready)
-  const dnPicked = picked.filter(v => dnReady.some(c => c.vin === v))
-  const allPicked = dnReady.length > 0 && dnPicked.length === dnReady.length
-
-  // a fresh DN starts with every eligible car ticked — the normal case is that
-  // the whole Note leaves together; untick the ones that stayed behind
-  useEffect(() => { setPicked(dnCars.filter(c => c.ready).map(c => c.vin)) }, [dn]) // eslint-disable-line react-hooks/exhaustive-deps
+  const dnGone = dnCars.filter(c => c.gone).length
 
   const onScanDn = (raw: string) => {
     const g = normGroup(raw)
@@ -3076,9 +3058,11 @@ function GateOutView() {
     setVin(null); setDn(g)
   }
 
+  // VIN scan INSIDE a scanned DN — the operator walks to the physical car and
+  // scans it there, so what leaves the gate is exactly what the Note says.
   const onScan = (v: string) => {
-    // the DN barcode may be shot into the VIN field too — a grouping number is
-    // never a VIN, so an exact grouping hit routes straight to the DN list
+    if (!dn) return
+    // the DN barcode shot into this field switches to that Note
     if (trackingRows.some(r => normGroup(r.cells[GROUP_KEY]) === normGroup(v))) { onScanDn(v); return }
     let r = trackingRows.find(x => x.vin === v)
     if (!r && v.length <= 8) {
@@ -3087,6 +3071,12 @@ function GateOutView() {
       else if (hits.length > 1) { toast('err', `พบ ${hits.length} คัน — พิมพ์ให้ยาวขึ้น`); return }
     }
     if (!r) { toast('err', wrongSite(v) ?? `ไม่พบ VIN: ${v}`); return }
+    // the whole point of scanning at the car: a car whose grouping is not THIS
+    // DN must never slip into the load — stop it with a popup, not a quiet toast
+    if (normGroup(r.cells[GROUP_KEY]) !== dn) {
+      setWrongGroup({ vin: r.vin, group: (r.cells[GROUP_KEY] ?? '').trim() })
+      return
+    }
     // Gate-out follows the delivery run: only a car listed in an open
     // Grouping-to-Dealer queue may leave, so nothing walks out of the yard
     // without being planned. (A car already Pre Gate-out stays scannable — its
@@ -3105,7 +3095,7 @@ function GateOutView() {
     // cars in a delivery sequence may sit at Wash/lane statuses that aren't in
     // the generic "gated-in" set — those are fine; a car that never gated in is not
     if (!isGatedInStatus(status) && !alreadyOut) { blockGate(r.vin, model); return }
-    setDn(null); setVin(r.vin)
+    setVin(r.vin) // dn stays — after this car confirms, the next scan continues the Note
   }
 
   // Ops-scan gate-out → "Pre Gate-out": the car is staged in preload, NOT gone
@@ -3125,31 +3115,6 @@ function GateOutView() {
     // close the delivery-sequence item too, if this car belongs to one
     if (seqHit) confirmSeqGateOut(seqHit.queue.id, row.vin, currentUser)
     setDone({ vin: row.vin, label: 'Pre Gate-out' }); setVin(null)
-  }
-
-  // Gate-out every ticked car of the scanned DN in one action. Identical writes
-  // to the single-car path, but batched: one tracking write per column, one
-  // queue push per sequence, one unit update for the whole run.
-  const doBulkGateOut = () => {
-    const vins = dnPicked
-    if (!vins.length) return
-    const now = new Date()
-    bulkUpdate(vins, 'Car Status', 'Pre Gate-out')
-    bulkUpdate(vins, 'Gate Out time stamp', stamp(now))
-    bulkUpdate(vins, 'Gate Out Time', String(now.getTime())) // epoch → 09:30 flush calc
-    markDepartedMany(vins) // release the parking slots
-    // close the delivery-sequence items, grouped by the queue they belong to
-    const byQueue = new Map<string, string[]>()
-    for (const v of vins) {
-      const hit = findSeqItem(v, queues)
-      if (!hit) continue
-      const list = byQueue.get(hit.queue.id)
-      if (list) list.push(v); else byQueue.set(hit.queue.id, [v])
-    }
-    for (const [qid, list] of byQueue) confirmSeqGateOutMany(qid, list, currentUser)
-    setAskBulk(false)
-    setDone({ vin: `DN ${dn} · ${vins.length} คัน`, label: 'Gate-out' })
-    setDn(null); setPicked([])
   }
 
   // Confirm Preload (before 09:30) → the Pre-Gate-out car has NOT left; it stays
@@ -3179,11 +3144,34 @@ function GateOutView() {
           </div>
         </div>
       )}
-      <VinInput onScan={onScan} accent="#64748b" />
       {gateModal}
 
-      {/* DN scan — one grouping number brings up the whole Delivery Note */}
-      {!row && (
+      {/* wrong grouping — the popup that stops a mixed-up load at the gate */}
+      {wrongGroup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6"
+          style={{ background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(3px)' }}
+          onClick={() => setWrongGroup(null)}>
+          <div className="panel p-6 w-full max-w-xs text-center fade-up" onClick={e => e.stopPropagation()}>
+            <div className="w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3"
+              style={{ background: '#fee2e2' }}>
+              <AlertTriangle size={28} style={{ color: '#dc2626' }} />
+            </div>
+            <div className="text-[17px] font-extrabold mb-1" style={{ color: '#dc2626' }}>กรุณาตรวจสอบ</div>
+            <div className="text-[14px] font-bold mb-1">รถไม่อยู่ใน Grouping นี้</div>
+            <div className="vin text-[12.5px] font-bold" style={{ color: 'var(--muted)' }}>{wrongGroup.vin}</div>
+            <div className="text-[12px] mt-1 mb-5" style={{ color: 'var(--muted)' }}>
+              คันนี้อยู่ group <b style={{ color: '#b45309' }}>{wrongGroup.group || '— (ไม่มีเลข grouping)'}</b><br />
+              DN ที่กำลังทำ: <b style={{ color: '#b45309' }}>{dn}</b>
+            </div>
+            <button onClick={() => setWrongGroup(null)}
+              className="w-full py-3 rounded-2xl text-[15px] font-bold text-white active:scale-95 transition-all"
+              style={{ background: '#dc2626' }}>ตกลง</button>
+          </div>
+        </div>
+      )}
+
+      {/* step 1 — scan the DN: only the DN field and the work queues live here */}
+      {!row && !dn && (
         <div className="panel p-3.5 space-y-2.5">
           <div className="flex items-center gap-2">
             <ClipboardList size={15} style={{ color: '#f59e0b' }} />
@@ -3193,7 +3181,6 @@ function GateOutView() {
           <VinInput
             onScan={onScanDn}
             accent="#f59e0b"
-            autoFocus={false}
             placeholder="เลข Grouping / DN…"
             action="เรียกรถทั้ง DN"
             camTitle="สแกน Barcode DN"
@@ -3202,47 +3189,48 @@ function GateOutView() {
         </div>
       )}
 
-      {/* the scanned DN: every car on it, tick one by one or all at once */}
+      {/* step 2 — inside the DN: scan each car AT the car, one by one */}
       {!row && dn && (
-        <div className="panel overflow-hidden fade-up">
-          <div className="px-4 py-3 flex items-center gap-3" style={{ background: 'rgba(245,158,11,0.10)' }}>
-            <div className="min-w-0 flex-1">
-              <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>DN · Grouping</div>
-              <div className="vin text-[14px] font-extrabold clip" style={{ color: '#b45309' }}>{dn}</div>
-              <div className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
-                ทั้งหมด <b style={{ color: 'var(--text)' }}>{dnCars.length}</b> คัน
-                {' · '}พร้อม Gate-out <b style={{ color: '#d97706' }}>{dnReady.length}</b>
-                {dnCars.some(c => c.gone) && <> · ออกแล้ว <b>{dnCars.filter(c => c.gone).length}</b></>}
-              </div>
+        <>
+          <div className="panel p-3.5 space-y-2.5">
+            <div className="flex items-center gap-2">
+              <LogOut size={15} style={{ color: '#64748b' }} />
+              <span className="text-[12.5px] font-bold">Gate-out · สแกนที่ตัวรถทีละคัน</span>
+              <span className="text-[11px] ml-auto tabular font-bold" style={{ color: '#16a34a' }}>ออกแล้ว {dnGone}/{dnCars.length}</span>
             </div>
-            <button onClick={() => { setDn(null); setPicked([]) }}
-              className="w-8 h-8 rounded-full flex items-center justify-center shrink-0"
-              style={{ background: 'rgba(0,0,0,0.06)', color: 'var(--muted)' }}>
-              <X size={16} />
-            </button>
+            <VinInput
+              onScan={onScan}
+              accent="#64748b"
+              placeholder="VIN / 5 ตัวท้าย…"
+              action="สแกน / ค้นหา VIN"
+            />
           </div>
 
-          {dnReady.length > 0 && (
-            <button onClick={() => setPicked(allPicked ? [] : dnReady.map(c => c.vin))}
-              className="w-full px-4 py-2.5 flex items-center gap-2.5 border-t hairline text-left"
-              style={{ borderColor: 'var(--line)' }}>
-              <CheckBox on={allPicked} />
-              <span className="text-[12.5px] font-bold">{allPicked ? 'ล้างการเลือกทั้งหมด' : 'เลือกทั้งหมด'}</span>
-              <span className="text-[11.5px] ml-auto tabular font-bold" style={{ color: '#d97706' }}>
-                เลือก {dnPicked.length}/{dnReady.length}
-              </span>
-            </button>
-          )}
+          <div className="panel overflow-hidden fade-up">
+            <div className="px-4 py-3 flex items-center gap-3" style={{ background: 'rgba(245,158,11,0.10)' }}>
+              <div className="min-w-0 flex-1">
+                <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>DN · Grouping</div>
+                <div className="vin text-[14px] font-extrabold clip" style={{ color: '#b45309' }}>{dn}</div>
+                <div className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
+                  ทั้งหมด <b style={{ color: 'var(--text)' }}>{dnCars.length}</b> คัน
+                  {' · '}ออกแล้ว <b style={{ color: '#16a34a' }}>{dnGone}</b>
+                  {' · '}เหลือ <b style={{ color: '#d97706' }}>{dnCars.length - dnGone}</b>
+                </div>
+              </div>
+              <button onClick={() => setDn(null)}
+                className="w-8 h-8 rounded-full flex items-center justify-center shrink-0"
+                style={{ background: 'rgba(0,0,0,0.06)', color: 'var(--muted)' }}>
+                <X size={16} />
+              </button>
+            </div>
 
-          <div className="border-t hairline divide-y" style={{ borderColor: 'var(--line)' }}>
-            {dnCars.map(c => {
-              const on = picked.includes(c.vin)
-              return (
-                <button key={c.vin} disabled={!c.ready}
-                  onClick={() => setPicked(p => p.includes(c.vin) ? p.filter(x => x !== c.vin) : [...p, c.vin])}
-                  className="w-full px-4 py-2.5 flex items-center gap-3 text-left"
-                  style={c.ready ? undefined : { opacity: 0.55 }}>
-                  {c.ready ? <CheckBox on={on} /> : <span className="w-[18px] shrink-0" />}
+            <div className="border-t hairline divide-y" style={{ borderColor: 'var(--line)' }}>
+              {dnCars.map(c => (
+                <div key={c.vin} className="px-4 py-2.5 flex items-center gap-3"
+                  style={c.gone ? { opacity: 0.55 } : undefined}>
+                  {c.gone
+                    ? <CheckCircle2 size={17} style={{ color: '#16a34a' }} className="shrink-0" />
+                    : <span className="w-[17px] shrink-0" />}
                   <div className="min-w-0 flex-1">
                     <div className="vin text-[12.5px] font-bold clip">{c.vin}</div>
                     <div className="text-[11px] mt-0.5 flex flex-wrap gap-x-2" style={{ color: 'var(--muted)' }}>
@@ -3252,51 +3240,21 @@ function GateOutView() {
                   <div className="text-right shrink-0">
                     <div className="tabular text-[12px] font-bold">{c.location}</div>
                     <span className="badge mt-0.5 inline-block" style={c.gone
-                      ? { background: 'rgba(100,116,139,0.16)', color: '#64748b', fontSize: 10 }
+                      ? { background: 'rgba(22,163,74,0.12)', color: '#16a34a', fontSize: 10 }
                       : c.reason
                         ? { background: '#fee2e2', color: '#b91c1c', fontSize: 10 }
                         : { background: 'rgba(245,158,11,0.15)', color: '#b45309', fontSize: 10 }}>
-                      {c.gone ? c.status : c.reason || 'พร้อม'}
+                      {c.gone ? c.status : c.reason || 'รอสแกน'}
                     </span>
                   </div>
-                </button>
-              )
-            })}
-          </div>
-
-          <div className="p-3 border-t hairline" style={{ borderColor: 'var(--line)' }}>
-            <button onClick={() => setAskBulk(true)} disabled={!dnPicked.length}
-              className="w-full py-3 rounded-2xl text-[15px] font-bold text-white flex items-center justify-center gap-2 transition-all active:scale-95"
-              style={{ background: dnPicked.length ? '#f59e0b' : '#cbd5e1' }}>
-              <LogOut size={18} /> ยืนยัน Gate-out {dnPicked.length ? `(${dnPicked.length} คัน)` : ''}
-            </button>
-            <div className="text-[10.5px] text-center leading-snug mt-2" style={{ color: 'var(--muted)' }}>
-              เลือกได้ทีละคันหรือทั้งหมด · รถจะออกจริงตอน 09:30
+                </div>
+              ))}
+            </div>
+            <div className="px-4 py-2.5 border-t hairline text-[10.5px] text-center leading-snug" style={{ color: 'var(--muted)', borderColor: 'var(--line)' }}>
+              เดินไปสแกน VIN ที่ตัวรถทีละคัน · รถนอก group นี้จะถูกเตือนทันที · รถจะออกจริงตอน 09:30
             </div>
           </div>
-        </div>
-      )}
-
-      {/* bulk gate-out is many cars at once — confirm before writing */}
-      {askBulk && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-6"
-          style={{ background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(3px)' }}
-          onClick={() => setAskBulk(false)}>
-          <div className="panel p-6 w-full max-w-xs text-center fade-up" onClick={e => e.stopPropagation()}>
-            <div className="w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3"
-              style={{ background: 'rgba(245,158,11,0.15)' }}>
-              <LogOut size={28} style={{ color: '#f59e0b' }} />
-            </div>
-            <div className="text-[17px] font-extrabold mb-1">Gate-out {dnPicked.length} คัน?</div>
-            <div className="text-[12.5px] mb-5" style={{ color: 'var(--muted)' }}>DN {dn}</div>
-            <button onClick={doBulkGateOut}
-              className="w-full py-3 rounded-2xl text-[15px] font-bold text-white active:scale-95 transition-all"
-              style={{ background: '#f59e0b' }}>ยืนยัน Gate-out</button>
-            <button onClick={() => setAskBulk(false)}
-              className="w-full py-2.5 mt-2 rounded-2xl text-[14px] font-bold active:scale-95 transition-all"
-              style={{ background: 'rgba(0,0,0,0.05)', color: 'var(--muted)' }}>ยกเลิก</button>
-          </div>
-        </div>
+        </>
       )}
 
       {/* delivery-sequence runs — see remaining cars to gate-out (before scanning) */}
