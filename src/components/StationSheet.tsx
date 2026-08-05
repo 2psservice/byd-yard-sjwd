@@ -17,6 +17,7 @@ import { CAR_STATUS_META } from '../lib/carStatus'
 import { MASTER_PARTS, MASTER_DEFECTS, resolvePart, resolveDefect } from '../lib/masterDefect'
 import { checkItemId, type CheckItemState, type CheckTab } from '../lib/checkSheet'
 import { MeasurementField, TirePressureField, TIRE_WHEELS, joinTirePressure } from './MeasurementField'
+import { MasterCombo } from './MasterCombo'
 import { CheckItemRow } from './CheckItemRow'
 import type { Unit } from '../types'
 import type { TrackRow } from '../lib/excelTracking'
@@ -283,9 +284,6 @@ export default function StationSheet({ unit, row, activeProc, onSaved, stationTi
         {/* ── NG tab — free entries: ตำแหน่ง / ข้อบกพร่อง / หมายเหตุ ── */}
         {isNgTab && (
           <div className="space-y-2.5">
-            <datalist id="fc-pos">{MASTER_PARTS.map(p => <option key={p.id} value={p.th} label={p.en} />)}</datalist>
-            <datalist id="fc-def">{MASTER_DEFECTS.map(d => <option key={d.id} value={d.th} label={d.en} />)}</datalist>
-
             {ngList.length === 0 && (
               <div className="rounded-xl px-3 py-4 text-center text-[12.5px]" style={{ border: '1px dashed var(--line)', color: 'var(--faint)' }}>
                 — ยังไม่มีรายการ NG —
@@ -302,12 +300,11 @@ export default function StationSheet({ unit, row, activeProc, onSaved, stationTi
                     <Trash2 size={13} />
                   </button>
                 </div>
-                <input list="fc-pos" value={e.position} onChange={ev => setNg(e.id, { position: ev.target.value })}
-                  placeholder="ตำแหน่ง (Position)…"
-                  className="w-full rounded-lg px-2.5 py-2 text-[12.5px] outline-none" style={{ background: '#fff', border: '1px solid var(--line)' }} />
-                <input list="fc-def" value={e.defect} onChange={ev => setNg(e.id, { defect: ev.target.value })}
-                  placeholder="ข้อบกพร่อง (Defect)…"
-                  className="w-full rounded-lg px-2.5 py-2 text-[12.5px] outline-none" style={{ background: '#fff', border: '1px solid var(--line)' }} />
+                {/* same tappable dropdowns as the Gate-in walk-around Defect form */}
+                <MasterCombo options={MASTER_PARTS} placeholder="ตำแหน่ง (Position)…"
+                  value={e.position} onChange={v => setNg(e.id, { position: v })} />
+                <MasterCombo options={MASTER_DEFECTS} placeholder="ข้อบกพร่อง (Defect)…"
+                  value={e.defect} onChange={v => setNg(e.id, { defect: v })} />
                 <input value={e.note} onChange={ev => setNg(e.id, { note: ev.target.value })} placeholder="หมายเหตุ…"
                   className="w-full rounded-lg px-2.5 py-2 text-[12.5px] outline-none" style={{ background: '#fff', border: '1px solid var(--line)' }} />
                 <div className="flex items-center gap-2 flex-wrap">
@@ -330,8 +327,12 @@ export default function StationSheet({ unit, row, activeProc, onSaved, stationTi
               </div>
             ))}
 
-            <button onClick={addNg} className="btn w-full py-2.5 text-[13px] font-semibold" style={{ color: '#dc2626' }}>
-              <Plus size={15} /> เพิ่มรายการ NG
+            {/* big and blue by request — the yard taps this between cars all day.
+                Size is inline: the unlayered `.btn` rule outranks Tailwind's
+                padding and text utilities (see the NOTE in index.css). */}
+            <button onClick={addNg} className="btn w-full font-bold"
+              style={{ background: 'var(--brand)', color: '#fff', border: 'none', padding: '14px 16px', fontSize: 15.5, minHeight: 52, boxShadow: '0 6px 18px -6px var(--brand)' }}>
+              <Plus size={19} strokeWidth={2.8} /> เพิ่มรายการ NG
             </button>
           </div>
         )}
