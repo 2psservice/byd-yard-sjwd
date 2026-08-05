@@ -37,6 +37,7 @@ import { parseLane } from '../lib/laneImport'
 import { LOCATION_KEY } from '../lib/trackingColumns'
 import { blockTag, blockKeyOfTag, resolveBlockByName } from '../lib/format'
 import { useRecentOps } from '../store/useRecentOps'
+import { buildWorkRows, buildEventLog, fmtHistAt } from '../lib/carHistory'
 
 const recordRecent = (key: string, vin: string, note?: string) => useRecentOps.getState().record(key, vin, note)
 
@@ -3689,8 +3690,10 @@ function CheckView() {
   const allTrips = useTrips()
   const queues = useSiteQueues()
   const { loadFromIdb } = useTracking()
+  const columns = useTracking(s => s.columns)
   const { toast, loadFromSupabase } = useYard()
   const [vin, setVin] = useState<string | null>(null)
+  const [ctab, setCtab] = useState<'info' | 'work' | 'event'>('info')
 
   // pull units + damages from the cloud too — Check is read-only and often sits
   // open while OTHER devices record PDI defects; local state alone showed
@@ -3716,11 +3719,17 @@ function CheckView() {
     }
     if (!found) { toast('err', wrongSite(v) ?? `ไม่พบ VIN: ${v}`); return }
     setVin(found)
+    setCtab('info')
     recordRecent('check:search', found)
     // refresh from the cloud so defects recorded moments ago on another
     // device (PDI tablet) appear on this scan, not the next app restart
     loadFromSupabase().catch(() => {})
   }
+
+  // Work checklist + Event log — the SAME data the admin Unit detail shows,
+  // built by the shared lib so หน้างาน reads the identical history
+  const workData = row ? buildWorkRows(row, unit ?? undefined, columns) : null
+  const eventLog = row ? buildEventLog(row, unit?.damages ?? [], queues, row.vin, zoneLabel) : []
 
   // derived data
   const vinTrips   = vin ? allTrips.filter(t => t.vin === vin).sort((a, b) => b.startedAt - a.startedAt) : []
@@ -3764,7 +3773,83 @@ function CheckView() {
       <VinInput onScan={onScan} accent="#0891b2" />
       {!vin && <RecentPanel station="check" accent="#0891b2" onPick={onScan} />}
 
+      {/* tabs — ข้อมูล / Work / Event, same history the admin detail shows */}
       {(row || unit) && vin && (
+        <div className="flex gap-1.5">
+          {([['info', 'ข้อมูล'], ['work', `Work${workData ? ` ${workData.done}/${workData.rows.length}` : ''}`], ['event', `Event${eventLog.length ? ` ${eventLog.length}` : ''}`]] as ['info' | 'work' | 'event', string][]).map(([id, label]) => (
+            <button key={id} onClick={() => setCtab(id)}
+              className="flex-1 py-2 rounded-xl text-[12.5px] font-bold transition"
+              style={ctab === id ? { background: '#0891b2', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* ── Work tab — the car's whole workflow with dates / status / user ── */}
+      {(row || unit) && vin && ctab === 'work' && workData && (
+        <div className="panel overflow-hidden fade-up">
+          <div className="divide-y" style={{ borderColor: 'var(--line)' }}>
+            {workData.rows.map((w, i) => (
+              <div key={w.code} className="px-3.5 py-2.5">
+                <div className="flex items-center gap-2.5">
+                  <span className="text-[11px] font-bold tabular shrink-0" style={{ color: 'var(--faint)', width: 18 }}>{i + 1}</span>
+                  <span className="text-[11.5px] font-bold tabular shrink-0" style={{ color: '#0891b2', width: 34 }}>{w.code}</span>
+                  <div className="min-w-0 flex-1">
+                    <span className="text-[13px] font-semibold">{w.name}</span>
+                    {w.value && <span className="ml-1.5 tabular font-bold text-[13px]" style={{ color: '#0891b2' }}>{w.value}</span>}
+                    {w.note && <span className="ml-1.5 text-[10.5px]" style={{ color: 'var(--faint)' }}>{w.note}</span>}
+                  </div>
+                  {w.done
+                    ? <span className="inline-flex w-5 h-5 rounded-full items-center justify-center shrink-0" style={{ background: '#16a34a' }}><CheckCircle2 size={13} color="#fff" /></span>
+                    : <span className="inline-flex w-5 h-5 rounded-full items-center justify-center shrink-0" style={{ background: '#ef4444' }}><X size={12} color="#fff" strokeWidth={3} /></span>}
+                </div>
+                {(w.date || w.user) && (
+                  <div className="text-[11px] mt-0.5 pl-[52px]" style={{ color: 'var(--muted)' }}>
+                    {w.date || '—'}{w.user ? ` · ${w.user}` : ''}
+                  </div>
+                )}
+                {/* SOC / Tire Pressure — every recorded value */}
+                {w.sub && w.sub.length > 0 && (
+                  <div className="mt-1 pl-[52px] space-y-0.5">
+                    {[...w.sub].reverse().map((v, vi) => (
+                      <div key={vi} className="flex items-baseline gap-2 text-[11.5px]">
+                        <span className="font-bold tabular">{v.value}</span>
+                        <span className="ml-auto text-right" style={{ color: 'var(--faint)' }}>
+                          {v.at ? fmtHistAt(v.at) : 'จากไฟล์นำเข้า'}{v.by ? ` · ${v.by}` : ''}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Event tab — every recorded action, newest first ── */}
+      {(row || unit) && vin && ctab === 'event' && (
+        <div className="panel overflow-hidden fade-up">
+          {eventLog.length === 0 ? (
+            <div className="py-8 text-center text-[12.5px]" style={{ color: 'var(--faint)' }}>— ไม่มีเหตุการณ์ —</div>
+          ) : (
+            <div className="divide-y" style={{ borderColor: 'var(--line)' }}>
+              {eventLog.map((e, i) => (
+                <div key={i} className="px-3.5 py-2.5">
+                  <div className="text-[12.5px] leading-snug" style={e.accent ? { color: e.accent, fontWeight: 600 } : undefined}>{e.text}</div>
+                  <div className="text-[11px] mt-0.5 flex items-center gap-1.5 flex-wrap" style={{ color: 'var(--muted)' }}>
+                    {e.station && <span className="badge" style={{ background: 'var(--chip)', color: 'var(--muted)', fontSize: 10 }}>{e.station}</span>}
+                    <span>{fmtHistAt(e.at)}</span><span>· {e.by || '—'}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {(row || unit) && vin && ctab === 'info' && (
         <div className="panel overflow-hidden fade-up">
 
           {/* ── Car image header ── */}
