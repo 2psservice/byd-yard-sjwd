@@ -3856,9 +3856,24 @@ function CheckView() {
 }
 
 // ── main: role selector + router ──────────────────────────────────────────────
+// The open station survives a page reload: field tablets reload every time the
+// operator app-switches (LINE → back), and losing the screen mid-shift meant
+// re-navigating for every chat reply. Stored per device; the back button clears it.
+const STATION_KEY = 'sjwd-ops-station'
+const savedStation = (): RoleKey | null => {
+  try {
+    const v = localStorage.getItem(STATION_KEY)
+    return v && ROLES.some(r => r.key === v) ? (v as RoleKey) : null
+  } catch { return null }
+}
+
 export function YardOps() {
   const { currentUser } = useYard()
-  const [role, setRole] = useState<RoleKey | null>(null)
+  const [role, setRoleState] = useState<RoleKey | null>(savedStation)
+  const setRole = (r: RoleKey | null) => {
+    setRoleState(r)
+    try { r ? localStorage.setItem(STATION_KEY, r) : localStorage.removeItem(STATION_KEY) } catch { /* private mode */ }
+  }
 
   const activeRole = ROLES.find(r => r.key === role)
 
