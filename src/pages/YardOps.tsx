@@ -30,6 +30,7 @@ import { rowInSite } from '../lib/siteScope'
 import { compressImage } from '../lib/photo'
 import StationSheet from '../components/StationSheet'
 import { MasterCombo } from '../components/MasterCombo'
+import { TirePressureField, TIRE_WHEELS, joinTirePressure } from '../components/MeasurementField'
 import { FINAL_CHECK_TABS } from '../lib/finalCheckList'
 import { yardLocCode, yardLocFull, blockCode, byYardLocation } from '../lib/groupingImport'
 import { parseLane } from '../lib/laneImport'
@@ -2318,6 +2319,7 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved, stationTit
   const [soc, setSoc] = useState('')
   const [mileage, setMileage] = useState('')
   const [voltage, setVoltage] = useState('')
+  const [tire, setTire] = useState<Record<string, string>>({}) // per-wheel FL/FR/RL/RR
   const [showNgForm, setShowNgForm] = useState(false)
 
   const last = (k: string) => (row?.cells[k]?.trim() ? row.cells[k] : '—')
@@ -2332,7 +2334,7 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved, stationTit
   // force this car to save NG forever
   const openDmgs = stationDmgs.filter(d => !d.statusRepair || d.statusRepair === 'Waiting Repair')
 
-  const clearAll = () => { setSoc(''); setMileage(''); setVoltage(''); setShowNgForm(false) }
+  const clearAll = () => { setSoc(''); setMileage(''); setVoltage(''); setTire({}); setShowNgForm(false) }
 
   const savedRef = useRef(false) // double-tap guard — a 2nd save burns another PM/RE-PDI date slot
   const save = () => {
@@ -2343,6 +2345,10 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved, stationTit
       if (soc.trim())     updateCell(row.vin, '% SOC', soc.trim())
       if (mileage.trim()) updateCell(row.vin, 'Mileage', mileage.trim())
       if (voltage.trim()) updateCell(row.vin, 'Voltage of 12V', voltage.trim())
+      // per-wheel readings + the combined cell, same as the PDI / Final Check sheet
+      const wheels = TIRE_WHEELS.filter(w => (tire[w.key] ?? '').trim())
+      for (const w of wheels) updateCell(row.vin, w.key, tire[w.key].trim())
+      if (wheels.length) updateCell(row.vin, 'Tire Pressure', joinTirePressure(tire))
     }
     const result: 'OK' | 'NG' = openDmgs.length > 0 ? 'NG' : 'OK'
     if (activeProc) {
@@ -2376,6 +2382,8 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved, stationTit
         <Meas label="% SOC" value={soc} onChange={setSoc} unit="%" lastVal={last('% SOC')} />
         <Meas label="Mileage" value={mileage} onChange={setMileage} unit="กม." lastVal={last('Mileage')} />
         <Meas label="Voltage of 12V" value={voltage} onChange={setVoltage} unit="V" lastVal={last('Voltage of 12V')} />
+        <TirePressureField label="Tire Pressure (310–340 Kpal)" row={row} values={tire}
+          onChange={(k, v) => setTire(s => ({ ...s, [k]: v }))} />
       </div>
 
       {/* NG entry — same Defect form as Gate-in (bilingual dropdowns / photos / remark) */}
