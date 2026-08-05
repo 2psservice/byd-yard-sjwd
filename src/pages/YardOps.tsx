@@ -3616,10 +3616,13 @@ function CheckView() {
   const allTrips = useTrips()
   const queues = useSiteQueues()
   const { loadFromIdb } = useTracking()
-  const { toast } = useYard()
+  const { toast, loadFromSupabase } = useYard()
   const [vin, setVin] = useState<string | null>(null)
 
-  useEffect(() => { loadFromIdb() }, [loadFromIdb])
+  // pull units + damages from the cloud too — Check is read-only and often sits
+  // open while OTHER devices record PDI defects; local state alone showed
+  // "NG — มี Defect" (from the sheet) with no defect cards under it
+  useEffect(() => { loadFromIdb(); loadFromSupabase() }, [loadFromIdb, loadFromSupabase])
 
   const row  = vin ? (trackingRows.find(r => r.vin === vin) ?? null) : null
   const unit = vin ? (units.find(u => u.vin === vin) ?? null)        : null
@@ -3641,6 +3644,9 @@ function CheckView() {
     if (!found) { toast('err', wrongSite(v) ?? `ไม่พบ VIN: ${v}`); return }
     setVin(found)
     recordRecent('check:search', found)
+    // refresh from the cloud so defects recorded moments ago on another
+    // device (PDI tablet) appear on this scan, not the next app restart
+    loadFromSupabase().catch(() => {})
   }
 
   // derived data
