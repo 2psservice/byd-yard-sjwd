@@ -127,13 +127,23 @@ export function Grouping() {
   const canPrint = !!rows && rows.length > 0 && !!meta
 
   const doCreateSequence = () => {
-    if (!rows || !rows.length || !seqName) return
-    // the grouping code travels with the item: the run keeps following it, so a
-    // car whose number is cleared later drops out and a car stamped with it joins
-    const items = rows.map((r) => ({ vin: r.vin, laneLoad: r.laneLoad, dest: r.deliveryLocation, group: r.grouping }))
-    createSequence(seqName, currentUser, items)
-    toast('ok', `สร้างลำดับงาน "${seqName}" · ${items.length} คัน — ไปที่ Operation / Yard Ops ได้เลย`)
-    setView('operation')
+    if (!rows || !rows.length) return
+    // never a silent return — a click on the green button must always answer
+    const name = seqName.trim() || `${siteLabel(siteName)} - Grouping to Dealer ( ${rows.length} Units ) ${todayLong()}`
+    try {
+      // the grouping code travels with the item: the run keeps following it, so a
+      // car whose number is cleared later drops out and a car stamped with it joins
+      const items = rows.map((r) => ({ vin: r.vin, laneLoad: r.laneLoad, dest: r.deliveryLocation, group: r.grouping }))
+      const id = createSequence(name, currentUser, items)
+      if (!id) { toast('err', 'สร้างลำดับงานไม่สำเร็จ — ชื่อคิวว่าง'); return }
+      toast('ok', `สร้างลำดับงาน "${name}" · ${items.length} คัน — ไปที่ Operation / Yard Ops ได้เลย`)
+      setView('operation')
+    } catch (e) {
+      // an old queue with broken data used to throw HERE, eating the click with
+      // no feedback at all — surface it so the operator can report what happened
+      console.error('[grouping] createSequence', e)
+      toast('err', `สร้างลำดับงานไม่สำเร็จ: ${(e as Error)?.message ?? e}`)
+    }
   }
 
   return (
