@@ -5,6 +5,7 @@
  * purpose: it is a personal worklist, not shared yard state.
  */
 import { create } from 'zustand'
+import { quotaSafeStorage } from '../lib/persistStorage'
 import { persist } from 'zustand/middleware'
 
 export interface RecentEntry {
@@ -33,6 +34,6 @@ export const useRecentOps = create<RecentOpsState>()(
         }),
       clear: (key) => set((s) => ({ lists: { ...s.lists, [key]: [] } })),
     }),
-    { name: 'sjwd-ops-recent' },
+    { name: 'sjwd-ops-recent', storage: quotaSafeStorage() },
   ),
 )

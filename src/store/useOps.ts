@@ -11,6 +11,7 @@ import { onSync, sendSync } from '../lib/syncBus'
 import { useYard } from './useYard'
 import { useTracking } from './useTracking' // one-way: tracking never imports ops
 import { PM_KEYS } from '../lib/trackingColumns'
+import { quotaSafeStorage } from '../lib/persistStorage'
 
 /** Process stage of one vehicle within a station queue (PDI / PM / Wash …).
  *  queued → (driver delivers) at-station → (staff records) checked → (driver returns) done. */
@@ -498,6 +499,10 @@ export const useOps = create<OpsState>()(
     }),
     {
       name: 'sjwd-ops',
+      // quota-safe: a full localStorage must never break the action that
+      // tried to persist — the cloud copy (pushQueue) is the real record
+      storage: quotaSafeStorage(() =>
+        useYard.getState().toast('err', 'พื้นที่จัดเก็บในเครื่องเต็ม — ข้อมูลยังถูกบันทึกขึ้น cloud ตามปกติ')),
       // heal corrupted queues left in localStorage by older app versions —
       // one name:null / items:null entry crashed every queue screen
       merge: (persisted, current) => {

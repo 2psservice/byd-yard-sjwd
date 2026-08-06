@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { create } from 'zustand'
+import { quotaSafeStorage } from '../lib/persistStorage'
 import { persist } from 'zustand/middleware'
 import type { Column } from '../lib/trackingColumns'
 import { defaultColumns, reconcileColumns, MAX_FILTERS, DEFAULT_FILTER_COLS } from '../lib/trackingColumns'
@@ -630,6 +631,7 @@ export const useTracking = create<TrackingState>()(
     {
       name: 'sjwd-tracking',
       // only the (small) column + filter config is persisted to localStorage; rows live in IndexedDB
+      storage: quotaSafeStorage(),
       partialize: (s) => ({ columns: s.columns, filterCols: s.filterCols, defaultSeeded: s.defaultSeeded, viewDefaultVersion: s.viewDefaultVersion, lastImport: s.lastImport, lastSync: s.lastSync }),
       merge: (persisted, current) => {
         const p = persisted as Partial<TrackingState> | undefined
