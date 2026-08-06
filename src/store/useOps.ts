@@ -594,8 +594,18 @@ function reconcileGateOuts() {
       // the sequence deliberately keeps gated-out cars so progress reads 17/17
       // instead of the total shrinking. A car with no tracking row at all is left
       // alone — there is nothing to read its grouping from.
+      //
+      // CRITICAL freshness guard: only a row updated AFTER the item joined the
+      // run may vote it out. Every device runs this reconciler, and one whose
+      // tracking rows hadn't synced today's import yet saw "no grouping" on all
+      // 51 fresh cars, emptied the queue, and pushed that ruin to the cloud —
+      // the run arrived at the gate as "0/0 คัน". A stale row is silence, not a
+      // removal order.
       const kept = items.filter((i) => {
-        if (i.gatedOut || i.done || !rows[i.vin]) return true
+        if (i.gatedOut || i.done) return true
+        const r = rows[i.vin]
+        if (!r) return true
+        if ((r.updatedAt ?? 0) <= (i.addedAt ?? 0)) return true // row predates the run — stale, keep
         const g = group.get(i.vin)
         return !!g && runGroups.has(g)
       })
