@@ -82,7 +82,7 @@ export const PRESET_QUEUES = ['PM', 'Wash for sale', 'PDI', 'FINAL CHECK'] as co
  *  from the name so legacy queues (created before `type` existed) still classify. */
 export function queueTypeOf(q: WorkQueue): QueueType {
   if (q.type) return q.type
-  const n = q.name.toLowerCase()
+  const n = (q.name ?? '').toLowerCase()
   if (n.includes('pdi')) return 'PDI'
   // PM before FINAL: a legacy queue named "FINAL PM" is a PM run — classifying
   // it FINAL stamped "Final check date" instead of the next PM1..15 slot.
@@ -150,6 +150,24 @@ function stampOverview(q: WorkQueue, vin: string, _result?: 'OK' | 'NG'): boolea
   return stampStationDate(vin, queueTypeOf(q))
 }
 
+/** Coerce a queue from ANY source (old localStorage, cloud rows, another app
+ *  version) into a safe shape. A queue with name:null / items:null crashed
+ *  every screen that touched it — and swallowed the Grouping "Create Sequence"
+ *  click with no feedback at all. */
+function sanitizeQueue(q: unknown): WorkQueue | null {
+  const r = q as Partial<WorkQueue> | null
+  if (!r || typeof r !== 'object' || !r.id) return null
+  return {
+    ...r,
+    id: String(r.id),
+    name: typeof r.name === 'string' ? r.name : '',
+    createdAt: typeof r.createdAt === 'number' ? r.createdAt : 0,
+    items: Array.isArray(r.items) ? r.items.filter((i) => i && typeof i.vin === 'string') : [],
+  } as WorkQueue
+}
+const sanitizeQueues = (list: unknown): WorkQueue[] =>
+  (Array.isArray(list) ? list : []).map(sanitizeQueue).filter((q): q is WorkQueue => q !== null)
+
 let qid = 0
 
 interface OpsState {
@@ -194,7 +212,13 @@ interface OpsState {
 function pushQueue(get: () => OpsState, id: string) {
   const q = get().queues.find((x) => x.id === id)
   if (!q) return
-  db.upsertOpsQueue(q).then(() => sendSync('ops')).catch((e) => console.error('[db] pushQueue', e))
+  db.upsertOpsQueue(q).then(() => sendSync('ops')).catch((e) => {
+    console.error('[db] pushQueue', e)
+    // NOT just a log: the next 'ops' broadcast replaces local queues with the
+    // cloud copy, so a queue that failed to upload quietly disappears — the
+    // operator must know the save didn't take.
+    useYard.getState().toast('err', `บันทึกคิว "${q.name ?? ''}" ขึ้น cloud ไม่สำเร็จ — กรุณาลองใหม่`)
+  })
 }
 
 export const useOps = create<OpsState>()(
@@ -205,7 +229,7 @@ export const useOps = create<OpsState>()(
       createQueue: (name, by, site) => {
         const n = name.trim()
         if (!n) return ''
-        const existing = get().queues.find((q) => q.name.toLowerCase() === n.toLowerCase())
+        const existing = get().queues.find((q) => (q.name ?? '').toLowerCase() === n.toLowerCase())
         if (existing) return existing.id
         const id = `q${++qid}${Date.now()}`
         // caller may pin the queue to a specific yard (multi-yard import); else the active site
@@ -220,7 +244,7 @@ export const useOps = create<OpsState>()(
         if (!n) return ''
         const siteTag = site ?? useYard.getState().currentSite ?? undefined
         const now = Date.now()
-        let id = get().queues.find((q) => q.name.toLowerCase() === n.toLowerCase())?.id ?? ''
+        let id = get().queues.find((q) => (q.name ?? '').toLowerCase() === n.toLowerCase())?.id ?? ''
         if (!id) id = `q${++qid}${now}`
         set((s) => {
           const base = s.queues.some((q) => q.id === id)
@@ -253,7 +277,7 @@ export const useOps = create<OpsState>()(
         const base = (name || '').trim().replace(/^\(+\s*/, '') || (QUEUE_TYPES.find((t) => t.type === type)?.name ?? type)
         // unique display name within this yard: "PM", "PM 2", "PM 3" …
         const taken = new Set(
-          get().queues.filter((q) => (q.site ?? null) === (siteTag ?? null)).map((q) => q.name.toLowerCase()),
+          get().queues.filter((q) => (q.site ?? null) === (siteTag ?? null)).map((q) => (q.name ?? '').toLowerCase()),
         )
         let n = base
         for (let k = 2; taken.has(n.toLowerCase()); k++) n = `${base} ${k}`
@@ -404,7 +428,7 @@ export const useOps = create<OpsState>()(
           .map((it) => ({ vin: it.vin.trim().toUpperCase(), laneLoad: it.laneLoad, dest: it.dest, group: it.group?.trim().toUpperCase() || undefined }))
           .filter((it) => it.vin)
           .map((it) => ({ vin: it.vin, addedAt: now, done: false, laneLoad: it.laneLoad, dest: it.dest, group: it.group }))
-        const existing = get().queues.find((q) => q.name.toLowerCase() === n.toLowerCase())
+        const existing = get().queues.find((q) => (q.name ?? '').toLowerCase() === n.toLowerCase())
         if (existing) {
           // re-uploading the same sequence: replace its items, keep the id
           set((s) => ({ queues: s.queues.map((q) => (q.id === existing.id ? { ...q, kind: 'sequence', items: rows, createdBy: by, createdAt: now } : q)) }))
@@ -460,8 +484,9 @@ export const useOps = create<OpsState>()(
       },
 
       loadFromCloud: async (authoritative = false) => {
-        const cloud = await db.fetchOpsQueues()
-        if (cloud === null) return // table missing / offline — keep local state
+        const fetched = await db.fetchOpsQueues()
+        if (fetched === null) return // table missing / offline — keep local state
+        const cloud = sanitizeQueues(fetched)
         if (cloud.length) set({ queues: cloud })
         else if (authoritative) set({ queues: [] }) // e.g. another device cleared all
         else {
@@ -471,7 +496,15 @@ export const useOps = create<OpsState>()(
         }
       },
     }),
-    { name: 'sjwd-ops' },
+    {
+      name: 'sjwd-ops',
+      // heal corrupted queues left in localStorage by older app versions —
+      // one name:null / items:null entry crashed every queue screen
+      merge: (persisted, current) => {
+        const p = (persisted ?? {}) as Partial<OpsState>
+        return { ...current, ...p, queues: sanitizeQueues(p.queues) }
+      },
+    },
   ),
 )
 
@@ -534,7 +567,7 @@ function reconcileGateOuts() {
   }
   const dirty: string[] = []
   const next = queues.map((q) => {
-    const isPreGateIn = q.name.trim().startsWith('(')
+    const isPreGateIn = (q.name ?? '').trim().startsWith('(')
     let changed = false
     let items = q.items.map((i) => {
       if (gone.has(i.vin) && !(i.done && i.gatedOut)) {
