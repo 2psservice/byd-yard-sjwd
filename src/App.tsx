@@ -61,9 +61,14 @@ export default function App() {
     return () => { unsubscribeTracking(); unsubscribeUnits(); stopSyncBus() }
   }, [loggedInUserId, subscribeTracking, subscribeUnits, unsubscribeTracking, unsubscribeUnits])
 
-  // ── one-time: seed this device's Unit-List view (columns + filters) from the
-  //    shared admin default, until the user customises their own ──
-  useEffect(() => { if (loggedInUserId) useTracking.getState().seedViewDefault().catch(() => {}) }, [loggedInUserId])
+  // ── seed this device's Unit-List view (columns + filters) from the shared
+  //    admin default, then restore the USER's own saved view (บันทึก) — the
+  //    newer of the two wins, so a refresh never loses a saved customization ──
+  useEffect(() => {
+    if (!loggedInUserId) return
+    const t = useTracking.getState()
+    t.seedViewDefault().catch(() => {}).then(() => t.loadMyView()).catch(() => {})
+  }, [loggedInUserId])
 
   // ── login roster: fetch BEFORE showing the login screen, logged-in or not —
   //    a field account created on the admin's computer must be able to log in
