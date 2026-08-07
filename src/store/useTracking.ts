@@ -326,6 +326,18 @@ export const useTracking = create<TrackingState>()(
           const stamped = { ...r, updatedAt: now, site: siteForRow(r.cells, sites, currentSite) }
           rows[r.vin] = stamped; added.push(stamped)
         }
+        // sold cars stay in the system: a gate-out row whose Location yard names
+        // the ACTIVE yard is this yard's own history — import it with Car Status
+        // = Gate-out so a fresh/re-import never makes a sold car vanish. Other
+        // yards' gate-outs (the master file carries ~57k across all yards and
+        // years) stay excluded, exactly as before.
+        for (const r of res.gateOutRows ?? []) {
+          if (rows[r.vin]) continue
+          if (!currentSite || siteIdForLocation(r.cells, sites) !== currentSite) continue
+          const cells = { ...r.cells, 'Car Status': 'Gate-out' }
+          const stamped: TrackRow = { vin: r.vin, cells, updatedAt: now, site: currentSite }
+          rows[r.vin] = stamped; added.push(stamped)
+        }
         idbBulkPut(added).catch(() => {})
         db.upsertTrackingRows(added).catch(() => {})
         set({
@@ -442,14 +454,26 @@ export const useTracking = create<TrackingState>()(
             added++
           }
         }
-        // gate-out rows: never added as new cars, but an EXISTING VIN whose file
-        // row now says gate-out means the car left the yard — merge the file's
-        // cells (Gate Out time stamp ฯลฯ) and force Car Status = Gate-out.
-        // Applied regardless of the active yard: a gate-out is global truth.
+        // gate-out rows: an EXISTING VIN whose file row now says gate-out means
+        // the car left the yard — merge the file's cells (Gate Out time stamp
+        // ฯลฯ) and force Car Status = Gate-out. Applied regardless of the
+        // active yard: a gate-out is global truth.
         let gateOut = 0
         for (const r of res.gateOutRows ?? []) {
           const existing = rows[r.vin]
-          if (!existing) continue
+          if (!existing) {
+            // sold car MISSING from the system (e.g. cleared + re-imported):
+            // when it belongs to the ACTIVE yard, restore it as Gate-out so the
+            // data stays in the system — never silently gone. Other yards'
+            // historical gate-outs stay excluded.
+            if (!currentSite || siteIdForLocation(r.cells, sites) !== currentSite) continue
+            const cells = { ...r.cells, 'Car Status': 'Gate-out' }
+            const stamped: TrackRow = { vin: r.vin, cells, updatedAt: now, site: currentSite }
+            rows[r.vin] = stamped
+            changed.push(stamped)
+            gateOut++
+            continue
+          }
           const cells = { ...existing.cells }
           let didChange = false
           for (const [k, v] of Object.entries(r.cells)) {
