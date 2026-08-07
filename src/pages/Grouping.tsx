@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
-import { Layers, Upload, Printer, MapPin, Loader2, FileSpreadsheet, CheckCircle2, AlertTriangle, ListChecks, X } from 'lucide-react'
+import { Layers, Upload, Printer, MapPin, Loader2, FileSpreadsheet, CheckCircle2, AlertTriangle, ListChecks, X, Save } from 'lucide-react'
 import { useYard, useUnits } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { useOps } from '../store/useOps'
@@ -31,10 +31,13 @@ export function Grouping() {
   const trackingRows = useTrackingRows()
   const bulkUpdate = useTracking((s) => s.bulkUpdate)
   const createSequence = useOps((s) => s.createSequence)
+  const setLaneLoads = useOps((s) => s.setLaneLoads)
+  const queues = useOps((s) => s.queues)
 
   const siteName = sites.find((s) => s.id === currentSite)?.name ?? ''
   const unitByVin = useMemo(() => new Map(units.map((u) => [u.vin, u])), [units])
   const trackVins = useMemo(() => new Set(trackingRows.map((r) => r.vin)), [trackingRows])
+  const rowByVin = useMemo(() => new Map(trackingRows.map((r) => [r.vin, r])), [trackingRows])
 
   const [rows, setRows] = useState<GroupPrintRow[] | null>(null)
   const [meta, setMeta] = useState<GroupPrintMeta | null>(null)
@@ -137,8 +140,6 @@ export function Grouping() {
     }
   }
 
-  const canPrint = !!rows && rows.length > 0 && !!meta
-
   // ALWAYS the latest position: the imported rows snapshot the location at
   // upload time, but the yard keeps re-locating cars afterwards — the on-screen
   // table and every print (ใบ Grouping / ใบหารถ) must read the LIVE placement,
@@ -148,14 +149,90 @@ export function Grouping() {
     return live && live !== r.yardLocation ? { ...r, yardLocation: live } : r
   }) ?? null, [rows, unitByVin])
 
+  // No fresh upload this session → rebuild the sheet from the newest delivery
+  // run, so the page shows the sheet (and its editable Lane load) after any
+  // reload, on any device — the queue in the cloud IS the plan of record.
+  const queueSheet = useMemo(() => {
+    if (rows) return null
+    const q = queues
+      .filter((x) => x.kind === 'sequence' && x.items.length > 0 && (!currentSite || !x.site || x.site === currentSite))
+      .sort((a, b) => b.createdAt - a.createdAt)[0]
+    if (!q) return null
+    const count = new Map<string, number>()
+    for (const i of q.items) count.set(i.group ?? '', (count.get(i.group ?? '') ?? 0) + 1)
+    const sheetRows: GroupPrintRow[] = q.items.map((i, idx) => {
+      const r = rowByVin.get(i.vin)
+      return {
+        no: idx + 1, vin: i.vin,
+        modelName: String(r?.cells['Model name'] ?? ''),
+        model: String(r?.cells['Model'] || r?.cells['Model name'] || ''),
+        color: String(r?.cells['Color'] ?? ''),
+        deliveryLocation: i.dest || String(r?.cells['Dealer Location'] ?? ''),
+        grouping: i.group ?? '', groupUnit: count.get(i.group ?? '') ?? 0,
+        yardLocation: yardLocCode(unitByVin.get(i.vin)) || '',
+        laneLoad: i.laneLoad ?? '', receiveDate: '', remark: '',
+      }
+    })
+    const m: GroupPrintMeta = {
+      siteLabel: siteLabel(siteName), date: todayLong(), totalUnits: sheetRows.length,
+      groupCount: count.size, locPrefix: siteGroupingConfig(siteName).prefix,
+    }
+    return { name: q.name, rows: sheetRows, meta: m }
+  }, [rows, queues, currentSite, rowByVin, unitByVin, siteName])
+
+  // admin's Lane load edits (grouping code → lane), shown live in the sheet and
+  // carried into prints/Create even before บันทึก writes them to the queues
+  const [laneEdits, setLaneEdits] = useState<Record<string, string>>({})
+  const baseRows = liveRows ?? queueSheet?.rows ?? null
+  const sheetMeta = meta ?? queueSheet?.meta ?? null
+  const fromQueue = !rows && !!queueSheet
+  const sheetRows = useMemo(() => baseRows?.map((r) => {
+    const l = laneEdits[r.grouping]
+    return l != null && l !== r.laneLoad ? { ...r, laneLoad: l } : r
+  }) ?? null, [baseRows, laneEdits])
+
+  const canPrint = !!sheetRows && sheetRows.length > 0 && !!sheetMeta
+  const hasLaneEdits = Object.keys(laneEdits).length > 0
+
+  // rows flattened for the sheet-style table: merged (rowSpan) cells for
+  // Grouping (Unit) / Lane load / วันที่ start on each group's first row, and
+  // group stripes alternate like the printed sheet
+  const renderRows = useMemo(() => {
+    if (!sheetRows) return []
+    const order: string[] = []
+    const byG = new Map<string, GroupPrintRow[]>()
+    for (const r of sheetRows) {
+      if (!byG.has(r.grouping)) { byG.set(r.grouping, []); order.push(r.grouping) }
+      byG.get(r.grouping)!.push(r)
+    }
+    let n = 0
+    return order.flatMap((g, gi) => byG.get(g)!.map((r, ri) => ({
+      r, n: ++n, first: ri === 0, span: byG.get(g)!.length, alt: gi % 2 === 1,
+    })))
+  }, [sheetRows])
+
+  const saveLaneLoads = () => {
+    if (!hasLaneEdits) return
+    const updates: Record<string, string> = {}
+    for (const [g, l] of Object.entries(laneEdits)) if (g) updates[g] = l.trim()
+    // queue items carry the lane the field reads — updating them (and pushing to
+    // cloud) is exactly what makes every device show the new lane automatically
+    const changed = setLaneLoads(updates)
+    if (rows) setRows(rows.map((r) => (updates[r.grouping] != null ? { ...r, laneLoad: updates[r.grouping] } : r)))
+    setLaneEdits({})
+    toast('ok', changed
+      ? `บันทึก Lane load แล้ว · อัปเดตคิวงาน ${changed} คิว — หน้างานเห็น lane ใหม่ทันที`
+      : 'บันทึก Lane load แล้ว')
+  }
+
   const doCreateSequence = () => {
-    if (!rows || !rows.length) return
+    if (!sheetRows || !sheetRows.length) return
     // never a silent return — a click on the green button must always answer
-    const name = seqName.trim() || `${siteLabel(siteName)} - Grouping to Dealer ( ${rows.length} Units ) ${todayLong()}`
+    const name = seqName.trim() || queueSheet?.name || `${siteLabel(siteName)} - Grouping to Dealer ( ${sheetRows.length} Units ) ${todayLong()}`
     try {
       // the grouping code travels with the item: the run keeps following it, so a
       // car whose number is cleared later drops out and a car stamped with it joins
-      const items = rows.map((r) => ({ vin: r.vin, laneLoad: r.laneLoad, dest: r.deliveryLocation, group: r.grouping }))
+      const items = sheetRows.map((r) => ({ vin: r.vin, laneLoad: r.laneLoad, dest: r.deliveryLocation, group: r.grouping }))
       const id = createSequence(name, currentUser, items)
       if (!id) { toast('err', 'สร้างลำดับงานไม่สำเร็จ — ชื่อคิวว่าง'); return }
       toast('ok', `สร้างลำดับงาน "${name}" · ${items.length} คัน — ไปที่ Operation / Yard Ops ได้เลย`)
@@ -179,14 +256,21 @@ export function Grouping() {
             <button className="btn btn-primary" disabled={busy} onClick={() => fileRef.current?.click()}>
               {busy ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />} 1 · อัปโหลด Excel Grouping
             </button>
-            <button className="btn" disabled={!canPrint} onClick={() => liveRows && meta && printGrouping(liveRows, meta)}>
+            <button className="btn" disabled={!canPrint} onClick={() => sheetRows && sheetMeta && printGrouping(sheetRows, sheetMeta)}>
               <Printer size={15} /> 2 · พิมพ์ Grouping
             </button>
-            <button className="btn" disabled={!canPrint} onClick={() => liveRows && meta && printFindCar(liveRows, meta)}>
+            <button className="btn" disabled={!canPrint} onClick={() => sheetRows && sheetMeta && printFindCar(sheetRows, sheetMeta)}>
               <MapPin size={15} /> 3 · พิมพ์ใบหารถ
             </button>
-            <button className="btn" disabled={!canPrint} onClick={doCreateSequence}
-              style={canPrint ? { background: '#16a34a', color: '#fff', borderColor: 'transparent' } : undefined}>
+            {hasLaneEdits && (
+              <button className="btn" onClick={saveLaneLoads}
+                style={{ background: '#2563eb', color: '#fff', borderColor: 'transparent' }}>
+                <Save size={15} /> บันทึก Lane load
+              </button>
+            )}
+            <button className="btn" disabled={!canPrint || fromQueue} onClick={doCreateSequence}
+              title={fromQueue ? 'คิวงานของแผนนี้ถูกสร้างไว้แล้ว — จัดการได้ที่รายการคิวด้านล่าง' : undefined}
+              style={canPrint && !fromQueue ? { background: '#16a34a', color: '#fff', borderColor: 'transparent' } : undefined}>
               <ListChecks size={15} /> Create Sequence
             </button>
           </div>
@@ -230,7 +314,7 @@ export function Grouping() {
         </div>
       )}
 
-      {!rows ? (
+      {!sheetRows || !sheetRows.length || !sheetMeta ? (
         <div className="panel p-12 text-center" style={{ color: 'var(--faint)' }}>
           <FileSpreadsheet size={40} className="mx-auto mb-3" style={{ color: 'var(--line-strong)' }} />
           <div className="text-[15px] font-semibold" style={{ color: 'var(--muted)' }}>ยังไม่ได้นำเข้าไฟล์ Grouping</div>
@@ -240,35 +324,77 @@ export function Grouping() {
           </div>
         </div>
       ) : (
-        <div className="panel overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-[12.5px]">
+        /* on-screen replica of the printed Grouping-to-Dealer sheet — same
+           columns, yellow header, merged group cells; Lane load is editable */
+        <div className="panel overflow-hidden" style={{ background: '#fff' }}>
+          <div className="px-4 pt-3 pb-1 text-center font-bold text-[13.5px]" style={{ color: '#111' }}>
+            {(seqName.trim() || queueSheet?.name) ??
+              `${sheetMeta.siteLabel} - Grouping to Dealer ( ${sheetMeta.totalUnits} Units / ${sheetMeta.groupCount} Group) Date ${sheetMeta.date}`}
+          </div>
+          {fromQueue && (
+            <div className="text-center text-[11.5px] pb-1" style={{ color: 'var(--muted)' }}>
+              แสดงจากคิวงานล่าสุด — แก้ Lane load แล้วกด <b style={{ color: '#2563eb' }}>บันทึก Lane load</b> หน้างานจะเห็นทันที
+            </div>
+          )}
+          <div className="overflow-x-auto p-3">
+            <table style={{ width: '100%', borderCollapse: 'collapse', color: '#111' }} className="text-[12px]">
               <thead>
-                <tr className="border-b hairline" style={{ background: 'var(--chip)' }}>
-                  {['No', 'Vin', 'Model', 'Color', 'Delivery Location', 'Grouping', 'Unit', 'Location', 'Lane', 'Date'].map((h) => (
-                    <th key={h} className="text-left px-3 py-2 text-[11px] font-bold whitespace-nowrap" style={{ color: 'var(--muted)' }}>{h}</th>
+                <tr>
+                  {['No', 'Vin', 'Model', 'Color', 'Delivery Location', 'Groupping Number', 'Grouping (Unit)', 'Location', 'Lane load', 'วันที่ในการเข้ารับ', 'หมายเหตุ'].map((h) => (
+                    <th key={h} className="whitespace-nowrap"
+                      style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 6px', fontWeight: 700, fontSize: 11, color: '#111', textAlign: 'center' }}>
+                      {h}
+                    </th>
                   ))}
                 </tr>
               </thead>
-              <tbody className="divide-y" style={{ '--tw-divide-opacity': 1 } as React.CSSProperties}>
-                {(liveRows ?? rows).map((r) => (
-                  <tr key={r.vin} className="hover:bg-chip transition-colors" style={!r.yardLocation ? { background: 'rgba(217,119,6,0.06)' } : undefined}>
-                    <td className="px-3 py-2 tabular" style={{ color: 'var(--muted)' }}>{r.no}</td>
-                    <td className="px-3 py-2 vin font-semibold whitespace-nowrap" style={{ color: 'var(--brand)' }}>{r.vin}</td>
-                    <td className="px-3 py-2 whitespace-nowrap">{r.model}</td>
-                    <td className="px-3 py-2 whitespace-nowrap">{r.color}</td>
-                    <td className="px-3 py-2 clip" style={{ maxWidth: 260 }} title={r.deliveryLocation}>{r.deliveryLocation}</td>
-                    <td className="px-3 py-2 tabular whitespace-nowrap">{r.grouping}</td>
-                    <td className="px-3 py-2 tabular text-center">{r.groupUnit}</td>
-                    <td className="px-3 py-2 tabular font-semibold whitespace-nowrap" style={{ color: r.yardLocation ? 'var(--text)' : '#d97706' }}>
-                      {r.yardLocation || 'ไม่พบตำแหน่ง'}
-                    </td>
-                    <td className="px-3 py-2 tabular font-bold text-center" style={{ color: 'var(--brand)' }}>{r.laneLoad}</td>
-                    <td className="px-3 py-2 tabular whitespace-nowrap" style={{ color: 'var(--muted)' }}>{r.receiveDate}</td>
-                  </tr>
-                ))}
+              <tbody>
+                {renderRows.map(({ r, n, first, span, alt }) => {
+                  const td = (extra?: React.CSSProperties): React.CSSProperties =>
+                    ({ border: '1px solid #000', padding: '3px 6px', background: alt ? '#fff3d6' : '#fff', ...extra })
+                  return (
+                    <tr key={r.vin}>
+                      <td style={td({ textAlign: 'center' })} className="tabular">{n}</td>
+                      <td style={td()} className="vin whitespace-nowrap font-semibold">{r.vin}</td>
+                      <td style={td({ textAlign: 'center' })} className="whitespace-nowrap">{r.model}</td>
+                      <td style={td({ textAlign: 'center' })} className="whitespace-nowrap">{r.color}</td>
+                      <td style={td({ maxWidth: 240 })} className="clip" title={r.deliveryLocation}>{r.deliveryLocation}</td>
+                      <td style={td({ textAlign: 'center' })} className="tabular whitespace-nowrap">{r.grouping}</td>
+                      {first && <td rowSpan={span} style={td({ textAlign: 'center', fontWeight: 700 })} className="tabular">{span}</td>}
+                      <td style={td({ textAlign: 'center', color: r.yardLocation ? '#111' : '#d97706', fontWeight: 600 })} className="tabular whitespace-nowrap">
+                        {r.yardLocation || 'ไม่พบ'}
+                      </td>
+                      {first && (
+                        <td rowSpan={span} style={td({ textAlign: 'center', padding: 2 })}>
+                          <input
+                            value={r.laneLoad}
+                            onChange={(e) => setLaneEdits((p) => ({ ...p, [r.grouping]: e.target.value.toUpperCase() }))}
+                            className="tabular"
+                            style={{ width: 52, textAlign: 'center', fontWeight: 700, fontSize: 12.5, color: '#2563eb',
+                              border: '1.5px solid #2563eb55', borderRadius: 6, padding: '3px 2px', background: '#fff' }}
+                          />
+                        </td>
+                      )}
+                      {first && (
+                        <td rowSpan={span} style={td({ textAlign: 'center' })} className="tabular whitespace-nowrap">
+                          {r.receiveDate || sheetMeta.date}
+                        </td>
+                      )}
+                      <td style={td({ minWidth: 60 })}>{r.remark}</td>
+                    </tr>
+                  )
+                })}
               </tbody>
+              <tfoot>
+                <tr>
+                  <td colSpan={6} style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 6px', fontWeight: 700, textAlign: 'center' }}>Total</td>
+                  <td style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 6px', fontWeight: 700, textAlign: 'center' }} className="tabular">{sheetMeta.totalUnits}</td>
+                  <td style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 6px', fontWeight: 700, textAlign: 'center' }}>Cars.</td>
+                  <td colSpan={3} style={{ background: '#ffff00', border: '1px solid #000' }} />
+                </tr>
+              </tfoot>
             </table>
+            <div className="text-center text-[11.5px] mt-1.5" style={{ color: '#111' }}>( {sheetMeta.groupCount} Group )</div>
           </div>
         </div>
       )}

@@ -204,6 +204,10 @@ interface OpsState {
   /** Close many cars of the same sequence at once (scan-DN bulk gate-out) —
    *  ONE state update + ONE cloud push for the whole run. */
   confirmSeqGateOutMany: (id: string, vins: string[], by?: string) => void
+  /** Admin edited the Lane load per grouping code — apply to every sequence
+   *  item carrying that code, so the field's queue cards show the new lane
+   *  immediately. Returns how many queues changed. */
+  setLaneLoads: (byGroup: Record<string, string>) => number
   /** Pull queues from the cloud. authoritative=true replaces local even when the cloud is empty
    *  (broadcast refetch); false = boot merge (cloud wins when non-empty, else seed local up). */
   loadFromCloud: (authoritative?: boolean) => Promise<void>
@@ -482,6 +486,29 @@ export const useOps = create<OpsState>()(
           ),
         }))
         pushQueue(get, id)
+      },
+
+      setLaneLoads: (byGroup) => {
+        const dirty: string[] = []
+        set((s) => ({
+          queues: s.queues.map((q) => {
+            if (q.kind !== 'sequence') return q
+            let changed = false
+            const items = q.items.map((i) => {
+              const g = i.group
+              if (g && byGroup[g] != null && i.laneLoad !== byGroup[g]) {
+                changed = true
+                return { ...i, laneLoad: byGroup[g] }
+              }
+              return i
+            })
+            if (!changed) return q
+            dirty.push(q.id)
+            return { ...q, items }
+          }),
+        }))
+        for (const id of dirty) pushQueue(get, id)
+        return dirty.length
       },
 
       loadFromCloud: async (authoritative = false) => {
