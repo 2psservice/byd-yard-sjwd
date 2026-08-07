@@ -329,6 +329,26 @@ function StagePill({ stage, drivingBy, atStation }: { stage: QueueStage; driving
   )
 }
 
+/** "07/08 14:32" — when a station check was recorded (queue-item timestamp) */
+const fmtCheckedAt = (ts?: number): string => {
+  if (!ts) return ''
+  const d = new Date(ts)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getDate())}/${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+/** ผู้ตรวจ + วันเวลา under the ตรวจแล้ว pill — who recorded the check and when. */
+function CheckedByLine({ by, at }: { by?: string; at?: number }) {
+  if (!by && !at) return null
+  return (
+    <div className="text-[10px] mt-0.5 clip" style={{ color: 'var(--muted)', maxWidth: 150 }}>
+      {by && <b style={{ color: '#16a34a' }}>{by}</b>}
+      {by && at ? ' · ' : ''}
+      {fmtCheckedAt(at)}
+    </div>
+  )
+}
+
 // Pre Gate-in queues are auto-named "(M-D-N)" (start with "("); admin process
 // queues (PDI / FINAL PM / WASHFORSALE …) are plain names — keep the two apart
 // so each shows under its own role and they don't get mixed up.
@@ -1797,6 +1817,8 @@ function AllQueuesBrowser({ queues, units, trackingRows, onPick }: {
             location: yardLocCode(u) || '—',
             stage: stageOf(i),
             drivingBy: drivingNow(i),
+            checkedBy: i.checkedBy ?? i.doneBy,
+            checkedAt: i.checkedAt ?? i.doneAt,
           }
         }).sort((a, b) => byYardLocation(a.location, b.location))
         return (
@@ -1828,6 +1850,7 @@ function AllQueuesBrowser({ queues, units, trackingRows, onPick }: {
                     <div className="text-right shrink-0">
                       <div className="tabular text-[12px] font-bold">{item.location}</div>
                       <StagePill stage={item.stage} drivingBy={item.drivingBy} atStation="Parking" />
+                      {item.stage === 'checked' && <CheckedByLine by={item.checkedBy} at={item.checkedAt} />}
                     </div>
                   </button>
                 ))}
@@ -2578,6 +2601,9 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
         location: yardLocCode(u) || '—',
         stage: stageOf(i),
         drivingBy: drivingNow(i),
+        // ผู้ตรวจ + เวลา — recorded when the station saved OK/NG
+        checkedBy: i.checkedBy ?? i.doneBy,
+        checkedAt: i.checkedAt ?? i.doneAt,
       }
     }).sort((a, b) => byYardLocation(a.location, b.location))
   }, [selectedQueue, units, trackingRows])
@@ -2673,6 +2699,7 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
                         <div className="text-right shrink-0">
                           <div className="tabular text-[12px] font-bold">{item.location}</div>
                           <StagePill stage={item.stage} drivingBy={item.drivingBy} atStation="พร้อมตรวจ" />
+                          {item.stage === 'checked' && <CheckedByLine by={item.checkedBy} at={item.checkedAt} />}
                         </div>
                       </button>
                     ))}
