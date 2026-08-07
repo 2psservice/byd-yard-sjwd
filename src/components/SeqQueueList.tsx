@@ -80,7 +80,7 @@ export function SeqQueuePicker({ queues, units, trackingRows, queuedLabel }: {
                 <ListChecks size={17} />
               </div>
               <div className="min-w-0 flex-1">
-                <div className="font-bold text-[12.5px] clip">{q.name}</div>
+                <div className="font-bold text-[12.5px]" style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{q.name}</div>
                 <div className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
                   <b style={{ color: 'var(--text)' }}>{done}/{total}</b> คัน · เหลือ <b style={{ color: '#d97706' }}>{total - done}</b>
                 </div>
