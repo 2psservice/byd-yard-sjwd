@@ -909,6 +909,17 @@ function DefectCard({ d, right }: { d: Damage; right?: React.ReactNode }) {
           <div className="flex items-center gap-x-3 gap-y-1 flex-wrap text-[11px]" style={{ color: 'var(--text)' }}>
             <span className="flex items-center gap-1"><User size={11} /> {d.by || '—'}</span>
             <span className="flex items-center gap-1"><Clock size={11} /> {fmtDateTime(d.at).date} {fmtDateTime(d.at).time}</span>
+            {(() => {
+              // when it was actually repaired: the stamped repairDate, else the
+              // Status-Repair audit trail's switch to Repaired
+              const rd = d.repairDate
+                ?? (d.repairHistory ?? []).filter((h) => h.status === 'Repaired').map((h) => h.at).pop()
+              return rd
+                ? <span className="flex items-center gap-1 font-semibold" style={{ color: '#15803d' }}>
+                    <Wrench size={11} /> ซ่อมเสร็จ {fmtDateTime(rd).date}
+                  </span>
+                : null
+            })()}
           </div>
           {photos.length > 0 && <DamagePhotoThumbs photos={photos} onOpen={i => setLb(i)} />}
         </div>
