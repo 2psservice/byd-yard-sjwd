@@ -2255,7 +2255,7 @@ function DriverView() {
             <div className="panel overflow-hidden">
               <div className="px-4 py-2.5 border-b hairline flex items-center gap-2">
                 <ListChecks size={15} style={{ color: 'var(--brand)' }} />
-                <span className="font-semibold text-[12.5px] clip">{seqHit.queue.name}</span>
+                <span className="font-semibold text-[12.5px]" style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{seqHit.queue.name}</span>
                 {seqHit.item.laneLoad && <span className="badge ml-auto shrink-0" style={{ background: 'var(--brand-soft,#eef4ff)', color: 'var(--brand)' }}>{seqHit.item.laneLoad}</span>}
               </div>
               {waiting ? (
