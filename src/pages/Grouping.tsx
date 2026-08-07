@@ -1,11 +1,13 @@
 import { useMemo, useRef, useState } from 'react'
-import { Layers, Upload, Printer, MapPin, Loader2, FileSpreadsheet, CheckCircle2, AlertTriangle, ListChecks, X, Save } from 'lucide-react'
+import { Layers, Upload, Printer, MapPin, Loader2, FileSpreadsheet, CheckCircle2, AlertTriangle, ListChecks, X, Save, FileText } from 'lucide-react'
 import { useYard, useUnits } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { useOps } from '../store/useOps'
 import { PageHead } from '../components/ui'
 import { parseGroupingWorkbook, siteGroupingConfig, yardLocCode } from '../lib/groupingImport'
-import { printGrouping, printFindCar, type GroupPrintRow, type GroupPrintMeta } from '../lib/groupingPrint'
+import { printGrouping, printFindCar, exportGroupingXlsx, exportFindCarXlsx, type GroupPrintRow, type GroupPrintMeta } from '../lib/groupingPrint'
+import { printIr, printDn, printIrPaper } from '../lib/dnir'
+import type { TrackRow } from '../lib/excelTracking'
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
 function todayLong(): string {
@@ -194,6 +196,20 @@ export function Grouping() {
   const canPrint = !!sheetRows && sheetRows.length > 0 && !!sheetMeta
   const hasLaneEdits = Object.keys(laneEdits).length > 0
 
+  // DN / IR print straight off the tracking rows of the sheet's cars — the
+  // import already stamped 'Grouping  Number' + 'Dealer Location' onto them,
+  // so the manifests carry this plan's data
+  const sheetTrackRows = useMemo(
+    () => sheetRows?.map((r) => rowByVin.get(r.vin)).filter((r): r is TrackRow => !!r) ?? [],
+    [sheetRows, rowByVin])
+  const trackRowsOrWarn = (): TrackRow[] => {
+    const missing = (sheetRows?.length ?? 0) - sheetTrackRows.length
+    if (missing > 0) toast('err', `ไม่พบข้อมูล ${missing} คันในระบบ — พิมพ์เฉพาะคันที่พบ`)
+    return sheetTrackRows
+  }
+  const doExport = (fn: () => Promise<void>) =>
+    fn().catch((e) => { console.error('[grouping] export', e); toast('err', `Export ไม่สำเร็จ: ${(e as Error)?.message ?? e}`) })
+
   // rows flattened for the sheet-style table: merged (rowSpan) cells for
   // Grouping (Unit) / Lane load / วันที่ start on each group's first row, and
   // group stripes alternate like the printed sheet
@@ -276,6 +292,33 @@ export function Grouping() {
           </div>
         }
       />
+
+      {/* DN / IR manifests + Excel exports of the current plan */}
+      {canPrint && (
+        <div className="flex items-center gap-2 flex-wrap mb-3">
+          <button className="btn" onClick={() => printDn(trackRowsOrWarn())} disabled={!sheetTrackRows.length}
+            title="พิมพ์ใบส่งมอบรถ (Delivery Note) — 1 ใบ ต่อ 1 Grouping">
+            <FileText size={15} /> พิมพ์ DN
+          </button>
+          <button className="btn" onClick={() => printIr(trackRowsOrWarn(), siteName)} disabled={!sheetTrackRows.length}
+            title="พิมพ์ใบตรวจรถ (Inspector Report) เต็มฟอร์ม — 1 หน้า ต่อ 1 คัน ลงกระดาษเปล่า">
+            <Printer size={15} /> พิมพ์ IR
+          </button>
+          <button className="btn" onClick={() => printIrPaper(trackRowsOrWarn(), siteName)} disabled={!sheetTrackRows.length}
+            title="พิมพ์เฉพาะข้อมูลลงบนกระดาษฟอร์ม IR ที่พิมพ์ไว้ล่วงหน้า (ตรงตำแหน่ง AMS 100%)">
+            <Printer size={15} /> พิมพ์กระดาษ IR
+          </button>
+          <span aria-hidden style={{ width: 1, height: 22, background: 'var(--line-strong)' }} />
+          <button className="btn" onClick={() => sheetRows && sheetMeta && doExport(() => exportGroupingXlsx(sheetRows, sheetMeta))}
+            style={{ color: '#16a34a' }} title="ดาวน์โหลดใบ Grouping เป็นไฟล์ Excel (.xlsx)">
+            <FileSpreadsheet size={15} /> Excel ใบ Grouping
+          </button>
+          <button className="btn" onClick={() => sheetRows && sheetMeta && doExport(() => exportFindCarXlsx(sheetRows, sheetMeta))}
+            style={{ color: '#16a34a' }} title="ดาวน์โหลดใบหารถเป็นไฟล์ Excel (.xlsx) เรียงตามตำแหน่งในลาน">
+            <FileSpreadsheet size={15} /> Excel ใบหารถ
+          </button>
+        </div>
+      )}
 
       {/* the read came up short of what the sheet says it holds */}
       {shortRead && (

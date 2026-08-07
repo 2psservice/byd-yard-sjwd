@@ -240,6 +240,133 @@ export async function exportFindListXlsx(rows: FindListRow[], date: string): Pro
   URL.revokeObjectURL(url)
 }
 
+// ── Excel exports (same layout as the printed sheets, yellow headers) ────────
+
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+const downloadXlsx = async (wb: any, filename: string): Promise<void> => {
+  const buf = await wb.xlsx.writeBuffer()
+  const url = URL.createObjectURL(new Blob([buf], { type: XLSX_MIME }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+/** Grouping-to-Dealer sheet as .xlsx — 1:1 with the printout: merged group
+ *  cells for Grouping (Unit) / Lane load / date, alternating group stripes,
+ *  yellow Total row. */
+export async function exportGroupingXlsx(rows: GroupPrintRow[], meta: GroupPrintMeta): Promise<void> {
+  if (!rows.length) return
+  const XJS: any = await import('exceljs')
+  const ExcelJS = XJS.default ?? XJS
+  const wb = new ExcelJS.Workbook()
+  wb.creator = 'SJWD Yard Control'
+  const ws = wb.addWorksheet('Grouping', { views: [{ state: 'frozen', ySplit: 2 }] })
+
+  const headers = ['No', 'Vin', 'Model', 'Color', 'Delivery Location', 'Groupping Number',
+    'Grouping (Unit)', 'Location', 'Lane load', 'วันที่ในการเข้ารับ', 'หมายเหตุ']
+  const widths = [5, 21, 13, 10, 42, 18, 13, 10, 10, 18, 16]
+  ws.columns = widths.map((w) => ({ width: w, style: { font: { name: 'Tahoma', size: 10 } } }))
+
+  const titleRow = ws.addRow([titleLine(meta)])
+  ws.mergeCells(1, 1, 1, headers.length)
+  titleRow.height = 22
+  titleRow.getCell(1).font = { name: 'Tahoma', size: 12, bold: true }
+  titleRow.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' }
+
+  const thin = { style: 'thin', color: { argb: 'FF000000' } }
+  const border = { top: thin, left: thin, bottom: thin, right: thin }
+  const hr = ws.addRow(headers)
+  hr.height = 18
+  hr.eachCell((c: any) => {
+    c.font = { name: 'Tahoma', size: 10, bold: true }
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF00' } }
+    c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }
+    c.border = border
+  })
+
+  let n = 0
+  let rowIdx = 3 // first data row (1=title, 2=header)
+  for (const [gi, g] of groupRows(rows).entries()) {
+    const start = rowIdx
+    for (const r of g.rows) {
+      n++
+      const row = ws.addRow([n, r.vin, r.model, r.color, r.deliveryLocation, r.grouping,
+        g.rows.length, r.yardLocation, r.laneLoad, r.receiveDate || meta.date, r.remark])
+      row.height = 16
+      row.eachCell({ includeEmpty: true }, (c: any, col: number) => {
+        c.border = border
+        c.alignment = { horizontal: col === 5 || col === 11 ? 'left' : 'center', vertical: 'middle' }
+        if (gi % 2 === 1) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF3D6' } }
+        if (col === 7 || col === 9) c.font = { name: 'Tahoma', size: 10, bold: true }
+      })
+      rowIdx++
+    }
+    if (g.rows.length > 1) for (const col of [7, 9, 10]) ws.mergeCells(start, col, rowIdx - 1, col)
+  }
+
+  const tot = ws.addRow(['Total', '', '', '', '', '', meta.totalUnits, 'Cars.', '', '', ''])
+  ws.mergeCells(rowIdx, 1, rowIdx, 6)
+  tot.height = 18
+  tot.eachCell({ includeEmpty: true }, (c: any) => {
+    c.font = { name: 'Tahoma', size: 10, bold: true }
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF00' } }
+    c.alignment = { horizontal: 'center', vertical: 'middle' }
+    c.border = border
+  })
+
+  const stamp = new Date().toISOString().slice(0, 10)
+  await downloadXlsx(wb, `SJWD-Grouping-${meta.siteLabel}-${rows.length}คัน-${stamp}.xlsx`)
+}
+
+/** ใบหารถ of the grouping plan as .xlsx — sorted by yard location (same walk
+ *  order as the printed sheet), with the Lane load column. */
+export async function exportFindCarXlsx(rows: GroupPrintRow[], meta: GroupPrintMeta): Promise<void> {
+  if (!rows.length) return
+  const XJS: any = await import('exceljs')
+  const ExcelJS = XJS.default ?? XJS
+  const wb = new ExcelJS.Workbook()
+  wb.creator = 'SJWD Yard Control'
+  const ws = wb.addWorksheet('ใบหารถ', { views: [{ state: 'frozen', ySplit: 2 }] })
+
+  const headers = ['No', 'Vin', 'Model', 'Color', 'Location', 'Lane load', 'หมายเหตุ']
+  const widths = [6, 22, 14, 12, 14, 11, 24]
+  ws.columns = widths.map((w) => ({ width: w, style: { font: { name: 'Tahoma', size: 10 } } }))
+
+  const titleRow = ws.addRow([`หารถ ${titleLine(meta)}`])
+  ws.mergeCells(1, 1, 1, headers.length)
+  titleRow.height = 22
+  titleRow.getCell(1).font = { name: 'Tahoma', size: 12, bold: true }
+  titleRow.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' }
+
+  const thin = { style: 'thin', color: { argb: 'FF000000' } }
+  const border = { top: thin, left: thin, bottom: thin, right: thin }
+  const hr = ws.addRow(headers)
+  hr.height = 18
+  hr.eachCell((c: any) => {
+    c.font = { name: 'Tahoma', size: 10, bold: true }
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF00' } }
+    c.alignment = { horizontal: 'center', vertical: 'middle' }
+    c.border = border
+  })
+
+  const sorted = [...rows].sort((a, b) => byYardLocation(a.yardLocation, b.yardLocation))
+  const locOf = (l: string) => (l && meta.locPrefix ? `${meta.locPrefix}-${l}` : l)
+  sorted.forEach((r, i) => {
+    const row = ws.addRow([i + 1, r.vin, r.model, r.color, locOf(r.yardLocation) || '—', r.laneLoad, r.remark])
+    row.height = 16
+    row.eachCell({ includeEmpty: true }, (c: any, col: number) => {
+      c.border = border
+      c.alignment = { horizontal: col === 7 ? 'left' : 'center', vertical: 'middle' }
+      if (col === 5 || col === 6) c.font = { name: 'Tahoma', size: 10, bold: true }
+    })
+  })
+
+  const stamp = new Date().toISOString().slice(0, 10)
+  await downloadXlsx(wb, `SJWD-ใบหารถ-${meta.siteLabel}-${rows.length}คัน-${stamp}.xlsx`)
+}
+
 /** Render HTML in a hidden iframe, wait a beat, then open the print dialog. */
 function printHtml(html: string): void {
   const iframe = document.createElement('iframe')
