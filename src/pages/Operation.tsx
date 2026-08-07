@@ -5,7 +5,7 @@
  */
 import { useMemo, useRef, useState } from 'react'
 import {
-  ClipboardList, Plus, X, Search, Trash2, Check, Car, Wrench, Sparkles,
+  ClipboardList, Plus, X, Search, Trash2, Check, Car, Wrench, Sparkles, Pencil,
   ShieldCheck, ClipboardCheck, Layers, QrCode, ListChecks, CheckCircle2, MapPin,
 } from 'lucide-react'
 import { useOps, useActiveQueues, queueProgress, isSequenceQueue, queueTypeOf, QUEUE_TYPES, type QueueType, type WorkQueue } from '../store/useOps'
@@ -181,6 +181,17 @@ function Stat({ label, value, accent, icon }: { label: string; value: number; ac
 
 function QueueRow({ q, onOpen }: { q: WorkQueue; onOpen: () => void }) {
   const removeQueue = useOps((s) => s.removeQueue)
+  const renameQueue = useOps((s) => s.renameQueue)
+  const toast = useYard((s) => s.toast)
+  // pencil = edit mode: only there do the delete button and the rename field
+  // appear, so a stray tap can never delete a whole queue
+  const [edit, setEdit] = useState(false)
+  const [name, setName] = useState(q.name)
+  const saveName = () => {
+    const n = name.trim()
+    if (n && n !== q.name) { renameQueue(q.id, n); toast('ok', 'แก้ไขชื่อคิวแล้ว') }
+    setEdit(false)
+  }
   const { total, done, remaining, pct } = queueProgress(q)
   const complete = total > 0 && remaining === 0
   const empty = total === 0 // no cars left (e.g. all gated out) — nothing to do
@@ -195,7 +206,14 @@ function QueueRow({ q, onOpen }: { q: WorkQueue; onOpen: () => void }) {
             style={{ background: complete ? 'rgba(34,197,94,0.14)' : 'var(--brand-soft, #eef4ff)', color: complete ? 'var(--st-yard)' : 'var(--brand)' }}>
             {complete ? <Check size={16} /> : queueIcon(q, 15)}
           </div>
-          <span className="font-bold clip" style={{ color: 'var(--brand)' }}>{q.name}</span>
+          {edit ? (
+            <input className="input py-1 text-[12.5px] font-bold flex-1" value={name} autoFocus
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') saveName() }} />
+          ) : (
+            <span className="font-bold clip" style={{ color: 'var(--brand)' }}>{q.name}</span>
+          )}
         </div>
       </td>
       {/* type */}
@@ -232,14 +250,31 @@ function QueueRow({ q, onOpen }: { q: WorkQueue; onOpen: () => void }) {
           </span>
         )}
       </td>
-      {/* actions */}
+      {/* actions — pencil toggles edit mode; save-name + delete live inside it */}
       <td className="px-4 py-3">
-        <button
-          onClick={(e) => { e.stopPropagation(); if (window.confirm(`ลบคิวงาน "${q.name}" ?`)) removeQueue(q.id) }}
-          className="btn p-1.5" title="ลบคิวงาน"
-          style={{ color: '#dc2626', background: 'rgba(220,38,38,0.08)' }}>
-          <Trash2 size={13} />
-        </button>
+        <div className="flex items-center gap-1.5 justify-end">
+          {edit && (
+            <>
+              <button onClick={(e) => { e.stopPropagation(); saveName() }}
+                className="btn p-1.5" title="บันทึกชื่อคิว"
+                style={{ color: '#16a34a', background: 'rgba(22,163,74,0.1)' }}>
+                <Check size={13} />
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); if (window.confirm(`ลบคิวงาน "${q.name}" ?`)) removeQueue(q.id) }}
+                className="btn p-1.5" title="ลบคิวงาน"
+                style={{ color: '#dc2626', background: 'rgba(220,38,38,0.08)' }}>
+                <Trash2 size={13} />
+              </button>
+            </>
+          )}
+          <button
+            onClick={(e) => { e.stopPropagation(); setEdit((v) => { const on = !v; if (on) setName(q.name); return on }) }}
+            className="btn p-1.5" title={edit ? 'ปิดโหมดแก้ไข' : 'แก้ไขคิว (เปลี่ยนชื่อ / ลบคิว)'}
+            style={edit ? { background: 'var(--brand)', color: '#fff', borderColor: 'transparent' } : { color: 'var(--muted)' }}>
+            <Pencil size={13} />
+          </button>
+        </div>
       </td>
     </tr>
   )
