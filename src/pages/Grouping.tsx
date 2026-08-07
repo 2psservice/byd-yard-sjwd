@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
-import { Layers, Upload, Printer, MapPin, Loader2, FileSpreadsheet, CheckCircle2, AlertTriangle, ListChecks } from 'lucide-react'
+import { Layers, Upload, Printer, MapPin, Loader2, FileSpreadsheet, CheckCircle2, AlertTriangle, ListChecks, X } from 'lucide-react'
 import { useYard, useUnits } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { useOps } from '../store/useOps'
@@ -94,6 +94,19 @@ export function Grouping() {
       }
       let assigned = 0
       for (const [g, vins] of byGroup) { bulkUpdate(vins, 'Grouping  Number', g); assigned += vins.length }
+
+      // the Excel's Delivery Location is the LATEST dealer for these cars —
+      // stamp it onto the tracking rows so Unit List, IR, DN and ใบหารถ all
+      // read this file's value from now on ('Dealer Location' is the cell
+      // every one of those surfaces prints)
+      const byDealer = new Map<string, string[]>()
+      for (const r of res.rows) {
+        const dl = r.deliveryLocation.trim()
+        if (!dl || !trackVins.has(r.vin)) continue
+        const arr = byDealer.get(dl) ?? []
+        arr.push(r.vin); byDealer.set(dl, arr)
+      }
+      for (const [dl, vins] of byDealer) bulkUpdate(vins, 'Dealer Location', dl)
 
       const m: GroupPrintMeta = {
         siteLabel: siteLabel(siteName),
@@ -259,6 +272,123 @@ export function Grouping() {
           </div>
         </div>
       )}
+
+      {/* delivery runs already created — persists across visits (the imported
+          table above is session-only, but the QUEUES live in the store/cloud),
+          with add / remove VIN and cancel-run controls */}
+      <SeqQueueManager />
+    </div>
+  )
+}
+
+/** Manage the site's Grouping-to-Dealer runs: expand to the car list, remove a
+ *  car (also clears its Grouping cell so the run reconciler agrees), add VINs,
+ *  or cancel the whole run. */
+function SeqQueueManager() {
+  const currentSite = useYard((s) => s.currentSite)
+  const toast = useYard((s) => s.toast)
+  const units = useUnits()
+  const trackingRows = useTrackingRows()
+  const updateCell = useTracking((s) => s.updateCell)
+  const queues = useOps((s) => s.queues)
+  const { addVins, removeVin, removeQueue } = useOps()
+  const [openId, setOpenId] = useState<string | null>(null)
+  const [addText, setAddText] = useState('')
+
+  const seqQueues = useMemo(
+    () => queues.filter((q) => q.kind === 'sequence' && (!currentSite || !q.site || q.site === currentSite)),
+    [queues, currentSite],
+  )
+  const rowByVin = useMemo(() => new Map(trackingRows.map((r) => [r.vin, r])), [trackingRows])
+  const unitByVin = useMemo(() => new Map(units.map((u) => [u.vin, u])), [units])
+  if (!seqQueues.length) return null
+
+  const doRemove = (qid: string, vin: string) => {
+    if (!window.confirm(`เอา ${vin.slice(-8)} ออกจากคิวงานนี้?`)) return
+    removeVin(qid, vin)
+    // clearing the cell records the removal in the row's history, so the run
+    // reconciler (which re-adds cars carrying the run's codes) agrees with it
+    if (rowByVin.has(vin)) updateCell(vin, 'Grouping  Number', '')
+    toast('ok', `เอา ${vin.slice(-8)} ออกจากคิวแล้ว`)
+  }
+  const doAdd = (qid: string) => {
+    const vins = addText.toUpperCase().match(/[A-Z0-9]{11,20}/g) ?? []
+    if (!vins.length) { toast('err', 'พิมพ์/วางเลขวินก่อน (เต็มตัวอย่างน้อย 11 หลัก)'); return }
+    const { added, dup } = addVins(qid, vins)
+    setAddText('')
+    toast(added ? 'ok' : 'err', `เพิ่ม ${added} คัน${dup ? ` · ซ้ำ ${dup}` : ''}`)
+  }
+
+  return (
+    <div className="mt-5 space-y-2.5">
+      <div className="text-[11px] font-bold uppercase tracking-wider" style={{ color: 'var(--muted)' }}>
+        คิวงานส่งมอบ (Grouping to Dealer)
+      </div>
+      {seqQueues.map((q) => {
+        const total = q.items.length
+        const done = q.items.filter((i) => i.done || i.gatedOut).length
+        const isOpen = openId === q.id
+        return (
+          <div key={q.id} className="panel overflow-hidden">
+            <div className="w-full px-4 py-3 flex items-center gap-3">
+              <button className="flex items-center gap-3 flex-1 min-w-0 text-left" onClick={() => setOpenId(isOpen ? null : q.id)}>
+                <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: 'var(--brand-soft,#eef4ff)', color: 'var(--brand)' }}>
+                  <ListChecks size={17} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="font-bold text-[13px] clip">{q.name}</div>
+                  <div className="text-[11.5px] mt-0.5" style={{ color: 'var(--muted)' }}>
+                    <b style={{ color: 'var(--text)' }}>{done}/{total}</b> คัน · เหลือ <b style={{ color: '#d97706' }}>{total - done}</b>
+                  </div>
+                </div>
+              </button>
+              <button className="btn py-1.5 text-[12px]" style={{ color: '#dc2626', background: 'rgba(220,38,38,0.08)' }}
+                onClick={() => { if (window.confirm(`ยกเลิกคิวงาน "${q.name}" ทั้งใบ?`)) { removeQueue(q.id); toast('ok', 'ยกเลิกคิวงานแล้ว') } }}>
+                ยกเลิกคิว
+              </button>
+            </div>
+            {isOpen && (
+              <div className="border-t hairline">
+                {/* add VINs */}
+                <div className="px-4 py-2.5 flex items-center gap-2 border-b hairline" style={{ background: 'var(--chip)' }}>
+                  <input className="input flex-1 text-[12.5px] vin" placeholder="วาง/พิมพ์เลขวินที่จะเพิ่ม (หลายคันคั่นด้วยเว้นวรรค)…"
+                    value={addText} onChange={(e) => setAddText(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && doAdd(q.id)} />
+                  <button className="btn btn-primary py-1.5 text-[12.5px]" onClick={() => doAdd(q.id)}>+ เพิ่ม</button>
+                </div>
+                <div className="divide-y" style={{ borderColor: 'var(--line)' }}>
+                  {q.items.map((i) => {
+                    const r = rowByVin.get(i.vin)
+                    const gone = i.done || i.gatedOut
+                    return (
+                      <div key={i.vin} className="px-4 py-2 flex items-center gap-3" style={gone ? { opacity: 0.55 } : undefined}>
+                        <div className="min-w-0 flex-1">
+                          <div className="vin text-[12.5px] font-bold clip">{i.vin}</div>
+                          <div className="text-[11px] mt-0.5 flex flex-wrap gap-x-2" style={{ color: 'var(--muted)' }}>
+                            <span>{r?.cells['Model'] || r?.cells['Model name'] || '—'}</span>
+                            <span>· {r?.cells['Color'] || '—'}</span>
+                            {i.group && <span>· {i.group}</span>}
+                          </div>
+                        </div>
+                        <div className="tabular text-[12px] font-bold shrink-0">{yardLocCode(unitByVin.get(i.vin)) || '—'}</div>
+                        {gone
+                          ? <span className="badge shrink-0" style={{ background: 'rgba(22,163,74,0.12)', color: '#16a34a', fontSize: 10.5 }}>ออกแล้ว</span>
+                          : (
+                            <button className="btn p-1.5 shrink-0" title="เอาออกจากคิว"
+                              style={{ color: '#dc2626', background: 'rgba(220,38,38,0.08)' }}
+                              onClick={() => doRemove(q.id, i.vin)}>
+                              <X size={13} />
+                            </button>
+                          )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
