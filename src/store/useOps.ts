@@ -714,7 +714,10 @@ export function seqStageOf(i: QueueItem): 'queued' | 'wash' | 'lane' | 'gateout'
 
 export function queueProgress(q: WorkQueue) {
   const total = q.items.length
-  const done = q.items.reduce((n, i) => n + (i.done ? 1 : 0), 0)
+  // count the way the STATION counts (stationProgress): a car is progress the
+  // moment its OK/NG is recorded ('checked'), not only after a driver returns
+  // it to a slot — the admin board read 0/67 while the field read 3/67.
+  const done = q.items.reduce((n, i) => n + (i.done || stageOf(i) === 'checked' ? 1 : 0), 0)
   return { total, done, remaining: total - done, pct: total ? Math.round((done / total) * 100) : 0 }
 }
 

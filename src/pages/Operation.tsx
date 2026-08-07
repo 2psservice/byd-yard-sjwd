@@ -63,7 +63,9 @@ export function Operation() {
 
   const totals = useMemo(() => {
     let vehicles = 0, done = 0
-    for (const q of queues) { vehicles += q.items.length; done += q.items.reduce((n, i) => n + (i.done ? 1 : 0), 0) }
+    // same counting as the queue rows + the field stations (queueProgress):
+    // a recorded check IS progress, even before the drive back to a slot
+    for (const q of queues) { const p = queueProgress(q); vehicles += p.total; done += p.done }
     return { queues: queues.length, vehicles, done, remaining: vehicles - done }
   }, [queues])
 
