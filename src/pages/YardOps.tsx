@@ -1001,7 +1001,7 @@ function DamageForm({ onSaveAll, onCancel }: {
   const [rows, setRows] = useState<DmgRow[]>([mkRow()])
   const [busyRid, setBusyRid] = useState<string | null>(null)
   const [armed, setArmed] = useState<string | null>(null) // rid whose delete is armed (2-tap guard)
-  const [accByd, setAccByd] = useState(false) // ACC BYD label (defect is always HEAVY NG)
+  const [heavy, setHeavy] = useState(true) // NG / HEAVY NG choice (HEAVY NG default, as before)
   const upd = (rid: string, k: keyof DmgRow, v: string) =>
     setRows(r => r.map(x => x.rid === rid ? { ...x, [k]: v } : x))
   const del = (rid: string) => { setRows(r => r.length > 1 ? r.filter(x => x.rid !== rid) : r); setArmed(null) }
@@ -1034,8 +1034,8 @@ function DamageForm({ onSaveAll, onCancel }: {
       item:   def.en,           // English defect — primary
       itemTh: def.th,           // Thai defect — shown below in admin
       type:   'scratch',        // legacy field kept for back-compat
-      severity: 'major' as const,                          // gate-in Defect is always HEAVY NG
-      categoryNG: accByd ? 'HEAVY NG · ACC BYD' : 'HEAVY NG',
+      severity: (heavy ? 'major' : 'minor') as 'major' | 'minor',
+      categoryNG: heavy ? 'HEAVY NG' : 'NG',
       statusRepair: 'Waiting Repair' as const,             // opens waiting for repair
       remark: row.remark.trim() || undefined,
       photos: row.photos.length ? row.photos : undefined,
@@ -1096,17 +1096,21 @@ function DamageForm({ onSaveAll, onCancel }: {
           </div>
         ))}
 
-        {/* Defect is always HEAVY NG · optional ACC BYD label */}
+        {/* severity choice: NG or HEAVY NG (pick one) */}
         <div className="flex gap-2 pt-0.5">
-          <div className="flex-1 py-2 rounded-xl text-[12px] font-bold text-center" style={{ background: '#dc2626', color: '#fff' }}>
-            HEAVY NG
-          </div>
-          <button onClick={() => setAccByd(v => !v)}
+          <button onClick={() => setHeavy(false)}
             className="flex-1 py-2 rounded-xl text-[12px] font-bold transition flex items-center justify-center gap-1.5"
-            style={accByd
-              ? { background: '#1d4ed8', color: '#fff' }
+            style={!heavy
+              ? { background: '#d97706', color: '#fff' }
               : { background: 'var(--chip)', color: 'var(--muted)', border: '1px dashed var(--line-strong)' }}>
-            {accByd ? <CheckCircle2 size={14} /> : <XCircle size={14} style={{ opacity: 0.5 }} />} ACC BYD
+            {!heavy && <CheckCircle2 size={14} />} NG
+          </button>
+          <button onClick={() => setHeavy(true)}
+            className="flex-1 py-2 rounded-xl text-[12px] font-bold transition flex items-center justify-center gap-1.5"
+            style={heavy
+              ? { background: '#dc2626', color: '#fff' }
+              : { background: 'var(--chip)', color: 'var(--muted)', border: '1px dashed var(--line-strong)' }}>
+            {heavy && <CheckCircle2 size={14} />} HEAVY NG
           </button>
         </div>
 
@@ -1132,7 +1136,7 @@ function DamageForm({ onSaveAll, onCancel }: {
           <button className="btn py-3 text-[13.5px] font-bold"
             onClick={save} disabled={!allPhotographed}
             style={{ background: allPhotographed ? 'var(--st-damage)' : 'var(--chip)', color: allPhotographed ? '#fff' : 'var(--faint)', border: 'none' }}>
-            <Plus size={14} /> บันทึก HEAVY NG{rows.length > 1 ? ` (${rows.length})` : ''}
+            <Plus size={14} /> บันทึก {heavy ? 'HEAVY NG' : 'NG'}{rows.length > 1 ? ` (${rows.length})` : ''}
           </button>
         </div>
       </div>
