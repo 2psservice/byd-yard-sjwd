@@ -222,7 +222,7 @@ const ROLES: { key: RoleKey; th: string; en: string; icon: React.ReactNode; colo
   { key: 'fc',       th: 'FINAL CHECK',     en: 'FINAL CHECK',     icon: <ShieldCheck size={28} />,   color: '#059669',        desc: 'ตรวจสอบคุณภาพ OK / NG' },
   { key: 'updatedmg',th: 'Update Damage',   en: 'Update Damage',   icon: <AlertTriangle size={28} />, color: '#dc2626',        desc: 'บันทึก / แก้ไขความเสียหาย' },
   { key: 'check',    th: 'Check',           en: 'Check',           icon: <ClipboardList size={28} />, color: '#0891b2',        desc: 'ตรวจสอบข้อมูลรถ' },
-  { key: 'mechanic', th: 'ช่าง',             en: 'Mechanic',        icon: <Wrench size={28} />,        color: '#c2680b',        desc: 'แก้ไข NG · ปลด / เพิ่ม NG' },
+  { key: 'mechanic', th: 'ช่าง',             en: 'Mechanic',        icon: <Wrench size={28} />,        color: '#c2680b',        desc: 'คิวงานซ่อม / งานพิเศษ · แก้ไข NG' },
 ]
 
 // ── shared: "not gated-in" guard ──────────────────────────────────────────────
@@ -2836,41 +2836,19 @@ function MechanicView() {
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
   const [vin, setVin] = useState<string | null>(null)
   const [showForm, setShowForm] = useState(false)
-  const [listOpen, setListOpen] = useState(true)
 
   const unit = vin ? units.find(u => u.vin === vin) ?? null : null
 
-  // repair queue — cars still IN YARD with at least one defect that is actually
-  // waiting for repair. Two things used to inflate this list far past the
-  // Dashboard's "Damage" figure: it keyed off `!repairDate`, which counts an
-  // Accept / Acc byd / OK Accept defect (resolved, but nothing was repaired, so
-  // it has no repair date) as outstanding; and it never excluded cars that have
-  // already left the yard.
-  const ngCars = useMemo(() => {
-    const inYard = new Set<string>()
-    for (const r of trackingRows) if (IN_YARD_STATUSES.has(deriveCarStatus(r.cells))) inYard.add(r.vin)
-    const isOpen = (d: Damage) => !d.statusRepair || d.statusRepair === 'Waiting Repair'
-    return units
-      .filter(u => inYard.has(u.vin))
-      .map(u => ({ u, open: u.damages.filter(isOpen).length }))
-      .filter(x => x.open > 0)
-      .map(({ u, open }) => ({
-        vin: u.vin,
-        model: u.modelName || '—',
-        color: u.color || '—',
-        grouping: trackingRows.find(r => r.vin === u.vin)?.cells['Grouping  Number'] || '—',
-        location: yardLocCode(u) || '—',
-        open,
-      }))
-      .sort((a, b) => byYardLocation(a.location, b.location))
-  }, [units, trackingRows])
-
-  // assigned repair queues created on the Operation page (type "ช่าง (ซ่อม)") —
-  // same behaviour as the PDI / PM / FINAL CHECK stations
+  // ONLY assigned queues from the Operation page appear here — ช่าง (ซ่อม) and
+  // งานพิเศษ both land at this station. The old auto-generated "every in-yard
+  // car with an open NG" list flooded the screen with hundreds of VINs nobody
+  // was assigned to fix today; scanning a car still opens its NG list directly.
   const repairQueues = useMemo(
-    () => allQueues.filter(q =>
-      !isSequenceQueue(q) && !isPreGateInQueue(q.name) &&
-      queueTypeOf(q) === 'REPAIR' && !isQueueComplete(q)),
+    () => allQueues.filter(q => {
+      if (isSequenceQueue(q) || isPreGateInQueue(q.name) || isQueueComplete(q)) return false
+      const t = queueTypeOf(q)
+      return t === 'REPAIR' || t === 'SPECIAL'
+    }),
     [allQueues],
   )
 
@@ -2897,49 +2875,17 @@ function MechanicView() {
       <VinInput onScan={onScan} accent="#c2680b" />
       {gateModal}
 
-      {/* assigned repair queues from the Operation page — listed first, above the
-          auto-generated "every car with an open NG" list */}
-      {!unit && repairQueues.length > 0 && (
+      {/* assigned queues from the Operation page — ช่าง (ซ่อม) + งานพิเศษ */}
+      {!unit && (repairQueues.length > 0 ? (
         <AllQueuesBrowser queues={repairQueues} units={units} trackingRows={trackingRows}
           onPick={v => { setVin(v); setShowForm(false) }} />
-      )}
-
-      {/* repair queue — cars in this yard with unrepaired NG (card + list, tap to fix) */}
-      {!unit && ngCars.length > 0 && (
-        <div className="panel overflow-hidden fade-up">
-          <button className="w-full px-4 py-3 flex items-center gap-3 text-left" onClick={() => setListOpen(v => !v)}>
-            <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: '#fff3e0', color: '#c2680b' }}>
-              <Wrench size={17} />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="font-bold text-[12.5px] clip">คิวงานซ่อม (NG)</div>
-              <div className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
-                รอซ่อม <b style={{ color: '#c2680b' }}>{ngCars.length}</b> คัน · Defect รอซ่อม <b style={{ color: 'var(--st-damage)' }}>{ngCars.reduce((n, c) => n + c.open, 0)}</b> รายการ
-              </div>
-            </div>
-            <ChevronLeft size={16} style={{ color: 'var(--muted)', transform: listOpen ? 'rotate(90deg)' : 'rotate(-90deg)', transition: 'transform .15s' }} />
-          </button>
-          {listOpen && (
-            <div className="border-t hairline max-h-[65vh] overflow-y-auto divide-y" style={{ borderColor: 'var(--line)' }}>
-              {ngCars.map(c => (
-                <button key={c.vin} onClick={() => { setVin(c.vin); setShowForm(false) }}
-                  className="w-full px-4 py-2.5 flex items-center gap-3 text-left transition active:bg-chip">
-                  <div className="min-w-0 flex-1">
-                    <div className="vin text-[12.5px] font-bold clip">{c.vin}</div>
-                    <div className="text-[11px] mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5" style={{ color: 'var(--muted)' }}>
-                      <span>{c.model}</span><span>· {c.color}</span><span>· {c.grouping}</span>
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <div className="tabular text-[12px] font-bold">{c.location}</div>
-                    <span className="badge mt-0.5 inline-block" style={{ fontSize: 10, background: 'rgba(255,59,48,0.12)', color: 'var(--st-damage)' }}>NG {c.open}</span>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
+      ) : (
+        <div className="panel p-6 text-center fade-up" style={{ color: 'var(--faint)' }}>
+          <Wrench size={26} className="mx-auto mb-2" style={{ color: 'var(--line-strong)' }} />
+          <div className="text-[13px] font-semibold" style={{ color: 'var(--muted)' }}>ยังไม่มีคิวงานซ่อม / งานพิเศษ</div>
+          <div className="text-[12px] mt-1">แอดมินสร้างคิวได้ที่หน้า Operation — หรือสแกน VIN เพื่อเปิดรายการ NG ของคันนั้นได้เลย</div>
         </div>
-      )}
+      ))}
 
       {unit && (
         <div className="space-y-3 fade-up">
@@ -4099,6 +4045,8 @@ export function YardOps() {
       if (t === 'PDI') add('pdi', unchecked)
       else if (t === 'PM') add('pm', unchecked)
       else if (t === 'FINAL') add('fc', unchecked)
+      // ช่าง (ซ่อม) and งานพิเศษ queues both land at the mechanic station
+      else if (t === 'REPAIR' || t === 'SPECIAL') add('mechanic', unchecked)
       // the driver moves cars in (queued) and back out (checked)
       add('driver', q.items.filter(i => !i.done && (stageOf(i) === 'queued' || stageOf(i) === 'checked')).length)
     }
