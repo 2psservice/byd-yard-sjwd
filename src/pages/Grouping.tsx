@@ -126,6 +126,15 @@ export function Grouping() {
 
   const canPrint = !!rows && rows.length > 0 && !!meta
 
+  // ALWAYS the latest position: the imported rows snapshot the location at
+  // upload time, but the yard keeps re-locating cars afterwards — the on-screen
+  // table and every print (ใบ Grouping / ใบหารถ) must read the LIVE placement,
+  // falling back to the import-time value for cars this device can't see.
+  const liveRows = useMemo(() => rows?.map((r) => {
+    const live = yardLocCode(unitByVin.get(r.vin))
+    return live && live !== r.yardLocation ? { ...r, yardLocation: live } : r
+  }) ?? null, [rows, unitByVin])
+
   const doCreateSequence = () => {
     if (!rows || !rows.length) return
     // never a silent return — a click on the green button must always answer
@@ -157,10 +166,10 @@ export function Grouping() {
             <button className="btn btn-primary" disabled={busy} onClick={() => fileRef.current?.click()}>
               {busy ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />} 1 · อัปโหลด Excel Grouping
             </button>
-            <button className="btn" disabled={!canPrint} onClick={() => rows && meta && printGrouping(rows, meta)}>
+            <button className="btn" disabled={!canPrint} onClick={() => liveRows && meta && printGrouping(liveRows, meta)}>
               <Printer size={15} /> 2 · พิมพ์ Grouping
             </button>
-            <button className="btn" disabled={!canPrint} onClick={() => rows && meta && printFindCar(rows, meta)}>
+            <button className="btn" disabled={!canPrint} onClick={() => liveRows && meta && printFindCar(liveRows, meta)}>
               <MapPin size={15} /> 3 · พิมพ์ใบหารถ
             </button>
             <button className="btn" disabled={!canPrint} onClick={doCreateSequence}
@@ -229,7 +238,7 @@ export function Grouping() {
                 </tr>
               </thead>
               <tbody className="divide-y" style={{ '--tw-divide-opacity': 1 } as React.CSSProperties}>
-                {rows.map((r) => (
+                {(liveRows ?? rows).map((r) => (
                   <tr key={r.vin} className="hover:bg-chip transition-colors" style={!r.yardLocation ? { background: 'rgba(217,119,6,0.06)' } : undefined}>
                     <td className="px-3 py-2 tabular" style={{ color: 'var(--muted)' }}>{r.no}</td>
                     <td className="px-3 py-2 vin font-semibold whitespace-nowrap" style={{ color: 'var(--brand)' }}>{r.vin}</td>
