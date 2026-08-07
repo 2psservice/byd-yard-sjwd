@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Layers, Upload, Printer, MapPin, Loader2, FileSpreadsheet, CheckCircle2, AlertTriangle, ListChecks, X, Save, FileText } from 'lucide-react'
 import { useYard, useUnits } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
@@ -151,14 +151,20 @@ export function Grouping() {
     return live && live !== r.yardLocation ? { ...r, yardLocation: live } : r
   }) ?? null, [rows, unitByVin])
 
-  // No fresh upload this session → rebuild the sheet from the newest delivery
-  // run, so the page shows the sheet (and its editable Lane load) after any
-  // reload, on any device — the queue in the cloud IS the plan of record.
+  // which delivery run the sheet displays: a queue card clicked below wins,
+  // else a fresh import this session, else the newest run
+  const [viewQueueId, setViewQueueId] = useState<string | null>(null)
+
+  // Rebuild the sheet from a delivery run (clicked, or the newest when nothing
+  // was uploaded this session) — the page shows the sheet (and its editable
+  // Lane load) after any reload, on any device: the queue in the cloud IS the
+  // plan of record.
   const queueSheet = useMemo(() => {
-    if (rows) return null
-    const q = queues
-      .filter((x) => x.kind === 'sequence' && x.items.length > 0 && (!currentSite || !x.site || x.site === currentSite))
-      .sort((a, b) => b.createdAt - a.createdAt)[0]
+    const list = queues.filter((x) =>
+      x.kind === 'sequence' && x.items.length > 0 && (!currentSite || !x.site || x.site === currentSite))
+    const picked = viewQueueId ? list.find((x) => x.id === viewQueueId) : null
+    if (!picked && rows) return null
+    const q = picked ?? [...list].sort((a, b) => b.createdAt - a.createdAt)[0]
     if (!q) return null
     const count = new Map<string, number>()
     for (const i of q.items) count.set(i.group ?? '', (count.get(i.group ?? '') ?? 0) + 1)
@@ -179,15 +185,17 @@ export function Grouping() {
       siteLabel: siteLabel(siteName), date: todayLong(), totalUnits: sheetRows.length,
       groupCount: count.size, locPrefix: siteGroupingConfig(siteName).prefix,
     }
-    return { name: q.name, rows: sheetRows, meta: m }
-  }, [rows, queues, currentSite, rowByVin, unitByVin, siteName])
+    return { id: q.id, name: q.name, rows: sheetRows, meta: m }
+  }, [rows, queues, currentSite, rowByVin, unitByVin, siteName, viewQueueId])
 
   // admin's Lane load edits (grouping code → lane), shown live in the sheet and
   // carried into prints/Create even before บันทึก writes them to the queues
   const [laneEdits, setLaneEdits] = useState<Record<string, string>>({})
-  const baseRows = liveRows ?? queueSheet?.rows ?? null
-  const sheetMeta = meta ?? queueSheet?.meta ?? null
-  const fromQueue = !rows && !!queueSheet
+  // an explicitly clicked queue outranks this session's import snapshot
+  const usingQueue = !!queueSheet && (!!viewQueueId || !rows)
+  const baseRows = usingQueue ? queueSheet!.rows : liveRows
+  const sheetMeta = usingQueue ? queueSheet!.meta : meta
+  const fromQueue = usingQueue
   const sheetRows = useMemo(() => baseRows?.map((r) => {
     const l = laneEdits[r.grouping]
     return l != null && l !== r.laneLoad ? { ...r, laneLoad: l } : r
@@ -196,16 +204,43 @@ export function Grouping() {
   const canPrint = !!sheetRows && sheetRows.length > 0 && !!sheetMeta
   const hasLaneEdits = Object.keys(laneEdits).length > 0
 
-  // DN / IR print straight off the tracking rows of the sheet's cars — the
+  // ── pick what DN / IR print: single VINs, whole groupings, or everything ──
+  const [selVins, setSelVins] = useState<Set<string>>(new Set())
+  const sheetKey = usingQueue ? queueSheet!.id : rows ? 'import' : 'none'
+  // switching to another run (or a fresh import) resets picks and lane edits
+  useEffect(() => { setSelVins(new Set()); setLaneEdits({}) }, [sheetKey])
+  const toggleVin = (v: string) => setSelVins((prev) => {
+    const n = new Set(prev)
+    n.has(v) ? n.delete(v) : n.add(v)
+    return n
+  })
+  const toggleGroup = (g: string) => {
+    const vins = (sheetRows ?? []).filter((r) => r.grouping === g).map((r) => r.vin)
+    const all = vins.length > 0 && vins.every((v) => selVins.has(v))
+    setSelVins((prev) => {
+      const n = new Set(prev)
+      vins.forEach((v) => (all ? n.delete(v) : n.add(v)))
+      return n
+    })
+  }
+  const allSelected = !!sheetRows && sheetRows.length > 0 && sheetRows.every((r) => selVins.has(r.vin))
+  const toggleAll = () => setSelVins(allSelected ? new Set() : new Set((sheetRows ?? []).map((r) => r.vin)))
+  // rows DN / IR actually print: the picked cars, or the whole sheet when none picked
+  const printSheetRows = useMemo(
+    () => (selVins.size ? (sheetRows ?? []).filter((r) => selVins.has(r.vin)) : sheetRows ?? []),
+    [sheetRows, selVins])
+  const printCount = printSheetRows.length
+
+  // DN / IR print straight off the tracking rows of the picked cars — the
   // import already stamped 'Grouping  Number' + 'Dealer Location' onto them,
   // so the manifests carry this plan's data
-  const sheetTrackRows = useMemo(
-    () => sheetRows?.map((r) => rowByVin.get(r.vin)).filter((r): r is TrackRow => !!r) ?? [],
-    [sheetRows, rowByVin])
+  const printTrackRows = useMemo(
+    () => printSheetRows.map((r) => rowByVin.get(r.vin)).filter((r): r is TrackRow => !!r),
+    [printSheetRows, rowByVin])
   const trackRowsOrWarn = (): TrackRow[] => {
-    const missing = (sheetRows?.length ?? 0) - sheetTrackRows.length
+    const missing = printSheetRows.length - printTrackRows.length
     if (missing > 0) toast('err', `ไม่พบข้อมูล ${missing} คันในระบบ — พิมพ์เฉพาะคันที่พบ`)
-    return sheetTrackRows
+    return printTrackRows
   }
   const doExport = (fn: () => Promise<void>) =>
     fn().catch((e) => { console.error('[grouping] export', e); toast('err', `Export ไม่สำเร็จ: ${(e as Error)?.message ?? e}`) })
@@ -293,20 +328,30 @@ export function Grouping() {
         }
       />
 
-      {/* DN / IR manifests + Excel exports of the current plan */}
+      {/* DN / IR manifests + Excel exports of the current plan. DN / IR print
+          the ticked cars (tick a row, a grouping, or everything in the table
+          header) — nothing ticked prints the whole sheet. */}
       {canPrint && (
         <div className="flex items-center gap-2 flex-wrap mb-3">
-          <button className="btn" onClick={() => printDn(trackRowsOrWarn())} disabled={!sheetTrackRows.length}
-            title="พิมพ์ใบส่งมอบรถ (Delivery Note) — 1 ใบ ต่อ 1 Grouping">
-            <FileText size={15} /> พิมพ์ DN
+          {selVins.size > 0 && (
+            <span className="badge" style={{ background: 'var(--brand-soft,#eef4ff)', color: 'var(--brand)' }}>
+              เลือก {selVins.size} คัน
+              <button className="ml-1" style={{ color: 'var(--brand)' }} title="ล้างที่เลือก" onClick={() => setSelVins(new Set())}>
+                <X size={12} />
+              </button>
+            </span>
+          )}
+          <button className="btn" onClick={() => printDn(trackRowsOrWarn())} disabled={!printTrackRows.length}
+            title="พิมพ์ใบส่งมอบรถ (Delivery Note) — 1 ใบ ต่อ 1 Grouping · พิมพ์เฉพาะคันที่ติ๊ก (ไม่ติ๊ก = ทั้งใบ)">
+            <FileText size={15} /> พิมพ์ DN ({printCount})
           </button>
-          <button className="btn" onClick={() => printIr(trackRowsOrWarn(), siteName)} disabled={!sheetTrackRows.length}
-            title="พิมพ์ใบตรวจรถ (Inspector Report) เต็มฟอร์ม — 1 หน้า ต่อ 1 คัน ลงกระดาษเปล่า">
-            <Printer size={15} /> พิมพ์ IR
+          <button className="btn" onClick={() => printIr(trackRowsOrWarn(), siteName)} disabled={!printTrackRows.length}
+            title="พิมพ์ใบตรวจรถ (Inspector Report) เต็มฟอร์ม — 1 หน้า ต่อ 1 คัน ลงกระดาษเปล่า · พิมพ์เฉพาะคันที่ติ๊ก (ไม่ติ๊ก = ทั้งใบ)">
+            <Printer size={15} /> พิมพ์ IR ({printCount})
           </button>
-          <button className="btn" onClick={() => printIrPaper(trackRowsOrWarn(), siteName)} disabled={!sheetTrackRows.length}
-            title="พิมพ์เฉพาะข้อมูลลงบนกระดาษฟอร์ม IR ที่พิมพ์ไว้ล่วงหน้า (ตรงตำแหน่ง AMS 100%)">
-            <Printer size={15} /> พิมพ์กระดาษ IR
+          <button className="btn" onClick={() => printIrPaper(trackRowsOrWarn(), siteName)} disabled={!printTrackRows.length}
+            title="พิมพ์เฉพาะข้อมูลลงบนกระดาษฟอร์ม IR ที่พิมพ์ไว้ล่วงหน้า (ตรงตำแหน่ง AMS 100%) · พิมพ์เฉพาะคันที่ติ๊ก (ไม่ติ๊ก = ทั้งใบ)">
+            <Printer size={15} /> พิมพ์กระดาษ IR ({printCount})
           </button>
           <span aria-hidden style={{ width: 1, height: 22, background: 'var(--line-strong)' }} />
           <button className="btn" onClick={() => sheetRows && sheetMeta && doExport(() => exportGroupingXlsx(sheetRows, sheetMeta))}
@@ -383,6 +428,10 @@ export function Grouping() {
             <table style={{ width: '100%', borderCollapse: 'collapse', color: '#111' }} className="text-[12px]">
               <thead>
                 <tr>
+                  <th style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 5px', textAlign: 'center' }}
+                    title="ติ๊กทั้งหมด / ล้างทั้งหมด — คันที่ติ๊กคือคันที่ปุ่ม พิมพ์ DN / IR จะพิมพ์">
+                    <input type="checkbox" checked={allSelected} onChange={toggleAll} style={{ width: 14, height: 14, cursor: 'pointer' }} />
+                  </th>
                   {['No', 'Vin', 'Model', 'Color', 'Delivery Location', 'Groupping Number', 'Grouping (Unit)', 'Location', 'Lane load', 'วันที่ในการเข้ารับ', 'หมายเหตุ'].map((h) => (
                     <th key={h} className="whitespace-nowrap"
                       style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 6px', fontWeight: 700, fontSize: 11, color: '#111', textAlign: 'center' }}>
@@ -395,15 +444,29 @@ export function Grouping() {
                 {renderRows.map(({ r, n, first, span, alt }) => {
                   const td = (extra?: React.CSSProperties): React.CSSProperties =>
                     ({ border: '1px solid #000', padding: '3px 6px', background: alt ? '#fff3d6' : '#fff', ...extra })
+                  const on = selVins.has(r.vin)
                   return (
-                    <tr key={r.vin}>
+                    <tr key={r.vin} style={on ? { outline: '2px solid #2563eb55', outlineOffset: -2 } : undefined}>
+                      <td style={td({ textAlign: 'center', padding: '3px 5px' })}>
+                        <input type="checkbox" checked={on} onChange={() => toggleVin(r.vin)} style={{ width: 14, height: 14, cursor: 'pointer' }} />
+                      </td>
                       <td style={td({ textAlign: 'center' })} className="tabular">{n}</td>
                       <td style={td()} className="vin whitespace-nowrap font-semibold">{r.vin}</td>
                       <td style={td({ textAlign: 'center' })} className="whitespace-nowrap">{r.model}</td>
                       <td style={td({ textAlign: 'center' })} className="whitespace-nowrap">{r.color}</td>
                       <td style={td({ maxWidth: 240 })} className="clip" title={r.deliveryLocation}>{r.deliveryLocation}</td>
                       <td style={td({ textAlign: 'center' })} className="tabular whitespace-nowrap">{r.grouping}</td>
-                      {first && <td rowSpan={span} style={td({ textAlign: 'center', fontWeight: 700 })} className="tabular">{span}</td>}
+                      {first && (
+                        <td rowSpan={span} style={td({ textAlign: 'center', fontWeight: 700 })} className="tabular">
+                          <label className="flex flex-col items-center gap-1" style={{ cursor: 'pointer' }}
+                            title="ติ๊กทั้ง Grouping นี้เพื่อพิมพ์ DN / IR เฉพาะกลุ่ม">
+                            <span>{span}</span>
+                            <input type="checkbox"
+                              checked={(sheetRows ?? []).filter((x) => x.grouping === r.grouping).every((x) => selVins.has(x.vin))}
+                              onChange={() => toggleGroup(r.grouping)} style={{ width: 14, height: 14, cursor: 'pointer' }} />
+                          </label>
+                        </td>
+                      )}
                       <td style={td({ textAlign: 'center', color: r.yardLocation ? '#111' : '#d97706', fontWeight: 600 })} className="tabular whitespace-nowrap">
                         {r.yardLocation || 'ไม่พบ'}
                       </td>
@@ -430,7 +493,7 @@ export function Grouping() {
               </tbody>
               <tfoot>
                 <tr>
-                  <td colSpan={6} style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 6px', fontWeight: 700, textAlign: 'center' }}>Total</td>
+                  <td colSpan={7} style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 6px', fontWeight: 700, textAlign: 'center' }}>Total</td>
                   <td style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 6px', fontWeight: 700, textAlign: 'center' }} className="tabular">{sheetMeta.totalUnits}</td>
                   <td style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 6px', fontWeight: 700, textAlign: 'center' }}>Cars.</td>
                   <td colSpan={3} style={{ background: '#ffff00', border: '1px solid #000' }} />
@@ -444,16 +507,19 @@ export function Grouping() {
 
       {/* delivery runs already created — persists across visits (the imported
           table above is session-only, but the QUEUES live in the store/cloud),
-          with add / remove VIN and cancel-run controls */}
-      <SeqQueueManager />
+          with add / remove VIN and cancel-run controls. Clicking a run loads
+          ITS grouping into the sheet above (prints/exports follow). */}
+      <SeqQueueManager viewingId={usingQueue ? queueSheet!.id : null}
+        onView={(id) => { setViewQueueId(id); window.scrollTo({ top: 0, behavior: 'smooth' }) }} />
     </div>
   )
 }
 
 /** Manage the site's Grouping-to-Dealer runs: expand to the car list, remove a
  *  car (also clears its Grouping cell so the run reconciler agrees), add VINs,
- *  or cancel the whole run. */
-function SeqQueueManager() {
+ *  or cancel the whole run. Clicking a run also shows it in the sheet above
+ *  (onView), so DN / IR / Excel work off any past plan. */
+function SeqQueueManager({ viewingId, onView }: { viewingId: string | null; onView: (id: string) => void }) {
   const currentSite = useYard((s) => s.currentSite)
   const toast = useYard((s) => s.toast)
   const units = useUnits()
@@ -497,10 +563,14 @@ function SeqQueueManager() {
         const total = q.items.length
         const done = q.items.filter((i) => i.done || i.gatedOut).length
         const isOpen = openId === q.id
+        const viewing = viewingId === q.id
         return (
-          <div key={q.id} className="panel overflow-hidden">
+          <div key={q.id} className="panel overflow-hidden"
+            style={viewing ? { border: '1.5px solid var(--brand)', boxShadow: '0 0 0 3px var(--brand-soft,#eef4ff)' } : undefined}>
             <div className="w-full px-4 py-3 flex items-center gap-3">
-              <button className="flex items-center gap-3 flex-1 min-w-0 text-left" onClick={() => setOpenId(isOpen ? null : q.id)}>
+              {/* click = show THIS run's grouping in the sheet above + expand */}
+              <button className="flex items-center gap-3 flex-1 min-w-0 text-left"
+                onClick={() => { onView(q.id); setOpenId(isOpen ? null : q.id) }}>
                 <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: 'var(--brand-soft,#eef4ff)', color: 'var(--brand)' }}>
                   <ListChecks size={17} />
                 </div>
@@ -508,6 +578,7 @@ function SeqQueueManager() {
                   <div className="font-bold text-[13px] clip">{q.name}</div>
                   <div className="text-[11.5px] mt-0.5" style={{ color: 'var(--muted)' }}>
                     <b style={{ color: 'var(--text)' }}>{done}/{total}</b> คัน · เหลือ <b style={{ color: '#d97706' }}>{total - done}</b>
+                    {viewing && <b className="ml-1.5" style={{ color: 'var(--brand)' }}>· กำลังแสดงในใบด้านบน</b>}
                   </div>
                 </div>
               </button>
