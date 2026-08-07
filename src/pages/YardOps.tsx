@@ -3322,6 +3322,11 @@ function RelocationView() {
   const [vin, setVin] = useState<string | null>(null)
   const [fLoc, setFLoc] = useState('')
   const [saved, setSaved] = useState(false)
+  // ── ยิงตามแถว: pick a lane once (e.g. A10), then scan car after car — each
+  // one lands on the next free space down that lane automatically ──
+  const [mode, setMode] = useState<'one' | 'lane'>('one')
+  const [laneStr, setLaneStr] = useState('')
+  const [laneAdded, setLaneAdded] = useState<{ vin: string; code: string }[]>([])
 
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
 
@@ -3402,6 +3407,67 @@ function RelocationView() {
   const codeOf = (b: string, col: number, depth: number) =>
     `${blockCode(b)}${String(col).padStart(2, '0')}${String(depth).padStart(2, '0')}`
 
+  // ── ยิงตามแถว derived state ──
+  const laneParsed = parseLane(laneStr.trim())
+  const laneBlk = useMemo(
+    () => (laneParsed ? resolveBlockByName(laneParsed.block, blocks) : null),
+    [laneParsed?.block, blocks], // eslint-disable-line react-hooks/exhaustive-deps
+  )
+  const laneBlockId = laneParsed ? (laneBlk ? blockTag(laneBlk) : blockKeyOfTag(laneParsed.block)) : ''
+  const laneSlot = laneParsed?.row ?? 0
+  const laneSlotOk = laneSlot >= 1 && (!laneBlk || laneSlot <= laneBlk.cols)
+  const laneBlockOk = !!laneBlockId && (blocks.length === 0 || !!laneBlk)
+  const laneReady = laneBlockOk && laneSlotOk
+  // live cars down this lane, depth order — recomputes after every placement
+  const laneCars = useMemo(() => {
+    if (!laneReady) return []
+    return siteUnits
+      .filter(u => u.block && u.slot === laneSlot && blockKeyOfTag(u.block) === laneBlockId)
+      .sort((a, b) => (a.row ?? 0) - (b.row ?? 0))
+  }, [laneReady, laneBlockId, laneSlot, siteUnits])
+  const laneDepthMax = laneBlk?.rows ?? 8
+  const laneNextRow = useMemo(() => {
+    if (!laneReady) return null
+    const taken = new Set(laneCars.map(u => u.row))
+    for (let r = 1; r <= laneDepthMax; r++) if (!taken.has(r)) return r
+    return null // lane full
+  }, [laneReady, laneCars, laneDepthMax])
+
+  const onLaneScan = (v: string) => {
+    if (!laneReady) { toast('err', 'ใส่แถวก่อน — Block + เลขช่อง เช่น A10'); return }
+    let r = trackingRows.find(x => x.vin === v)
+    if (!r && v.length <= 8) {
+      const hits = trackingRows.filter(x => x.vin.endsWith(v))
+      if (hits.length === 1) r = hits[0]
+      else if (hits.length > 1) { toast('err', `พบ ${hits.length} คัน — พิมพ์ให้ยาวขึ้น`); return }
+    }
+    if (!r) { toast('err', wrongSite(v) ?? `ไม่พบ VIN: ${v}`); return }
+    if (hasGoneOut(r.cells)) {
+      blockGate2(r.vin, r.cells['Model name'] ?? r.cells['Model'] ?? '', 'รถออกจากลานแล้ว',
+        <>รถคันนี้ <b style={{ color: '#dc2626' }}>Gate-out</b> ไปแล้ว จึงไม่มีตำแหน่งในลานให้ย้าย</>)
+      return
+    }
+    if (!isGatedInStatus(r.cells['Car Status'])) { blockGate(r.vin, r.cells['Model name'] ?? r.cells['Model'] ?? ''); return }
+    const u = siteUnits.find(x => x.vin === r!.vin)
+    const already = laneCars.find(x => x.vin === r!.vin)
+    if (already) { toast('info', `อยู่ในแถวนี้แล้ว — คันที่ ${already.row}`); return }
+    if (laneNextRow === null) { toast('err', `แถว ${laneBlockId}${laneSlot} เต็มแล้ว (${laneDepthMax} คัน)`); return }
+    updateLocations([{
+      vin: r.vin, block: laneBlockId, row: laneNextRow, slot: laneSlot,
+      modelName: r.cells['Model name'] || r.cells['Model'] || undefined,
+      color: r.cells['Color'] || undefined,
+    }])
+    const code = codeOf(laneBlockId, laneSlot, laneNextRow)
+    appendHistory(r.vin, {
+      at: Date.now(), by: currentUser, field: 'Location',
+      from: u?.block && u.row && u.slot ? yardLocFull(u) : '',
+      to: code,
+    })
+    recordRecent('reloc:save', r.vin, `ย้ายไป ${code}`)
+    setLaneAdded(a => [{ vin: r!.vin, code }, ...a])
+    toast('ok', `${code} · ${r.vin.slice(-6)} — คันถัดไปยิงต่อได้เลย`)
+  }
+
   const doSave = () => {
     if (!canSave || !row || nextRow === null) return
     // move the CAR, not the "Location yard" cell — that cell names the yard and
@@ -3427,10 +3493,85 @@ function RelocationView() {
 
   return (
     <div className="space-y-4">
-      <VinInput onScan={onScan} accent="#0ea5e9" />
+      {/* mode: move one car ↔ scan a whole lane (ยิงตามแถว) */}
+      <div className="grid grid-cols-2 gap-2">
+        <button onClick={() => setMode('one')}
+          className="py-2.5 rounded-xl text-[13px] font-bold transition"
+          style={mode === 'one' ? { background: '#0ea5e9', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>
+          ทีละคัน
+        </button>
+        <button onClick={() => setMode('lane')}
+          className="py-2.5 rounded-xl text-[13px] font-bold transition"
+          style={mode === 'lane' ? { background: '#0ea5e9', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>
+          ยิงตามแถว
+        </button>
+      </div>
+
+      {mode === 'lane' && (
+        <div className="space-y-4 fade-up">
+          <div className="panel p-4 space-y-2.5">
+            <div className="text-[11px] font-semibold" style={{ color: 'var(--muted)' }}>แถวปลายทาง (Block + เลขช่อง)</div>
+            <input
+              className="input w-full font-bold text-center text-[17px] uppercase tabular"
+              placeholder="A10" autoCapitalize="characters" autoCorrect="off" spellCheck={false}
+              value={laneStr}
+              onChange={e => { setLaneStr(e.target.value.toUpperCase()); setLaneAdded([]) }}
+            />
+            {laneReady ? (
+              <div className="text-[12px] font-semibold flex items-center gap-1.5" style={{ color: '#0284c7' }}>
+                <MapPin size={13} /> Block {laneBlockId} ช่อง {laneSlot} · มีรถ {laneCars.length}/{laneDepthMax} คัน
+                {laneNextRow !== null
+                  ? <span style={{ color: 'var(--muted)', fontWeight: 500 }}>· คันถัดไปลงคันที่ {laneNextRow}</span>
+                  : <span style={{ color: '#dc2626' }}>· แถวเต็มแล้ว</span>}
+              </div>
+            ) : laneStr.trim() ? (
+              <div className="text-[12px] font-semibold flex items-center gap-1.5" style={{ color: '#dc2626' }}>
+                <AlertTriangle size={13} />
+                {!laneParsed ? 'รูปแบบไม่ถูกต้อง — พิมพ์ Block ตามด้วยเลขช่อง เช่น A10'
+                  : !laneBlockOk ? `ไม่มี Block ${laneParsed.block} ในผังลานนี้`
+                  : laneBlk ? `Block ${blockTag(laneBlk)} มีช่อง 1–${laneBlk.cols}` : 'เลขช่องไม่ถูกต้อง'}
+              </div>
+            ) : (
+              <div className="text-[11px]" style={{ color: 'var(--faint)' }}>
+                ใส่แถวครั้งเดียว แล้วสแกน/พิมพ์วินทีละคันจนครบ — รถต่อท้ายคันที่มีอยู่ในแถวอัตโนมัติ
+              </div>
+            )}
+          </div>
+
+          {laneReady && <VinInput onScan={onLaneScan} accent="#0ea5e9" />}
+
+          {/* live view of the lane, depth order — just-scanned cars highlighted */}
+          {laneReady && (laneCars.length > 0 || laneAdded.length > 0) && (
+            <div className="panel overflow-hidden fade-up">
+              <div className="px-4 py-2.5 border-b hairline text-[12px] font-bold" style={{ background: 'var(--chip)' }}>
+                รถในแถว {laneBlockId}{laneSlot} ({laneCars.length}/{laneDepthMax})
+                {laneAdded.length > 0 && <span className="ml-1.5" style={{ color: '#16a34a' }}>· ยิงรอบนี้ {laneAdded.length} คัน</span>}
+              </div>
+              <div className="divide-y max-h-[45vh] overflow-y-auto" style={{ borderColor: 'var(--line)' }}>
+                {laneCars.map(u => {
+                  const fresh = laneAdded.some(a => a.vin === u.vin)
+                  return (
+                    <div key={u.vin} className="px-4 py-2 flex items-center gap-3"
+                      style={fresh ? { background: 'rgba(22,163,74,0.07)' } : undefined}>
+                      <span className="tabular font-bold text-[13px] shrink-0" style={{ color: '#0284c7', width: 30 }}>{u.row}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="vin text-[12.5px] font-bold clip">{u.vin}</div>
+                        <div className="text-[11px]" style={{ color: 'var(--muted)' }}>{u.modelName || '—'}</div>
+                      </div>
+                      {fresh && <CheckCircle2 size={15} className="shrink-0" style={{ color: '#16a34a' }} />}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {mode === 'one' && <VinInput onScan={onScan} accent="#0ea5e9" />}
       {gateModal}
-      {!row && <RecentPanel station="reloc" accent="#0ea5e9" onPick={onScan} />}
-      {row && (
+      {mode === 'one' && !row && <RecentPanel station="reloc" accent="#0ea5e9" onPick={onScan} />}
+      {mode === 'one' && row && (
         <div className="panel p-4 space-y-4 fade-up">
           <div className="flex items-center gap-2">
             <span className="vin text-[13.5px] font-bold">{row.vin}</span>
