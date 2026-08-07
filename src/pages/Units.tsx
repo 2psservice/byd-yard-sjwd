@@ -23,6 +23,7 @@ import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirs
 import { resolvePart, resolveDefect, MASTER_PARTS, MASTER_DEFECTS } from '../lib/masterDefect'
 import { cx, PhotoLightbox } from '../components/ui'
 import { useQueues, queueTypeOf } from '../store/useOps'
+import { useUnitsView } from '../store/useUnitsView'
 import { buildWorkRows, buildEventLog, readingsHist as libReadingsHist, histOf, fmtHistAt, filledDates, PDI_DATE_KEYS, PM_DATE_KEYS } from '../lib/carHistory'
 
 const DMG_SRC: Record<string, string> = { walkaround: 'Walk-around', pdi: 'PDI', mechanic: 'ช่าง', update: 'Update', yardDefect: 'Defect-Yard', factoryDefect: 'Defect-Factory', whaleDefect: 'Defect-Whale', manual: 'เพิ่มเอง' }
@@ -193,13 +194,26 @@ export function Units() {
   const allUnits = useYard((s) => s.units)
   const locOf = (r: TrackRow) => yardLocFull(allUnits[r.vin])
 
-  const [tab, setTab] = useState<Tab>('units')
-  const [q, setQ] = useState('')
-  const [fGroup, setFGroup] = useState('')
+  // the page's working state lives in a PERSISTED store: switching sidebar
+  // pages (this component unmounts), closing the app, or the next-day
+  // auto-logout all bring the operator back to the same tab + filters
+  const tab = useUnitsView((s) => s.tab)
+  const q = useUnitsView((s) => s.q)
+  const fGroup = useUnitsView((s) => s.fGroup)
   // generic per-column filters: column key → selected value ('ALL'/'' = off)
-  const [colFilters, setColFilters] = useState<Record<string, string>>({})
-  const setColFilter = (key: string, v: string) => setColFilters((m) => ({ ...m, [key]: v }))
-  const [filtersOpen, setFiltersOpen] = useState(true)
+  const colFilters = useUnitsView((s) => s.colFilters)
+  const filtersOpen = useUnitsView((s) => s.filtersOpen)
+  const sortKey = useUnitsView((s) => s.sortKey)
+  // "Last update" sorts NEWEST-FIRST by default (sortDir -1): editing a cell
+  // bumps the row's updatedAt, and with ascending order the edited row silently
+  // teleported to the far END of the list. Descending pops it to the top.
+  const sortDir = useUnitsView((s) => s.sortDir)
+  const patchView = useUnitsView((s) => s.patch)
+  const setTab = (t: Tab) => patchView({ tab: t })
+  const setQ = (v: string) => patchView({ q: v })
+  const setFGroup = (v: string) => patchView({ fGroup: v })
+  const setColFilter = (key: string, v: string) =>
+    patchView({ colFilters: { ...useUnitsView.getState().colFilters, [key]: v } })
   const filterCols = useTracking((s) => s.filterCols)
   const setFilterCols = useTracking((s) => s.setFilterCols)
   const [filterMgr, setFilterMgr] = useState(false)
@@ -207,12 +221,6 @@ export function Units() {
   const visColKeys = useMemo(() => new Set(visCols.map((c) => c.key)), [visCols])
   const colByKey = useMemo(() => new Map(visCols.map((c) => [c.key, c])), [visCols])
   const activeFilterCols = useMemo(() => filterCols.filter((k) => visColKeys.has(k)), [filterCols, visColKeys])
-  const [sortKey, setSortKey] = useState('No')
-  // "Last update" sorts NEWEST-FIRST by default: editing a cell bumps the row's
-  // updatedAt, and with ascending order the edited row silently teleported to
-  // the far END of the list — the user saw "nothing changed" because the row
-  // they edited vanished from view. Descending pops it to the top instead.
-  const [sortDir, setSortDir] = useState<SortDir>(-1)
 
   const [sel, setSel] = useState<Set<string>>(new Set())
   const [colMgr, setColMgr] = useState(false)
@@ -297,8 +305,8 @@ export function Units() {
   }, [rows, searchIndex, q, fGroup, colFilters, activeFilterCols, allUnits, unitPreset, vinFilterSet, sortKey, sortDir])
 
   const toggleSort = (key: string) => {
-    if (sortKey === key) setSortDir((d) => (d * -1) as SortDir)
-    else { setSortKey(key); setSortDir(1) }
+    if (sortKey === key) patchView({ sortDir: (sortDir * -1) as SortDir })
+    else patchView({ sortKey: key, sortDir: 1 })
   }
 
   const counts = useMemo(() => {
@@ -310,7 +318,7 @@ export function Units() {
     return { ok, wait }
   }, [rows])
 
-  const clearFilters = () => { setQ(''); setFGroup(''); setColFilters({}); setUnitPreset(null); setUnitVinFilter(null) }
+  const clearFilters = () => { patchView({ q: '', fGroup: '', colFilters: {} }); setUnitPreset(null); setUnitVinFilter(null) }
   const anyFilter = !!q || !!fGroup || !!unitPreset || !!unitVinFilter
     || activeFilterCols.some((k) => colFilters[k] && colFilters[k] !== 'ALL')
 
@@ -363,7 +371,7 @@ export function Units() {
             <span className="mx-1">·</span><b style={{ color: 'var(--st-pending)' }}>{counts.wait.toLocaleString()}</b> Waiting
             <span className="mx-1">·</span><b style={{ color: 'var(--brand)' }}>{filtered.length.toLocaleString()}</b> shown
           </div>
-          <button className={cx('btn py-1.5', filtersOpen && 'btn-blue')} onClick={() => setFiltersOpen((v) => !v)}>
+          <button className={cx('btn py-1.5', filtersOpen && 'btn-blue')} onClick={() => patchView({ filtersOpen: !filtersOpen })}>
             <Filter size={14} /> ตัวกรอง
           </button>
           <button className="btn py-1.5" onClick={doExport}><Download size={14} /> CSV</button>
@@ -955,9 +963,14 @@ function GroupingView({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort
   const grpSites = useYard((s) => s.sites)
   const grpSite = useYard((s) => s.currentSite)
   const siteName = grpSites.find((x) => x.id === grpSite)?.name ?? ''
-  const [search, setSearch] = useState('')
-  const [active, setActive] = useState<string | null>(null)
-  const [picked, setPicked] = useState<Set<string>>(new Set())
+  // search / open group / ticked groups survive leaving the page (persisted view store)
+  const search = useUnitsView((s) => s.grpSearch)
+  const active = useUnitsView((s) => s.grpActive)
+  const pickedArr = useUnitsView((s) => s.grpPicked)
+  const patchView = useUnitsView((s) => s.patch)
+  const setSearch = (v: string) => patchView({ grpSearch: v })
+  const setActive = (g: string | null) => patchView({ grpActive: g })
+  const picked = useMemo(() => new Set(pickedArr), [pickedArr])
 
   const groups = useMemo(() => {
     const m = new Map<string, TrackRow[]>()
@@ -980,17 +993,17 @@ function GroupingView({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort
   // ── ticked groups: print several groupings in one go. Resolved against every
   //    group (not the filtered list) so a tick survives changing the search. ──
   const pickedGroups = useMemo(() => groups.filter(([g]) => picked.has(g)), [groups, picked])
-  const togglePick = (g: string) => setPicked((prev) => {
-    const n = new Set(prev)
+  const togglePick = (g: string) => {
+    const n = new Set(picked)
     n.has(g) ? n.delete(g) : n.add(g)
-    return n
-  })
+    patchView({ grpPicked: [...n] })
+  }
   const shownFilteredPicked = filteredGroups.length > 0 && filteredGroups.every(([g]) => picked.has(g))
-  const toggleAllFiltered = () => setPicked((prev) => {
-    const n = new Set(prev)
+  const toggleAllFiltered = () => {
+    const n = new Set(picked)
     filteredGroups.forEach(([g]) => (shownFilteredPicked ? n.delete(g) : n.add(g)))
-    return n
-  })
+    patchView({ grpPicked: [...n] })
+  }
 
   // the grid (and printing) shows the ticked groups, or the open one when none is ticked
   const shownRows = useMemo(
@@ -1030,7 +1043,7 @@ function GroupingView({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort
               style={{ background: 'var(--brand-soft)', color: 'var(--brand)' }}>
               <CheckSquare size={12} />
               <b className="tabular">{picked.size}</b> กลุ่มที่ติ๊ก · <b className="tabular">{pickedGroups.reduce((n, [, l]) => n + l.length, 0)}</b> คัน
-              <button className="btn btn-ghost ml-auto px-1.5 py-0.5 text-[11px]" onClick={() => setPicked(new Set())}>ล้าง</button>
+              <button className="btn btn-ghost ml-auto px-1.5 py-0.5 text-[11px]" onClick={() => patchView({ grpPicked: [] })}>ล้าง</button>
             </div>
           )}
         </div>
@@ -1094,7 +1107,9 @@ function GroupingView({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort
 
 // ============================ Units Mylist (paste VINs) ============================
 function MylistView({ allRows, visCols, sel, setSel, sortKey, sortDir, toggleSort, optionsFor }: Omit<GridProps, 'rows'> & { allRows: TrackRow[] }) {
-  const [text, setText] = useState('')
+  // the pasted VIN list survives leaving the page (persisted view store)
+  const text = useUnitsView((s) => s.mylistText)
+  const setText = (v: string) => useUnitsView.getState().patch({ mylistText: v })
   const units = useYard((s) => s.units)
   const sites = useYard((s) => s.sites)
   const currentSite = useYard((s) => s.currentSite)
