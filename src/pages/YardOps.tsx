@@ -3550,13 +3550,30 @@ function RelocationView() {
               <div className="divide-y max-h-[45vh] overflow-y-auto" style={{ borderColor: 'var(--line)' }}>
                 {laneCars.map(u => {
                   const fresh = laneAdded.some(a => a.vin === u.vin)
+                  const tr = trackingRows.find(x => x.vin === u.vin)
+                  const color = u.color || tr?.cells['Color'] || '—'
+                  // who recorded this car's LAST move and when — the same trail
+                  // the single-car mode's ประวัติการย้าย shows
+                  const lastMove = [...(tr?.history ?? [])].filter(e => e.field === 'Location' || e.field === LOCATION_KEY).pop()
                   return (
                     <div key={u.vin} className="px-4 py-2 flex items-center gap-3"
                       style={fresh ? { background: 'rgba(22,163,74,0.07)' } : undefined}>
                       <span className="tabular font-bold text-[13px] shrink-0" style={{ color: '#0284c7', width: 30 }}>{u.row}</span>
                       <div className="min-w-0 flex-1">
                         <div className="vin text-[12.5px] font-bold clip">{u.vin}</div>
-                        <div className="text-[11px]" style={{ color: 'var(--muted)' }}>{u.modelName || '—'}</div>
+                        <div className="text-[11px] flex flex-wrap gap-x-1.5" style={{ color: 'var(--muted)' }}>
+                          <span>{u.modelName || '—'}</span><span>· {color}</span>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        {lastMove ? (
+                          <div className="text-[10.5px] leading-tight" style={{ color: 'var(--muted)' }}>
+                            <div className="font-semibold" style={{ color: fresh ? '#16a34a' : 'var(--text)' }}>{lastMove.by || '—'}</div>
+                            <div className="tabular">{fmtCheckedAt(lastMove.at)}</div>
+                          </div>
+                        ) : (
+                          <span className="text-[10.5px]" style={{ color: 'var(--faint)' }}>—</span>
+                        )}
                       </div>
                       {fresh && <CheckCircle2 size={15} className="shrink-0" style={{ color: '#16a34a' }} />}
                     </div>
