@@ -1369,7 +1369,7 @@ function WalkView() {
                     <ClipboardList size={17} />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="font-bold text-[12.5px] clip">{q.name}</div>
+                    <div className="font-bold text-[12.5px]" style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{q.name}</div>
                     <div className="text-[11px] mt-0.5 flex flex-wrap gap-x-1.5" style={{ color: 'var(--muted)' }}>
                       <span><b style={{ color: 'var(--text)' }}>{done}/{total}</b> คัน</span>
                       <span>· เหลือ <b style={{ color: total - done > 0 ? '#d97706' : '#16a34a' }}>{total - done}</b></span>
@@ -1828,7 +1828,7 @@ function AllQueuesBrowser({ queues, units, trackingRows, onPick }: {
                 <ClipboardList size={17} />
               </div>
               <div className="min-w-0 flex-1">
-                <div className="font-bold text-[12.5px] clip">{q.name}</div>
+                <div className="font-bold text-[12.5px]" style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{q.name}</div>
                 <div className="text-[11px] mt-0.5 flex items-center gap-1.5 flex-wrap" style={{ color: 'var(--muted)' }}>
                   <span className="badge text-[9.5px] font-bold" style={{ background: 'rgba(22,163,74,0.1)', color: 'var(--st-yard)' }}>{queueTypeOf(q)}</span>
                   {total === 0
@@ -2675,7 +2675,7 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
                     <ClipboardList size={17} />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="font-bold text-[12.5px] clip">{q.name}</div>
+                    <div className="font-bold text-[12.5px]" style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{q.name}</div>
                     <div className="text-[11px] mt-0.5 flex items-center gap-1.5 flex-wrap" style={{ color: 'var(--muted)' }}>
                       <span className="badge text-[9.5px] font-bold" style={{ background: `${accent}1a`, color: accent }}>{queueTypeOf(q)}</span>
                       {total === 0
