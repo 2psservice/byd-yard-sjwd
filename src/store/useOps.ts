@@ -595,21 +595,36 @@ function reconcileGateOuts() {
       // instead of the total shrinking. A car with no tracking row at all is left
       // alone — there is nothing to read its grouping from.
       //
-      // CRITICAL freshness guard: only a row updated AFTER the item joined the
-      // run may vote it out. Every device runs this reconciler, and one whose
-      // tracking rows hadn't synced today's import yet saw "no grouping" on all
-      // 51 fresh cars, emptied the queue, and pushed that ruin to the cloud —
-      // the run arrived at the gate as "0/0 คัน". A stale row is silence, not a
-      // removal order.
+      // CRITICAL removal rules — every device runs this reconciler, so removal
+      // must key on EXPLICIT evidence that travels with the row, never on the
+      // absence of data. A device whose rows were stale (or whose grouping cell
+      // was silently reverted by another device's whole-row write) read "no
+      // grouping" on every fresh car, emptied the run, and pushed 0/0 to the
+      // cloud — twice. A car leaves the run only when:
+      //  (a) its row, updated after the car joined, carries a DIFFERENT real
+      //      grouping (re-import moved it to another run), or
+      //  (b) the row's own edit history records the number being cleared /
+      //      replaced with an เศษ-Mix note AFTER the car joined — the log entry
+      //      is written by the actual edit and syncs with the row, so a machine
+      //      that merely lacks data can never fake it.
+      const clearedInHistory = (r: (typeof rows)[string], after: number) =>
+        (r.history ?? []).some((h) =>
+          (h.field === GROUPING_KEY || h.field === 'Grouping') &&
+          h.at > after && !groupOf({ [GROUPING_KEY]: h.to ?? '' }))
       const kept = items.filter((i) => {
         if (i.gatedOut || i.done) return true
         const r = rows[i.vin]
         if (!r) return true
-        if ((r.updatedAt ?? 0) <= (i.addedAt ?? 0)) return true // row predates the run — stale, keep
         const g = group.get(i.vin)
-        return !!g && runGroups.has(g)
+        if (g && runGroups.has(g)) return true // still carries one of this run's codes
+        if (g && (r.updatedAt ?? 0) > (i.addedAt ?? 0)) return false // moved to another run
+        return !clearedInHistory(r, i.addedAt ?? 0)
       })
-      if (kept.length !== items.length) { changed = true; items = kept }
+      // circuit breaker: no single reconciliation may wipe a run to zero — a
+      // whole Note losing every car at once is corruption, not planning
+      if (kept.length !== items.length && !(kept.length === 0 && items.length > 1)) {
+        changed = true; items = kept
+      }
       // IN — a car newly stamped with one of this run's grouping codes joins it,
       // inheriting that group's loading lane + dealer. Cars that already left the
       // yard are not pulled back in.
