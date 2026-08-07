@@ -2270,7 +2270,14 @@ function ViewDefaultButtons() {
   const toast = useYard((s) => s.toast)
   const saveViewDefault = useTracking((s) => s.saveViewDefault)
   const resetToViewDefault = useTracking((s) => s.resetToViewDefault)
+  const saveMyView = useTracking((s) => s.saveMyView)
   const [busy, setBusy] = useState(false)
+  const saveMine = async () => {
+    setBusy(true)
+    try { await saveMyView(); toast('ok', 'บันทึกการปรับแต่งแล้ว — รีเฟรช/เปิดเครื่องไหนก็กลับมาเหมือนเดิม') }
+    catch { toast('err', 'บันทึกไม่สำเร็จ — ตรวจสอบการเชื่อมต่อแล้วลองใหม่') }
+    setBusy(false)
+  }
   const save = async () => {
     if (!window.confirm('ตั้งลำดับคอลัมน์ + ช่องกรองปัจจุบัน เป็นค่าเริ่มต้นของทุกคน?\n\nทุก user และทุก yard จะได้ลำดับนี้อัตโนมัติ ไม่ต้องดาวน์โหลดหรือกดโหลดเอง\n(เครื่องที่เปิดอยู่เห็นทันที · ที่เหลือเห็นตอนเข้าใช้งานครั้งถัดไป) — แล้วแต่ละคนปรับแต่งของตัวเองได้ภายหลัง')) return
     setBusy(true)
@@ -2286,6 +2293,10 @@ function ViewDefaultButtons() {
   }
   return (
     <div className="p-2 border-t hairline shrink-0 space-y-1">
+      <button className="btn btn-primary w-full justify-center text-[12.5px] py-1.5" disabled={busy} onClick={saveMine}
+        title="บันทึกคอลัมน์+ช่องกรองของฉันขึ้น cloud — รีเฟรชหรือเปิดเครื่องอื่นก็กลับมาเหมือนเดิม">
+        <Check size={13} /> บันทึก
+      </button>
       {isAdmin && (
         <button className="btn btn-ghost w-full justify-center text-[12px] py-1.5" disabled={busy} onClick={save} title="ตั้งคอลัมน์+ช่องกรองปัจจุบันเป็นค่าเริ่มต้นของทุกคน — ส่งให้อัตโนมัติ ไม่ต้องดาวน์โหลด">
           <Check size={13} /> ตั้งเป็นค่าเริ่มต้นของทุกคน

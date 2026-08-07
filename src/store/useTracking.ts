@@ -72,6 +72,8 @@ interface TrackingState {
   seedViewDefault: () => Promise<void>     // one-time: pull the shared default onto a fresh device
   saveViewDefault: () => Promise<void>     // admin: publish current columns + filters as the shared default
   resetToViewDefault: () => Promise<boolean> // pull the shared default on demand (overrides local)
+  saveMyView: () => Promise<void>          // บันทึก: save THIS USER's columns + filters to the cloud
+  loadMyView: () => Promise<void>          // login: restore the user's saved view (newer than the shared default wins)
 }
 
 // merge live select-options discovered during import into the column defs
@@ -650,6 +652,33 @@ export const useTracking = create<TrackingState>()(
           viewDefaultVersion: cfg.updatedAt ?? get().viewDefaultVersion ?? 0,
         })
         return true
+      },
+
+      // ── per-user saved view (the บันทึก button) ────────────────────────────
+      // localStorage persistence dies SILENTLY when the device's quota is full
+      // (this yard's data is big enough to hit it), so a refresh could lose the
+      // customization. The explicit Save writes the view to the CLOUD keyed by
+      // user name; every login restores it — on any device.
+      saveMyView: async () => {
+        const user = useYard.getState().currentUser?.trim()
+        if (!user) throw new Error('no user')
+        const columns = get().columns.map(({ options, ...c }) => c) as Column[]
+        await db.saveAppConfig(`${VIEW_DEFAULT_KEY}_u_${user}`, {
+          columns, filterCols: get().filterCols, updatedAt: Date.now(),
+        })
+      },
+      loadMyView: async () => {
+        const user = useYard.getState().currentUser?.trim()
+        if (!user) return
+        const cfg = await db.fetchAppConfig<ViewDefault>(`${VIEW_DEFAULT_KEY}_u_${user}`).catch(() => null)
+        if (!cfg || !Array.isArray(cfg.columns)) return
+        // the personal save wins only when NEWER than the shared default this
+        // device adopted — a fresher admin publish takes precedence
+        if ((cfg.updatedAt ?? 0) <= (get().viewDefaultVersion ?? 0)) return
+        set({
+          columns: reconcileColumns(cfg.columns),
+          filterCols: Array.isArray(cfg.filterCols) ? cfg.filterCols.slice(0, MAX_FILTERS) : get().filterCols,
+        })
       },
     }),
     {
