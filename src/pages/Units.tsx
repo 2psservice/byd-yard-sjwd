@@ -15,7 +15,7 @@ import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, LOCATION_KEY, MAX_FIL
 import { yardLocFull } from '../lib/groupingImport'
 import { CAR_STATUS_META, deriveCarStatus, IN_YARD_STATUSES, PARKED_STATUSES, isWaitingRepair, finalColor, vinOfStatusColor, taxStatusColor } from '../lib/carStatus'
 import { rowsToCsv, type TrackRow, type RowEvent } from '../lib/excelTracking'
-import { printFindList, exportFindListXlsx } from '../lib/groupingPrint'
+import { printFindList } from '../lib/groupingPrint'
 import { matchVins, toFindListRows } from '../lib/findCar'
 import { rowInSite } from '../lib/siteScope'
 import { zoneLabel } from '../components/CarDiagramMultiView'
@@ -1106,6 +1106,22 @@ function GroupingView({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort
 }
 
 // ============================ Units Mylist (paste VINs) ============================
+// Mylist CSV export: the master Co-Inspection file's column order, with the
+// exact header spellings the sheet uses (double spaces and all) — so the
+// exported file drops straight into the same workflow as the source file.
+const CO_INSPECT_COLS: string[] = [
+  'Match Tax/Shuttle', 'Vin', 'Model name', 'Front Motor no.', 'Rear Motor no.', 'Engine No.',
+  'Model Code', 'Model', 'Color', 'battery', 'company', 'Status', 'PDI',
+  ...Array.from({ length: 8 }, (_, i) => `RE PDI  Date #${i + 1}`),
+  'OK date', 'PIC (PDI)', 'Vin Of Status', 'Gate In (Rayong yard)', 'Final check date', 'Final Status',
+  'Location yard', 'Status Tax', 'Stock of Status', 'Gate Out time stamp', 'Grouping  Number',
+  'Allocation Date', 'Dealer Code', 'Dealer Location', 'Remark', 'Tailer Company', 'storage Yard',
+  'Move from  1', 'Transfer 1', 'Move from  2', 'Transfer 2', 'Move from  3', 'Transfer 3',
+  'Move from  4', 'Transfer 4', 'Factory-Installed', 'Accessories', 'Aging PM',
+  ...Array.from({ length: 15 }, (_, i) => `PM${i + 1}`),
+  'หมายเหตุ',
+]
+
 function MylistView({ allRows, visCols, sel, setSel, sortKey, sortDir, toggleSort, optionsFor }: Omit<GridProps, 'rows'> & { allRows: TrackRow[] }) {
   // the pasted VIN list survives leaving the page (persisted view store)
   const text = useUnitsView((s) => s.mylistText)
@@ -1125,9 +1141,26 @@ function MylistView({ allRows, visCols, sel, setSel, sortKey, sortDir, toggleSor
 
   const today = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' })
   const doPdf = () => { if (findRows.length) printFindList(findRows, today) }
-  const doXlsx = async () => {
-    if (!findRows.length) return
-    try { await exportFindListXlsx(findRows, today) } catch (e) { console.error('[findlist] xlsx', e); toast('err', 'ออกไฟล์ Excel ไม่สำเร็จ') }
+  // Excel-openable CSV in the Co-Inspection file's exact column order — the
+  // picked cars drop straight back into the master-file workflow
+  const doCsv = () => {
+    if (!found.length) return
+    try {
+      const esc = (s: string) => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s)
+      const header = ['No', ...CO_INSPECT_COLS].map(esc).join(',')
+      const lines = found.map((r, i) =>
+        [String(i + 1), ...CO_INSPECT_COLS.map((k) =>
+          k === 'Aging PM' ? (r.cells[k] || fmtAgingPm(r.cells)) : (r.cells[k] ?? ''))]
+          .map(esc).join(','))
+      // BOM so Excel opens the Thai text as UTF-8
+      const csv = '\ufeff' + [header, ...lines].join('\r\n')
+      const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `SJWD-Mylist-${found.length}คัน-${new Date().toISOString().slice(0, 10)}.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) { console.error('[mylist] csv', e); toast('err', 'ออกไฟล์ CSV ไม่สำเร็จ') }
   }
 
   return (
@@ -1141,7 +1174,10 @@ function MylistView({ allRows, visCols, sel, setSel, sortKey, sortDir, toggleSor
           <span style={{ color: 'var(--st-yard)' }}>พบ <b className="tabular">{found.length}</b> คัน</span>
           {notFound.length > 0 && <span style={{ color: 'var(--st-damage)' }}>ไม่พบ <b className="tabular">{notFound.length}</b></span>}
           <div className="ml-auto flex items-center gap-1.5">
-            <button className="btn btn-ghost py-1" disabled={!found.length} onClick={doXlsx}><Download size={13} /> ใบหารถ (Excel)</button>
+            <button className="btn btn-ghost py-1" disabled={!found.length} onClick={doCsv}
+              title="ดาวน์โหลด CSV เรียงคอลัมน์ตามไฟล์ Co-Inspection (เปิดใน Excel ได้)">
+              <Download size={13} /> Excel (CSV)
+            </button>
             <button className="btn btn-ghost py-1" disabled={!found.length} onClick={doPdf}><Printer size={13} /> ใบหารถ (PDF)</button>
             {text && <button className="btn btn-ghost py-1" onClick={() => setText('')}><X size={13} /> ล้าง</button>}
           </div>
