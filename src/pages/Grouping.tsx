@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Layers, Upload, Printer, MapPin, Loader2, FileSpreadsheet, CheckCircle2, AlertTriangle, ListChecks, X, Save, FileText } from 'lucide-react'
+import { Layers, Upload, Printer, MapPin, Loader2, FileSpreadsheet, CheckCircle2, AlertTriangle, ListChecks, X, Save, FileText, Pencil, CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useYard, useUnits } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
-import { useOps } from '../store/useOps'
+import { useOps, type WorkQueue } from '../store/useOps'
 import { PageHead } from '../components/ui'
 import { parseGroupingWorkbook, siteGroupingConfig, yardLocCode } from '../lib/groupingImport'
 import { printGrouping, printFindCar, exportGroupingXlsx, exportFindCarXlsx, type GroupPrintRow, type GroupPrintMeta } from '../lib/groupingPrint'
@@ -20,6 +20,19 @@ function siteLabel(siteName: string): string {
   if (n.includes('nyb')) return 'NYB2'
   if (n.includes('rayong')) return 'Rayong'
   return siteName
+}
+
+const dayKeyOf = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+/** Which DAY a delivery run belongs to — the "Date 07 August 2026" in its
+ *  name (the plan's own date), falling back to the day it was created. */
+function queueDay(q: WorkQueue): string {
+  const m = /Date\s+(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/i.exec(q.name ?? '')
+  if (m) {
+    const mi = MONTHS.findIndex((x) => x.toLowerCase() === m[2].toLowerCase())
+    if (mi >= 0) return `${m[3]}-${String(mi + 1).padStart(2, '0')}-${m[1].padStart(2, '0')}`
+  }
+  return dayKeyOf(new Date(q.createdAt))
 }
 
 export function Grouping() {
@@ -154,6 +167,20 @@ export function Grouping() {
   // which delivery run the sheet displays: a queue card clicked below wins,
   // else a fresh import this session, else the newest run
   const [viewQueueId, setViewQueueId] = useState<string | null>(null)
+
+  // ── calendar day filter for the delivery-run list (list stays short) ──
+  // days that HAVE runs show red in the picker; default = the latest such day
+  const seqQueuesAll = useMemo(
+    () => queues.filter((q) => q.kind === 'sequence' && (!currentSite || !q.site || q.site === currentSite)),
+    [queues, currentSite])
+  const dayCounts = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const q of seqQueuesAll) { const d = queueDay(q); m.set(d, (m.get(d) ?? 0) + 1) }
+    return m
+  }, [seqQueuesAll])
+  const [selDay, setSelDay] = useState<string | 'all' | null>(null) // null = auto (latest day)
+  const latestDay = useMemo(() => [...dayCounts.keys()].sort().pop() ?? null, [dayCounts])
+  const dayFilter: string | 'all' = selDay ?? latestDay ?? 'all'
 
   // Rebuild the sheet from a delivery run (clicked, or the newest when nothing
   // was uploaded this session) — the page shows the sheet (and its editable
@@ -324,6 +351,7 @@ export function Grouping() {
               style={canPrint && !fromQueue ? { background: '#16a34a', color: '#fff', borderColor: 'transparent' } : undefined}>
               <ListChecks size={15} /> Create Sequence
             </button>
+            <DayPicker days={dayCounts} value={dayFilter} onChange={setSelDay} />
           </div>
         }
       />
@@ -509,8 +537,77 @@ export function Grouping() {
           table above is session-only, but the QUEUES live in the store/cloud),
           with add / remove VIN and cancel-run controls. Clicking a run loads
           ITS grouping into the sheet above (prints/exports follow). */}
-      <SeqQueueManager viewingId={usingQueue ? queueSheet!.id : null}
+      <SeqQueueManager viewingId={usingQueue ? queueSheet!.id : null} dayFilter={dayFilter}
         onView={(id) => { setViewQueueId(id); window.scrollTo({ top: 0, behavior: 'smooth' }) }} />
+    </div>
+  )
+}
+
+/** Calendar button (top-right): days that have delivery runs show RED; picking
+ *  one shows only that day's runs below, so the list never grows unbounded. */
+function DayPicker({ days, value, onChange }: {
+  days: Map<string, number>
+  value: string | 'all'
+  onChange: (v: string | 'all') => void
+}) {
+  const [open, setOpen] = useState(false)
+  const base = value !== 'all' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T00:00:00`) : new Date()
+  const [ym, setYm] = useState({ y: base.getFullYear(), m: base.getMonth() })
+  const first = new Date(ym.y, ym.m, 1)
+  const nDays = new Date(ym.y, ym.m + 1, 0).getDate()
+  const startDow = first.getDay() // 0 = Sunday
+  const todayKey = dayKeyOf(new Date())
+  const label = value === 'all' ? 'ทุกวัน' : value.split('-').reverse().join('/')
+  const cells: (number | null)[] = [...Array(startDow).fill(null), ...Array.from({ length: nDays }, (_, i) => i + 1)]
+  return (
+    <div className="relative">
+      <button className="btn" onClick={() => setOpen((v) => !v)}
+        title="เลือกวันที่ — วันที่มีคิวงานส่งมอบเป็นสีแดง รายการคิวด้านล่างแสดงเฉพาะวันที่เลือก">
+        <CalendarDays size={15} /> {label}
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-[70]" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 mt-1.5 z-[71] panel-solid p-3 fade-up" style={{ width: 252, boxShadow: '0 12px 32px rgba(0,0,0,0.18)' }}>
+            <div className="flex items-center justify-between mb-2">
+              <button className="btn p-1" onClick={() => setYm(({ y, m }) => (m === 0 ? { y: y - 1, m: 11 } : { y, m: m - 1 }))}><ChevronLeft size={14} /></button>
+              <div className="text-[12.5px] font-bold">{MONTHS[ym.m]} {ym.y}</div>
+              <button className="btn p-1" onClick={() => setYm(({ y, m }) => (m === 11 ? { y: y + 1, m: 0 } : { y, m: m + 1 }))}><ChevronRight size={14} /></button>
+            </div>
+            <div className="grid grid-cols-7 gap-1 text-center text-[10.5px] font-bold mb-1" style={{ color: 'var(--muted)' }}>
+              {['อา', 'จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส'].map((d) => <div key={d}>{d}</div>)}
+            </div>
+            <div className="grid grid-cols-7 gap-1">
+              {cells.map((d, i) => {
+                if (d === null) return <div key={`b${i}`} />
+                const key = `${ym.y}-${String(ym.m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+                const has = days.has(key)
+                const sel = value === key
+                return (
+                  <button key={key} onClick={() => { onChange(key); setOpen(false) }}
+                    title={has ? `${days.get(key)} คิวงาน` : undefined}
+                    className="tabular rounded-lg text-[12px] transition"
+                    style={{
+                      height: 30,
+                      background: has ? '#dc2626' : 'transparent',
+                      color: has ? '#fff' : 'var(--text)',
+                      fontWeight: has || sel ? 700 : 400,
+                      outline: sel ? '2px solid var(--brand)' : key === todayKey ? '1.5px dashed var(--line-strong)' : 'none',
+                      outlineOffset: 1,
+                    }}>
+                    {d}
+                  </button>
+                )
+              })}
+            </div>
+            <button className="btn w-full mt-2 py-1.5 text-[12px]"
+              style={value === 'all' ? { background: 'var(--brand)', color: '#fff', borderColor: 'transparent' } : undefined}
+              onClick={() => { onChange('all'); setOpen(false) }}>
+              แสดงทุกวัน ({[...days.values()].reduce((a, b) => a + b, 0)} คิว)
+            </button>
+          </div>
+        </>
+      )}
     </div>
   )
 }
@@ -519,7 +616,11 @@ export function Grouping() {
  *  car (also clears its Grouping cell so the run reconciler agrees), add VINs,
  *  or cancel the whole run. Clicking a run also shows it in the sheet above
  *  (onView), so DN / IR / Excel work off any past plan. */
-function SeqQueueManager({ viewingId, onView }: { viewingId: string | null; onView: (id: string) => void }) {
+function SeqQueueManager({ viewingId, dayFilter, onView }: {
+  viewingId: string | null
+  dayFilter: string | 'all'
+  onView: (id: string) => void
+}) {
   const currentSite = useYard((s) => s.currentSite)
   const toast = useYard((s) => s.toast)
   const units = useUnits()
@@ -528,15 +629,23 @@ function SeqQueueManager({ viewingId, onView }: { viewingId: string | null; onVi
   const queues = useOps((s) => s.queues)
   const { addVins, removeVin, removeQueue } = useOps()
   const [openId, setOpenId] = useState<string | null>(null)
+  // edit mode per card (pencil): cancel-run and add/remove-VIN controls only
+  // show here — no more accidental ยกเลิกคิว taps from the list
+  const [editId, setEditId] = useState<string | null>(null)
   const [addText, setAddText] = useState('')
 
-  const seqQueues = useMemo(
+  const allSeq = useMemo(
     () => queues.filter((q) => q.kind === 'sequence' && (!currentSite || !q.site || q.site === currentSite)),
     [queues, currentSite],
   )
+  // the calendar picks the day; the list shows only that day's runs
+  const seqQueues = useMemo(
+    () => (dayFilter === 'all' ? allSeq : allSeq.filter((q) => queueDay(q) === dayFilter)),
+    [allSeq, dayFilter],
+  )
   const rowByVin = useMemo(() => new Map(trackingRows.map((r) => [r.vin, r])), [trackingRows])
   const unitByVin = useMemo(() => new Map(units.map((u) => [u.vin, u])), [units])
-  if (!seqQueues.length) return null
+  if (!allSeq.length) return null
 
   const doRemove = (qid: string, vin: string) => {
     if (!window.confirm(`เอา ${vin.slice(-8)} ออกจากคิวงานนี้?`)) return
@@ -556,9 +665,19 @@ function SeqQueueManager({ viewingId, onView }: { viewingId: string | null; onVi
 
   return (
     <div className="mt-5 space-y-2.5">
-      <div className="text-[11px] font-bold uppercase tracking-wider" style={{ color: 'var(--muted)' }}>
+      <div className="text-[11px] font-bold uppercase tracking-wider flex items-center gap-2" style={{ color: 'var(--muted)' }}>
         คิวงานส่งมอบ (Grouping to Dealer)
+        {dayFilter !== 'all' && (
+          <span className="badge" style={{ background: 'rgba(220,38,38,0.1)', color: '#dc2626', textTransform: 'none' }}>
+            <CalendarDays size={11} /> {dayFilter.split('-').reverse().join('/')}
+          </span>
+        )}
       </div>
+      {!seqQueues.length && (
+        <div className="panel p-5 text-center text-[12.5px]" style={{ color: 'var(--faint)' }}>
+          ไม่มีคิวงานส่งมอบในวันที่เลือก — กดปุ่มปฏิทินด้านบนเพื่อเลือกวันอื่น (วันสีแดง = มีคิวงาน)
+        </div>
+      )}
       {seqQueues.map((q) => {
         const total = q.items.length
         const done = q.items.filter((i) => i.done || i.gatedOut).length
@@ -582,20 +701,31 @@ function SeqQueueManager({ viewingId, onView }: { viewingId: string | null; onVi
                   </div>
                 </div>
               </button>
-              <button className="btn py-1.5 text-[12px]" style={{ color: '#dc2626', background: 'rgba(220,38,38,0.08)' }}
-                onClick={() => { if (window.confirm(`ยกเลิกคิวงาน "${q.name}" ทั้งใบ?`)) { removeQueue(q.id); toast('ok', 'ยกเลิกคิวงานแล้ว') } }}>
-                ยกเลิกคิว
+              {/* pencil = enter edit mode; cancel-run only lives INSIDE it, so a
+                  stray tap on the list can never kill a whole run */}
+              {editId === q.id && (
+                <button className="btn py-1.5 text-[12px]" style={{ color: '#dc2626', background: 'rgba(220,38,38,0.08)' }}
+                  onClick={() => { if (window.confirm(`ยกเลิกคิวงาน "${q.name}" ทั้งใบ?`)) { removeQueue(q.id); setEditId(null); toast('ok', 'ยกเลิกคิวงานแล้ว') } }}>
+                  ยกเลิกคิว
+                </button>
+              )}
+              <button className="btn p-2" title={editId === q.id ? 'ปิดโหมดแก้ไข' : 'แก้ไขคิว (เพิ่ม/ลบเลขวิน · ยกเลิกคิว)'}
+                style={editId === q.id ? { background: 'var(--brand)', color: '#fff', borderColor: 'transparent' } : { color: 'var(--muted)' }}
+                onClick={() => { const on = editId === q.id; setEditId(on ? null : q.id); if (!on) setOpenId(q.id) }}>
+                <Pencil size={14} />
               </button>
             </div>
             {isOpen && (
               <div className="border-t hairline">
-                {/* add VINs */}
-                <div className="px-4 py-2.5 flex items-center gap-2 border-b hairline" style={{ background: 'var(--chip)' }}>
-                  <input className="input flex-1 text-[12.5px] vin" placeholder="วาง/พิมพ์เลขวินที่จะเพิ่ม (หลายคันคั่นด้วยเว้นวรรค)…"
-                    value={addText} onChange={(e) => setAddText(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && doAdd(q.id)} />
-                  <button className="btn btn-primary py-1.5 text-[12.5px]" onClick={() => doAdd(q.id)}>+ เพิ่ม</button>
-                </div>
+                {/* add VINs — edit mode only */}
+                {editId === q.id && (
+                  <div className="px-4 py-2.5 flex items-center gap-2 border-b hairline" style={{ background: 'var(--chip)' }}>
+                    <input className="input flex-1 text-[12.5px] vin" placeholder="วาง/พิมพ์เลขวินที่จะเพิ่ม (หลายคันคั่นด้วยเว้นวรรค)…"
+                      value={addText} onChange={(e) => setAddText(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && doAdd(q.id)} />
+                    <button className="btn btn-primary py-1.5 text-[12.5px]" onClick={() => doAdd(q.id)}>+ เพิ่ม</button>
+                  </div>
+                )}
                 <div className="divide-y" style={{ borderColor: 'var(--line)' }}>
                   {q.items.map((i) => {
                     const r = rowByVin.get(i.vin)
@@ -613,13 +743,13 @@ function SeqQueueManager({ viewingId, onView }: { viewingId: string | null; onVi
                         <div className="tabular text-[12px] font-bold shrink-0">{yardLocCode(unitByVin.get(i.vin)) || '—'}</div>
                         {gone
                           ? <span className="badge shrink-0" style={{ background: 'rgba(22,163,74,0.12)', color: '#16a34a', fontSize: 10.5 }}>ออกแล้ว</span>
-                          : (
+                          : editId === q.id ? (
                             <button className="btn p-1.5 shrink-0" title="เอาออกจากคิว"
                               style={{ color: '#dc2626', background: 'rgba(220,38,38,0.08)' }}
                               onClick={() => doRemove(q.id, i.vin)}>
                               <X size={13} />
                             </button>
-                          )}
+                          ) : null}
                       </div>
                     )
                   })}
