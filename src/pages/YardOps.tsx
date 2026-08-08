@@ -479,6 +479,17 @@ function RecentPanel({ station, accent, onPick }: { station: string; accent: str
  * so the printed Delivery Note scans exactly like a VIN sticker.
  * `autoFocus` is opt-out: with two fields on one screen only one may grab focus.
  */
+// the worker's preferred scanner zoom, remembered across scans/app restarts —
+// whoever always needs 4× on the windshield sticker sets it once
+const SCAN_ZOOM_KEY = 'sjwd-scan-zoom'
+function savedScanZoom(): number {
+  try {
+    const v = parseFloat(localStorage.getItem(SCAN_ZOOM_KEY) ?? '')
+    return Number.isFinite(v) && v >= 1 ? v : 2
+  } catch { return 2 }
+}
+const rememberScanZoom = (v: number) => { try { localStorage.setItem(SCAN_ZOOM_KEY, String(v)) } catch { /* full */ } }
+
 function VinInput({
   onScan, accent = 'var(--brand)',
   placeholder = 'VIN / 5 ตัวท้าย…',
@@ -509,8 +520,8 @@ function VinInput({
   // that crops the DECODED frame instead (and scales the preview to match), so
   // a tiny windshield QR still fills the decoder's view
   const [digitalZoom, setDigitalZoom] = useState(false)
-  const [dz, setDz] = useState(2)
-  const dzRef = useRef(2)
+  const [dz, setDz] = useState(() => Math.min(3, savedScanZoom()))
+  const dzRef = useRef(dz)
   const opticalRef = useRef(false)
 
   const applyZoom = (z: number) => {
@@ -518,6 +529,7 @@ function VinInput({
     if (!t || !zoomCap) return
     const v = Math.min(zoomCap.max, Math.max(zoomCap.min, z))
     setZoom(v)
+    rememberScanZoom(v) // next scan starts at this zoom
     t.applyConstraints({ advanced: [{ zoom: v } as MediaTrackConstraintSet] }).catch(() => {})
   }
   const toggleTorch = () => {
@@ -546,7 +558,8 @@ function VinInput({
     if (v) v.srcObject = null
     trackRef.current = null
     setZoomCap(null); setZoom(1); setTorchCap(false); setTorchOn(false)
-    setDigitalZoom(false); setDz(2); dzRef.current = 2; opticalRef.current = false
+    const z0 = Math.min(3, savedScanZoom())
+    setDigitalZoom(false); setDz(z0); dzRef.current = z0; opticalRef.current = false
   }
 
   const openCamera = () => { setCamErr(''); setCamOpen(true) }
@@ -579,7 +592,8 @@ function VinInput({
         opticalRef.current = true
         const cap = { min: caps.zoom.min ?? 1, max: caps.zoom.max, step: caps.zoom.step || 0.1 }
         setZoomCap(cap)
-        const z = Math.min(2, cap.max)
+        // start at the zoom the worker used LAST time (remembered), capped
+        const z = Math.min(Math.max(savedScanZoom(), cap.min), cap.max)
         track!.applyConstraints({ advanced: [{ zoom: z } as MediaTrackConstraintSet] })
           .then(() => setZoom(z)).catch(() => setZoom(cap.min))
       } else if (allowDigital) {
@@ -747,7 +761,7 @@ function VinInput({
                   <input
                     type="range" className="flex-1" style={{ accentColor: accent }}
                     min={1} max={3} step={0.1}
-                    value={dz} onChange={e => { const v = Number(e.target.value); setDz(v); dzRef.current = v }}
+                    value={dz} onChange={e => { const v = Number(e.target.value); setDz(v); dzRef.current = v; rememberScanZoom(v) }}
                   />
                   <span className="text-white/70 text-[12px] tabular shrink-0" style={{ width: 36, textAlign: 'right' }}>{dz.toFixed(1)}×</span>
                 </>
