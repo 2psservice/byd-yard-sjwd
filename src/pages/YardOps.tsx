@@ -505,6 +505,13 @@ function VinInput({
   const [zoom, setZoom] = useState(1)
   const [torchCap, setTorchCap] = useState(false)
   const [torchOn, setTorchOn] = useState(false)
+  // digital zoom — iPhones whose Safari can't drive the lens zoom get a slider
+  // that crops the DECODED frame instead (and scales the preview to match), so
+  // a tiny windshield QR still fills the decoder's view
+  const [digitalZoom, setDigitalZoom] = useState(false)
+  const [dz, setDz] = useState(2)
+  const dzRef = useRef(2)
+  const opticalRef = useRef(false)
 
   const applyZoom = (z: number) => {
     const t = trackRef.current
@@ -539,6 +546,7 @@ function VinInput({
     if (v) v.srcObject = null
     trackRef.current = null
     setZoomCap(null); setZoom(1); setTorchCap(false); setTorchOn(false)
+    setDigitalZoom(false); setDz(2); dzRef.current = 2; opticalRef.current = false
   }
 
   const openCamera = () => { setCamErr(''); setCamOpen(true) }
@@ -552,21 +560,30 @@ function VinInput({
     let cancelled = false
 
     // ask for a real capture size: the default 640×480 left a windshield QR
-    // only ~40 px wide, below what any decoder can read
-    const VIDEO: MediaTrackConstraints = { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+    // only ~40 px wide, below what any decoder can read. 2560 gives iPhones
+    // (which clamp to what the sensor pipeline allows) every pixel available.
+    const VIDEO: MediaTrackConstraints = { facingMode: { ideal: 'environment' }, width: { ideal: 2560 }, height: { ideal: 1440 } }
 
     // zoom + torch, where the hardware offers them. A slight starting zoom
     // (2×, capped) puts far more pixels on the small sticker code.
-    const setupTrack = (video: HTMLVideoElement) => {
+    // `allowDigital`: the ZXing path can crop-decode, so when the lens zoom is
+    // NOT drivable (most iPhones on Safari) it falls back to a digital zoom.
+    const setupTrack = (video: HTMLVideoElement, allowDigital: boolean) => {
       const track = (video.srcObject as MediaStream | null)?.getVideoTracks?.()[0] ?? null
       trackRef.current = track
+      // nudge continuous autofocus — ignored where unsupported, but stops some
+      // devices from locking focus at the wrong distance
+      track?.applyConstraints({ advanced: [{ focusMode: 'continuous' } as MediaTrackConstraintSet] }).catch(() => {})
       const caps = (track?.getCapabilities?.() ?? {}) as MediaTrackCapabilities & { zoom?: { min?: number; max?: number; step?: number }; torch?: boolean }
       if (caps.zoom && typeof caps.zoom.max === 'number' && caps.zoom.max > (caps.zoom.min ?? 1)) {
+        opticalRef.current = true
         const cap = { min: caps.zoom.min ?? 1, max: caps.zoom.max, step: caps.zoom.step || 0.1 }
         setZoomCap(cap)
         const z = Math.min(2, cap.max)
         track!.applyConstraints({ advanced: [{ zoom: z } as MediaTrackConstraintSet] })
           .then(() => setZoom(z)).catch(() => setZoom(cap.min))
+      } else if (allowDigital) {
+        setDigitalZoom(true) // slider drives the crop-decode + preview scale
       }
       setTorchCap(!!caps.torch)
     }
@@ -601,12 +618,16 @@ function VinInput({
           } catch { /* detector hiccup — next tick */ }
         }, 120)
         controlsRef.current = { stop: () => clearInterval(iv) }
-        setupTrack(video)
+        setupTrack(video, false) // native detector reads the full frame — no crop zoom
         return true
       } catch { return false } // permission error falls through to ZXing for its message
     }
 
-    // Path 2 — ZXing (iOS Safari + anything without BarcodeDetector)
+    // Path 2 — ZXing (iOS Safari + anything without BarcodeDetector).
+    // Instead of decoding the whole frame (where a windshield QR is a few dozen
+    // pixels), each tick decodes a CENTER CROP of the frame — the aiming box —
+    // which multiplies the code's effective size. Every 3rd tick decodes the
+    // full frame too, so a large/off-center code still hits.
     const startZxing = async () => {
       const [{ BrowserMultiFormatReader }, { DecodeHintType, BarcodeFormat }] = await Promise.all([
         import('@zxing/browser'),
@@ -622,14 +643,33 @@ function VinInput({
       // spend more CPU per frame to catch small / skewed / low-contrast codes —
       // the VIN sticker sits BEHIND the windshield glass, tiny and full of glare
       hints.set(DecodeHintType.TRY_HARDER, true)
-      // the library waits 500 ms between attempts by default — only two tries a
-      // second made every scan feel like it "doesn't stick". Scan ~12×/sec.
-      const reader = new BrowserMultiFormatReader(hints as never, { delayBetweenScanAttempts: 80 })
-      const controls = await reader.decodeFromConstraints({ video: VIDEO }, video,
-        (result) => { if (result) hit(result.getText()) })
-      if (cancelled) { controls.stop(); return }
-      controlsRef.current = controls
-      setupTrack(video)
+      const reader = new BrowserMultiFormatReader(hints as never)
+      const stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO })
+      if (cancelled) { stream.getTracks().forEach(t => t.stop()); return }
+      video.srcObject = stream
+      await video.play().catch(() => {})
+      const canvas = document.createElement('canvas')
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })
+      let tick = 0
+      const iv = setInterval(() => {
+        if (!ctx || video.readyState < 2) return
+        const vw = video.videoWidth, vh = video.videoHeight
+        if (!vw || !vh) return
+        // crop factor: with lens zoom the frame is already magnified → a mild
+        // 1.6× aim-box crop; without it the slider's digital zoom drives it
+        const factor = opticalRef.current ? 1.6 : Math.max(1.6, dzRef.current)
+        const full = ++tick % 3 === 0
+        const cw = full ? vw : Math.round(vw / factor)
+        const ch = full ? vh : Math.round(vh / factor)
+        canvas.width = cw; canvas.height = ch
+        ctx.drawImage(video, (vw - cw) >> 1, (vh - ch) >> 1, cw, ch, 0, 0, cw, ch)
+        try {
+          const res = reader.decodeFromCanvas(canvas)
+          if (res) hit(res.getText())
+        } catch { /* no code in this frame */ }
+      }, 110)
+      controlsRef.current = { stop: () => clearInterval(iv) }
+      setupTrack(video, true)
     }
 
     ;(async () => {
@@ -658,6 +698,7 @@ function VinInput({
             <video
               ref={videoRef}
               className="w-full h-full object-cover"
+              style={digitalZoom && dz > 1 ? { transform: `scale(${dz})` } : undefined}
               playsInline
               muted
               autoPlay
@@ -679,10 +720,11 @@ function VinInput({
               </div>
             )}
           </div>
-          {/* zoom / torch — only when the camera reports the capability */}
-          {(zoomCap || torchCap) && (
+          {/* zoom / torch — lens zoom where the camera drives it, digital
+              (crop-decode) zoom where it doesn't (iPhone Safari) */}
+          {(zoomCap || digitalZoom || torchCap) && (
             <div className="px-5 py-2 flex items-center gap-3 shrink-0" style={{ touchAction: 'pan-x' }}>
-              {zoomCap && (
+              {zoomCap ? (
                 <>
                   <span className="text-white/70 text-[12px] shrink-0">ซูม</span>
                   <input
@@ -691,6 +733,16 @@ function VinInput({
                     value={zoom} onChange={e => applyZoom(Number(e.target.value))}
                   />
                   <span className="text-white/70 text-[12px] tabular shrink-0" style={{ width: 36, textAlign: 'right' }}>{zoom.toFixed(1)}×</span>
+                </>
+              ) : digitalZoom && (
+                <>
+                  <span className="text-white/70 text-[12px] shrink-0">ซูม</span>
+                  <input
+                    type="range" className="flex-1" style={{ accentColor: accent }}
+                    min={1} max={3} step={0.1}
+                    value={dz} onChange={e => { const v = Number(e.target.value); setDz(v); dzRef.current = v }}
+                  />
+                  <span className="text-white/70 text-[12px] tabular shrink-0" style={{ width: 36, textAlign: 'right' }}>{dz.toFixed(1)}×</span>
                 </>
               )}
               {torchCap && (
@@ -703,7 +755,7 @@ function VinInput({
             </div>
           )}
           <div className="px-4 py-3 text-center text-white/60 text-[13px] shrink-0">
-            {camHint}{zoomCap ? ' · เลื่อนซูมถ้าโค้ดเล็ก' : ''}
+            {camHint}{zoomCap || digitalZoom ? ' · เลื่อนซูมถ้าโค้ดเล็ก' : ''}
           </div>
         </div>
       )}
