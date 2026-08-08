@@ -3478,6 +3478,10 @@ function RelocationView() {
   const [laneAdded, setLaneAdded] = useState<{ vin: string; code: string }[]>([])
   const lastSaveGuard = useRef(0)          // double-fire guard: single-car save
   const lastLaneHit = useRef({ v: '', at: 0 }) // double-fire guard: lane scans
+  // scan order of THIS round (oldest first) — the scan sequence IS the lane
+  // order: 1st scan parks as คันที่ 1, 2nd as คันที่ 2, … (ref: scans arrive
+  // faster than state flushes)
+  const laneOrderRef = useRef<string[]>([])
 
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
 
@@ -3619,27 +3623,53 @@ function RelocationView() {
     }
     if (!isGatedInStatus(r.cells['Car Status'])) { blockGate(r.vin, r.cells['Model name'] ?? r.cells['Model'] ?? ''); return }
     const u = siteUnits.find(x => x.vin === r!.vin)
-    const already = L.cars.find(x => x.vin === r!.vin)
-    if (already) { toast('info', `อยู่ในแถวนี้แล้ว — คันที่ ${already.row}`); return }
-    if (L.next === null) { toast('err', `แถว ${L.blockId}${L.slot} เต็มแล้ว (${L.depth} คัน)`); return }
     // the same scan can reach here twice (wedge + debounce racing) before the
     // store re-renders — the second pass would double-place with stale data
     if (lastLaneHit.current.v === r.vin && Date.now() - lastLaneHit.current.at < 1500) return
     lastLaneHit.current = { v: r.vin, at: Date.now() }
-    updateLocations([{
-      vin: r.vin, block: L.blockId, row: L.next, slot: L.slot,
-      modelName: r.cells['Model name'] || r.cells['Model'] || undefined,
-      color: r.cells['Color'] || undefined,
-    }])
-    const code = codeOf(L.blockId, L.slot, L.next)
+
+    // ── the SCAN SEQUENCE is the lane order ─────────────────────────────────
+    // 1st scan parks as คันที่ 1, 2nd as คันที่ 2, … — even a car already in
+    // this lane moves to its scan position; cars in the lane NOT yet scanned
+    // slide to the END (their relative order kept). The worker walks the row
+    // scanning car after car and the system mirrors the physical order.
+    const ord = laneOrderRef.current
+    const atPos = ord.indexOf(r.vin)
+    if (atPos >= 0) { toast('info', `ยิงคันนี้แล้ว — คันที่ ${atPos + 1}`); return }
+    const incumbents = L.cars.filter(x => !ord.includes(x.vin) && x.vin !== r!.vin)
+    if (ord.length + 1 + incumbents.length > L.depth) {
+      toast('err', `แถว ${L.blockId}${L.slot} เต็มแล้ว (${L.depth} คัน)`)
+      return
+    }
+    ord.push(r.vin)
+    const pos = ord.length
+    // rebuild the whole lane: scanned cars at 1..k in scan order, then the
+    // not-yet-scanned cars after them
+    const updates: { vin: string; block: string; row: number; slot: number; modelName?: string; color?: string }[] = []
+    ord.forEach((vin, i) => {
+      const cu = siteUnits.find(x => x.vin === vin)
+      const row = i + 1
+      if (cu && cu.block === L.blockId && cu.slot === L.slot && cu.row === row) return // already right
+      const tr2 = vin === r!.vin ? r : trackingRows.find(x => x.vin === vin)
+      updates.push({ vin, block: L.blockId, row, slot: L.slot,
+        modelName: cu?.modelName || tr2?.cells['Model name'] || tr2?.cells['Model'] || undefined,
+        color: cu?.color || tr2?.cells['Color'] || undefined })
+    })
+    incumbents.forEach((cu, i) => {
+      const row = ord.length + 1 + i
+      if (cu.block === L.blockId && cu.slot === L.slot && cu.row === row) return
+      updates.push({ vin: cu.vin, block: L.blockId, row, slot: L.slot, modelName: cu.modelName, color: cu.color })
+    })
+    if (updates.length) updateLocations(updates)
+    const code = codeOf(L.blockId, L.slot, pos)
     appendHistory(r.vin, {
       at: Date.now(), by: currentUser, field: 'Location',
       from: u?.block && u.row && u.slot ? yardLocFull(u) : '',
       to: code,
     })
     recordRecent('reloc:save', r.vin, `ย้ายไป ${code}`)
-    setLaneAdded(a => [{ vin: r!.vin, code }, ...a])
-    toast('ok', `${code} · ${r.vin.slice(-6)} — คันถัดไปยิงต่อได้เลย`)
+    setLaneAdded(ord.map((vin, i) => ({ vin, code: codeOf(L.blockId, L.slot, i + 1) })))
+    toast('ok', `${code} · คันที่ ${pos} · ${r.vin.slice(-6)} — ยิงคันถัดไปต่อได้เลย`)
   }
 
   const doSave = () => {
@@ -3696,9 +3726,9 @@ function RelocationView() {
               onChange={e => {
                 const v = e.target.value.toUpperCase().replace(/\s+/g, '')
                 setLaneStr(v)
-                // reset the round counter only on a real lane edit — a handheld
+                // reset the scan round only on a real lane edit — a handheld
                 // burst appending a VIN here is NOT a lane change
-                if (v === '' || parseLane(v)) setLaneAdded([])
+                if (v === '' || parseLane(v)) { setLaneAdded([]); laneOrderRef.current = [] }
               }}
             />
             {laneReady ? (
