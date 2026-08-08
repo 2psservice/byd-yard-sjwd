@@ -678,30 +678,52 @@ function VinInput({
     // which multiplies the code's effective size. Every 3rd tick decodes the
     // full frame too, so a large/off-center code still hits.
     const startZxing = async () => {
-      const [{ BrowserMultiFormatReader }, { DecodeHintType, BarcodeFormat }] = await Promise.all([
-        import('@zxing/browser'),
-        import('@zxing/library'),
-      ])
       const video = videoRef.current
       if (!video || cancelled) return
-      const hints = new Map<number, unknown>()
-      hints.set(DecodeHintType.POSSIBLE_FORMATS, [
-        BarcodeFormat.QR_CODE, BarcodeFormat.CODE_128, BarcodeFormat.CODE_39,
-        BarcodeFormat.EAN_13, BarcodeFormat.DATA_MATRIX,
-      ])
-      // spend more CPU per frame to catch small / skewed / low-contrast codes —
-      // the VIN sticker sits BEHIND the windshield glass, tiny and full of glare
-      hints.set(DecodeHintType.TRY_HARDER, true)
-      const reader = new BrowserMultiFormatReader(hints as never)
       const stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO })
       if (cancelled) { stream.getTracks().forEach(t => t.stop()); return }
       video.srcObject = stream
       await video.play().catch(() => {})
+
+      // ── decoder: zxing-wasm (the C++ engine compiled to WebAssembly) — near
+      // Android-native accuracy and speed on tiny / glarey windshield codes.
+      // Falls back to the pure-JS @zxing/library if the wasm fails to load.
+      let wasmRead: ((img: ImageData) => Promise<string | null>) | null = null
+      try {
+        const [{ readBarcodes, prepareZXingModule }, wasmUrlMod] = await Promise.all([
+          import('zxing-wasm/reader'),
+          import('zxing-wasm/reader/zxing_reader.wasm?url'),
+        ])
+        const wasmUrl = (wasmUrlMod as { default: string }).default
+        prepareZXingModule({ overrides: { locateFile: (p: string, prefix: string) => (p.endsWith('.wasm') ? wasmUrl : prefix + p) } })
+        const OPTS = { formats: ['QRCode', 'Code128', 'Code39', 'EAN13', 'DataMatrix'], tryHarder: true, maxNumberOfSymbols: 1 } as const
+        // warm the module now so the first real frame doesn't pay the load
+        await readBarcodes(new ImageData(2, 2), OPTS as never).catch(() => {})
+        wasmRead = async (img) => (await readBarcodes(img, OPTS as never))[0]?.text ?? null
+      } catch (e) { console.warn('[scan] wasm decoder unavailable — JS fallback', e) }
+
+      let jsReader: { decodeFromCanvas: (c: HTMLCanvasElement) => { getText: () => string } } | null = null
+      if (!wasmRead) {
+        const [{ BrowserMultiFormatReader }, { DecodeHintType, BarcodeFormat }] = await Promise.all([
+          import('@zxing/browser'),
+          import('@zxing/library'),
+        ])
+        const hints = new Map<number, unknown>()
+        hints.set(DecodeHintType.POSSIBLE_FORMATS, [
+          BarcodeFormat.QR_CODE, BarcodeFormat.CODE_128, BarcodeFormat.CODE_39,
+          BarcodeFormat.EAN_13, BarcodeFormat.DATA_MATRIX,
+        ])
+        hints.set(DecodeHintType.TRY_HARDER, true)
+        jsReader = new BrowserMultiFormatReader(hints as never)
+      }
+      if (cancelled) { stream.getTracks().forEach(t => t.stop()); return }
+
       const canvas = document.createElement('canvas')
       const ctx = canvas.getContext('2d', { willReadFrequently: true })
       let tick = 0
+      let busy = false
       const iv = setInterval(() => {
-        if (!ctx || video.readyState < 2) return
+        if (busy || !ctx || video.readyState < 2) return
         const vw = video.videoWidth, vh = video.videoHeight
         if (!vw || !vh) return
         // crop factor: with lens zoom the frame is already magnified → a mild
@@ -710,13 +732,23 @@ function VinInput({
         const full = ++tick % 3 === 0
         const cw = full ? vw : Math.round(vw / factor)
         const ch = full ? vh : Math.round(vh / factor)
-        canvas.width = cw; canvas.height = ch
-        ctx.drawImage(video, (vw - cw) >> 1, (vh - ch) >> 1, cw, ch, 0, 0, cw, ch)
-        try {
-          const res = reader.decodeFromCanvas(canvas)
-          if (res) hit(res.getText())
-        } catch { /* no code in this frame */ }
-      }, 110)
+        // cap the decode surface at ~1024 px wide — plenty for the wasm engine,
+        // and each frame decodes in tens of ms instead of hundreds on iPhone
+        const scale = Math.min(1, 1024 / cw)
+        canvas.width = Math.max(2, Math.round(cw * scale))
+        canvas.height = Math.max(2, Math.round(ch * scale))
+        ctx.drawImage(video, (vw - cw) >> 1, (vh - ch) >> 1, cw, ch, 0, 0, canvas.width, canvas.height)
+        busy = true
+        void (async () => {
+          try {
+            let text: string | null = null
+            if (wasmRead) text = await wasmRead(ctx.getImageData(0, 0, canvas.width, canvas.height))
+            else { try { text = jsReader!.decodeFromCanvas(canvas).getText() } catch { /* none */ } }
+            if (text) hit(text)
+          } catch { /* decoder hiccup — next tick */ }
+          finally { busy = false }
+        })()
+      }, 90)
       controlsRef.current = { stop: () => clearInterval(iv) }
       setupTrack(video, true)
     }
