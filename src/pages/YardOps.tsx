@@ -479,6 +479,10 @@ function RecentPanel({ station, accent, onPick }: { station: string; accent: str
  * so the printed Delivery Note scans exactly like a VIN sticker.
  * `autoFocus` is opt-out: with two fields on one screen only one may grab focus.
  */
+// keyboard-wedge dedupe: two VinInputs on one screen both hear the burst —
+// only the first may fire it
+let lastWedgeAt = 0
+
 // the worker's preferred scanner zoom, remembered across scans/app restarts —
 // whoever always needs 4× on the windshield sticker sets it once
 const SCAN_ZOOM_KEY = 'sjwd-scan-zoom'
@@ -546,6 +550,37 @@ function VinInput({
   }
 
   useEffect(() => { if (autoFocus) ref.current?.focus() }, [autoFocus])
+
+  // ── handheld (keyboard-wedge) scanners: the SCAN trigger types the code as a
+  // rapid keystroke burst + Enter. When focus is NOT in any text field, catch
+  // the burst here and feed it straight into this station's search — the VIN
+  // lands without the worker ever tapping the input first.
+  const onScanRef = useRef(onScan)
+  onScanRef.current = onScan
+  useEffect(() => {
+    let buf = ''
+    let last = 0
+    const onKey = (e: KeyboardEvent) => {
+      const el = document.activeElement
+      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) { buf = ''; return } // fields handle their own keys
+      const now = Date.now()
+      if (/^[a-zA-Z0-9]$/.test(e.key)) {
+        if (now - last > 250) buf = '' // human-speed gap → not a scanner burst
+        buf += e.key.toUpperCase()
+        last = now
+      } else if (e.key === 'Enter') {
+        if (buf.length >= 8 && now - last < 600 && now - lastWedgeAt > 400) {
+          lastWedgeAt = now
+          e.preventDefault()
+          const v = buf
+          buf = ''
+          onScanRef.current(v)
+        } else buf = ''
+      }
+    }
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
+  }, [])
 
   // Fully release the camera: stop ZXing's decode loop AND every media track,
   // then detach from the <video> so the OS camera indicator turns off.
@@ -3489,34 +3524,53 @@ function RelocationView() {
   const codeOf = (b: string, col: number, depth: number) =>
     `${blockCode(b)}${String(col).padStart(2, '0')}${String(depth).padStart(2, '0')}`
 
-  // ── ยิงตามแถว derived state ──
-  const laneParsed = parseLane(laneStr.trim())
-  const laneBlk = useMemo(
-    () => (laneParsed ? resolveBlockByName(laneParsed.block, blocks) : null),
-    [laneParsed?.block, blocks], // eslint-disable-line react-hooks/exhaustive-deps
-  )
-  const laneBlockId = laneParsed ? (laneBlk ? blockTag(laneBlk) : blockKeyOfTag(laneParsed.block)) : ''
-  const laneSlot = laneParsed?.row ?? 0
-  const laneSlotOk = laneSlot >= 1 && (!laneBlk || laneSlot <= laneBlk.cols)
-  const laneBlockOk = !!laneBlockId && (blocks.length === 0 || !!laneBlk)
-  const laneReady = laneBlockOk && laneSlotOk
-  // live cars down this lane, depth order — recomputes after every placement
-  const laneCars = useMemo(() => {
-    if (!laneReady) return []
-    return siteUnits
-      .filter(u => u.block && u.slot === laneSlot && blockKeyOfTag(u.block) === laneBlockId)
-      .sort((a, b) => (a.row ?? 0) - (b.row ?? 0))
-  }, [laneReady, laneBlockId, laneSlot, siteUnits])
-  const laneDepthMax = laneBlk?.rows ?? 8
-  const laneNextRow = useMemo(() => {
-    if (!laneReady) return null
-    const taken = new Set(laneCars.map(u => u.row))
-    for (let r = 1; r <= laneDepthMax; r++) if (!taken.has(r)) return r
-    return null // lane full
-  }, [laneReady, laneCars, laneDepthMax])
+  // ── ยิงตามแถว derived state — a PURE function of the lane string, so the
+  // scan handler can evaluate any lane text directly (no stale-closure state)
+  const laneInfoOf = (str: string) => {
+    const parsed = parseLane(str.trim())
+    const blk = parsed ? resolveBlockByName(parsed.block, blocks) : null
+    const blockId = parsed ? (blk ? blockTag(blk) : blockKeyOfTag(parsed.block)) : ''
+    const slot = parsed?.row ?? 0
+    const slotOk = slot >= 1 && (!blk || slot <= blk.cols)
+    const blockOk = !!blockId && (blocks.length === 0 || !!blk)
+    const ready = blockOk && slotOk
+    const depth = blk?.rows ?? 8
+    const cars = ready
+      ? siteUnits.filter(u => u.block && u.slot === slot && blockKeyOfTag(u.block) === blockId)
+          .sort((a, b) => (a.row ?? 0) - (b.row ?? 0))
+      : []
+    const taken = new Set(cars.map(u => u.row))
+    let next: number | null = null
+    if (ready) for (let r = 1; r <= depth; r++) if (!taken.has(r)) { next = r; break }
+    return { parsed, blk, blockOk, ready, blockId, slot, depth, cars, next }
+  }
+  const laneCur = useMemo(() => laneInfoOf(laneStr), [laneStr, siteUnits, blocks]) // eslint-disable-line react-hooks/exhaustive-deps
+  const laneParsed = laneCur.parsed
+  const laneBlk = laneCur.blk
+  const laneBlockOk = laneCur.blockOk
+  const laneReady = laneCur.ready
+  const laneBlockId = laneCur.blockId
+  const laneSlot = laneCur.slot
+  const laneDepthMax = laneCur.depth
+  const laneCars = laneCur.cars
+  const laneNextRow = laneCur.next
 
-  const onLaneScan = (v: string) => {
-    if (!laneReady) { toast('err', 'ใส่แถวก่อน — Block + เลขช่อง เช่น A10'); return }
+  // a handheld with focus still in the LANE box types the whole VIN there —
+  // once the keystroke burst settles, split "A10<VIN17>" back into lane + VIN
+  // and route the VIN to the scan handler (evaluating mid-burst split wrong)
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const m = /^(.*?)([A-HJ-NPR-Z0-9]{17})$/.exec(laneStr)
+      // route with the LANE PART as an explicit override — the state update
+      // hasn't landed yet, so the handler must not read laneStr itself
+      if (m) { setLaneStr(m[1]); onLaneScan(m[2], m[1]) }
+    }, 250)
+    return () => clearTimeout(t)
+  }, [laneStr]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const onLaneScan = (v: string, laneOverride?: string) => {
+    const L = laneOverride != null ? laneInfoOf(laneOverride) : laneCur
+    if (!L.ready) { toast('err', 'ใส่แถวก่อน — Block + เลขช่อง เช่น A10'); return }
     let r = trackingRows.find(x => x.vin === v)
     if (!r && v.length <= 8) {
       const hits = trackingRows.filter(x => x.vin.endsWith(v))
@@ -3531,15 +3585,15 @@ function RelocationView() {
     }
     if (!isGatedInStatus(r.cells['Car Status'])) { blockGate(r.vin, r.cells['Model name'] ?? r.cells['Model'] ?? ''); return }
     const u = siteUnits.find(x => x.vin === r!.vin)
-    const already = laneCars.find(x => x.vin === r!.vin)
+    const already = L.cars.find(x => x.vin === r!.vin)
     if (already) { toast('info', `อยู่ในแถวนี้แล้ว — คันที่ ${already.row}`); return }
-    if (laneNextRow === null) { toast('err', `แถว ${laneBlockId}${laneSlot} เต็มแล้ว (${laneDepthMax} คัน)`); return }
+    if (L.next === null) { toast('err', `แถว ${L.blockId}${L.slot} เต็มแล้ว (${L.depth} คัน)`); return }
     updateLocations([{
-      vin: r.vin, block: laneBlockId, row: laneNextRow, slot: laneSlot,
+      vin: r.vin, block: L.blockId, row: L.next, slot: L.slot,
       modelName: r.cells['Model name'] || r.cells['Model'] || undefined,
       color: r.cells['Color'] || undefined,
     }])
-    const code = codeOf(laneBlockId, laneSlot, laneNextRow)
+    const code = codeOf(L.blockId, L.slot, L.next)
     appendHistory(r.vin, {
       at: Date.now(), by: currentUser, field: 'Location',
       from: u?.block && u.row && u.slot ? yardLocFull(u) : '',
@@ -3597,7 +3651,13 @@ function RelocationView() {
               className="input w-full font-bold text-center text-[17px] uppercase tabular"
               placeholder="A10" autoCapitalize="characters" autoCorrect="off" spellCheck={false}
               value={laneStr}
-              onChange={e => { setLaneStr(e.target.value.toUpperCase()); setLaneAdded([]) }}
+              onChange={e => {
+                const v = e.target.value.toUpperCase().replace(/\s+/g, '')
+                setLaneStr(v)
+                // reset the round counter only on a real lane edit — a handheld
+                // burst appending a VIN here is NOT a lane change
+                if (v === '' || parseLane(v)) setLaneAdded([])
+              }}
             />
             {laneReady ? (
               <div className="text-[12px] font-semibold flex items-center gap-1.5" style={{ color: '#0284c7' }}>
