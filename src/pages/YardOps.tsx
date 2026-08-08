@@ -3797,6 +3797,17 @@ function RelocationView() {
             <div className="text-[11.5px] mt-1.5 flex items-center gap-1" style={{ color: 'var(--muted)' }}>
               <MapPin size={11} /> {curYard}
             </div>
+            {/* who recorded the position last, and when — the latest Location move */}
+            {moves[0] && (() => {
+              const d = new Date(moves[0].at)
+              const p2 = (n: number) => String(n).padStart(2, '0')
+              return (
+                <div className="text-[11.5px] mt-1 flex items-center gap-x-2 flex-wrap" style={{ color: 'var(--muted)' }}>
+                  <span className="flex items-center gap-1"><User size={11} /> บันทึกโดย <b style={{ color: 'var(--text)' }}>{moves[0].by || '—'}</b></span>
+                  <span className="flex items-center gap-1"><Clock size={11} /> {p2(d.getDate())}/{p2(d.getMonth() + 1)}/{d.getFullYear()} {p2(d.getHours())}:{p2(d.getMinutes())}</span>
+                </div>
+              )
+            })()}
           </div>
 
           <div>
