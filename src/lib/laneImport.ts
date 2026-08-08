@@ -66,7 +66,8 @@ export function resolveBlock(token: string, drawn: Set<string>): string {
 }
 
 const norm = (s: unknown) => String(s).trim().toLowerCase().replace(/[\s._\-#]/g, '')
-const isVin = (s: string) => /^[A-Z0-9]{11,20}$/.test(s)
+// real VINs never contain I, O or Q (ISO 3779) — rejects placeholder codes
+const isVin = (s: string) => /^[A-Z0-9]{11,20}$/.test(s) && !/[IOQ]/.test(s)
 
 export async function parseLaneWorkbook(file: File): Promise<LaneParseResult> {
   const XLSX = await import('xlsx')
