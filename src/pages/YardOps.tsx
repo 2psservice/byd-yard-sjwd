@@ -3590,7 +3590,10 @@ function RelocationView() {
             )}
           </div>
 
-          {laneReady && <VinInput onScan={onLaneScan} accent="#0ea5e9" />}
+          {/* autoFocus off: this input MOUNTS the moment the lane string turns
+              valid ("A1" while typing "A12") — grabbing focus mid-keystroke
+              yanked the cursor out of the lane field */}
+          {laneReady && <VinInput onScan={onLaneScan} accent="#0ea5e9" autoFocus={false} />}
 
           {/* live view of the lane, depth order — just-scanned cars highlighted */}
           {laneReady && (laneCars.length > 0 || laneAdded.length > 0) && (
