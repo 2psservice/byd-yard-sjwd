@@ -515,7 +515,15 @@ export const useTracking = create<TrackingState>()(
       appendHistory: (vin, entry) => {
         const r = get().rows[vin]
         if (!r) return // only tracking-row cars keep an Event history
-        const next: TrackRow = { ...r, history: [...(r.history ?? []), entry].slice(-MAX_ROW_HISTORY), updatedAt: Date.now() }
+        // one physical action is ONE history line: a double-tap / double-Enter /
+        // duplicated event firing the same entry seconds apart is dropped here,
+        // so every caller is covered at once
+        const hist = r.history ?? []
+        const lastH = hist[hist.length - 1]
+        if (lastH && lastH.field === entry.field && lastH.from === entry.from
+            && lastH.to === entry.to && lastH.by === entry.by
+            && Math.abs(entry.at - lastH.at) < 8000) return
+        const next: TrackRow = { ...r, history: [...hist, entry].slice(-MAX_ROW_HISTORY), updatedAt: Date.now() }
         set({ rows: { ...get().rows, [vin]: next } })
         idbPut(next).catch(() => {})
         db.upsertTrackingRows([next]).catch(() => {})

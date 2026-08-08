@@ -3476,6 +3476,8 @@ function RelocationView() {
   const [mode, setMode] = useState<'one' | 'lane'>('one')
   const [laneStr, setLaneStr] = useState('')
   const [laneAdded, setLaneAdded] = useState<{ vin: string; code: string }[]>([])
+  const lastSaveGuard = useRef(0)          // double-fire guard: single-car save
+  const lastLaneHit = useRef({ v: '', at: 0 }) // double-fire guard: lane scans
 
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
 
@@ -3620,6 +3622,10 @@ function RelocationView() {
     const already = L.cars.find(x => x.vin === r!.vin)
     if (already) { toast('info', `อยู่ในแถวนี้แล้ว — คันที่ ${already.row}`); return }
     if (L.next === null) { toast('err', `แถว ${L.blockId}${L.slot} เต็มแล้ว (${L.depth} คัน)`); return }
+    // the same scan can reach here twice (wedge + debounce racing) before the
+    // store re-renders — the second pass would double-place with stale data
+    if (lastLaneHit.current.v === r.vin && Date.now() - lastLaneHit.current.at < 1500) return
+    lastLaneHit.current = { v: r.vin, at: Date.now() }
     updateLocations([{
       vin: r.vin, block: L.blockId, row: L.next, slot: L.slot,
       modelName: r.cells['Model name'] || r.cells['Model'] || undefined,
@@ -3638,6 +3644,10 @@ function RelocationView() {
 
   const doSave = () => {
     if (!canSave || !row || nextRow === null) return
+    // double-tap / double-Enter guard: `saved` state hasn't flushed yet when a
+    // second event lands in the same frame — this ref has
+    if (Date.now() - lastSaveGuard.current < 1200) return
+    lastSaveGuard.current = Date.now()
     // move the CAR, not the "Location yard" cell — that cell names the yard and
     // is what scopes a row to its site, so a slot code written into it used to
     // drop the car out of its own yard
