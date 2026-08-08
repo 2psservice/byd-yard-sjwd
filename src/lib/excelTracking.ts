@@ -73,7 +73,9 @@ export interface ParseResult {
 
 const TARGET_SHEET = 'Tracking Status'
 const norm = (s: string) => String(s).trim().toLowerCase().replace(/[\s._\-#]/g, '')
-const isVin = (s: string) => /^[A-Z0-9]{11,20}$/.test(s)
+// real VINs never contain I, O or Q (ISO 3779) — the letter test rejects
+// generated placeholder codes ("QAQANYB2000001") sitting in template rows
+const isVin = (s: string) => /^[A-Z0-9]{11,20}$/.test(s) && !/[IOQ]/.test(s)
 
 /** Parse a Defect-Yard / Defect-Factory sheet into defect records (by VIN). */
 function parseDefectSheet(XLSX: any, ws: any, source: 'yard' | 'factory' | 'whale'): { rows: DefectRow[]; headers: string[] } {

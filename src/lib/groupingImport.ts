@@ -91,7 +91,8 @@ export function byYardLocation(a: string, b: string): number {
 }
 
 const norm = (s: unknown) => String(s ?? '').trim().toLowerCase().replace(/[\s._\-#]/g, '')
-const isVin = (s: string) => /^[A-Z0-9]{11,20}$/.test(s)
+// real VINs never contain I, O or Q (ISO 3779) — rejects placeholder codes
+const isVin = (s: string) => /^[A-Z0-9]{11,20}$/.test(s) && !/[IOQ]/.test(s)
 
 /** Find the workbook sheet whose (normalised) name matches one of the site keys.
  *  Skips the raw master "Sheet3"-style dumps by requiring a key hit. */

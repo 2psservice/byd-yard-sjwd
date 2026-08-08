@@ -30,6 +30,11 @@ import type { View } from './types'
 // same local calendar day? (device-local time — matches how the yard works shifts)
 const sameDay = (a: number, b: number) => new Date(a).toDateString() === new Date(b).toDateString()
 
+// placeholder codes from a Vin List file's template rows ("QAQANYB2000001") —
+// not real VINs (a real VIN never contains the letter Q, and no WMI starts
+// with QAQ), so anything in this family is import junk to purge everywhere
+const isJunkVin = (v: string) => v.startsWith('QAQA')
+
 export default function App() {
   const loggedInUserId = useYard((s) => s.loggedInUserId)
   const me = useMe()
@@ -153,9 +158,23 @@ export default function App() {
   useEffect(() => {
     if (!purgedRef.current && trackingRows.length > 0 && useTracking.getState().lastSync > 0) {
       purgedRef.current = true
-      purgeNonTracking(new Set(trackingRows.map((r) => r.vin)))
+      // data fix: tombstone-delete leaked placeholder codes so they never
+      // resurface from another device's cache, and keep them OUT of the
+      // keep-set below so any stray unit of theirs is purged the same pass
+      const junk = trackingRows.filter((r) => isJunkVin(r.vin)).map((r) => r.vin)
+      if (junk.length) useTracking.getState().deleteRows(junk)
+      purgeNonTracking(new Set(trackingRows.filter((r) => !isJunkVin(r.vin)).map((r) => r.vin)))
     }
   }, [trackingRows, purgeNonTracking])
+
+  // the same placeholder codes also sit inside work queues (the import that
+  // created them added them to a Pre Gate-in queue) — strip them wherever found
+  const opsQueues = useOps((s) => s.queues)
+  useEffect(() => {
+    for (const q of opsQueues)
+      for (const it of q.items)
+        if (isJunkVin(it.vin)) useOps.getState().removeVin(q.id, it.vin)
+  }, [opsQueues])
 
   // assign sites to real units (no-op if already set)
   useEffect(() => {
