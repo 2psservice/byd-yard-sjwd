@@ -188,6 +188,21 @@ function rowToUnit(r: DbUnitWithDamages): Unit {
 
 // ── unit operations ───────────────────────────────────────────────────────
 
+/** Fetch specific units (+ damages) by VIN — the lane-compaction stale-guard
+ *  uses this to check a car's REAL position before overwriting it. Throws on
+ *  a query error so the caller can tell "offline" apart from "not found". */
+export async function fetchUnitsByVins(vins: string[]): Promise<Unit[]> {
+  if (!isConfigured() || !vins.length) return []
+  const out: Unit[] = []
+  for (let i = 0; i < vins.length; i += 200) {
+    const { data, error } = await supabase
+      .from('units').select('*, damages(*)').in('vin', vins.slice(i, i + 200))
+    if (error) { console.error('[db] fetchUnitsByVins', error); throw error }
+    for (const r of (data ?? []) as DbUnitWithDamages[]) out.push(rowToUnit(r))
+  }
+  return out
+}
+
 /** โหลดรถทุกคัน (+ ความเสียหาย) จาก Supabase; กรองตาม site หากระบุ.
  *  Paginated — PostgREST caps a single request at 1,000 rows, so a >1,000-unit
  *  yard silently lost the tail (units past the cap never loaded → their damages

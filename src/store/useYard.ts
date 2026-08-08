@@ -650,12 +650,55 @@ export const useYard = create<YardState>()(
       },
 
       compactAllLanes: () => {
-        const units = { ...get().units }
+        const before = get().units
+        const units = { ...before }
         const lanes = lanesOf(Object.values(units))
         const changed = compactLanes(units, lanes)
         if (!changed.length) return 0
         set({ units })
-        db.upsertUnits(changed).catch((e) => console.error('[db] compactAllLanes', e))
+        // ── stale-copy guard ────────────────────────────────────────────────
+        // EVERY device runs this pass — including one that hasn't yet received
+        // a relocation done elsewhere. Unchecked, its stale copy would be
+        // "compacted" back into the OLD lane and pushed with a fresh timestamp,
+        // overwriting the real move (a car relocated T5004 → W0101 on phone A
+        // was re-written to T5002 by phone B's compaction of lane T50). So
+        // before persisting, compare each changed car's CLOUD position with
+        // the position this device compacted FROM: a mismatch means our copy
+        // was stale — adopt the cloud row and drop our write for that car.
+        // The adopt triggers another (now fresh) compaction pass that
+        // converges properly.
+        const finish = (rows: Unit[]) => {
+          if (rows.length) db.upsertUnits(rows).catch((e) => console.error('[db] compactAllLanes', e))
+        }
+        if (db.isConfigured()) {
+          const prevPos = new Map(changed.map((u) => {
+            const p = before[u.vin]
+            return [u.vin, p ? `${p.block}|${p.slot}|${p.row}` : ''] as const
+          }))
+          db.fetchUnitsByVins(changed.map((u) => u.vin))
+            .then((cloud) => {
+              const cloudBy = new Map(cloud.map((u) => [u.vin, u]))
+              const push: Unit[] = []
+              const adopt: Unit[] = []
+              for (const u of changed) {
+                const c = cloudBy.get(u.vin)
+                if (!c) { push.push(u); continue } // not in cloud yet — keep ours
+                if (`${c.block}|${c.slot}|${c.row}` === prevPos.get(u.vin)) push.push(u)
+                else adopt.push(c) // cloud moved on — our compaction used a stale copy
+              }
+              if (adopt.length) {
+                set((s) => {
+                  const next = { ...s.units }
+                  for (const c of adopt) next[c.vin] = { ...c, damages: s.units[c.vin]?.damages?.length ? s.units[c.vin].damages : c.damages }
+                  return { units: next }
+                })
+              }
+              finish(push)
+            })
+            .catch(() => finish(changed)) // cloud unreachable (offline) — persist as before
+        } else {
+          finish(changed)
+        }
         return changed.length
       },
 
