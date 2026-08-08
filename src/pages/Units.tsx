@@ -1106,22 +1106,6 @@ function GroupingView({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort
 }
 
 // ============================ Units Mylist (paste VINs) ============================
-// Mylist CSV export: the master Co-Inspection file's column order, with the
-// exact header spellings the sheet uses (double spaces and all) — so the
-// exported file drops straight into the same workflow as the source file.
-const CO_INSPECT_COLS: string[] = [
-  'Match Tax/Shuttle', 'Vin', 'Model name', 'Front Motor no.', 'Rear Motor no.', 'Engine No.',
-  'Model Code', 'Model', 'Color', 'battery', 'company', 'Status', 'PDI',
-  ...Array.from({ length: 8 }, (_, i) => `RE PDI  Date #${i + 1}`),
-  'OK date', 'PIC (PDI)', 'Vin Of Status', 'Gate In (Rayong yard)', 'Final check date', 'Final Status',
-  'Location yard', 'Status Tax', 'Stock of Status', 'Gate Out time stamp', 'Grouping  Number',
-  'Allocation Date', 'Dealer Code', 'Dealer Location', 'Remark', 'Tailer Company', 'storage Yard',
-  'Move from  1', 'Transfer 1', 'Move from  2', 'Transfer 2', 'Move from  3', 'Transfer 3',
-  'Move from  4', 'Transfer 4', 'Factory-Installed', 'Accessories', 'Aging PM',
-  ...Array.from({ length: 15 }, (_, i) => `PM${i + 1}`),
-  'หมายเหตุ',
-]
-
 function MylistView({ allRows, visCols, sel, setSel, sortKey, sortDir, toggleSort, optionsFor }: Omit<GridProps, 'rows'> & { allRows: TrackRow[] }) {
   // the pasted VIN list survives leaving the page (persisted view store)
   const text = useUnitsView((s) => s.mylistText)
@@ -1141,25 +1125,23 @@ function MylistView({ allRows, visCols, sel, setSel, sortKey, sortDir, toggleSor
 
   const today = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' })
   const doPdf = () => { if (findRows.length) printFindList(findRows, today) }
-  // Excel-openable CSV in the Co-Inspection file's exact column order — the
-  // picked cars drop straight back into the master-file workflow
+  // Excel-openable CSV of EXACTLY the columns open in the table (จัดการคอลัมน์),
+  // in their current order — same as the main CSV button, with the computed
+  // Location and Aging PM cells filled in where those columns are open
   const doCsv = () => {
     if (!found.length) return
     try {
-      const esc = (s: string) => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s)
-      const header = ['No', ...CO_INSPECT_COLS].map(esc).join(',')
-      const lines = found.map((r, i) =>
-        [String(i + 1), ...CO_INSPECT_COLS.map((k) =>
-          k === 'Aging PM' ? (r.cells[k] || fmtAgingPm(r.cells)) : (r.cells[k] ?? ''))]
-          .map(esc).join(','))
-      // BOM so Excel opens the Thai text as UTF-8
-      const csv = '\ufeff' + [header, ...lines].join('\r\n')
-      const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `SJWD-Mylist-${found.length}คัน-${new Date().toISOString().slice(0, 10)}.csv`
-      a.click()
-      URL.revokeObjectURL(url)
+      const wantLoc = visCols.some((c) => c.key === LOCATION_KEY)
+      const wantAging = visCols.some((c) => c.key === 'Aging PM')
+      const out = (wantLoc || wantAging)
+        ? found.map((r) => ({ ...r, cells: {
+            ...r.cells,
+            ...(wantLoc ? { [LOCATION_KEY]: yardLocFull(units[r.vin]) } : {}),
+            ...(wantAging && !r.cells['Aging PM'] ? { 'Aging PM': fmtAgingPm(r.cells) } : {}),
+          } }))
+        : found
+      rowsToCsv(`SJWD-Mylist-${found.length}คัน-${new Date().toISOString().slice(0, 10)}.csv`,
+        visCols.map((c) => ({ key: c.key, label: c.label })), out)
     } catch (e) { console.error('[mylist] csv', e); toast('err', 'ออกไฟล์ CSV ไม่สำเร็จ') }
   }
 
