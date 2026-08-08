@@ -3482,6 +3482,19 @@ function RelocationView() {
   // order: 1st scan parks as คันที่ 1, 2nd as คันที่ 2, … (ref: scans arrive
   // faster than state flushes)
   const laneOrderRef = useRef<string[]>([])
+  // walking direction: 'head' = 1st scan is คันที่ 1 · 'tail' = the worker
+  // walks tail→head in ONE pass, so each NEW scan becomes คันที่ 1 and the
+  // earlier scans slide down — the FIRST scan ends up last
+  const [laneDir, setLaneDir] = useState<'head' | 'tail'>('head')
+  const laneDirRef = useRef(laneDir)
+  laneDirRef.current = laneDir
+  const switchLaneDir = (d: 'head' | 'tail') => {
+    if (d === laneDir) return
+    setLaneDir(d)
+    laneOrderRef.current = []
+    setLaneAdded([])
+    toast('info', d === 'tail' ? 'ยิงจากท้ายแถว — คันที่ยิงล่าสุดจะเป็นคันที่ 1' : 'ยิงจากหัวแถว — คันแรกที่ยิงเป็นคันที่ 1')
+  }
 
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
 
@@ -3634,19 +3647,26 @@ function RelocationView() {
     // slide to the END (their relative order kept). The worker walks the row
     // scanning car after car and the system mirrors the physical order.
     const ord = laneOrderRef.current
-    const atPos = ord.indexOf(r.vin)
-    if (atPos >= 0) { toast('info', `ยิงคันนี้แล้ว — คันที่ ${atPos + 1}`); return }
+    const dir = laneDirRef.current
+    if (ord.includes(r.vin)) {
+      const seq0 = dir === 'tail' ? [...ord].reverse() : ord
+      toast('info', `ยิงคันนี้แล้ว — คันที่ ${seq0.indexOf(r.vin) + 1}`)
+      return
+    }
     const incumbents = L.cars.filter(x => !ord.includes(x.vin) && x.vin !== r!.vin)
     if (ord.length + 1 + incumbents.length > L.depth) {
       toast('err', `แถว ${L.blockId}${L.slot} เต็มแล้ว (${L.depth} คัน)`)
       return
     }
     ord.push(r.vin)
-    const pos = ord.length
-    // rebuild the whole lane: scanned cars at 1..k in scan order, then the
-    // not-yet-scanned cars after them
+    // 'tail' = worker walks from the END of the row toward the front in one
+    // pass, so the LATEST scan is always คันที่ 1 and earlier scans slide down
+    const seq = dir === 'tail' ? [...ord].reverse() : ord
+    const pos = seq.indexOf(r.vin) + 1
+    // rebuild the whole lane: scanned cars at 1..k in direction order, then
+    // the not-yet-scanned cars after them
     const updates: { vin: string; block: string; row: number; slot: number; modelName?: string; color?: string }[] = []
-    ord.forEach((vin, i) => {
+    seq.forEach((vin, i) => {
       const cu = siteUnits.find(x => x.vin === vin)
       const row = i + 1
       if (cu && cu.block === L.blockId && cu.slot === L.slot && cu.row === row) return // already right
@@ -3656,7 +3676,7 @@ function RelocationView() {
         color: cu?.color || tr2?.cells['Color'] || undefined })
     })
     incumbents.forEach((cu, i) => {
-      const row = ord.length + 1 + i
+      const row = seq.length + 1 + i
       if (cu.block === L.blockId && cu.slot === L.slot && cu.row === row) return
       updates.push({ vin: cu.vin, block: L.blockId, row, slot: L.slot, modelName: cu.modelName, color: cu.color })
     })
@@ -3668,7 +3688,7 @@ function RelocationView() {
       to: code,
     })
     recordRecent('reloc:save', r.vin, `ย้ายไป ${code}`)
-    setLaneAdded(ord.map((vin, i) => ({ vin, code: codeOf(L.blockId, L.slot, i + 1) })))
+    setLaneAdded(seq.map((vin, i) => ({ vin, code: codeOf(L.blockId, L.slot, i + 1) })))
     toast('ok', `${code} · คันที่ ${pos} · ${r.vin.slice(-6)} — ยิงคันถัดไปต่อได้เลย`)
   }
 
@@ -3750,6 +3770,23 @@ function RelocationView() {
                 ใส่แถวครั้งเดียว แล้วสแกน/พิมพ์วินทีละคันจนครบ — รถต่อท้ายคันที่มีอยู่ในแถวอัตโนมัติ
               </div>
             )}
+
+            {/* walking direction — tail mode lets the worker loop the row once
+                without walking back to the head before scanning */}
+            <div className="grid grid-cols-2 gap-2 pt-0.5">
+              <button onClick={() => switchLaneDir('head')}
+                className="py-2 rounded-xl text-[12px] font-bold transition"
+                style={laneDir === 'head' ? { background: '#0ea5e9', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>
+                ยิงจากหัวแถว
+                <div className="text-[10px] font-medium" style={{ opacity: 0.85 }}>คันแรกที่ยิง = คันที่ 1</div>
+              </button>
+              <button onClick={() => switchLaneDir('tail')}
+                className="py-2 rounded-xl text-[12px] font-bold transition"
+                style={laneDir === 'tail' ? { background: '#0ea5e9', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>
+                ยิงจากท้ายแถว
+                <div className="text-[10px] font-medium" style={{ opacity: 0.85 }}>คันล่าสุดที่ยิง = คันที่ 1</div>
+              </button>
+            </div>
           </div>
 
           {/* autoFocus off: this input MOUNTS the moment the lane string turns
