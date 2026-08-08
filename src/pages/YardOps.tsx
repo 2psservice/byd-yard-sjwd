@@ -685,9 +685,12 @@ function VinInput({
 
   return (
     <>
-      {/* Camera overlay */}
-      {camOpen && (
-        <div className="fixed inset-0 z-50 bg-black flex flex-col" style={{ touchAction: 'none' }}>
+      {/* Camera overlay — PORTALED to <body>: rendered in place, an ancestor
+          with a transform (e.g. the fade-up animation Safari keeps as a
+          containing block) traps position:fixed and squeezes the scanner into
+          the panel instead of the full screen. 100dvh covers the iOS URL bar. */}
+      {camOpen && createPortal(
+        <div className="fixed inset-0 z-[90] bg-black flex flex-col" style={{ touchAction: 'none', height: '100dvh' }}>
           <div className="flex items-center justify-between px-4 py-3 shrink-0">
             <span className="text-white font-bold text-[16px]">{camTitle}</span>
             <button onClick={closeCamera} className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: 'rgba(255,255,255,0.15)' }}>
@@ -757,7 +760,8 @@ function VinInput({
           <div className="px-4 py-3 text-center text-white/60 text-[13px] shrink-0">
             {camHint}{zoomCap || digitalZoom ? ' · เลื่อนซูมถ้าโค้ดเล็ก' : ''}
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
       {/* Input row */}
