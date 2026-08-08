@@ -691,10 +691,14 @@ function VinInput({
           the panel instead of the full screen. 100dvh covers the iOS URL bar. */}
       {camOpen && createPortal(
         <div className="fixed inset-0 z-[90] bg-black flex flex-col" style={{ touchAction: 'none', height: '100dvh' }}>
-          <div className="flex items-center justify-between px-4 py-3 shrink-0">
+          {/* header sits BELOW the iPhone notch / Dynamic Island (safe-area),
+              with a big RED close button that can't be missed */}
+          <div className="flex items-center justify-between px-4 pb-2 shrink-0"
+            style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 14px)' }}>
             <span className="text-white font-bold text-[16px]">{camTitle}</span>
-            <button onClick={closeCamera} className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: 'rgba(255,255,255,0.15)' }}>
-              <X size={20} color="#fff" />
+            <button onClick={closeCamera} className="w-12 h-12 rounded-full flex items-center justify-center shrink-0"
+              style={{ background: '#dc2626' }}>
+              <X size={24} color="#fff" strokeWidth={3} />
             </button>
           </div>
           <div className="relative flex-1 overflow-hidden">
@@ -757,8 +761,16 @@ function VinInput({
               )}
             </div>
           )}
-          <div className="px-4 py-3 text-center text-white/60 text-[13px] shrink-0">
+          <div className="px-4 pt-2 pb-1 text-center text-white/60 text-[13px] shrink-0">
             {camHint}{zoomCap || digitalZoom ? ' · เลื่อนซูมถ้าโค้ดเล็ก' : ''}
+          </div>
+          {/* thumb-reach close bar — one tap to leave, no stretching to the top */}
+          <div className="px-4 pt-1 shrink-0" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 12px)' }}>
+            <button onClick={closeCamera}
+              className="w-full py-3.5 rounded-2xl text-[15px] font-bold text-white flex items-center justify-center gap-2"
+              style={{ background: '#dc2626' }}>
+              <X size={18} strokeWidth={3} /> ปิดกล้อง
+            </button>
           </div>
         </div>,
         document.body,
