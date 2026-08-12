@@ -852,6 +852,14 @@ export function isQueueComplete(q: WorkQueue): boolean {
   return q.items.length > 0 && q.items.every((i) => i.done)
 }
 
+/** The STATION's work on a queue is finished: every car is done or at least
+ *  checked (OK/NG recorded). Such a queue reads "เหลือ 0" on the station
+ *  counter but never satisfied isQueueComplete while cars sat checked-but-not-
+ *  returned — so it lingered on the station and driver lists forever. */
+export function isStationWorkComplete(q: WorkQueue): boolean {
+  return q.items.length > 0 && q.items.every((i) => i.done || stageOf(i) === 'checked')
+}
+
 /** Aggregate across all queues — gated-out cars excluded so the stat cards
  *  match the queue rows below them. */
 export function useOpsTotals() {

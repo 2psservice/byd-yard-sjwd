@@ -14,7 +14,7 @@ import {
 import { useYard, useUnits, useTrips, useBlocks, useMe } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { isDamaged, deriveCarStatus, IN_YARD_STATUSES, CAR_STATUS_META } from '../lib/carStatus'
-import { useOps, useActiveQueues, activeProcess, stageOf, isSequenceQueue, seqStageOf, isQueueComplete, queueTypeOf, stampStationDate, stationProgress, drivingNow } from '../store/useOps'
+import { useOps, useActiveQueues, activeProcess, stageOf, isSequenceQueue, seqStageOf, isQueueComplete, isStationWorkComplete, queueTypeOf, stampStationDate, stationProgress, drivingNow } from '../store/useOps'
 import type { WorkQueue, QueueItem, QueueType, QueueStage } from '../store/useOps'
 import { CarTopView } from '../components/CarTopView'
 import { LogoMark } from '../components/Logo'
@@ -2092,7 +2092,9 @@ function DriverView() {
   // (PDI / PM / FINAL CHECK / งานพิเศษ) — unlike the stations, which are
   // strictly scoped to their own type.
   const allWorkQueues = useMemo(
-    () => queues.filter(q => !isSequenceQueue(q) && !isPreGateInQueue(q.name) && !isQueueComplete(q)),
+    // finished station work (every car done or checked) leaves the driver's
+    // browser too — a "เหลือ 0" queue only blocked the screen
+    () => queues.filter(q => !isSequenceQueue(q) && !isPreGateInQueue(q.name) && !isQueueComplete(q) && !isStationWorkComplete(q)),
     [queues],
   )
 
@@ -2762,10 +2764,12 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [allQueues, typeKey],
   )
-  // completed queues drop off the live list (they've filed under their day).
+  // completed queues drop off the live list (they've filed under their day) —
+  // including queues whose STATION work is finished (every car done/checked)
+  // while some cars still wait for the drive back to a slot ("เหลือ 0" cards).
   // A just-created queue with no cars yet IS shown (it used to vanish, so an
   // operator who had just created it thought the queue never arrived).
-  const procQueues = useMemo(() => queues.filter(q => !isPreGateInQueue(q.name) && !isQueueComplete(q)), [queues])
+  const procQueues = useMemo(() => queues.filter(q => !isPreGateInQueue(q.name) && !isQueueComplete(q) && !isStationWorkComplete(q)), [queues])
   const selectedQueue = selectedQueueId ? queues.find(q => q.id === selectedQueueId) ?? null : null
   const queueCars = useMemo(() => {
     if (!selectedQueue) return []
