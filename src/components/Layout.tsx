@@ -191,7 +191,7 @@ export function Layout({ children }: { children: ReactNode }) {
 
       <div className="flex-1 flex flex-col min-w-0">
         {/* topbar */}
-        <header className="flex items-center gap-2 sm:gap-3 px-3 sm:px-4 h-14 border-b hairline shrink-0" style={{ background: 'var(--glass)', backdropFilter: 'blur(22px) saturate(180%)', WebkitBackdropFilter: 'blur(22px) saturate(180%)' }}>
+        <header className="flex items-center gap-2 sm:gap-3 px-3 sm:px-4 h-12 border-b hairline shrink-0" style={{ background: 'var(--glass)', backdropFilter: 'blur(22px) saturate(180%)', WebkitBackdropFilter: 'blur(22px) saturate(180%)' }}>
           <button className={cx('btn btn-ghost p-2 shrink-0', !isTouch && 'lg:hidden')} onClick={() => setMobileNav(true)}><Menu size={18} /></button>
 
           {/* the search box gives up its width first — every control to its right
@@ -239,7 +239,9 @@ export function Layout({ children }: { children: ReactNode }) {
           </div>
         </header>
 
-        <main className="flex-1 overflow-auto p-4 md:p-6" style={{ background: 'var(--app-bg)' }}>{children}</main>
+        {/* the Unit List is a full-height data grid — give it the padding back
+            as table rows (several extra VINs per screen) */}
+        <main className={cx('flex-1 overflow-auto', view === 'units' ? 'p-2' : 'p-4 md:p-6')} style={{ background: 'var(--app-bg)' }}>{children}</main>
 
         {/* bottom status bar (TOS chrome) */}
         <footer className="flex items-center gap-4 px-4 h-7 border-t hairline shrink-0 text-[11.5px]" style={{ background: 'var(--glass)', backdropFilter: 'blur(22px) saturate(180%)', WebkitBackdropFilter: 'blur(22px) saturate(180%)', color: 'var(--muted)' }}>
