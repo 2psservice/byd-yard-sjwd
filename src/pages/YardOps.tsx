@@ -3548,6 +3548,21 @@ function RelocationView() {
   const blockOk = !!blockId && (blocks.length === 0 || !!blk)
   const canSave = !!row && blockOk && slotOk && nextRow !== null && !saved
 
+  // The Car Status CELL can lag reality: a unit standing in the yard (placed by
+  // gate-in on another device, or a lane/plan import) while the sheet still says
+  // Pre Gate-in. A physically-present unit IS gated-in — trust it over the stale
+  // cell and heal the cell so counts/filters agree from now on.
+  const unitGated = (vin: string) => {
+    const u = siteUnits.find(x => x.vin === vin)
+    return !!u && (u.status !== 'EXPECTED' || !!(u.block && u.row && u.slot))
+  }
+  const passGateGuard = (r: TrackRow): boolean => {
+    if (isGatedInStatus(r.cells['Car Status'])) return true
+    if (!unitGated(r.vin)) return false
+    useTracking.getState().updateCell(r.vin, 'Car Status', 'In Yard')
+    return true
+  }
+
   const onScan = (v: string) => {
     setSaved(false); setFLoc('')
     let r = trackingRows.find(x => x.vin === v)
@@ -3566,7 +3581,7 @@ function RelocationView() {
           หากรถกลับเข้าลาน ต้องทำ <b>Gate-in</b> ใหม่ก่อน</>)
       return
     }
-    if (!isGatedInStatus(r.cells['Car Status'])) { blockGate(r.vin, r.cells['Model name'] ?? r.cells['Model'] ?? ''); return }
+    if (!passGateGuard(r)) { blockGate(r.vin, r.cells['Model name'] ?? r.cells['Model'] ?? ''); return }
     setVin(r.vin)
     recordRecent('reloc:search', r.vin)
   }
@@ -3634,7 +3649,7 @@ function RelocationView() {
         <>รถคันนี้ <b style={{ color: '#dc2626' }}>Gate-out</b> ไปแล้ว จึงไม่มีตำแหน่งในลานให้ย้าย</>)
       return
     }
-    if (!isGatedInStatus(r.cells['Car Status'])) { blockGate(r.vin, r.cells['Model name'] ?? r.cells['Model'] ?? ''); return }
+    if (!passGateGuard(r)) { blockGate(r.vin, r.cells['Model name'] ?? r.cells['Model'] ?? ''); return }
     const u = siteUnits.find(x => x.vin === r!.vin)
     // the same scan can reach here twice (wedge + debounce racing) before the
     // store re-renders — the second pass would double-place with stale data
