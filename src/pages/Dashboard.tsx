@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Car, Hourglass, AlertTriangle, Truck, Activity, X, Search, LogOut } from 'lucide-react'
+import { Car, Hourglass, AlertTriangle, Truck, Activity, X, Search, LogOut, Pencil } from 'lucide-react'
+import * as db from '../lib/db'
 import { useYard, useUnits, useBlocks } from '../store/useYard'
 import { useTrackingRows, useTracking } from '../store/useTracking'
 import { makeT } from '../i18n'
@@ -278,7 +279,34 @@ export function Dashboard() {
     return evs.sort((a, b) => b.ts - a.ts).slice(0, 9)
   }, [fromTracking, trackingRows, units, trackingVins])
 
-  const fill = fromTracking ? pct(s.inYard, s.total) : pct(s.occupied, s.cap)
+  // ── yard capacity (คัน) — the Car Status donut's denominator. The old
+  // divisor was EVERY tracking row (incl. ~15k gate-out history), so a full
+  // yard read "12%". The % now means: cars in the yard ÷ the yard's capacity.
+  // Admin sets the capacity per yard (pencil next to the number, synced via
+  // app_config); default = the plan's drawn slots.
+  const [capOverride, setCapOverride] = useState<number | null>(null)
+  useEffect(() => {
+    let dead = false
+    setCapOverride(null)
+    if (currentSite) {
+      db.fetchAppConfig<number>(`yard_capacity_${currentSite}`)
+        .then((v) => { if (!dead && typeof v === 'number' && v > 0) setCapOverride(v) })
+        .catch(() => {})
+    }
+    return () => { dead = true }
+  }, [currentSite])
+  const blockCap = useMemo(() => blocks.reduce((a, b) => a + b.rows * b.cols, 0), [blocks])
+  const yardCap = capOverride ?? (blockCap || s.total)
+  const editCap = () => {
+    const v = window.prompt('ความจุลานทั้งหมด (คัน) — ใช้เป็นตัวหารเปอร์เซ็นต์ "อยู่ในลาน"', String(yardCap))
+    if (v == null) return
+    const n = parseInt(v.replace(/[^0-9]/g, ''), 10)
+    if (!n || n <= 0) return
+    setCapOverride(n)
+    if (currentSite) db.saveAppConfig(`yard_capacity_${currentSite}`, n).catch(() => {})
+  }
+
+  const fill = fromTracking ? pct(s.inYard, yardCap) : pct(s.occupied, s.cap)
 
   const openPopup = (label: string, accent: string, filter: (u: Unit) => boolean) =>
     setPopup({ label, accent, units: units.filter(filter) })
@@ -323,8 +351,15 @@ export function Dashboard() {
         <div className="panel p-5 fade-up">
           <div className="flex items-center justify-between mb-1">
             <h3 className="font-semibold display">{fromTracking ? (lang === 'th' ? 'สถานะรถ' : 'Car Status') : t('yardFill')}</h3>
-            <span className="text-[12px]" style={{ color: 'var(--muted)' }}>
-              {fromTracking ? `${s.inYard.toLocaleString()} / ${s.total.toLocaleString()}` : `${s.occupied.toLocaleString()} / ${s.cap.toLocaleString()}`}
+            <span className="text-[12px] flex items-center gap-1" style={{ color: 'var(--muted)' }}>
+              {fromTracking ? (
+                <>
+                  {s.inYard.toLocaleString()} / {yardCap.toLocaleString()}
+                  <button onClick={editCap} title="ตั้งค่าความจุลาน (ตัวหารเปอร์เซ็นต์)" className="p-0.5" style={{ color: 'var(--faint)' }}>
+                    <Pencil size={11} />
+                  </button>
+                </>
+              ) : `${s.occupied.toLocaleString()} / ${s.cap.toLocaleString()}`}
             </span>
           </div>
           <div className="flex items-center justify-center gap-3 my-3">
