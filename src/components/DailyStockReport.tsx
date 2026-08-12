@@ -8,9 +8,10 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import { CalendarDays, ChevronLeft, ChevronRight, Download, LogIn, LogOut, Warehouse, ChevronDown } from 'lucide-react'
-import { useYard } from '../store/useYard'
+import { useYard, useUnits } from '../store/useYard'
 import { useTrackingRows } from '../store/useTracking'
 import { rowInSite } from '../lib/siteScope'
+import { appendMasterSheets } from '../lib/masterSheets'
 import { dateKey, todayKey, addDays, fmtDateTh, gateInDateKey, gateOutDateKey } from '../lib/dayKey'
 import * as db from '../lib/db'
 import type { TrackRow } from '../lib/excelTracking'
@@ -64,6 +65,11 @@ export function DailyStockReport() {
   const rows = useMemo(
     () => allRows.filter((r) => rowInSite(r, currentSite, sites)),
     [allRows, currentSite, sites],
+  )
+  const allUnits = useUnits()
+  const scopedUnits = useMemo(
+    () => (currentSite ? allUnits.filter((u) => !u.site || u.site === currentSite) : allUnits),
+    [allUnits, currentSite],
   )
 
   const data = useMemo(() => {
@@ -149,6 +155,11 @@ export function DailyStockReport() {
         for (const r of list) ws.addRow([r.vin, modelOf(r), colorOf(r), groupOf(r)])
         ws.addRow([])
       }
+
+      // ── master sheets ride along: Tracking Status + the 3 Defect sheets,
+      //    same 1:1 master format the Report export uses (re-importable)
+      const sortedRows = [...rows].sort((a, b) => a.vin.localeCompare(b.vin))
+      appendMasterSheets(wb, sortedRows, scopedUnits)
 
       const buf = await wb.xlsx.writeBuffer()
       const url = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }))
