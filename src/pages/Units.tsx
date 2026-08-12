@@ -337,9 +337,9 @@ export function Units() {
   ]
 
   return (
-    <div className="max-w-full -mt-1 flex flex-col" style={{ height: 'calc(100dvh - 104px)' }}>
+    <div className="max-w-full flex flex-col" style={{ height: 'calc(100dvh - 92px)' }}>
       {/* tabs + toolbar — one compact row */}
-      <div className="flex items-stretch gap-1 border-b hairline mb-1.5 shrink-0">
+      <div className="flex items-stretch gap-1 border-b hairline mb-1 shrink-0">
         {TABS.map((tb) => (
           <button key={tb.id} onClick={() => setTab(tb.id)}
             className="flex items-center gap-1.5 px-3 text-[13px] font-medium relative transition"
@@ -364,25 +364,25 @@ export function Units() {
             <button onClick={() => setUnitVinFilter(null)} title="ล้างตัวกรอง" className="ml-0.5 -mr-0.5 flex"><X size={13} /></button>
           </div>
         )}
-        <div className="ml-auto flex items-center gap-2 py-1">
+        <div className="ml-auto flex items-center gap-2 py-0.5">
           <div className="text-[12px] tabular hidden lg:block mr-1" style={{ color: 'var(--muted)' }}>
             <b style={{ color: 'var(--text)' }}>{rows.length.toLocaleString()}</b> total
             <span className="mx-1">·</span><b style={{ color: 'var(--st-yard)' }}>{counts.ok.toLocaleString()}</b> OK
             <span className="mx-1">·</span><b style={{ color: 'var(--st-pending)' }}>{counts.wait.toLocaleString()}</b> Waiting
             <span className="mx-1">·</span><b style={{ color: 'var(--brand)' }}>{filtered.length.toLocaleString()}</b> shown
           </div>
-          <button className={cx('btn py-1.5', filtersOpen && 'btn-blue')} onClick={() => patchView({ filtersOpen: !filtersOpen })}>
+          <button className={cx('btn py-1', filtersOpen && 'btn-blue')} onClick={() => patchView({ filtersOpen: !filtersOpen })}>
             <Filter size={14} /> ตัวกรอง
           </button>
-          <button className="btn py-1.5" onClick={doExport}><Download size={14} /> CSV</button>
-          <button className="btn btn-ghost p-1.5" title="โหลดใหม่" onClick={() => location.reload()}><RefreshCw size={14} style={{ color: 'var(--muted)' }} /></button>
-          <button className={cx('btn btn-ghost p-1.5', colMgr && 'btn-blue')} title="คอลัมน์" onClick={() => setColMgr((v) => !v)}><Columns3 size={14} /></button>
+          <button className="btn py-1" onClick={doExport}><Download size={14} /> CSV</button>
+          <button className="btn btn-ghost p-1" title="โหลดใหม่" onClick={() => location.reload()}><RefreshCw size={14} style={{ color: 'var(--muted)' }} /></button>
+          <button className={cx('btn btn-ghost p-1', colMgr && 'btn-blue')} title="คอลัมน์" onClick={() => setColMgr((v) => !v)}><Columns3 size={14} /></button>
         </div>
       </div>
 
       {/* filter bar — Unit Nbr + Grouping pinned, the rest configurable */}
       {filtersOpen && (
-        <div className="panel px-2.5 py-1.5 mb-1.5 flex flex-nowrap items-center gap-x-3 overflow-x-auto fade-up shrink-0 relative">
+        <div className="panel px-2.5 py-1 mb-1 flex flex-nowrap items-center gap-x-3 overflow-x-auto fade-up shrink-0 relative">
           <FInput label="Unit Nbr" value={q} onChange={setQ} placeholder="VIN / รุ่น / ที่จอด / บริษัท" wide />
           <FInput label="Grouping" value={fGroup} onChange={setFGroup} placeholder="B/L / Grouping" />
           {activeFilterCols.map((key) => (
@@ -944,7 +944,7 @@ function InputPromptModal({ input, onSubmit, onClose }: {
 
 function GridFooter({ sel, shown, total, lastImport }: { sel: Set<string>; shown: number; total: number; lastImport: any }) {
   return (
-    <div className="flex items-center justify-between gap-3 px-3 py-1.5 border-t hairline text-[11.5px] flex-wrap shrink-0" style={{ color: 'var(--muted)' }}>
+    <div className="flex items-center justify-between gap-3 px-3 py-1 border-t hairline text-[11.5px] flex-wrap shrink-0" style={{ color: 'var(--muted)' }}>
       <div className="flex items-center gap-3">
         <span>เลือก: <b className="tabular" style={{ color: sel.size ? 'var(--brand)' : 'var(--text)' }}>{sel.size.toLocaleString()}</b></span>
         <span>แสดง: <b className="tabular" style={{ color: 'var(--text)' }}>{shown.toLocaleString()}</b> จาก {total.toLocaleString()}</span>
