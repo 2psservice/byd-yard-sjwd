@@ -7,8 +7,10 @@ const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string | und
 export const isConfigured = () =>
   !!SUPABASE_URL &&
   !SUPABASE_URL.includes('xxxxxxxxxxxxxxxxxxxx') &&
+  !SUPABASE_URL.includes('your-project') && // .env.example placeholder ≠ configured
   !!SUPABASE_ANON_KEY &&
-  !SUPABASE_ANON_KEY.includes('your-anon-key-here')
+  !SUPABASE_ANON_KEY.includes('your-anon-key-here') &&
+  !SUPABASE_ANON_KEY.includes('your-anon-public-key')
 
 export const supabase = createClient(
   SUPABASE_URL ?? 'https://placeholder.supabase.co',

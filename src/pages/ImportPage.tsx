@@ -12,6 +12,7 @@ import { parseLane, parseLaneWorkbook, type LaneParseResult, type LaneRow } from
 import { coInspectionAccepts, rowInSite, siteForRow } from '../lib/siteScope'
 import { deriveCarStatus } from '../lib/carStatus'
 import { pos, blockKeyOfTag, blockTag, resolveBlockByName } from '../lib/format'
+import { yardLocFull } from '../lib/groupingImport'
 import { PageHead } from '../components/ui'
 
 /** group key for a row's date — Pre Gate-in files date by "Gate In Date",
@@ -156,6 +157,17 @@ export function ImportPage() {
 
   const confirmLoc = () => {
     if (!locPlan || !locPlan.placements.length) return
+    // every placement that MOVES a car leaves a Location history line — a
+    // silent position rewrite made screens contradict each other (the unit
+    // said one spot, ประวัติการย้าย another, and nobody could tell why)
+    const by = `${useYard.getState().currentUser} · นำเข้าไฟล์`
+    const appendHistory = useTracking.getState().appendHistory
+    const now = Date.now()
+    for (const p of locPlan.placements) {
+      const from = yardLocFull(yardUnits[p.vin])
+      const to = yardLocFull({ block: p.block, slot: p.slot, row: p.row })
+      if (from !== to) appendHistory(p.vin, { at: now, by, field: 'Location', from, to })
+    }
     const n = updateLocations(locPlan.placements)
     toast('ok', `Update Location · จัดตำแหน่ง ${n.toLocaleString()} คัน` +
       (locPlan.rowFull.length ? ` · ช่องเต็ม ข้าม ${locPlan.rowFull.length}` : '') +
