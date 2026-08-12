@@ -10,6 +10,7 @@ import { useTrackingRows, useTracking } from './store/useTracking'
 import { useOps } from './store/useOps'
 import { startSyncBus, stopSyncBus } from './lib/syncBus'
 import { deriveCarStatus } from './lib/carStatus'
+import { matchModel } from './lib/sampleData'
 import { blockTag, blockKeyOfTag } from './lib/format'
 import { yardLocFull } from './lib/groupingImport'
 import { isPhone } from './lib/device'
@@ -174,6 +175,24 @@ export default function App() {
         if (r && deriveCarStatus(r.cells) === 'Gate-out') gone.push(vin)
       }
       if (gone.length) useYard.getState().markDepartedMany(gone)
+
+      // ── model heal: the sheet's รุ่น is the truth — a unit created from an
+      // older file keeps a stale class forever (a SEAL 5 painted "SEAL" on the
+      // yard plan). Re-derive the class from the row's model text and fix any
+      // mismatch (importUnits re-runs matchModel + pushes to cloud). Unknown
+      // text (OTHER) never overwrites a unit's existing class.
+      {
+        const allU = useYard.getState().units
+        const fixes: { vin: string; model: string; color: string }[] = []
+        for (const vin in allU) {
+          const u = allU[vin]
+          const txt = (rows[vin]?.cells['Model name'] || rows[vin]?.cells['Model'] || '').trim()
+          if (!txt) continue
+          const m = matchModel(txt)
+          if (m.id !== 'OTHER' && m.id !== u.model) fixes.push({ vin, model: txt, color: '' })
+        }
+        if (fixes.length) useYard.getState().importUnits(fixes)
+      }
 
       // ── "ใช้ข้อมูลแก้ไขล่าสุด": position must agree with the newest edit ──
       // Every lane-CHANGING write now logs a Location history line, so a
