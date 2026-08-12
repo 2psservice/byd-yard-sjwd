@@ -17,6 +17,9 @@ import type { RealtimeChannel } from '@supabase/supabase-js'
 
 // live channel (module-scoped — never persisted)
 let trackingChannel: RealtimeChannel | null = null
+// remember a websocket drop so the re-subscribe runs an incremental syncCloud
+// to catch up on rows changed while the socket was down
+let trackingHadDrop = false
 
 /** Migrate the filter config from its old standalone localStorage key (pre-store). */
 function initialFilterCols(): string[] {
@@ -297,7 +300,24 @@ export const useTracking = create<TrackingState>()(
               })
             },
           )
-          .subscribe()
+          // self-healing subscription — mirror of the units channel: reconnect
+          // after a silent websocket death and run an incremental syncCloud to
+          // catch up on rows changed while the socket was down
+          .subscribe((status) => {
+            if (status === 'SUBSCRIBED') {
+              if (!trackingHadDrop) return
+              trackingHadDrop = false
+              get().syncCloud().catch(() => {})
+              return
+            }
+            if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+              trackingHadDrop = true
+              if (trackingChannel) { supabase.removeChannel(trackingChannel); trackingChannel = null }
+              setTimeout(() => {
+                if (!trackingChannel && useYard.getState().loggedInUserId) get().subscribeRealtime()
+              }, 4000)
+            }
+          })
       },
 
       unsubscribeRealtime: () => {
