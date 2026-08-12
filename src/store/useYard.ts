@@ -1352,7 +1352,32 @@ export const useYard = create<YardState>()(
           }
 
           const result: Damage[] = [...inApp]
+          // duplicate-wound rule: the SAME wound recorded both at the station
+          // (walk-around / PDI / mechanic) and in the Co-Inspection file must
+          // show as ONE defect. The in-app record wins — it carries photos and
+          // the mechanic's trail — so the file's copy is skipped; if an earlier
+          // import already added that copy, it is removed now. Matching is by
+          // normalized position + defect text across EN/TH labels.
+          const normTxt = (s?: string) => (s ?? '').toLowerCase().replace(/\s+/g, '')
+          const inAppKeys = new Set<string>()
+          for (const d of inApp) {
+            for (const a of [d.area, d.areaTh]) for (const t of [d.type, d.item, d.itemTh]) {
+              const na = normTxt(a), nt = normTxt(t)
+              if (na && nt && na !== '—' && nt !== '—') inAppKeys.add(`${na}|${nt}`)
+            }
+          }
+          const dupOfInApp = (d: Damage) => {
+            for (const a of [d.area, d.areaTh]) for (const t of [d.type, d.item, d.itemTh]) {
+              const na = normTxt(a), nt = normTxt(t)
+              if (na && nt && inAppKeys.has(`${na}|${nt}`)) return true
+            }
+            return false
+          }
           for (let dmg of fileById.values()) {
+            if (inAppKeys.size && dupOfInApp(dmg)) {
+              if (oldById.has(dmg.id)) removedIds.push(dmg.id)
+              continue
+            }
             const base = oldById.get(dmg.id) ?? healedTwin.get(dayKey(dmg.source, dmg.area, dmg.at))
             if (base) {
               // keep evidence captured in-app that the workbook can't carry —
