@@ -7,8 +7,6 @@ import { rowInSite } from '../lib/siteScope'
 import { PageHead, cx } from '../components/ui'
 import { DailyStockReport } from '../components/DailyStockReport'
 import { dayKeyOf } from './Grouping'
-import type { TrackRow } from '../lib/excelTracking'
-import { appendMasterSheets } from '../lib/masterSheets'
 import {
   REPORT_MENUS, TIME_PERIODS, buildList, buildDefects, buildTimeMatrix, exportOpsReport,
   rangeLabel, type ReportCtx,
@@ -16,71 +14,14 @@ import {
 
 export function Report() {
   const lang = useYard((s) => s.lang)
-  const sites = useYard((s) => s.sites)
-  const currentSite = useYard((s) => s.currentSite)
-  const toast = useYard((s) => s.toast)
-  const units = useUnits()
-  const allRows = useTrackingRows()
-  const allYards = false // master export always covers the current yard now
-  const [exporting, setExporting] = useState(false)
-
-  const siteName = sites.find((s) => s.id === currentSite)?.name ?? '—'
-
-  const scopedRows = useMemo<TrackRow[]>(() => {
-    const rows = allYards || !currentSite ? allRows : allRows.filter((r) => rowInSite(r, currentSite, sites))
-    return [...rows].sort((a, b) => a.vin.localeCompare(b.vin))
-  }, [allRows, allYards, currentSite, sites])
-
-  const scopedUnits = useMemo(
-    () => (allYards || !currentSite ? units : units.filter((u) => !u.site || u.site === currentSite)),
-    [units, allYards, currentSite],
-  )
-
-  const doExport = async () => {
-    if (!scopedRows.length && !scopedUnits.length) { toast('info', 'ยังไม่มีข้อมูลให้ออกรายงาน'); return }
-    setExporting(true)
-    try {
-      // exceljs (not SheetJS) — the free SheetJS build can't write fonts/fills,
-      // and this export reproduces the master file's formatting exactly.
-      const XJS: any = await import('exceljs')
-      const ExcelJS = XJS.default ?? XJS
-      const wb = new ExcelJS.Workbook()
-      wb.creator = 'SJWD Yard Control'
-      appendMasterSheets(wb, scopedRows, scopedUnits)
-
-      const d = new Date()
-      const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-      const scopeTag = allYards ? 'All-Yards' : siteName.replace(/[^\w]+/g, '-')
-      const buf = await wb.xlsx.writeBuffer()
-      const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `SJWD-Report-${scopeTag}-${stamp}.xlsx`
-      a.click()
-      URL.revokeObjectURL(url)
-      toast('ok', `ออกรายงานแล้ว — ${scopedRows.length.toLocaleString()} คัน`)
-    } catch (e) {
-      console.error('[report] export', e)
-      toast('err', 'ออกรายงานไม่สำเร็จ ลองใหม่อีกครั้ง')
-    } finally {
-      setExporting(false)
-    }
-  }
 
   return (
     <div>
       <PageHead
         title={lang === 'th' ? 'รายงาน (Report)' : 'Report'}
         sub={lang === 'th'
-          ? 'รายงานประจำวัน (ดูย้อนหลังได้ทุกวัน) และรายงาน Excel รูปแบบเดียวกับไฟล์ master 100%'
-          : 'Daily stock report for any past date, plus the Excel export mirroring the master workbook'}
-        right={
-          <button className="btn btn-primary px-4 py-2.5 text-[13.5px]" onClick={doExport} disabled={exporting}>
-            <Download size={16} className="mr-1.5" />
-            {exporting ? (lang === 'th' ? 'กำลังสร้างไฟล์…' : 'Building…') : (lang === 'th' ? 'ออกรายงาน Excel' : 'Export Excel')}
-          </button>
-        }
+          ? 'รายงาน Operation ส่งทุกเบรค · ดูย้อนหลังได้ทุกวัน · Export Excel ได้ทุกเมนู'
+          : 'Operation report per break, any past date, Excel export for every menu'}
       />
 
       {/* ── operation report (ส่งทุกเบรค) — 14 เมนู realtime จากหน้างาน ──
