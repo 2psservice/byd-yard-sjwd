@@ -22,7 +22,7 @@ function siteLabel(siteName: string): string {
   return siteName
 }
 
-const dayKeyOf = (d: Date) =>
+export const dayKeyOf = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 /** Which DAY a delivery run belongs to — the "Date 07 August 2026" in its
  *  name (the plan's own date), falling back to the day it was created. */
@@ -545,7 +545,7 @@ export function Grouping() {
 
 /** Calendar button (top-right): days that have delivery runs show RED; picking
  *  one shows only that day's runs below, so the list never grows unbounded. */
-function DayPicker({ days, value, onChange }: {
+export function DayPicker({ days, value, onChange }: {
   days: Map<string, number>
   value: string | 'all'
   onChange: (v: string | 'all') => void

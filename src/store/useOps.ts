@@ -173,6 +173,13 @@ let qid = 0
 
 interface OpsState {
   queues: WorkQueue[]
+  /** Admin-closed queues — id → when/who. A closed queue is archived to its
+   *  day (calendar view) and stops occupying the daily board; an OPEN queue
+   *  keeps showing every day until finished + closed. Synced via app_config
+   *  ('ops_closed_queues') so no table migration is needed. */
+  closed: Record<string, { at: number; by?: string }>
+  closeQueue: (id: string, by?: string) => void
+  reopenQueue: (id: string) => void
   createQueue: (name: string, by?: string, site?: string) => string
   /** Find-or-create a Pre Gate-in queue by name and add these VINs in ONE atomic
    *  state update + ONE cloud push. Avoids the create(empty)+addVins(full) race
@@ -230,6 +237,20 @@ export const useOps = create<OpsState>()(
   persist(
     (set, get) => ({
       queues: [],
+      closed: {},
+
+      closeQueue: (id, by) => {
+        const closed = { ...get().closed, [id]: { at: Date.now(), by } }
+        set({ closed })
+        db.saveAppConfig('ops_closed_queues', closed).then(() => sendSync('ops')).catch(() => {})
+      },
+
+      reopenQueue: (id) => {
+        const closed = { ...get().closed }
+        delete closed[id]
+        set({ closed })
+        db.saveAppConfig('ops_closed_queues', closed).then(() => sendSync('ops')).catch(() => {})
+      },
 
       createQueue: (name, by, site) => {
         const n = name.trim()
@@ -512,6 +533,10 @@ export const useOps = create<OpsState>()(
       },
 
       loadFromCloud: async (authoritative = false) => {
+        // closures ride along on every queue refetch — cloud copy wins
+        db.fetchAppConfig<Record<string, { at: number; by?: string }>>('ops_closed_queues')
+          .then((c) => { if (c && typeof c === 'object') set({ closed: c }) })
+          .catch(() => {})
         const fetched = await db.fetchOpsQueues()
         if (fetched === null) return // table missing / offline — keep local state
         const cloud = sanitizeQueues(fetched)
@@ -534,7 +559,10 @@ export const useOps = create<OpsState>()(
       // one name:null / items:null entry crashed every queue screen
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<OpsState>
-        return { ...current, ...p, queues: sanitizeQueues(p.queues) }
+        return {
+          ...current, ...p, queues: sanitizeQueues(p.queues),
+          closed: p.closed && typeof p.closed === 'object' ? p.closed : {},
+        }
       },
     },
   ),
