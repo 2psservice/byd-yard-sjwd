@@ -9,6 +9,7 @@ import { useYard, useMe, isOpsOnlyRole } from './store/useYard'
 import { useTrackingRows, useTracking } from './store/useTracking'
 import { useOps } from './store/useOps'
 import { startSyncBus, stopSyncBus } from './lib/syncBus'
+import { deriveCarStatus } from './lib/carStatus'
 import { isPhone } from './lib/device'
 import { Dashboard } from './pages/Dashboard'
 import { ImportPage } from './pages/ImportPage'
@@ -150,6 +151,32 @@ export default function App() {
 
   // load real tracking data from IndexedDB on startup
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
+
+  // ── a gated-out car must not keep holding a parking slot ──────────────────
+  // Cars leave through several paths (ops-scan + 09:30 flush, Co-Inspection
+  // import, restored gate-out history) and only the ops-scan path released its
+  // slot — the rest stayed painted into their lane, blocking the row. Sweep on
+  // boot and every minute (the flush is clock-driven, no data change fires it):
+  // any positioned unit whose sheet derives Gate-out is marked departed — the
+  // slot frees, the lane closes up, and the tracking row's history stays.
+  useEffect(() => {
+    if (!loggedInUserId) return
+    const sweep = () => {
+      const { units } = useYard.getState()
+      const { rows } = useTracking.getState()
+      const gone: string[] = []
+      for (const vin in units) {
+        const u = units[vin]
+        if (u.block == null && u.row == null && u.slot == null) continue
+        const r = rows[vin]
+        if (r && deriveCarStatus(r.cells) === 'Gate-out') gone.push(vin)
+      }
+      if (gone.length) useYard.getState().markDepartedMany(gone)
+    }
+    const t = setTimeout(sweep, 9000) // let the boot loads settle first
+    const iv = setInterval(sweep, 60_000)
+    return () => { clearTimeout(t); clearInterval(iv) }
+  }, [loggedInUserId])
 
   // dev-only store handles for automated tests (same pattern as Units' __tracking)
   useEffect(() => {
