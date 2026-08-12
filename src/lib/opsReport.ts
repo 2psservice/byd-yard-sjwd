@@ -74,9 +74,16 @@ function parseDayCell(s?: string): number | undefined {
   }
   return undefined
 }
-const cellOnDay = (s: string | undefined, day: string) => {
-  const ts = parseDayCell(s)
-  return ts !== undefined && dayKeyOfTs(ts) === day
+/** Inclusive YYYY-MM-DD range test (string compare is date order). */
+const keyInRange = (k: string, ctx: { dayFrom: string; dayTo: string }) => k >= ctx.dayFrom && k <= ctx.dayTo
+const tsInRange = (ts: number | undefined, ctx: { dayFrom: string; dayTo: string }) =>
+  ts !== undefined && keyInRange(dayKeyOfTs(ts), ctx)
+const cellInRange = (s: string | undefined, ctx: { dayFrom: string; dayTo: string }) =>
+  tsInRange(parseDayCell(s), ctx)
+/** "12/08/2026" or "10/08/2026 - 12/08/2026" for display cells. */
+export const rangeLabel = (ctx: { dayFrom: string; dayTo: string }) => {
+  const f = (k: string) => k.split('-').reverse().join('/')
+  return ctx.dayFrom === ctx.dayTo ? f(ctx.dayFrom) : `${f(ctx.dayFrom)} - ${f(ctx.dayTo)}`
 }
 
 /** P1..P5 bucket for a timestamp (index 0..4) by the yard's break schedule. */
@@ -94,7 +101,8 @@ export interface ReportCtx {
   rows: TrackRow[]           // site-scoped tracking rows
   units: Unit[]              // site-scoped units (damages live here)
   queues: WorkQueue[]        // site-scoped work queues
-  day: string                // 'YYYY-MM-DD'
+  dayFrom: string            // 'YYYY-MM-DD' (inclusive)
+  dayTo: string              // 'YYYY-MM-DD' (inclusive)
   siteLabel: string
 }
 
@@ -117,14 +125,14 @@ function toListRow(no: number, vin: string, ctx: ReportCtx, lots: Map<string, st
     modelName: c['Model name'] || c['Model'] || '',
     model: c['Model'] || c['Model name'] || '',
     color: c['Color'] || '',
-    date: opts?.date ?? fmtDay(ctx.day),
+    date: opts?.date ?? rangeLabel(ctx),
     lot: opts?.lot ?? (c['LOT'] || lots.get(vin) || ''),
     remark: opts?.remark ?? '',
   }
 }
 
 const itemTs = (i: QueueItem) => i.checkedAt ?? i.doneAt
-const itemOnDay = (i: QueueItem, day: string) => { const t = itemTs(i); return t != null && dayKeyOfTs(t) === day }
+const itemInRange = (i: QueueItem, ctx: { dayFrom: string; dayTo: string }) => tsInRange(itemTs(i) ?? undefined, ctx)
 
 /** Type-scoped station queues (never sequences / pre-gate-in batches). */
 function typeQueues(ctx: ReportCtx, type: 'PDI' | 'FINAL' | 'PM' | 'WASH'): WorkQueue[] {
@@ -137,7 +145,7 @@ function checkedItems(ctx: ReportCtx, type: 'PDI' | 'FINAL' | 'PM' | 'WASH', nam
   const out = new Map<string, QueueItem>()
   for (const q of typeQueues(ctx, type)) {
     if (nameFilter && !nameFilter(q.name ?? '')) continue
-    for (const i of q.items) if (itemOnDay(i, ctx.day)) {
+    for (const i of q.items) if (itemInRange(i, ctx)) {
       const prev = out.get(i.vin)
       if (!prev || (itemTs(i) ?? 0) > (itemTs(prev) ?? 0)) out.set(i.vin, i)
     }
@@ -158,19 +166,19 @@ export function buildList(ctx: ReportCtx, id: string): ListRow[] {
   if (id === 'gatein') {
     for (const r of ctx.rows) {
       const ts = parseDayCell(r.cells['Gate In Time'])
-      if (ts !== undefined && dayKeyOfTs(ts) === ctx.day) { push(r.vin, { date: fmtTime(ts), remark: r.cells['Gate In Inspector'] || '' }); continue }
-      if (ts === undefined && cellOnDay(r.cells['Gate In (Rayong yard)'], ctx.day)) push(r.vin)
+      if (tsInRange(ts, ctx)) { push(r.vin, { date: fmtTime(ts), remark: r.cells['Gate In Inspector'] || '' }); continue }
+      if (ts === undefined && cellInRange(r.cells['Gate In (Rayong yard)'], ctx)) push(r.vin)
     }
   } else if (id === 'gateout') {
     for (const r of ctx.rows) {
       const ts = parseDayCell(r.cells['Gate Out Time'])
-      if (ts !== undefined && dayKeyOfTs(ts) === ctx.day) { push(r.vin, { date: fmtTime(ts) }); continue }
-      if (ts === undefined && cellOnDay(r.cells['Gate Out time stamp'], ctx.day)) push(r.vin)
+      if (tsInRange(ts, ctx)) { push(r.vin, { date: fmtTime(ts) }); continue }
+      if (ts === undefined && cellInRange(r.cells['Gate Out time stamp'], ctx)) push(r.vin)
     }
   } else if (id === 'pdiout') {
     // passed PDI on the day AND already assigned a delivery group → released
     for (const r of ctx.rows) {
-      if (!PDI_KEYS.some((k) => cellOnDay(r.cells[k], ctx.day))) continue
+      if (!PDI_KEYS.some((k) => cellInRange(r.cells[k], ctx))) continue
       const g = (r.cells['Grouping  Number'] || '').trim()
       if (g) push(r.vin, { lot: g })
     }
@@ -179,7 +187,7 @@ export function buildList(ctx: ReportCtx, id: string): ListRow[] {
     const seen = new Set<string>()
     for (const q of ctx.queues) {
       if (!isSequenceQueue(q)) continue
-      for (const i of q.items) if (i.atWashAt && dayKeyOfTs(i.atWashAt) === ctx.day && !seen.has(i.vin)) {
+      for (const i of q.items) if (i.atWashAt && tsInRange(i.atWashAt, ctx) && !seen.has(i.vin)) {
         seen.add(i.vin); push(i.vin, { date: fmtTime(i.atWashAt) })
       }
     }
@@ -214,13 +222,13 @@ export function buildDefects(ctx: ReportCtx, id: 'fcdefect' | 'pmdefect'): Defec
   for (const u of ctx.units) {
     if (!stationVins.has(u.vin)) continue
     for (const d of u.damages) {
-      if (dayKeyOfTs(d.at) !== ctx.day) continue
+      if (!tsInRange(d.at, ctx)) continue
       const c = rows.get(u.vin)?.cells ?? {}
       out.push({
         no: out.length + 1, vin: u.vin,
         position: d.areaTh || d.area || '',
         defect: d.itemTh || d.item || d.type || '',
-        date: fmtDay(ctx.day),
+        date: fmtDay(dayKeyOfTs(d.at)),
         status: d.statusRepair || 'Waiting Repair',
         lot: c['LOT'] || lots.get(u.vin) || '',
         remark: d.note || d.remark || '',
@@ -240,8 +248,8 @@ export function buildTimeMatrix(ctx: ReportCtx, id: 'fctime' | 'pmtime'): TimeMa
   // queue spans days, count queues created that day, else any queue with a
   // check recorded that day
   const qs = typeQueues(ctx, type)
-  let planQs = qs.filter((q) => dayKeyOfTs(q.createdAt || 0) === ctx.day)
-  if (!planQs.length) planQs = qs.filter((q) => q.items.some((i) => itemOnDay(i, ctx.day)))
+  let planQs = qs.filter((q) => keyInRange(dayKeyOfTs(q.createdAt || 0), ctx))
+  if (!planQs.length) planQs = qs.filter((q) => q.items.some((i) => itemInRange(i, ctx)))
   const plan = planQs.reduce((a, q) => a + q.items.length, 0)
 
   const byModel = new Map<string, { total: number; p: number[] }>()
@@ -348,7 +356,7 @@ export async function exportOpsReport(ctx: ReportCtx) {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `Report_operation_${ctx.siteLabel.replace(/[^\w]+/g, '')}_${ctx.day}.xlsx`
+  a.download = `Report_operation_${ctx.siteLabel.replace(/[^\w]+/g, '')}_${ctx.dayFrom === ctx.dayTo ? ctx.dayFrom : `${ctx.dayFrom}_to_${ctx.dayTo}`}.xlsx`
   a.click()
   URL.revokeObjectURL(url)
 }

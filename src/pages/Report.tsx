@@ -6,12 +6,12 @@ import { useOps } from '../store/useOps'
 import { rowInSite } from '../lib/siteScope'
 import { PageHead, cx } from '../components/ui'
 import { DailyStockReport } from '../components/DailyStockReport'
-import { DayPicker, dayKeyOf } from './Grouping'
+import { dayKeyOf } from './Grouping'
 import type { TrackRow } from '../lib/excelTracking'
 import { appendMasterSheets } from '../lib/masterSheets'
 import {
   REPORT_MENUS, TIME_PERIODS, buildList, buildDefects, buildTimeMatrix, exportOpsReport,
-  dayKeyOfTs, type ReportCtx,
+  rangeLabel, type ReportCtx,
 } from '../lib/opsReport'
 
 export function Report() {
@@ -101,7 +101,9 @@ function OpsReportSection() {
   const units = useUnits()
   const queues = useOps((s) => s.queues)
   const [menu, setMenu] = useState('stock')
-  const [day, setDay] = useState<string | 'all'>(dayKeyOf(new Date()))
+  // date RANGE (inclusive) — one day by default; pick from–to for a period
+  const [dayFrom, setDayFrom] = useState(dayKeyOf(new Date()))
+  const [dayTo, setDayTo] = useState(dayKeyOf(new Date()))
   const [exporting, setExporting] = useState(false)
 
   const site = sites.find((s) => s.id === currentSite)
@@ -113,24 +115,17 @@ function OpsReportSection() {
     return site?.code || site?.name || 'Yard'
   }, [site])
 
-  const ctx = useMemo<ReportCtx>(() => ({
-    rows: currentSite ? allRows.filter((r) => rowInSite(r, currentSite, sites)) : allRows,
-    units: currentSite ? units.filter((u) => !u.site || u.site === currentSite) : units,
-    queues: queues.filter((q) => !currentSite || !q.site || q.site === currentSite),
-    day: day === 'all' ? dayKeyOf(new Date()) : day,
-    siteLabel,
-  }), [allRows, units, queues, currentSite, sites, day, siteLabel])
-
-  // calendar marks: days that have queue activity or gate scans
-  const dayCounts = useMemo(() => {
-    const m = new Map<string, number>()
-    const add = (k: string) => m.set(k, (m.get(k) ?? 0) + 1)
-    for (const q of ctx.queues) for (const i of q.items) {
-      const t = i.checkedAt ?? i.doneAt
-      if (t) add(dayKeyOfTs(t))
+  const ctx = useMemo<ReportCtx>(() => {
+    // tolerate a reversed pick (from > to) — swap instead of showing nothing
+    const [f, t] = dayFrom <= dayTo ? [dayFrom, dayTo] : [dayTo, dayFrom]
+    return {
+      rows: currentSite ? allRows.filter((r) => rowInSite(r, currentSite, sites)) : allRows,
+      units: currentSite ? units.filter((u) => !u.site || u.site === currentSite) : units,
+      queues: queues.filter((q) => !currentSite || !q.site || q.site === currentSite),
+      dayFrom: f, dayTo: t,
+      siteLabel,
     }
-    return m
-  }, [ctx.queues])
+  }, [allRows, units, queues, currentSite, sites, dayFrom, dayTo, siteLabel])
 
   const active = REPORT_MENUS.find((m) => m.id === menu) ?? REPORT_MENUS[0]
   const listRows = useMemo(() => (active.kind === 'list' ? buildList(ctx, active.id) : []), [ctx, active])
@@ -141,7 +136,7 @@ function OpsReportSection() {
     setExporting(true)
     try {
       await exportOpsReport(ctx)
-      toast('ok', `ออกไฟล์ Report_operation (${ctx.day.split('-').reverse().join('/')}) แล้ว`)
+      toast('ok', `ออกไฟล์ Report_operation (${rangeLabel(ctx)}) แล้ว`)
     } catch (e) { console.error('[opsReport] export', e); toast('err', 'ออกไฟล์ไม่สำเร็จ ลองใหม่อีกครั้ง') }
     finally { setExporting(false) }
   }
@@ -155,8 +150,20 @@ function OpsReportSection() {
         <div className="text-[12px] font-bold uppercase tracking-wider flex items-center gap-1.5" style={{ color: 'var(--muted)' }}>
           <ClipboardList size={14} /> รายงาน Operation ({siteLabel}) · ส่งทุกเบรค — นับ realtime จากที่หน้างานบันทึก
         </div>
-        <div className="flex items-center gap-2">
-          <DayPicker days={dayCounts} value={day} onChange={setDay} />
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* จาก–ถึง: เลือกวันเดียว (ค่าเริ่มต้น = วันนี้) หรือทั้งช่วง */}
+          <div className="flex items-center gap-1.5 text-[12px]" style={{ color: 'var(--muted)' }}>
+            <span>จาก</span>
+            <input type="date" className="input py-1 px-2 text-[12.5px] tabular" value={dayFrom}
+              onChange={(e) => { if (e.target.value) setDayFrom(e.target.value) }} />
+            <span>ถึง</span>
+            <input type="date" className="input py-1 px-2 text-[12.5px] tabular" value={dayTo}
+              onChange={(e) => { if (e.target.value) setDayTo(e.target.value) }} />
+            <button className="btn px-2 py-1 text-[12px]"
+              onClick={() => { const t = dayKeyOf(new Date()); setDayFrom(t); setDayTo(t) }}>
+              วันนี้
+            </button>
+          </div>
           <button className="btn btn-primary px-3 py-1.5 text-[12.5px]" onClick={doExport} disabled={exporting}>
             <Download size={14} /> {exporting ? 'กำลังสร้างไฟล์…' : 'Export Excel (ทุกเมนู)'}
           </button>
@@ -179,7 +186,7 @@ function OpsReportSection() {
         <div className="panel overflow-hidden">
           <div className="px-4 py-2 border-b hairline flex items-center gap-2 text-[12.5px] font-bold" style={{ background: 'var(--chip)' }}>
             {active.label} · Total <span style={{ color: 'var(--brand)' }}>{listRows.length}</span>
-            <span className="font-medium" style={{ color: 'var(--faint)' }}>· {ctx.day.split('-').reverse().join('/')}</span>
+            <span className="font-medium" style={{ color: 'var(--faint)' }}>· {rangeLabel(ctx)}</span>
           </div>
           <div className="overflow-x-auto max-h-[60vh] overflow-y-auto">
             <table className="w-full text-[12.5px]">
@@ -210,7 +217,7 @@ function OpsReportSection() {
         <div className="panel overflow-hidden">
           <div className="px-4 py-2 border-b hairline flex items-center gap-2 text-[12.5px] font-bold" style={{ background: 'var(--chip)' }}>
             {active.label} · Total <span style={{ color: '#dc2626' }}>{defRows.length}</span>
-            <span className="font-medium" style={{ color: 'var(--faint)' }}>· {ctx.day.split('-').reverse().join('/')}</span>
+            <span className="font-medium" style={{ color: 'var(--faint)' }}>· {rangeLabel(ctx)}</span>
           </div>
           <div className="overflow-x-auto max-h-[60vh] overflow-y-auto">
             <table className="w-full text-[12.5px]">
@@ -240,7 +247,7 @@ function OpsReportSection() {
       {active.kind === 'time' && matrix && (
         <div className="panel overflow-hidden">
           <div className="px-4 py-2 border-b hairline text-center text-[13px] font-bold" style={{ background: '#000', color: '#fff' }}>
-            {matrix.title} · {ctx.day.split('-').reverse().join('/')}
+            {matrix.title} · {rangeLabel(ctx)}
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-[12.5px] text-center" style={{ borderCollapse: 'collapse' }}>
