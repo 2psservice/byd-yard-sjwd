@@ -2131,8 +2131,15 @@ function DriverView() {
   }
   const doAssign = (slot: { block: string; row: number; slot: number }) => {
     if (!unit) return
+    const from = unit.block && unit.row && unit.slot ? yardLocFull(unit) : ''
     assign(unit.vin, slot, driverName, planMode)
     startTrip(unit.vin, driverName, 'Gate', `${blockCode(slot.block)}${slot.slot}.${slot.row}`)
+    // the parking assignment IS a position edit — log it like any relocation,
+    // so no screen can ever hold a position that no history line explains
+    useTracking.getState().appendHistory(unit.vin, {
+      at: Date.now(), by: driverName, field: 'Location',
+      from, to: yardLocFull({ block: slot.block, slot: slot.slot, row: slot.row }),
+    })
     toast('ok', `${unit.vin.slice(-6)} → ${blockCode(slot.block)}${slot.slot}.${slot.row}`)
   }
   const doPark = () => {
@@ -2182,7 +2189,14 @@ function DriverView() {
       updateCell(unit.vin, 'Car Status', YARD_STATUS)
       setProcDone({ label: stationParkLabel(proc.queueName), sub: `ส่งเข้าสถานี ${proc.queueName} แล้ว · รอตรวจ`, accent: '#0ea5e9' })
     } else {
-      if (proc.slot) { assign(unit.vin, proc.slot, driverName, planMode); confirmParked(unit.vin) }
+      if (proc.slot) {
+        const from = unit.block && unit.row && unit.slot ? yardLocFull(unit) : ''
+        assign(unit.vin, proc.slot, driverName, planMode); confirmParked(unit.vin)
+        useTracking.getState().appendHistory(unit.vin, {
+          at: Date.now(), by: driverName, field: 'Location',
+          from, to: yardLocFull({ block: proc.slot.block, slot: proc.slot.slot, row: proc.slot.row }),
+        })
+      }
       returnToSlot(proc.queueId, unit.vin, driverName)
       updateCell(unit.vin, 'Car Status', YARD_STATUS)
       setProcDone({ label: proc.destLabel, sub: `${proc.queueName} เสร็จ · จอดที่ ${proc.destLabel}`, accent: 'var(--st-yard)' })
