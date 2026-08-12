@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { FileSpreadsheet, Download, Database, ShieldAlert, ClipboardList } from 'lucide-react'
+import { Download, ClipboardList } from 'lucide-react'
 import { useYard, useUnits } from '../store/useYard'
 import { useTrackingRows } from '../store/useTracking'
 import { useOps } from '../store/useOps'
@@ -113,7 +113,7 @@ export function Report() {
   const toast = useYard((s) => s.toast)
   const units = useUnits()
   const allRows = useTrackingRows()
-  const [allYards, setAllYards] = useState(false)
+  const allYards = false // master export always covers the current yard now
   const [exporting, setExporting] = useState(false)
 
   const siteName = sites.find((s) => s.id === currentSite)?.name ?? '—'
@@ -224,16 +224,6 @@ export function Report() {
     }
   }
 
-  const stat = (label: string, value: number, icon: React.ReactNode) => (
-    <div className="panel p-4 flex items-center gap-3">
-      <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'var(--brand-soft)', color: 'var(--brand)' }}>{icon}</div>
-      <div>
-        <div className="text-[12px]" style={{ color: 'var(--muted)' }}>{label}</div>
-        <div className="display text-[20px] font-bold tabular leading-tight">{value.toLocaleString()}</div>
-      </div>
-    </div>
-  )
-
   return (
     <div>
       <PageHead
@@ -250,43 +240,9 @@ export function Report() {
       />
 
       {/* ── operation report (ส่งทุกเบรค) — 14 เมนู realtime จากหน้างาน ──
-          เมนูแรกคือ Daily report stock (คอมโพเนนต์เดิม) */}
+          เมนูแรกคือ Daily report stock (คอมโพเนนต์เดิม) · ปุ่มมุมขวาบนยังออก
+          ไฟล์ master (Tracking Status + Defect sheets) ได้เหมือนเดิม */}
       <OpsReportSection />
-
-      {/* ── master-format Excel export ── */}
-      <div className="text-[12px] font-bold uppercase tracking-wider mb-2 mt-5" style={{ color: 'var(--muted)' }}>
-        {lang === 'th' ? 'ออกรายงาน Excel (รูปแบบไฟล์ master)' : 'Excel export (master format)'}
-      </div>
-
-      {/* scope: current yard vs all yards */}
-      <div className="panel p-3.5 mb-4 flex items-center gap-2 flex-wrap text-[13px]">
-        <span className="font-medium" style={{ color: 'var(--muted)' }}>{lang === 'th' ? 'ขอบเขตข้อมูล:' : 'Scope:'}</span>
-        <button className={`btn px-3 py-1.5 ${!allYards ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setAllYards(false)}>
-          {lang === 'th' ? `ลานปัจจุบัน (${siteName})` : `Current yard (${siteName})`}
-        </button>
-        <button className={`btn px-3 py-1.5 ${allYards ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setAllYards(true)}>
-          {lang === 'th' ? 'ทุกลาน' : 'All yards'}
-        </button>
-      </div>
-
-      {/* what goes into the file */}
-      <div className="grid gap-3 mb-4" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
-        {stat('Tracking Status', scopedRows.length, <Database size={17} />)}
-        {stat('Defect-Yard', defectSplit.yard.length, <ShieldAlert size={17} />)}
-        {stat('Defect-Factory', defectSplit.factory.length, <ShieldAlert size={17} />)}
-        {stat('Defect-Whale 28 rai', defectSplit.whale.length, <ShieldAlert size={17} />)}
-      </div>
-
-      <div className="panel p-4 text-[13px] leading-relaxed" style={{ color: 'var(--muted)' }}>
-        <div className="font-semibold mb-1.5 flex items-center gap-1.5">
-          <FileSpreadsheet size={15} /> {lang === 'th' ? 'ไฟล์ที่ได้' : 'Output file'}
-        </div>
-        <ul className="list-disc pl-5 space-y-1">
-          <li><b>Tracking Status</b> — {lang === 'th' ? 'ครบ 66 คอลัมน์ตามไฟล์ master: ฟอนต์ Tahoma 10, ความกว้างคอลัมน์, ความสูงแถว, สีหัวคอลัมน์ (PIC (PDI) ส้ม, กลุ่ม Vin Of Status ฟ้าอ่อน) ตรงต้นฉบับ' : 'all 66 master columns with the master fonts, widths, heights and header colours'}</li>
-          <li><b>Defect-Yard / Defect-Factory / Defect-Whale 28 rai</b> — {lang === 'th' ? 'หัวคอลัมน์ ฟอนต์ และขนาดตรงตาม sheet ต้นฉบับ (Defect ที่บันทึกในแอปรวมอยู่ใน Defect-Yard)' : 'defect sheets with the master layout (in-app finds are included in Defect-Yard)'}</li>
-          <li>{lang === 'th' ? 'ไฟล์นี้นำกลับมา Import ในระบบได้ทันที (ชื่อ sheet และหัวคอลัมน์ตรงกับตัวอ่านไฟล์ 100%)' : 'The exported file can be re-imported — sheet names and headers match the parser 1:1'}</li>
-        </ul>
-      </div>
     </div>
   )
 }
