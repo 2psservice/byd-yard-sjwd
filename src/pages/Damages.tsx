@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Plus, Search, Pencil, Trash2, CheckCircle2, XCircle, ChevronLeft, ChevronRight, FileSpreadsheet, Printer, FileText, X } from 'lucide-react'
+import { Plus, Search, Pencil, ChevronLeft, ChevronRight, FileSpreadsheet, Printer, FileText, X } from 'lucide-react'
 import { useYard, useUnits } from '../store/useYard'
 import { useTrackingRows } from '../store/useTracking'
 import { zoneLabel } from '../components/CarDiagramMultiView'
@@ -177,7 +177,7 @@ export function Damages() {
     () => (currentSite ? allUnits.filter(u => !u.site || u.site === currentSite) : allUnits),
     [allUnits, currentSite],
   )
-  const { removeDamage, updateDamage } = useYard()
+  const { updateDamage } = useYard()
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
   const [addOpen, setAddOpen] = useState(false)
@@ -202,12 +202,15 @@ export function Damages() {
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
   const pageRows = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
 
-  const toggleFixed = (r: DamageRow) => {
-    const isFixed = !!r.damage.repairDate
-    updateDamage(r.unit.vin, r.damage.id, isFixed
-      ? { statusRepair: undefined, repairDate: undefined }
-      : { statusRepair: 'Repaired', repairDate: Date.now() },
-    )
+  // Status Repair — the same ladder the master sheet's Status column uses.
+  // Repaired stamps the repair date; going back to Waiting Repair clears it.
+  const setStatusRepair = (r: DamageRow, v: string) => {
+    updateDamage(r.unit.vin, r.damage.id, {
+      statusRepair: v as any,
+      repairDate: v === 'Repaired' ? (r.damage.repairDate ?? Date.now())
+        : v === 'Waiting Repair' ? undefined
+        : r.damage.repairDate,
+    })
   }
 
   return (
@@ -249,7 +252,7 @@ export function Damages() {
           <table className="w-full text-[13px]">
             <thead>
               <tr className="border-b hairline" style={{ background: 'var(--chip)' }}>
-                {['Vehicle', 'Zone / Type', 'Inspector', 'Date/Time', 'Images', 'Fixed', 'Fixed at', ''].map(h => (
+                {['Vehicle', 'Zone / Type', 'Inspector', 'Date/Time', 'Images', 'Status Repair', 'Repair Date', ''].map(h => (
                   <th key={h} className="text-left px-4 py-2.5 text-[11.5px] font-bold whitespace-nowrap" style={{ color: 'var(--muted)' }}>{h}</th>
                 ))}
               </tr>
@@ -289,37 +292,33 @@ export function Damages() {
                         {r.damage.photo ? 1 : 0}
                       </span>
                     </td>
-                    {/* Fixed */}
+                    {/* Status Repair */}
                     <td className="px-4 py-3">
-                      <button onClick={() => toggleFixed(r)}
-                        className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[11.5px] font-semibold border transition hover:opacity-80"
-                        style={isFixed
+                      <select
+                        value={r.damage.statusRepair ?? 'Waiting Repair'}
+                        onChange={e => setStatusRepair(r, e.target.value)}
+                        className="px-2 py-1 rounded-md text-[11.5px] font-semibold border outline-none cursor-pointer"
+                        style={isFixed || r.damage.statusRepair === 'Accept'
                           ? { background: 'rgba(22,163,74,0.1)', color: '#16a34a', borderColor: 'rgba(22,163,74,0.25)' }
                           : { background: 'rgba(220,38,38,0.08)', color: '#dc2626', borderColor: 'rgba(220,38,38,0.2)' }}>
-                        {isFixed ? <CheckCircle2 size={12} /> : <XCircle size={12} />}
-                        {isFixed ? 'Yes' : 'No'}
-                      </button>
+                        <option value="Waiting Repair">Waiting Repair</option>
+                        <option value="Repaired">Repaired</option>
+                        <option value="Accept">Accept</option>
+                      </select>
                     </td>
-                    {/* Fixed at */}
+                    {/* Repair Date */}
                     <td className="px-4 py-3 tabular text-[12.5px]" style={{ color: 'var(--muted)' }}>
                       {r.damage.repairDate ? fmt(r.damage.repairDate) : 'N/A'}
                     </td>
-                    {/* Actions */}
+                    {/* Actions — delete is intentionally NOT here (a stray tap
+                        must never erase a defect record) */}
                     <td className="px-4 py-3">
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          onClick={() => updateDamage(r.unit.vin, r.damage.id, { severity: r.damage.severity === 'minor' ? 'major' : 'minor' })}
-                          className="btn p-1.5" title="Toggle severity"
-                          style={{ color: 'var(--brand)', background: 'rgba(37,99,235,0.08)' }}>
-                          <Pencil size={13} />
-                        </button>
-                        <button
-                          onClick={() => { if (confirm('ลบรายการนี้?')) removeDamage(r.unit.vin, r.damage.id) }}
-                          className="btn p-1.5" title="Delete"
-                          style={{ color: '#dc2626', background: 'rgba(220,38,38,0.08)' }}>
-                          <Trash2 size={13} />
-                        </button>
-                      </div>
+                      <button
+                        onClick={() => updateDamage(r.unit.vin, r.damage.id, { severity: r.damage.severity === 'minor' ? 'major' : 'minor' })}
+                        className="btn p-1.5" title="Toggle severity"
+                        style={{ color: 'var(--brand)', background: 'rgba(37,99,235,0.08)' }}>
+                        <Pencil size={13} />
+                      </button>
                     </td>
                   </tr>
                 )
