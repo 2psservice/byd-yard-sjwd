@@ -3776,13 +3776,13 @@ function RelocationView() {
             <div className="grid grid-cols-2 gap-2 pt-0.5">
               <button onClick={() => switchLaneDir('head')}
                 className="py-2 rounded-xl text-[12px] font-bold transition"
-                style={laneDir === 'head' ? { background: '#0ea5e9', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>
+                style={laneDir === 'head' ? { background: '#16a34a', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>
                 ยิงจากหัวแถว
                 <div className="text-[10px] font-medium" style={{ opacity: 0.85 }}>คันแรกที่ยิง = คันที่ 1</div>
               </button>
               <button onClick={() => switchLaneDir('tail')}
                 className="py-2 rounded-xl text-[12px] font-bold transition"
-                style={laneDir === 'tail' ? { background: '#0ea5e9', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>
+                style={laneDir === 'tail' ? { background: '#dc2626', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>
                 ยิงจากท้ายแถว
                 <div className="text-[10px] font-medium" style={{ opacity: 0.85 }}>คันล่าสุดที่ยิง = คันที่ 1</div>
               </button>
