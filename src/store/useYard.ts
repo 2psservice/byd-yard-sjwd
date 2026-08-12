@@ -33,6 +33,9 @@ function logDamageEvent(vin: string, text: string, by: string): void {
 
 // live channel + per-vin last-applied timestamp (echo / stale-write guard)
 let unitsChannel: RealtimeChannel | null = null
+// the units websocket can silently die on a long-open screen (admin's yard
+// plan) — remember a drop so the re-subscribe catches up on missed moves
+let unitsHadDrop = false
 const unitTs = new Map<string, number>()
 
 // A damage row that carries base64 photos can exceed Supabase Realtime's
@@ -1294,7 +1297,35 @@ export const useYard = create<YardState>()(
               })
             },
           )
-          .subscribe()
+          // self-healing subscription: an admin screen left open for hours loses
+          // the websocket and the yard plan silently freezes — reconnect with a
+          // short backoff and re-pull the site's units to catch up on every
+          // relocation missed while the socket was down
+          .subscribe((status) => {
+            if (status === 'SUBSCRIBED') {
+              if (!unitsHadDrop) return
+              unitsHadDrop = false
+              const sid = get().currentSite
+              if (!sid) return
+              db.fetchAllUnits(sid).then((cloud) => {
+                if (!cloud.length) return
+                set((s) => {
+                  const merged: Record<string, Unit> = { ...s.units }
+                  for (const u of cloud) merged[u.vin] = u
+                  return { units: merged }
+                })
+              }).catch(() => {})
+              return
+            }
+            if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+              unitsHadDrop = true
+              if (unitsChannel) { supabase.removeChannel(unitsChannel); unitsChannel = null }
+              setTimeout(() => {
+                // still logged in and nobody resubscribed already (site switch)?
+                if (!unitsChannel && get().loggedInUserId) get().subscribeRealtime()
+              }, 4000)
+            }
+          })
       },
 
       unsubscribeRealtime: () => {

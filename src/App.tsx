@@ -239,6 +239,28 @@ export default function App() {
     return () => { clearTimeout(t); clearInterval(iv) }
   }, [loggedInUserId])
 
+  // ── realtime catch-up: a tab that slept or lost network missed events ──
+  // Realtime keeps the yard plan live, but a phone in a pocket or a laptop
+  // lid-closed misses everything while suspended. On waking after ≥60s (or
+  // when the network returns) pull the gap: incremental tracking sync + this
+  // yard's units, so re-locations done meanwhile appear without a refresh.
+  useEffect(() => {
+    if (!loggedInUserId) return
+    const catchUp = () => {
+      useTracking.getState().syncCloud().catch(() => {})
+      useYard.getState().loadFromSupabase().catch(() => {})
+    }
+    let hiddenAt = 0
+    const onVis = () => {
+      if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return }
+      if (hiddenAt && Date.now() - hiddenAt > 60_000) catchUp()
+      hiddenAt = 0
+    }
+    document.addEventListener('visibilitychange', onVis)
+    window.addEventListener('online', catchUp)
+    return () => { document.removeEventListener('visibilitychange', onVis); window.removeEventListener('online', catchUp) }
+  }, [loggedInUserId])
+
   // dev-only store handles for automated tests (same pattern as Units' __tracking)
   useEffect(() => {
     if (import.meta.env.DEV) { (window as any).__yard = useYard; (window as any).__ops = useOps; (window as any).__tracking = useTracking }
