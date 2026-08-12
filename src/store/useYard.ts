@@ -103,6 +103,54 @@ function compactLanes(units: Record<string, Unit>, lanes: Set<string>): Unit[] {
   return changed
 }
 
+/** Persist compaction-slid rows through the stale-copy guard. EVERY device
+ *  compacts lanes (boot pass, gate-out sweep, departures, relocations) using
+ *  its LOCAL copy — one that may not have received a relocation done elsewhere.
+ *  Unchecked, that stale copy is "slid" back into the old lane and pushed with
+ *  a fresh timestamp, overwriting the real move (a car moved N1602 → N3201 on
+ *  device A was re-written to N1601 by device B compacting lane N16). Before
+ *  persisting, compare each slid car's CLOUD position with the position this
+ *  device slid it FROM: a mismatch means our copy was stale — adopt the cloud
+ *  row and drop our write for that car. The adopt triggers another (now fresh)
+ *  pass that converges properly. Offline / no cloud: persist as before. */
+function persistSlid(
+  setUnits: (fn: (s: { units: Record<string, Unit> }) => { units: Record<string, Unit> }) => void,
+  before: Record<string, Unit>,
+  slid: Unit[],
+  label: string,
+) {
+  if (!slid.length) return
+  const finish = (rows: Unit[]) => {
+    if (rows.length) db.upsertUnits(rows).catch((e) => console.error(`[db] ${label}`, e))
+  }
+  if (!db.isConfigured()) { finish(slid); return }
+  const prevPos = new Map(slid.map((u) => {
+    const p = before[u.vin]
+    return [u.vin, p ? `${p.block}|${p.slot}|${p.row}` : ''] as const
+  }))
+  db.fetchUnitsByVins(slid.map((u) => u.vin))
+    .then((cloud) => {
+      const cloudBy = new Map(cloud.map((u) => [u.vin, u]))
+      const push: Unit[] = []
+      const adopt: Unit[] = []
+      for (const u of slid) {
+        const c = cloudBy.get(u.vin)
+        if (!c) { push.push(u); continue } // not in cloud yet — keep ours
+        if (`${c.block}|${c.slot}|${c.row}` === prevPos.get(u.vin)) push.push(u)
+        else adopt.push(c) // cloud moved on — our slide used a stale copy
+      }
+      if (adopt.length) {
+        setUnits((s) => {
+          const next = { ...s.units }
+          for (const c of adopt) next[c.vin] = { ...c, damages: s.units[c.vin]?.damages?.length ? s.units[c.vin].damages : c.damages }
+          return { units: next }
+        })
+      }
+      finish(push)
+    })
+    .catch(() => finish(slid)) // cloud unreachable (offline) — persist as before
+}
+
 // ── Defect import helpers (Defect-Yard / Defect-Factory → Damage) ───────────
 function defHash(s: string): string {
   let h = 5381
@@ -607,46 +655,52 @@ export const useYard = create<YardState>()(
       },
 
       removeUnit: (vin) => {
-        const old = get().units[vin]
+        const before = get().units
+        const old = before[vin]
         if (!old) return
-        const units = { ...get().units }
+        const units = { ...before }
         delete units[vin]
-        const compacted = compactLanes(units, lanesOf([old]))
+        const slid = compactLanes(units, lanesOf([old]))
         set((s) => ({ units, trips: s.trips.filter((t) => t.vin !== vin) }))
         db.deleteUnit(vin).catch((e) => console.error('[db] removeUnit', e))
-        if (compacted.length) db.upsertUnits(compacted).catch((e) => console.error('[db] removeUnit compact', e))
+        persistSlid(set, before, slid, 'removeUnit compact')
       },
 
       markDeparted: (vin) => {
         // Nothing ever set DEPARTED before, so a gated-out car kept PARKED with
         // its block/row/slot — the engine counted the slot occupied forever and
         // after enough gate-outs the auto-plan reported a full yard.
-        const u = get().units[vin]
+        const before = get().units
+        const u = before[vin]
         if (!u) return // sheet-only car (no yard unit) — nothing to release
-        const units = { ...get().units }
+        const units = { ...before }
         units[vin] = { ...u, status: 'DEPARTED', block: undefined, row: undefined, slot: undefined }
-        // the lane it left closes up behind it (คันถัดไปเลื่อนขึ้น)
-        const changed = [units[vin], ...compactLanes(units, lanesOf([u]))]
+        // the lane it left closes up behind it (คันถัดไปเลื่อนขึ้น) — the slide
+        // goes through the stale-copy guard, the departure itself pushes as-is
+        const slid = compactLanes(units, lanesOf([u]))
         set({ units })
-        db.upsertUnits(changed).catch((e) => console.error('[db] markDeparted', e))
+        db.upsertUnits([units[vin]]).catch((e) => console.error('[db] markDeparted', e))
+        persistSlid(set, before, slid, 'markDeparted compact')
       },
 
       markDepartedMany: (vins) => {
-        const units = { ...get().units }
+        const before = get().units
+        const units = { ...before }
         const old: Unit[] = []
-        const changed: Unit[] = []
+        const cleared: Unit[] = []
         for (const vin of vins) {
           const u = units[vin]
           if (!u) continue // sheet-only car (no yard unit) — nothing to release
           old.push(u)
           const updated: Unit = { ...u, status: 'DEPARTED', block: undefined, row: undefined, slot: undefined }
           units[vin] = updated
-          changed.push(updated)
+          cleared.push(updated)
         }
-        if (!changed.length) return
-        changed.push(...compactLanes(units, lanesOf(old)))
+        if (!cleared.length) return
+        const slid = compactLanes(units, lanesOf(old))
         set({ units })
-        db.upsertUnits(changed).catch((e) => console.error('[db] markDepartedMany', e))
+        db.upsertUnits(cleared).catch((e) => console.error('[db] markDepartedMany', e))
+        persistSlid(set, before, slid, 'markDepartedMany compact')
       },
 
       compactAllLanes: () => {
@@ -656,49 +710,7 @@ export const useYard = create<YardState>()(
         const changed = compactLanes(units, lanes)
         if (!changed.length) return 0
         set({ units })
-        // ── stale-copy guard ────────────────────────────────────────────────
-        // EVERY device runs this pass — including one that hasn't yet received
-        // a relocation done elsewhere. Unchecked, its stale copy would be
-        // "compacted" back into the OLD lane and pushed with a fresh timestamp,
-        // overwriting the real move (a car relocated T5004 → W0101 on phone A
-        // was re-written to T5002 by phone B's compaction of lane T50). So
-        // before persisting, compare each changed car's CLOUD position with
-        // the position this device compacted FROM: a mismatch means our copy
-        // was stale — adopt the cloud row and drop our write for that car.
-        // The adopt triggers another (now fresh) compaction pass that
-        // converges properly.
-        const finish = (rows: Unit[]) => {
-          if (rows.length) db.upsertUnits(rows).catch((e) => console.error('[db] compactAllLanes', e))
-        }
-        if (db.isConfigured()) {
-          const prevPos = new Map(changed.map((u) => {
-            const p = before[u.vin]
-            return [u.vin, p ? `${p.block}|${p.slot}|${p.row}` : ''] as const
-          }))
-          db.fetchUnitsByVins(changed.map((u) => u.vin))
-            .then((cloud) => {
-              const cloudBy = new Map(cloud.map((u) => [u.vin, u]))
-              const push: Unit[] = []
-              const adopt: Unit[] = []
-              for (const u of changed) {
-                const c = cloudBy.get(u.vin)
-                if (!c) { push.push(u); continue } // not in cloud yet — keep ours
-                if (`${c.block}|${c.slot}|${c.row}` === prevPos.get(u.vin)) push.push(u)
-                else adopt.push(c) // cloud moved on — our compaction used a stale copy
-              }
-              if (adopt.length) {
-                set((s) => {
-                  const next = { ...s.units }
-                  for (const c of adopt) next[c.vin] = { ...c, damages: s.units[c.vin]?.damages?.length ? s.units[c.vin].damages : c.damages }
-                  return { units: next }
-                })
-              }
-              finish(push)
-            })
-            .catch(() => finish(changed)) // cloud unreachable (offline) — persist as before
-        } else {
-          finish(changed)
-        }
+        persistSlid(set, before, changed, 'compactAllLanes')
         return changed.length
       },
 
@@ -920,14 +932,16 @@ export const useYard = create<YardState>()(
         }),
 
       resetParking: (vin) => {
-        const u = get().units[vin]
+        const before = get().units
+        const u = before[vin]
         if (!u) return
         const { block, row, slot, assignedAt, drivingStartedAt, parkedAt, ...rest } = u
-        const units = { ...get().units }
+        const units = { ...before }
         units[vin] = { ...rest, status: 'GATE_IN' }
-        const changed = [units[vin], ...compactLanes(units, lanesOf([u]))]
+        const slid = compactLanes(units, lanesOf([u]))
         set({ units })
-        db.upsertUnits(changed).catch((e) => console.error('[db] resetParking', e))
+        db.upsertUnits([units[vin]]).catch((e) => console.error('[db] resetParking', e))
+        persistSlid(set, before, slid, 'resetParking compact')
       },
 
       // Update Location import: place each car into its lane's block/row at the
@@ -968,12 +982,15 @@ export const useYard = create<YardState>()(
         // (Lanes cars moved INTO are excluded automatically: their occupants sit
         // at 1..n already, and the mover was appended at first-free = n+1.)
         const moved = changed.length
-        changed.push(...compactLanes(units, fromLanes))
+        const slid = compactLanes(units, fromLanes)
         set({ units })
-        // one write per car — a car both placed AND re-rowed by compaction must
-        // not appear twice in the same upsert batch (Postgres rejects that)
-        const batch = [...new Set(changed.map((u) => u.vin))].map((v) => units[v])
-        db.upsertUnits(batch).catch((e) => console.error('[db] updateLocations', e))
+        // the deliberate placements push as-is (a relocation IS an intentional
+        // overwrite); only the compaction slide goes through the stale-copy
+        // guard. One write per car — a car both placed AND re-rowed must not
+        // appear twice in the same upsert batch (Postgres rejects that).
+        const intentional = new Set(changed.map((u) => u.vin))
+        db.upsertUnits([...intentional].map((v) => units[v])).catch((e) => console.error('[db] updateLocations', e))
+        persistSlid(set, s.units, slid.filter((u) => !intentional.has(u.vin)), 'updateLocations compact')
         return moved
       },
 
