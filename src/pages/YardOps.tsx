@@ -36,6 +36,7 @@ import { yardLocCode, yardLocFull, blockCode, byYardLocation } from '../lib/grou
 import { parseLane } from '../lib/laneImport'
 import { LOCATION_KEY } from '../lib/trackingColumns'
 import { blockTag, blockKeyOfTag, resolveBlockByName } from '../lib/format'
+import { fetchUnitsByVins, isConfigured } from '../lib/db'
 import { useRecentOps } from '../store/useRecentOps'
 import { buildWorkRows, buildEventLog, fmtHistAt, histOf } from '../lib/carHistory'
 
@@ -3482,6 +3483,10 @@ function RelocationView() {
   // order: 1st scan parks as คันที่ 1, 2nd as คันที่ 2, … (ref: scans arrive
   // faster than state flushes)
   const laneOrderRef = useRef<string[]>([])
+  // rebuild generation: each scan supersedes the WHOLE lane layout, so an
+  // async (cloud-verified) rebuild only applies if no newer scan happened —
+  // a late verify from an earlier scan must not overwrite a newer rebuild
+  const laneGenRef = useRef(0)
   // walking direction: 'head' = 1st scan is คันที่ 1 · 'tail' = the worker
   // walks tail→head in ONE pass, so each NEW scan becomes คันที่ 1 and the
   // earlier scans slide down — the FIRST scan ends up last
@@ -3492,6 +3497,7 @@ function RelocationView() {
     if (d === laneDir) return
     setLaneDir(d)
     laneOrderRef.current = []
+    laneGenRef.current++
     setLaneAdded([])
     toast('info', d === 'tail' ? 'ยิงจากท้ายแถว — คันที่ยิงล่าสุดจะเป็นคันที่ 1' : 'ยิงจากหัวแถว — คันแรกที่ยิงเป็นคันที่ 1')
   }
@@ -3680,22 +3686,59 @@ function RelocationView() {
     const pos = seq.indexOf(r.vin) + 1
     // rebuild the whole lane: scanned cars at 1..k in direction order, then
     // the not-yet-scanned cars after them
-    const updates: { vin: string; block: string; row: number; slot: number; modelName?: string; color?: string }[] = []
-    seq.forEach((vin, i) => {
-      const cu = siteUnits.find(x => x.vin === vin)
-      const row = i + 1
-      if (cu && cu.block === L.blockId && cu.slot === L.slot && cu.row === row) return // already right
-      const tr2 = vin === r!.vin ? r : trackingRows.find(x => x.vin === vin)
-      updates.push({ vin, block: L.blockId, row, slot: L.slot,
-        modelName: cu?.modelName || tr2?.cells['Model name'] || tr2?.cells['Model'] || undefined,
-        color: cu?.color || tr2?.cells['Color'] || undefined })
-    })
-    incumbents.forEach((cu, i) => {
-      const row = seq.length + 1 + i
-      if (cu.block === L.blockId && cu.slot === L.slot && cu.row === row) return
-      updates.push({ vin: cu.vin, block: L.blockId, row, slot: L.slot, modelName: cu.modelName, color: cu.color })
-    })
-    if (updates.length) updateLocations(updates)
+    // The whole lane is rebuilt in ONE updateLocations batch (splitting it
+    // breaks the rebuild's atomicity — cells collide mid-way). Incumbents come
+    // from THIS device's view of the lane, which can be stale: another device
+    // may have already relocated one of them elsewhere, and sliding it here
+    // would silently teleport it back (the T5004→W0101 class of bug). So the
+    // incumbent list is verified against the CLOUD first — only cars the cloud
+    // still parks in this lane slide — then the batch applies. Offline (or no
+    // cloud configured) keeps the old trust-local behavior.
+    type LocUpdate = { vin: string; block: string; row: number; slot: number; modelName?: string; color?: string }
+    const gen = ++laneGenRef.current
+    const buildAndApply = (inc: typeof incumbents) => {
+      if (gen !== laneGenRef.current) return // a newer scan supersedes this rebuild
+      const updates: LocUpdate[] = []
+      seq.forEach((vin, i) => {
+        const cu = siteUnits.find(x => x.vin === vin)
+        const row = i + 1
+        if (cu && cu.block === L.blockId && cu.slot === L.slot && cu.row === row) return // already right
+        const tr2 = vin === r!.vin ? r : trackingRows.find(x => x.vin === vin)
+        updates.push({ vin, block: L.blockId, row, slot: L.slot,
+          modelName: cu?.modelName || tr2?.cells['Model name'] || tr2?.cells['Model'] || undefined,
+          color: cu?.color || tr2?.cells['Color'] || undefined })
+      })
+      inc.forEach((cu, i) => {
+        const row = seq.length + 1 + i
+        if (cu.block === L.blockId && cu.slot === L.slot && cu.row === row) return
+        updates.push({ vin: cu.vin, block: L.blockId, row, slot: L.slot, modelName: cu.modelName, color: cu.color })
+      })
+      if (!updates.length) return
+      updateLocations(updates)
+      // every car the rebuild moves BESIDES the scanned one (a reordered
+      // earlier scan, an incumbent sliding down) gets its own Location history
+      // line — the silent slide made a car's position contradict its ประวัติการย้าย
+      for (const up of updates) {
+        if (up.vin === r!.vin) continue
+        const cu = siteUnits.find(x => x.vin === up.vin)
+        appendHistory(up.vin, {
+          at: Date.now(), by: currentUser, field: 'Location',
+          from: cu ? yardLocFull(cu) : '',
+          to: codeOf(L.blockId, L.slot, up.row),
+        })
+      }
+    }
+    if (!incumbents.length || !isConfigured()) buildAndApply(incumbents)
+    else Promise.race([
+      fetchUnitsByVins(incumbents.map(c => c.vin)),
+      // flaky yard wifi must not stall the lane rebuild — after 2.5s fall back
+      new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 2500)),
+    ])
+      .then(cloud => buildAndApply(incumbents.filter(local => {
+        const cu = cloud.find(x => x.vin === local.vin)
+        return cu && cu.block && cu.slot === L.slot && blockKeyOfTag(cu.block) === L.blockId
+      })))
+      .catch(() => buildAndApply(incumbents)) // cloud unreachable — behave as before
     const code = codeOf(L.blockId, L.slot, pos)
     appendHistory(r.vin, {
       at: Date.now(), by: currentUser, field: 'Location',
@@ -3763,7 +3806,7 @@ function RelocationView() {
                 setLaneStr(v)
                 // reset the scan round only on a real lane edit — a handheld
                 // burst appending a VIN here is NOT a lane change
-                if (v === '' || parseLane(v)) { setLaneAdded([]); laneOrderRef.current = [] }
+                if (v === '' || parseLane(v)) { setLaneAdded([]); laneOrderRef.current = []; laneGenRef.current++ }
               }}
             />
             {laneReady ? (
