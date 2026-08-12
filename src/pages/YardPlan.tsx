@@ -197,7 +197,8 @@ export function YardPlan() {
   }, [])
 
   // ── slot colouring mode: Status (default) / Model / Grouping / Final Status ──
-  const [viewMode, setViewMode] = useState<YardViewMode>('status')
+  // default view = รุ่นรถ (Model) — what the yard opens the plan to see
+  const [viewMode, setViewMode] = useState<YardViewMode>('model')
   const [viewOpen, setViewOpen] = useState(false)
   const trackingRows = useTrackingRows()
   // VIN → tracking cells, for Grouping/Final Status (not fields on Unit itself)
