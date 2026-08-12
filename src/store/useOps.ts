@@ -64,6 +64,9 @@ export interface QueueItem {
   atWashAt?: number        // driver scan #1: car moved to Wash for sale
   atLaneAt?: number        // driver scan #2: car moved from Wash for sale to its loading lane
   gatedOut?: boolean       // gate-out confirmed → Car Status set to Gate-out
+  /** A human UN-ticked this item — the sheet-date reconciler must not re-tick
+   *  it (the manual decision outranks the Co-Inspection file's date). */
+  manualUndoneAt?: number
 }
 
 export interface WorkQueue {
@@ -358,7 +361,7 @@ export const useOps = create<OpsState>()(
         set((s) => ({
           queues: s.queues.map((qq) =>
             qq.id === id
-              ? { ...qq, items: qq.items.map((i) => (i.vin === vin ? { ...i, done: !i.done, doneAt: !i.done ? Date.now() : undefined, doneBy: !i.done ? by : undefined, stamped: i.stamped || wrote } : i)) }
+              ? { ...qq, items: qq.items.map((i) => (i.vin === vin ? { ...i, done: !i.done, doneAt: !i.done ? Date.now() : undefined, doneBy: !i.done ? by : undefined, stamped: i.stamped || wrote, manualUndoneAt: !i.done ? undefined : Date.now() } : i)) }
               : qq,
           ),
         }))
@@ -595,6 +598,28 @@ function groupOf(cells: Record<string, string>): string {
   return l.includes('เศษ') || l.includes('mix') ? '' : g.toUpperCase()
 }
 
+/** Parse a station date cell ("29/07/2026", "2026-07-29", "29-Jul-26") →
+ *  local-midnight epoch; undefined when unreadable. */
+function parseDayCell(s?: string): number | undefined {
+  const t = (s ?? '').trim()
+  if (!t) return undefined
+  let m = t.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$/) // 29/07/2026 (d/m/y)
+  if (m) { const y = +m[3] < 100 ? 2000 + +m[3] : +m[3]; return new Date(y, +m[2] - 1, +m[1]).getTime() }
+  m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)                  // 2026-07-29
+  if (m) return new Date(+m[1], +m[2] - 1, +m[3]).getTime()
+  m = t.match(/^(\d{1,2})[-\s]([A-Za-z]{3})[A-Za-z]*[-\s](\d{2,4})$/) // 29-Jul-26
+  if (m) {
+    const mo = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].indexOf(m[2].toLowerCase())
+    if (mo >= 0) { const y = +m[3] < 100 ? 2000 + +m[3] : +m[3]; return new Date(y, mo, +m[1]).getTime() }
+  }
+  return undefined
+}
+
+/** The date ladder a queue type reads its "already recorded" signal from. */
+const LADDER_OF: Partial<Record<QueueType, readonly string[]>> = {
+  PM: PM_KEYS, PDI: PDI_KEYS, FINAL: ['Final check date'],
+}
+
 let reconcileTimer: ReturnType<typeof setTimeout> | null = null
 function reconcileGateOuts() {
   const rows = useTracking.getState().rows
@@ -628,6 +653,14 @@ function reconcileGateOuts() {
   const dirty: string[] = []
   const next = queues.map((q) => {
     const isPreGateIn = (q.name ?? '').trim().startsWith('(')
+    // a PM/PDI/FINAL already recorded on the sheet (e.g. a Co-Inspection file
+    // upload filled the date cell) counts as done for this queue too — but an
+    // item the field/admin already ticked keeps ITS record (ระบบมาก่อนไฟล์).
+    // Only a date on/after the queue's creation day counts: an older date is
+    // last round's check, not this queue's work.
+    const ladder = !isSequenceQueue(q) && !isPreGateIn ? LADDER_OF[queueTypeOf(q)] : undefined
+    const qd = new Date(q.createdAt || 0); qd.setHours(0, 0, 0, 0)
+    const qDay = qd.getTime()
     let changed = false
     let items = q.items.map((i) => {
       if (gone.has(i.vin) && !(i.done && i.gatedOut)) {
@@ -637,6 +670,21 @@ function reconcileGateOuts() {
       if (isPreGateIn && gatedIn.has(i.vin) && !i.done) {
         changed = true
         return { ...i, done: true, doneAt: i.doneAt ?? Date.now() }
+      }
+      if (ladder && !i.done && !i.manualUndoneAt) {
+        const r = rows[i.vin]
+        if (r) {
+          let ts: number | undefined
+          for (const k of ladder) { // latest recorded date on the ladder (hole-safe)
+            const v = parseDayCell(r.cells[k])
+            if (v !== undefined && (ts === undefined || v > ts)) ts = v
+          }
+          if (ts !== undefined && ts >= qDay) {
+            changed = true
+            // stamped: the date already sits on the sheet — never burn another slot
+            return { ...i, done: true, doneAt: ts, doneBy: i.doneBy ?? 'ไฟล์ Co-Inspection', stamped: true }
+          }
+        }
       }
       return i
     })
