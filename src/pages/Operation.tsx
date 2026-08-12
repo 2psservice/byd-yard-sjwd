@@ -7,12 +7,18 @@ import { useMemo, useRef, useState } from 'react'
 import {
   ClipboardList, Plus, X, Search, Trash2, Check, Car, Wrench, Sparkles, Pencil,
   ShieldCheck, ClipboardCheck, Layers, QrCode, ListChecks, CheckCircle2, MapPin,
+  Archive, RotateCcw,
 } from 'lucide-react'
 import { useOps, useActiveQueues, queueProgress, isSequenceQueue, queueTypeOf, QUEUE_TYPES, type QueueType, type WorkQueue } from '../store/useOps'
 import { useTrackingRows } from '../store/useTracking'
 import { useYard, useUnits } from '../store/useYard'
 import { yardLocCode, byYardLocation } from '../lib/groupingImport'
+import { DayPicker, dayKeyOf } from './Grouping'
 import { PageHead, cx } from '../components/ui'
+
+/** Which DAY a work queue belongs to — the day it was created. */
+const queueDayKey = (q: WorkQueue) => dayKeyOf(new Date(q.createdAt || Date.now()))
+const fmtDay = (k: string) => k.split('-').reverse().join('/')
 
 const typeIcon = (type: QueueType, size = 18) => {
   switch (type) {
@@ -49,16 +55,32 @@ export function Operation() {
   const [type, setType] = useState<QueueType>('PM')
   const [label, setLabel] = useState('')
   const [openId, setOpenId] = useState<string | null>(null)
+  // calendar day filter — defaults to today; red days = days that have queues
+  const [day, setDay] = useState<string | 'all'>(dayKeyOf(new Date()))
+  const closed = useOps((s) => s.closed)
 
   const siteName = sites.find((s) => s.id === currentSite)?.name ?? ''
 
   // ── per-site scope: work queues are separated by yard, never combined ──
-  const queues = useMemo(
+  const allQueues = useMemo(
     () => all.filter((q) =>
       !isSequenceQueue(q) && !isPreGateInQueue(q.name) &&
       (!currentSite || !q.site || q.site === currentSite),
     ),
     [all, currentSite],
+  )
+
+  const dayCounts = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const q of allQueues) { const k = queueDayKey(q); m.set(k, (m.get(k) ?? 0) + 1) }
+    return m
+  }, [allQueues])
+
+  // an OPEN queue keeps showing every day until it is finished AND closed by
+  // the admin; a CLOSED queue is archived to its own day (calendar lookup)
+  const queues = useMemo(
+    () => (day === 'all' ? allQueues : allQueues.filter((q) => !closed[q.id] || queueDayKey(q) === day)),
+    [allQueues, closed, day],
   )
 
   const totals = useMemo(() => {
@@ -127,12 +149,20 @@ export function Operation() {
         </div>
       </div>
 
+      {/* day filter — closed queues live under their own day; open queues follow every day */}
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <div className="text-[12px] font-semibold" style={{ color: 'var(--muted)' }}>
+          {day === 'all' ? 'คิวงานทุกวัน' : <>คิวงานวันที่ <b style={{ color: 'var(--text)' }}>{fmtDay(day)}</b> · คิวที่ยังไม่ปิดงานแสดงทุกวัน</>}
+        </div>
+        <DayPicker days={dayCounts} value={day} onChange={setDay} />
+      </div>
+
       {/* queues */}
       {queues.length === 0 ? (
         <div className="panel p-12 text-center" style={{ color: 'var(--faint)' }}>
           <ClipboardList size={36} className="mx-auto mb-3" style={{ color: 'var(--line-strong)' }} />
-          <div className="text-[15px] font-semibold" style={{ color: 'var(--muted)' }}>ยังไม่มีคิวงาน{siteName && ` ใน ${siteName}`}</div>
-          <div className="text-[13px] mt-1">เลือกประเภทด้านบน (PM / PDI / FINAL CHECK / งานพิเศษ) แล้วกดสร้างคิว</div>
+          <div className="text-[15px] font-semibold" style={{ color: 'var(--muted)' }}>ไม่มีคิวงาน{day !== 'all' ? ` ของวันที่ ${fmtDay(day)}` : ''}{siteName && ` ใน ${siteName}`}</div>
+          <div className="text-[13px] mt-1">เลือกประเภทด้านบน (PM / PDI / FINAL CHECK / งานพิเศษ) แล้วกดสร้างคิว หรือเลือกวันอื่นจากปฏิทิน</div>
         </div>
       ) : (
         <div className="panel overflow-hidden">
@@ -182,6 +212,10 @@ function Stat({ label, value, accent, icon }: { label: string; value: number; ac
 function QueueRow({ q, onOpen }: { q: WorkQueue; onOpen: () => void }) {
   const removeQueue = useOps((s) => s.removeQueue)
   const renameQueue = useOps((s) => s.renameQueue)
+  const closeQueue = useOps((s) => s.closeQueue)
+  const reopenQueue = useOps((s) => s.reopenQueue)
+  const closedInfo = useOps((s) => s.closed[q.id])
+  const currentUser = useYard((s) => s.currentUser)
   const toast = useYard((s) => s.toast)
   // pencil = edit mode: only there do the delete button and the rename field
   // appear, so a stray tap can never delete a whole queue
@@ -235,7 +269,13 @@ function QueueRow({ q, onOpen }: { q: WorkQueue; onOpen: () => void }) {
       </td>
       {/* status */}
       <td className="px-4 py-3">
-        {empty ? (
+        {closedInfo ? (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11.5px] font-semibold border whitespace-nowrap"
+            style={{ background: 'rgba(100,116,139,0.1)', color: '#64748b', borderColor: 'rgba(100,116,139,0.25)' }}
+            title={`ปิดงานโดย ${closedInfo.by ?? '—'}`}>
+            <Archive size={12} /> ปิดงานแล้ว · {fmtDay(dayKeyOf(new Date(closedInfo.at)))}
+          </span>
+        ) : empty ? (
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11.5px] font-semibold border whitespace-nowrap"
             style={{ background: 'var(--chip)', color: 'var(--muted)', borderColor: 'var(--line)' }}>
             ไม่มีรถในคิว
@@ -253,6 +293,30 @@ function QueueRow({ q, onOpen }: { q: WorkQueue; onOpen: () => void }) {
       {/* actions — pencil toggles edit mode; save-name + delete live inside it */}
       <td className="px-4 py-3">
         <div className="flex items-center gap-1.5 justify-end">
+          {/* finished + admin-confirmed → the queue archives to its own day and
+              stops occupying the daily board (open queues follow every day) */}
+          {!closedInfo && (complete || empty) && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                if (window.confirm(`ปิดงาน "${q.name}" และเก็บเข้าวันที่ ${fmtDay(queueDayKey(q))}?\n(ดูย้อนหลังได้จากปฏิทิน)`)) {
+                  closeQueue(q.id, currentUser)
+                  toast('ok', `ปิดงาน "${q.name}" แล้ว — ดูย้อนหลังได้จากปฏิทิน`)
+                }
+              }}
+              className="btn px-2.5 py-1.5 text-[11.5px] font-bold whitespace-nowrap"
+              style={{ background: 'rgba(22,163,74,0.1)', color: '#16a34a', borderColor: 'rgba(22,163,74,0.3)' }}>
+              <Archive size={12} /> ปิดงาน
+            </button>
+          )}
+          {closedInfo && edit && (
+            <button
+              onClick={(e) => { e.stopPropagation(); reopenQueue(q.id); toast('ok', `เปิดคิว "${q.name}" อีกครั้ง`) }}
+              className="btn px-2.5 py-1.5 text-[11.5px] font-bold whitespace-nowrap"
+              style={{ color: '#d97706', background: 'rgba(217,119,6,0.1)' }}>
+              <RotateCcw size={12} /> เปิดใหม่
+            </button>
+          )}
           {edit && (
             <>
               <button onClick={(e) => { e.stopPropagation(); saveName() }}
