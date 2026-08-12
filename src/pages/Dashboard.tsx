@@ -4,7 +4,7 @@ import * as db from '../lib/db'
 import { useYard, useUnits, useBlocks } from '../store/useYard'
 import { useTrackingRows, useTracking } from '../store/useTracking'
 import { makeT } from '../i18n'
-import { modelById, matchModel, ZONE_COLOR } from '../lib/sampleData'
+import { ZONE_COLOR } from '../lib/sampleData'
 import { deriveCarStatus, CAR_STATUS_META, CAR_STATUS_ORDER, PARKED_STATUSES, isWaitingRepair } from '../lib/carStatus'
 import { rowInSite } from '../lib/siteScope'
 import { pct, pos, timeAgo } from '../lib/format'
@@ -346,7 +346,7 @@ export function Dashboard() {
       {/* ── Summary: Model × Final Status (คลิกตัวเลขเพื่อดู VIN) ── */}
       <YardSummary />
 
-      <div className="grid lg:grid-cols-3 gap-4">
+      <div className="grid lg:grid-cols-2 gap-4">
         {/* yard fill / car-status breakdown */}
         <div className="panel p-5 fade-up">
           <div className="flex items-center justify-between mb-1">
@@ -395,27 +395,6 @@ export function Dashboard() {
                     <ProgressBar value={d.used} max={d.cap} color={ZONE_COLOR[z as 'Y']} />
                   </div>
                 ))}
-          </div>
-        </div>
-
-        {/* model mix */}
-        <div className="panel p-5 fade-up">
-          <h3 className="font-semibold display mb-3">{t('modelMix')}</h3>
-          <div className="space-y-2.5">
-            {s.mix.length === 0 && <Empty />}
-            {s.mix.map(({ m, n }) => {
-              const md = fromTracking ? matchModel(m) : modelById(m)
-              const max = s.mix[0]?.n || 1
-              return (
-                <div key={m}>
-                  <div className="flex items-center justify-between text-[12.5px] mb-1">
-                    <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm" style={{ background: md?.color }} /> {fromTracking ? m : (md?.name ?? m)}</span>
-                    <span className="tabular font-semibold">{n}</span>
-                  </div>
-                  <div className="track"><div className="fill" style={{ width: `${(n / max) * 100}%`, background: md?.color }} /></div>
-                </div>
-              )
-            })}
           </div>
         </div>
 
