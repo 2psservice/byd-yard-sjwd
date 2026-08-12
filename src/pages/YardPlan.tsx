@@ -5,7 +5,8 @@ import {
   Search, Printer, Download,
 } from 'lucide-react'
 import { useYard, useUnits, useBlocks } from '../store/useYard'
-import { useTrackingRows } from '../store/useTracking'
+import { useTracking, useTrackingRows } from '../store/useTracking'
+import { yardLocFull } from '../lib/groupingImport'
 import { deriveCarStatus, IN_YARD_STATUSES, CAR_STATUS_META } from '../lib/carStatus'
 import { rowInSite } from '../lib/siteScope'
 import { blockTag, blockKeyOfTag } from '../lib/format'
@@ -450,7 +451,24 @@ export function YardPlan() {
             )}
 
             {!edit && (
-              <button className="btn btn-primary" onClick={() => { const n = autoParkAll(); toast(n ? 'ok' : 'info', n ? `จัดจอดอัตโนมัติ ${n} คัน` : 'ไม่มีรถรอจอด') }}>
+              <button className="btn btn-primary" onClick={() => {
+                const before = useYard.getState().units
+                const n = autoParkAll()
+                if (n) {
+                  // log each auto-assigned position — an unlogged position
+                  // write can silently contradict a later manual edit
+                  const after = useYard.getState().units
+                  const by = `${useYard.getState().currentUser} · จัดจอดอัตโนมัติ`
+                  const ah = useTracking.getState().appendHistory
+                  for (const vin in after) {
+                    const a = after[vin], b = before[vin]
+                    if (!a.block || !a.row || !a.slot) continue
+                    if (b && b.block === a.block && b.row === a.row && b.slot === a.slot) continue
+                    ah(vin, { at: Date.now(), by, field: 'Location', from: yardLocFull(b), to: yardLocFull(a) })
+                  }
+                }
+                toast(n ? 'ok' : 'info', n ? `จัดจอดอัตโนมัติ ${n} คัน` : 'ไม่มีรถรอจอด')
+              }}>
                 <Zap size={15} /> {t('autoFill')}
               </button>
             )}

@@ -10,6 +10,8 @@ import { useTrackingRows, useTracking } from './store/useTracking'
 import { useOps } from './store/useOps'
 import { startSyncBus, stopSyncBus } from './lib/syncBus'
 import { deriveCarStatus } from './lib/carStatus'
+import { blockTag, blockKeyOfTag } from './lib/format'
+import { yardLocFull } from './lib/groupingImport'
 import { isPhone } from './lib/device'
 import { Dashboard } from './pages/Dashboard'
 import { ImportPage } from './pages/ImportPage'
@@ -172,6 +174,65 @@ export default function App() {
         if (r && deriveCarStatus(r.cells) === 'Gate-out') gone.push(vin)
       }
       if (gone.length) useYard.getState().markDepartedMany(gone)
+
+      // ── "ใช้ข้อมูลแก้ไขล่าสุด": position must agree with the newest edit ──
+      // Every lane-CHANGING write now logs a Location history line, so a
+      // positioned car whose lane contradicts its LATEST history entry is
+      // leftover damage from a pre-guard stale-device clobber (a car moved to
+      // N2705 showing N0701). Heal it: move the car back to the lane the last
+      // recorded edit names — its exact คันที่ when free, else the first free
+      // row. Same-lane row differences are normal compaction and stay.
+      // Scoped to the ACTIVE yard (updateLocations re-tags site to it).
+      const y = useYard.getState()
+      const us = y.units
+      const site = y.currentSite
+      if (!site) return
+      const blocks = y.blocksBySite[site] ?? y.blocksBySite['_global'] ?? []
+      const occ = new Map<string, Set<number>>() // "blockKey|slot" → used rows
+      const laneOf = (tag: string, slot: number) => `${blockKeyOfTag(tag)}|${slot}`
+      for (const vin in us) {
+        const u = us[vin]
+        if (!u.block || !u.row || !u.slot) continue
+        if (u.site && u.site !== site) continue
+        const k = laneOf(u.block, u.slot)
+        if (!occ.has(k)) occ.set(k, new Set())
+        occ.get(k)!.add(u.row)
+      }
+      const heals: { vin: string; block: string; row: number; slot: number }[] = []
+      for (const vin in us) {
+        const u = us[vin]
+        if (!u.block || !u.row || !u.slot) continue
+        if (u.site && u.site !== site) continue
+        const last = [...(rows[vin]?.history ?? [])].reverse().find(e => e.field === 'Location')
+        const m = last ? /^([A-Z]+)(\d{2})(\d{2})$/.exec((last.to ?? '').trim()) : null
+        if (!m) continue
+        const tag = m[1], slot = parseInt(m[2]), wantRow = parseInt(m[3])
+        if (laneOf(u.block, u.slot) === laneOf(tag, slot)) continue // row shifts = compaction
+        const blk = blocks.find(b => blockKeyOfTag(blockTag(b)) === blockKeyOfTag(tag))
+        if (blocks.length && !blk) continue // history names a block this yard doesn't draw
+        const depth = blk?.rows ?? 8
+        if (slot < 1 || (blk && slot > blk.cols)) continue
+        const k = laneOf(tag, slot)
+        if (!occ.has(k)) occ.set(k, new Set())
+        const used = occ.get(k)!
+        let row = 0
+        if (wantRow >= 1 && wantRow <= depth && !used.has(wantRow)) row = wantRow
+        else for (let i = 1; i <= depth; i++) if (!used.has(i)) { row = i; break }
+        if (!row) continue // lane full — leave it for a human
+        used.add(row)
+        occ.get(laneOf(u.block, u.slot))?.delete(u.row) // old cell frees up
+        heals.push({ vin, block: tag, row, slot })
+      }
+      if (heals.length) {
+        y.updateLocations(heals)
+        const ah = useTracking.getState().appendHistory
+        for (const h of heals) {
+          ah(h.vin, {
+            at: Date.now(), by: 'ระบบ · ใช้ตำแหน่งที่แก้ไขล่าสุด', field: 'Location',
+            from: yardLocFull(us[h.vin]), to: yardLocFull({ block: h.block, slot: h.slot, row: h.row }),
+          })
+        }
+      }
     }
     const t = setTimeout(sweep, 9000) // let the boot loads settle first
     const iv = setInterval(sweep, 60_000)
