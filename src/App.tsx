@@ -151,6 +151,11 @@ export default function App() {
   // load real tracking data from IndexedDB on startup
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
 
+  // dev-only store handles for automated tests (same pattern as Units' __tracking)
+  useEffect(() => {
+    if (import.meta.env.DEV) { (window as any).__yard = useYard; (window as any).__ops = useOps; (window as any).__tracking = useTracking }
+  }, [])
+
   // once tracking rows are available, purge any leftover sample units/trips —
   // but only AFTER a cloud sync completed (lastSync > 0). On a fresh device the
   // first non-empty set is the site-scoped partial load; purging against it
