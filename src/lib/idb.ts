@@ -6,6 +6,7 @@
  * One object store: "rows", keyed by VIN. Each value = { vin, cells }.
  */
 import type { TrackRow } from './excelTracking'
+import { isOnlineOnly } from './onlineMode'
 
 const DB_NAME = 'sjwd-yard'
 const DB_VERSION = 1
@@ -45,8 +46,10 @@ export async function idbGetAllRows(): Promise<TrackRow[]> {
   })
 }
 
+// WRITES are skipped in online-100% mode: no yard data may be left on the
+// device (deletes/clear still run — they only ever remove leftovers).
 export async function idbBulkPut(rows: TrackRow[]): Promise<void> {
-  if (!rows.length) return
+  if (!rows.length || isOnlineOnly()) return
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const t = db.transaction(STORE, 'readwrite')
@@ -59,6 +62,7 @@ export async function idbBulkPut(rows: TrackRow[]): Promise<void> {
 }
 
 export async function idbPut(row: TrackRow): Promise<void> {
+  if (isOnlineOnly()) return
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const req = tx(db, 'readwrite').put(row)

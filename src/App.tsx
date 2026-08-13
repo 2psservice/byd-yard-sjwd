@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Layout } from './components/Layout'
+import { OfflineGate } from './components/OfflineGate'
 import { LoginScreen } from './components/LoginScreen'
 import { LogoLoaderOverlay } from './components/LogoLoader'
 import { Toaster } from './components/ui'
@@ -371,11 +372,13 @@ export default function App() {
   // roster) or is deactivated goes back to login. It used to fall through with
   // a null role — `isOpsOnlyRole(undefined) === false` — straight into the
   // full admin shell.
-  if (!loggedInUserId || !me || !me.active) return <><LoginScreen /><Toaster /></>
+  if (!loggedInUserId || !me || !me.active) return <><LoginScreen /><OfflineGate /><Toaster /></>
 
-  // brand loader while the boot animation plays or yard data is still loading
+  // brand loader while the boot animation plays or yard data is still loading.
+  // In online-100% mode `trackingLoaded` only flips once CLOUD rows are in
+  // hand, so the first thing on screen is never this device's own leftovers.
   if (booting || !trackingLoaded)
-    return <><LogoLoaderOverlay label="กำลังโหลดข้อมูล" /><Toaster /></>
+    return <><LogoLoaderOverlay label="กำลังโหลดข้อมูลจากคลาวด์" /><OfflineGate /><Toaster /></>
 
   // field roles (driver / walk-around / PM / mechanic) — and ANY account on a
   // phone — live in Yard Ops only: no sidebar, no admin pages
@@ -384,6 +387,7 @@ export default function App() {
       <>
         <OpsShell><YardOps /></OpsShell>
         <SelectSiteModal />
+        <OfflineGate />
         <Toaster />
       </>
     )
@@ -392,6 +396,7 @@ export default function App() {
     <>
       <Layout>{pages[view]}</Layout>
       <SelectSiteModal />
+      <OfflineGate />
       <Toaster />
     </>
   )

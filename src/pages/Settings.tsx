@@ -7,12 +7,13 @@ import {
   Settings as SettingsIcon, MapPin, Plus, Trash2, Check, Building2,
   User, Car, Globe, Zap, Hand, SlidersHorizontal, Hash, Search,
   ChevronLeft, ChevronRight, AlertCircle, Pencil, X, ShieldCheck,
-  Wrench, ScanLine, ClipboardCheck,
+  Wrench, ScanLine, ClipboardCheck, Cloud,
 } from 'lucide-react'
 import { useYard, useUnits } from '../store/useYard'
 import type { UserRole } from '../types'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { PageHead, Toggle, cx } from '../components/ui'
+import { isOnlineOnly, setOnlineOnly } from '../lib/onlineMode'
 import { hashPassword } from '../lib/password'
 
 const VIN_RE = /^[A-HJ-NPR-Z0-9]{17}$/i
@@ -422,6 +423,40 @@ function UserManager() {
   )
 }
 
+// ── Data mode: online-100% vs local cache ────────────────────────────────────
+// Online 100% is the default and the reason every device shows the same
+// numbers: nothing about the yard is stored on the device, so there is no
+// local copy that can drift. Turning it off is the escape hatch for a yard
+// with an unreliable link — that device then keeps a cache and works offline,
+// at the cost of possibly showing data the cloud has already moved on from.
+function DataMode() {
+  const toast = useYard((s) => s.toast)
+  const [online, setOnline] = useState(() => isOnlineOnly())
+  const apply = (v: boolean) => {
+    setOnline(v)
+    setOnlineOnly(v)
+    toast('ok', v ? 'เปิดโหมดออนไลน์ 100% — กำลังโหลดใหม่' : 'ปิดโหมดออนไลน์ 100% — เก็บข้อมูลในเครื่องได้')
+    setTimeout(() => window.location.reload(), 700)
+  }
+  return (
+    <section className="panel overflow-hidden">
+      <SectionHead icon={<Cloud size={17} />} title="โหมดข้อมูล"
+        desc="แหล่งข้อมูลที่เครื่องนี้ใช้แสดงผล" badge={online ? 'ออนไลน์ 100%' : 'มีแคชในเครื่อง'} />
+      <div className="flex items-center gap-3 px-4 py-4">
+        <div className="min-w-0 flex-1">
+          <div className="font-semibold text-[13.5px]">ออนไลน์ 100% (ใช้ข้อมูลจากคลาวด์อย่างเดียว)</div>
+          <div className="text-[11.5px] mt-1 leading-relaxed" style={{ color: 'var(--muted)' }}>
+            เปิด: ทุกครั้งที่เปิดแอปจะดึงข้อมูลจากคลาวด์ใหม่ทั้งหมด ไม่เก็บรายการรถ/ตำแหน่ง/ผังลานไว้ในเครื่อง
+            ทุกเครื่องจึงเห็นยอดเดียวกันเสมอ — แต่ต้องมีอินเทอร์เน็ตจึงจะใช้งานได้
+            <br />ปิด: เก็บสำเนาไว้ในเครื่อง ใช้งานตอนเน็ตหลุดได้ แต่ยอดอาจตามคลาวด์ไม่ทัน
+          </div>
+        </div>
+        <Toggle checked={online} onChange={apply} />
+      </div>
+    </section>
+  )
+}
+
 export function Settings() {
   const {
     sites, currentSite, addSite, updateSite, removeSite, setCurrentSite, toast,
@@ -472,6 +507,9 @@ export function Settings() {
       <UserManager />
 
       <div className="grid gap-4 min-w-0">
+
+      {/* ── Data mode (online 100%) ── */}
+      <DataMode />
 
       {/* ── VIN management ── */}
       <VinManager />

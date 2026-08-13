@@ -10,6 +10,7 @@ import { idbBulkPut, idbClear, idbDelete, idbGetAllRows, idbPut } from '../lib/i
 import * as db from '../lib/db'
 import { supabase } from '../lib/supabase'
 import { onSync, sendSync } from '../lib/syncBus'
+import { isOnlineOnly } from '../lib/onlineMode'
 import { useYard } from './useYard'
 import { siteForRow, siteIdForLocation, coInspectionAccepts } from '../lib/siteScope'
 import { CAR_STATUS_ORDER, deriveCarStatus, isGateOutStamp } from '../lib/carStatus'
@@ -150,6 +151,34 @@ export const useTracking = create<TrackingState>()(
 
       loadFromIdb: async () => {
         if (get().loaded) return
+
+        // ── ONLINE 100%: this device holds nothing of its own ───────────────
+        // Start from an empty table, wipe whatever an older build cached, and
+        // fill the screen from the cloud only. Nothing on this device can make
+        // its numbers differ from anyone else's.
+        if (isOnlineOnly() && db.isConfigured()) {
+          set({ rows: {}, lastSync: 0 })
+          idbClear().catch(() => {})
+          // fast first paint: the ACTIVE yard, filtered server-side (~2 MB)
+          const y = useYard.getState()
+          const siteName = y.sites.find((s) => s.id === y.currentSite)?.name
+          if (siteName) {
+            try {
+              const siteRows = await db.fetchTrackingRowsForSite(siteName)
+              if (siteRows.length) {
+                const rec: Record<string, TrackRow> = {}
+                for (const r of siteRows) if (hasVin(r)) rec[r.vin] = r
+                set({ rows: rec, loaded: true }) // cloud data — safe to show
+              }
+            } catch { /* the full pull below is the real load */ }
+          }
+          // full set, verified against the cloud's exact count
+          await get().syncCloud().catch(() => {})
+          set({ loaded: true }) // release the loader even if the network failed
+          get().ensureComplete().catch(() => {})
+          return
+        }
+
         let rows: Record<string, TrackRow> = {}
         try {
           const all = await idbGetAllRows()
@@ -824,7 +853,13 @@ export const useTracking = create<TrackingState>()(
       name: 'sjwd-tracking',
       // only the (small) column + filter config is persisted to localStorage; rows live in IndexedDB
       storage: quotaSafeStorage(),
-      partialize: (s) => ({ columns: s.columns, filterCols: s.filterCols, defaultSeeded: s.defaultSeeded, viewDefaultVersion: s.viewDefaultVersion, lastImport: s.lastImport, lastSync: s.lastSync }),
+      // UI config only. In online-100% mode lastSync is NOT kept either: the
+      // device starts empty on every load, so the next run must be a full pull.
+      partialize: (s) => ({
+        columns: s.columns, filterCols: s.filterCols, defaultSeeded: s.defaultSeeded,
+        viewDefaultVersion: s.viewDefaultVersion, lastImport: s.lastImport,
+        lastSync: isOnlineOnly() ? 0 : s.lastSync,
+      }),
       merge: (persisted, current) => {
         const p = persisted as Partial<TrackingState> | undefined
         return {
