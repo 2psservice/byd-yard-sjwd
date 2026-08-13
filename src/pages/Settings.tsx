@@ -17,6 +17,26 @@ import { hashPassword } from '../lib/password'
 
 const VIN_RE = /^[A-HJ-NPR-Z0-9]{17}$/i
 
+// shared section header — tinted icon chip + title/desc + count badge, so the
+// three admin panels read as one system
+function SectionHead({ icon, title, desc, badge }: {
+  icon: React.ReactNode; title: string; desc: string; badge: string
+}) {
+  return (
+    <div className="px-4 py-3 border-b hairline flex items-center gap-3">
+      <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
+        style={{ background: 'var(--brand-soft, #eef4ff)', color: 'var(--brand)' }}>
+        {icon}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="font-semibold text-[14.5px] leading-tight">{title}</div>
+        <div className="text-[11.5px] mt-0.5 truncate" style={{ color: 'var(--muted)' }}>{desc}</div>
+      </div>
+      <span className="badge shrink-0" style={{ color: 'var(--brand)', background: 'var(--brand-soft, #eef4ff)' }}>{badge}</span>
+    </div>
+  )
+}
+
 // readable status for yard-unit-only VINs (mirrors tracking "Car Status" wording)
 const UNIT_STATUS_LABEL: Record<string, string> = {
   EXPECTED: 'Pre Gate-in', GATE_IN: 'Gate-in', ASSIGNED: 'Moving',
@@ -119,12 +139,9 @@ function VinManager() {
   const allChecked = pageRows.length > 0 && pageRows.every(r => selected.has(r.vin))
 
   return (
-    <section className="panel overflow-hidden mb-4">
-      <div className="px-4 py-3 border-b hairline flex items-center gap-2">
-        <Hash size={16} style={{ color: 'var(--brand)' }} />
-        <span className="font-semibold text-[14.5px]">จัดการ VIN</span>
-        <span className="badge ml-auto" style={{ color: 'var(--brand)', background: 'var(--brand-soft, #eef4ff)' }}>{rows.length} รายการ</span>
-      </div>
+    <section className="panel overflow-hidden">
+      <SectionHead icon={<Hash size={17} />} title="จัดการ VIN"
+        desc="เพิ่ม ค้นหา หรือลบรถรายคันออกจากระบบ" badge={`${rows.length.toLocaleString()} รายการ`} />
 
       {/* add new VIN */}
       <div className="p-4 border-b hairline" style={{ background: 'var(--app-bg)' }}>
@@ -158,7 +175,7 @@ function VinManager() {
       <div className="px-4 py-3 border-b hairline flex items-center gap-3" style={{ background: 'var(--app-bg)' }}>
         <div className="relative flex-1 max-w-xs">
           <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--muted)' }} />
-          <input className="input pl-8 py-1.5 text-[13px] w-full" placeholder="ค้นหา VIN / รุ่น / สี…"
+          <input className="input py-1.5 text-[13px] w-full" style={{ paddingLeft: 32 }} placeholder="ค้นหา VIN / รุ่น / สี…"
             value={q} onChange={e => { setQ(e.target.value); setPage(1) }} />
         </div>
         <div className="text-[12.5px]" style={{ color: 'var(--muted)' }}>{filtered.length} รายการ</div>
@@ -296,14 +313,9 @@ function UserManager() {
   const countByRole = (r: UserRole) => appUsers.filter(u => u.role === r && u.active).length
 
   return (
-    <section className="panel overflow-hidden mb-4">
-      <div className="px-4 py-3 border-b hairline flex items-center gap-2">
-        <ShieldCheck size={16} style={{ color: 'var(--brand)' }} />
-        <span className="font-semibold text-[14.5px]">สิทธิการใช้งาน</span>
-        <span className="badge ml-auto" style={{ color: 'var(--brand)', background: 'var(--brand-soft,#eef4ff)' }}>
-          {appUsers.length} ผู้ใช้
-        </span>
-      </div>
+    <section className="panel overflow-hidden">
+      <SectionHead icon={<ShieldCheck size={17} />} title="สิทธิการใช้งาน"
+        desc="บัญชีผู้ใช้และบทบาทของแต่ละสถานี" badge={`${appUsers.length} ผู้ใช้`} />
 
       {/* role summary chips */}
       <div className="px-4 py-3 flex flex-wrap gap-2 border-b hairline" style={{ background: 'var(--app-bg)' }}>
@@ -319,7 +331,7 @@ function UserManager() {
       {/* add form */}
       <div className="p-4 border-b hairline" style={{ background: 'var(--app-bg)' }}>
         <div className="text-[11px] font-bold uppercase tracking-wider mb-2" style={{ color: 'var(--muted)' }}>เพิ่มผู้ใช้ใหม่</div>
-        <div className="grid grid-cols-2 gap-2 mb-2">
+        <div className="grid grid-cols-2 gap-2 mb-2 md:grid-cols-[1.3fr_1fr_1fr_1fr_auto]">
           <input className="input py-2 text-[13.5px]" placeholder="ชื่อ-นามสกุล"
             value={newName} onChange={e => { setNewName(e.target.value); setErr('') }} onKeyDown={e => e.key === 'Enter' && doAdd()} />
           <select className="input py-2 text-[13px]" value={newRole} onChange={e => setNewRole(e.target.value as UserRole)}>
@@ -329,10 +341,10 @@ function UserManager() {
             value={newUser} onChange={e => { setNewUser(e.target.value); setErr('') }} onKeyDown={e => e.key === 'Enter' && doAdd()} />
           <input className="input py-2 text-[13.5px]" placeholder="Password" type="text"
             value={newPass} onChange={e => { setNewPass(e.target.value); setErr('') }} onKeyDown={e => e.key === 'Enter' && doAdd()} />
+          <button className="btn btn-primary px-4 py-2 shrink-0 col-span-2 md:col-span-1 justify-center" onClick={doAdd} disabled={!newName.trim() || !newUser.trim()}>
+            <Plus size={15} /> เพิ่มผู้ใช้
+          </button>
         </div>
-        <button className="btn btn-primary px-4 py-2 shrink-0" onClick={doAdd} disabled={!newName.trim() || !newUser.trim()}>
-          <Plus size={15} /> เพิ่มผู้ใช้
-        </button>
         {err && <div className="text-[12px] mt-2 flex items-center gap-1" style={{ color: '#dc2626' }}><AlertCircle size={13} />{err}</div>}
       </div>
 
@@ -345,7 +357,7 @@ function UserManager() {
           const meta = roleOf(u.role)
           const isEdit = editId === u.id
           return (
-            <div key={u.id} className="px-4 py-3 flex items-center gap-3">
+            <div key={u.id} className="px-4 py-3 flex items-center gap-3 transition-colors hover:bg-chip">
               {/* avatar */}
               <div className="w-9 h-9 rounded-full flex items-center justify-center font-bold text-[15px] shrink-0"
                 style={{ background: meta.bg, color: meta.color }}>
@@ -447,25 +459,27 @@ export function Settings() {
   }
 
   return (
-    <div className="max-w-[920px] mx-auto">
+    <div>
       <PageHead
         title={<span className="flex items-center gap-2"><SettingsIcon size={20} style={{ color: 'var(--brand)' }} /> ตั้งค่า</span>}
         sub="จัดการ Site งาน และการตั้งค่าระบบ"
       />
 
+      {/* full-width, two columns on wide screens: users (long) left, VIN + sites right */}
+      <div className="grid gap-4 items-start xl:grid-cols-2">
+
       {/* ── User permissions ── */}
       <UserManager />
+
+      <div className="grid gap-4 min-w-0">
 
       {/* ── VIN management ── */}
       <VinManager />
 
       {/* ── Site management ── */}
-      <section className="panel overflow-hidden mb-4">
-        <div className="px-4 py-3 border-b hairline flex items-center gap-2">
-          <Building2 size={16} style={{ color: 'var(--brand)' }} />
-          <span className="font-semibold text-[14.5px]">จัดการ Site งาน</span>
-          <span className="badge ml-auto" style={{ color: 'var(--brand)', background: 'var(--brand-soft, #eef4ff)' }}>{sites.length} Site</span>
-        </div>
+      <section className="panel overflow-hidden">
+        <SectionHead icon={<Building2 size={17} />} title="จัดการ Site งาน"
+          desc="ลานที่เปิดใช้งาน — รายการนี้คือตัวเลือกตอนเข้าสู่ระบบ" badge={`${sites.length} Site`} />
 
         {/* add new */}
         <div className="p-4 border-b hairline" style={{ background: 'var(--app-bg)' }}>
@@ -539,6 +553,8 @@ export function Settings() {
         </div>
       </section>
 
+      </div>
+      </div>
     </div>
   )
 }
