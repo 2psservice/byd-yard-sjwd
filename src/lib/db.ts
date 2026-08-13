@@ -753,11 +753,18 @@ export async function fetchTrackingRows(sinceMs?: number): Promise<TrackRow[]> {
  *  (offline / error): the caller must not draw any conclusion from it. */
 export async function fetchTrackingIndex(): Promise<{ vin: string; updatedAt: number; deletedAt: number | null }[] | null> {
   if (!isConfigured()) return null
-  const PAGE = 5000
+  // PostgREST caps every response at 1,000 rows. Asking for a bigger page and
+  // treating a short page as "the end" stopped after ONE page, so the index
+  // listed only the first 1,000 VINs — and reconcile deleted everything else
+  // as "not in the cloud" (16,585 rows collapsed to 571).
+  const PAGE = 1000
   const run = (from: number, cols: string) =>
     supabase.from('tracking_rows').select(cols).order('vin').range(from, from + PAGE - 1)
   const out: { vin: string; updatedAt: number; deletedAt: number | null }[] = []
   try {
+    // expected size, so a truncated walk can be detected instead of trusted
+    const { count, error: cErr } = await supabase.from('tracking_rows').select('vin', { count: 'exact', head: true })
+    if (cErr || count == null) { console.error('[db] fetchTrackingIndex count', cErr); return null }
     for (let from = 0; ; from += PAGE) {
       let res: any = await withRetry<{ error: unknown; data: unknown }>(() => run(from, 'vin, updated_at, deleted_at'))
         .catch(async (e) => {
@@ -772,6 +779,12 @@ export async function fetchTrackingIndex(): Promise<{ vin: string; updatedAt: nu
         deletedAt: r.deleted_at ? new Date(r.deleted_at).getTime() : null,
       })
       if (batch.length < PAGE) break
+    }
+    // a walk that came back short of the counted total is NOT the cloud's
+    // full list — returning it would make reconcile delete the difference
+    if (out.length < count) {
+      console.error(`[db] fetchTrackingIndex truncated: ${out.length}/${count} — ignoring`)
+      return null
     }
     return out
   } catch (e) {
