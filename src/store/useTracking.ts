@@ -294,6 +294,15 @@ export const useTracking = create<TrackingState>()(
           if (!cr && hasVin(lr) && (lr.updatedAt ?? 0) > lastSync) { rescue.push(lr); continue }
           drop.push(lr.vin)
         }
+        // safety brake: deleting a large share of the table means the index we
+        // diffed against is wrong (truncated page walk, partial outage), not
+        // that the yard emptied. Keep everything and log — data loss is never
+        // the safer failure. (A real bulk delete still lands via tombstones.)
+        const localCount = Object.keys(local).length
+        if (drop.length > Math.max(200, localCount * 0.1)) {
+          console.error(`[tracking] reconcile aborted: would drop ${drop.length}/${localCount} rows — index looks wrong`)
+          return
+        }
         const pulled = pullVins.length ? await db.fetchTrackingRowsByVins(pullVins) : []
         if (!pulled.length && !drop.length && !rescue.length) return
         set((s) => {
