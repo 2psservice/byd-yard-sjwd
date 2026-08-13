@@ -228,7 +228,7 @@ export function DailyStockReport() {
 
         {/* ── stock summary — the Local Production Stock block ── */}
         <div className="overflow-x-auto mb-4">
-          <table className="w-full" style={{ fontSize: 12.5, borderCollapse: 'collapse' }}>
+          <table className="w-full tbl-vlines" style={{ fontSize: 12.5, borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: 'var(--app-bg)' }}>
                 <th className="text-left px-3 py-2 font-bold whitespace-nowrap">Yard</th>
@@ -297,7 +297,7 @@ export function DailyStockReport() {
               <div className="px-3.5 py-4 text-[12.5px]" style={{ color: 'var(--faint)' }}>— ไม่มีรายการในวันนี้ —</div>
             ) : (
               <div className="max-h-[46vh] overflow-y-auto">
-                <table className="w-full" style={{ fontSize: 12, borderCollapse: 'collapse' }}>
+                <table className="w-full tbl-vlines" style={{ fontSize: 12, borderCollapse: 'collapse' }}>
                   <thead>
                     <tr style={{ background: 'var(--app-bg)' }}>
                       <th className="text-left px-3 py-1.5 font-bold">VIN</th>
@@ -332,7 +332,7 @@ export function DailyStockReport() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full" style={{ fontSize: 12, borderCollapse: 'collapse' }}>
+            <table className="w-full tbl-vlines" style={{ fontSize: 12, borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ background: 'var(--app-bg)' }}>
                   <th className="text-left px-3 py-1.5 font-bold whitespace-nowrap" style={{ color: 'var(--muted)' }}>Model</th>
