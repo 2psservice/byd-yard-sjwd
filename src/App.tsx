@@ -277,6 +277,7 @@ export default function App() {
       useTracking.getState().syncCloud().catch(() => {})
       useTracking.getState().ensureComplete().catch(() => {})
       useYard.getState().loadFromSupabase().catch(() => {})
+      useYard.getState().ensureUnitsComplete().catch(() => {})
     }
     let hiddenAt = 0
     const onVis = () => {
@@ -294,6 +295,12 @@ export default function App() {
     // instead of sitting on it, so all screens converge on the same number
     const boot = setTimeout(() => useTracking.getState().ensureComplete().catch(() => {}), 12_000)
     const iv = setInterval(() => useTracking.getState().ensureComplete().catch(() => {}), 600_000)
+    // same convergence check for the yard-plan/units table — a tablet that
+    // boots once, hits a partial page fetch, and stays open all shift never
+    // got a second chance before this (see ensureUnitsComplete). Staggered
+    // 15s so it doesn't compete with the tracking check above for bandwidth.
+    const bootUnits = setTimeout(() => useYard.getState().ensureUnitsComplete().catch(() => {}), 15_000)
+    const ivUnits = setInterval(() => useYard.getState().ensureUnitsComplete().catch(() => {}), 600_000)
     // the shared cloud numbers every screen shows: the In Yard count (one
     // number for every device) + the row total behind the sync-status badge.
     // 30s keeps all screens within half a minute of each other.
@@ -307,6 +314,7 @@ export default function App() {
       document.removeEventListener('visibilitychange', onVis)
       window.removeEventListener('online', catchUp)
       clearTimeout(boot); clearInterval(iv); clearInterval(ivCounts)
+      clearTimeout(bootUnits); clearInterval(ivUnits)
     }
   }, [loggedInUserId])
 

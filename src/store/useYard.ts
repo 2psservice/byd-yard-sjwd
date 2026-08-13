@@ -344,6 +344,9 @@ interface YardState {
   ensureUnitSites: () => void
   // --- supabase ---
   loadFromSupabase: () => Promise<void>
+  /** verify this device's local unit count for the active site matches the
+   *  cloud's exact count, retrying loadFromSupabase until it does */
+  ensureUnitsComplete: () => Promise<void>
   subscribeRealtime: () => void
   unsubscribeRealtime: () => void
   // --- co-inspection defects ---
@@ -1337,6 +1340,32 @@ export const useYard = create<YardState>()(
             return touched ? { units } : s
           })
         }).catch(() => {})
+      },
+
+      // ── convergence check: does this device hold every unit the cloud has
+      //    for the active site? ──────────────────────────────────────────────
+      // loadFromSupabase() only self-heals a partial fetch on its NEXT call —
+      // a tablet that boots once, gets a page timeout on a bad wifi moment, and
+      // then stays open for a whole shift never gets another chance (no tab
+      // hidden/online event fires). That is how one screen stayed stuck at 259
+      // cars while others read ~1,980: the first load was partial and nothing
+      // ever re-triggered it. This mirrors useTracking's ensureComplete (exact
+      // count vs local, retry with backoff) but for the units/yard-plan table.
+      ensureUnitsComplete: async () => {
+        if (!db.isConfigured()) return
+        const siteId = get().currentSite
+        if (!siteId) return
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const cloudCount = await db.countUnitsForSite(siteId)
+          if (cloudCount == null) return // can't verify → decide nothing
+          const localCount = Object.values(get().units).filter((u) => !u.site || u.site === siteId).length
+          if (localCount === cloudCount) return
+          console.warn(`[yard] units out of sync: local ${localCount} vs cloud ${cloudCount} — reloading (try ${attempt + 1})`)
+          await get().loadFromSupabase().catch(() => {})
+          const after = Object.values(get().units).filter((u) => !u.site || u.site === siteId).length
+          if (after === cloudCount) return
+          await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)))
+        }
       },
 
       // Live yard-plan updates: assign / park / gate-in on any device broadcasts
