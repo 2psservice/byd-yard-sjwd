@@ -1255,32 +1255,14 @@ export const useYard = create<YardState>()(
           if (local.length) db.replaceBlocks(siteId, local).catch((e) => console.error('[db] seedBlocks', e))
         }
         set((s) => {
-          let units = mergeCloudUnits(s.units, cloud)
-          // cloud 100%: a COMPLETE fetch is the yard's full truth — drop this
-          // site's local-only units (ghost cars deleted elsewhere). Very fresh
-          // local units are kept: they're this device's own writes still in
-          // flight to the cloud. Partial fetches only ever merge additively.
-          if (complete) {
-            const have = new Set(cloud.map((u) => u.vin))
-            const cutoff = Date.now() - 5 * 60_000
-            const ghosts: string[] = []
-            for (const vin of Object.keys(units)) {
-              const u = units[vin]
-              if (have.has(vin) || u.site !== siteId) continue
-              const freshest = Math.max(u.parkedAt ?? 0, u.assignedAt ?? 0, u.gateInAt ?? 0, u.importedAt ?? 0)
-              if (freshest > cutoff) continue
-              ghosts.push(vin)
-            }
-            // safety brake: dropping a large share of the yard means the cloud
-            // answer itself is suspect (e.g. a site_id mismatch returning a
-            // near-empty set marked "complete") — keep local and log instead
-            const localSiteCount = Object.values(units).filter((u) => u.site === siteId).length
-            if (ghosts.length > Math.max(50, localSiteCount * 0.2)) {
-              console.error(`[db] ghost-drop skipped: would remove ${ghosts.length}/${localSiteCount} units — cloud set looks wrong`)
-            } else {
-              for (const vin of ghosts) delete units[vin]
-            }
-          }
+          // ADD-ONLY: merge the cloud in, never delete a car just because the
+          // cloud's answer didn't list it. A stale ghost row is a cosmetic
+          // count problem; dropping real positions because of a partial or
+          // wrong fetch is data loss. Cars leave only when something actually
+          // removes them (gate-out sweep, explicit delete), which propagates
+          // on its own.
+          const units = mergeCloudUnits(s.units, cloud)
+          void complete // kept for logging/diagnostics; no longer gates deletes
           return {
             units,
             trailers: trailers.length ? trailers : s.trailers,
