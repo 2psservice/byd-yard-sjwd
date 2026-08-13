@@ -902,8 +902,11 @@ export async function deleteTrackingRows(vins: string[]): Promise<void> {
   const CHUNK = 500
   for (let i = 0; i < vins.length; i += CHUNK) {
     const slice = vins.slice(i, i + CHUNK)
+    // mark deleted WITHOUT wiping `cells`: blanking the payload made every
+    // delete unrecoverable, so a wrong delete could never be undone. The
+    // tombstone alone hides the row everywhere; the data stays for recovery.
     const { error } = await supabase.from('tracking_rows')
-      .upsert(slice.map((vin) => ({ vin, deleted_at: nowIso, updated_at: nowIso, cells: {} })), { onConflict: 'vin' })
+      .upsert(slice.map((vin) => ({ vin, deleted_at: nowIso, updated_at: nowIso })), { onConflict: 'vin' })
     if (error) {
       // `deleted_at` column not migrated yet → fall back to the old hard delete
       const { error: dErr } = await supabase.from('tracking_rows').delete().in('vin', slice)

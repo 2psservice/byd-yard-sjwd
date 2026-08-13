@@ -34,9 +34,14 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // prompt-mode update: the waiting SW activates only when the user taps
-        // the update banner (updateSW → SKIP_WAITING) — no mid-work reloads
-        skipWaiting: false,
+        // A new build must take over on the NEXT reload, no exceptions. With
+        // skipWaiting:false the new worker sat "waiting" until every tab of
+        // the app closed, so devices kept running an old build for days —
+        // fixes shipped but the yard still saw the bug ("ยังไม่หาย"). The new
+        // worker now activates as soon as it installs; the update banner
+        // stays, so nobody is reloaded mid-task, but a manual refresh always
+        // lands on the current code.
+        skipWaiting: true,
         clientsClaim: true,
         // precache the app shell (JS/CSS/HTML/fonts/images) → instant cold loads.
         // Skip the lazily-imported Excel engines (~1.4 MB) — they're admin
