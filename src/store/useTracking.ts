@@ -159,21 +159,18 @@ export const useTracking = create<TrackingState>()(
         if (isOnlineOnly() && db.isConfigured()) {
           set({ rows: {}, lastSync: 0 })
           idbClear().catch(() => {})
-          // fast first paint: the ACTIVE yard, filtered server-side (~2 MB)
-          const y = useYard.getState()
-          const siteName = y.sites.find((s) => s.id === y.currentSite)?.name
-          if (siteName) {
-            try {
-              const siteRows = await db.fetchTrackingRowsForSite(siteName)
-              if (siteRows.length) {
-                const rec: Record<string, TrackRow> = {}
-                for (const r of siteRows) if (hasVin(r)) rec[r.vin] = r
-                set({ rows: rec, loaded: true }) // cloud data — safe to show
-              }
-            } catch { /* the full pull below is the real load */ }
-          }
-          // full set, verified against the cloud's exact count
+          // The pull STREAMS: syncCloud paints each page the moment it lands and
+          // flips `loaded` on the first one, so the app opens in about the time
+          // of one request instead of waiting for all ~17 pages. (The old
+          // "active yard first" query filtered on cells->>'Location yard',
+          // which no index covers — it scanned the whole table before the real
+          // load had even started.)
+          // …and never hold the logo screen longer than 3s: past that the app
+          // opens and fills in behind the sync badge ("กำลังเติม N%"), which
+          // beats staring at a splash on a slow yard link.
+          const reveal = setTimeout(() => set({ loaded: true }), 3000)
           await get().syncCloud().catch(() => {})
+          clearTimeout(reveal)
           set({ loaded: true }) // release the loader even if the network failed
           get().ensureComplete().catch(() => {})
           return
@@ -268,7 +265,18 @@ export const useTracking = create<TrackingState>()(
 
         let cloud: TrackRow[] = []
         let complete = false
-        try { const res = await db.fetchTrackingRows(since); cloud = res.rows; complete = res.complete } catch { return }
+        // On a device that starts empty (every load in online-100% mode) paint
+        // each page as it arrives instead of holding the screen until the last
+        // one: the yard is usable after the first ~1,000 rows and the rest fills
+        // in behind. The merge below still runs on the COMPLETE set.
+        const stream = hasLocal ? undefined : (batch: TrackRow[]) => {
+          set((s) => {
+            const rows = { ...s.rows }
+            for (const r of batch) if (hasVin(r) && !r.deletedAt) rows[r.vin] = r
+            return { rows, loaded: true }
+          })
+        }
+        try { const res = await db.fetchTrackingRows(since, stream); cloud = res.rows; complete = res.complete } catch { return }
         const cloudByVin = new Map(cloud.map((r) => [r.vin, r]))
 
         // cloud → local: apply tombstones (remove) and pull rows missing locally

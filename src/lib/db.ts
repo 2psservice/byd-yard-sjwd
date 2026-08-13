@@ -234,7 +234,11 @@ async function resolveUnitsSelect(): Promise<string> {
  *  `complete` marks a fetch where EVERY page arrived — only then may a caller
  *  treat the result as the yard's full truth (and e.g. drop local ghosts);
  *  a partial result must only ever be merged additively. */
-export async function fetchAllUnits(siteId?: string | null): Promise<{ units: Unit[]; complete: boolean }> {
+export async function fetchAllUnits(
+  siteId?: string | null,
+  /** called with each page as it lands, so the yard plan paints progressively */
+  onPage?: (units: Unit[]) => void,
+): Promise<{ units: Unit[]; complete: boolean }> {
   if (!isConfigured()) return { units: [], complete: false }
   const select = await resolveUnitsSelect()
   // photo-free pages are tiny; the full-embed fallback carries base64 photos,
@@ -260,7 +264,9 @@ export async function fetchAllUnits(siteId?: string | null): Promise<{ units: Un
           if (siteFilter) q = (q as any).or(siteFilter)
           return (q as any).order('vin').range(p * PAGE, p * PAGE + PAGE - 1)
         }, 4)
-        return (data ?? []) as unknown as DbUnitWithDamages[]
+        const rows = (data ?? []) as unknown as DbUnitWithDamages[]
+        if (onPage && rows.length) onPage(rows.map(rowToUnit))
+        return rows
       } catch (e) {
         failed++
         console.error('[db] fetchAllUnits page failed after retries', p, e)
@@ -706,7 +712,13 @@ const toTrackRow = (r: TrackRowRow): TrackRow => ({
 /** `complete` = every page of the pull arrived. A false value means the result
  *  is PARTIAL: merge it additively, never conclude anything from what's absent,
  *  and don't advance lastSync (the next run must pull fully again). */
-export async function fetchTrackingRows(sinceMs?: number): Promise<{ rows: TrackRow[]; complete: boolean }> {
+export async function fetchTrackingRows(
+  sinceMs?: number,
+  /** called with each page THE MOMENT it lands — lets the caller paint rows
+   *  while the rest of the pull is still in flight (online-100% devices used to
+   *  sit on the logo screen until all ~17 pages had arrived) */
+  onPage?: (rows: TrackRow[]) => void,
+): Promise<{ rows: TrackRow[]; complete: boolean }> {
   if (!isConfigured()) return { rows: [], complete: false }
   const PAGE = 1000
   const sinceIso = sinceMs ? new Date(sinceMs).toISOString() : null
@@ -716,10 +728,15 @@ export async function fetchTrackingRows(sinceMs?: number): Promise<{ rows: Track
   // how a device got stuck showing 213 of 1,980 rows forever: the partial pull
   // was accepted and lastSync moved on, so nothing ever backfilled it)
   let anyPageFailed = false
-  const page = async (from: number): Promise<TrackRowRow[]> => {
+  // `after` = keyset cursor (the last VIN of the previous page). PostgreSQL can
+  // jump straight to it on the primary-key index, where OFFSET 15000 has to walk
+  // and discard 15,000 index entries first — the deep pages of a 16k-row yard
+  // were the slowest part of the load.
+  const page = async (from: number, after?: string): Promise<TrackRowRow[]> => {
     const run = (cols: string) => {
       let q: any = supabase.from('tracking_rows').select(cols).order('vin')
       if (sinceIso) q = q.gt('updated_at', sinceIso)
+      if (after != null) return q.gt('vin', after).limit(PAGE)
       return q.range(from, from + PAGE - 1)
     }
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -727,7 +744,11 @@ export async function fetchTrackingRows(sinceMs?: number): Promise<{ rows: Track
       if (res.error) res = await run('vin, cells, updated_at, site, history') // `deleted_at` column not migrated yet
       if (res.error) res = await run('vin, cells, updated_at, site') // `history` column not migrated yet
       if (res.error) res = await run('vin, cells, updated_at') // `site` column not migrated yet
-      if (!res.error) return (res.data ?? []) as TrackRowRow[]
+      if (!res.error) {
+        const data = (res.data ?? []) as TrackRowRow[]
+        if (onPage && data.length) onPage(data.map(toTrackRow))
+        return data
+      }
       console.error('[db] fetchTrackingRows page', from, 'attempt', attempt + 1, res.error)
       await sleep(500 * (attempt + 1))
     }
@@ -735,16 +756,21 @@ export async function fetchTrackingRows(sinceMs?: number): Promise<{ rows: Track
     return []
   }
 
-  // incremental deltas are small → walk sequentially
-  if (sinceIso) {
+  /** sequential keyset walk — no counts, no deep offsets, each page streams out */
+  const walk = async (): Promise<TrackRow[]> => {
     const out: TrackRow[] = []
-    for (let from = 0; ; from += PAGE) {
-      const batch = await page(from)
+    let after: string | undefined
+    for (;;) {
+      const batch = await page(0, after ?? '')
       for (const r of batch) out.push(toTrackRow(r))
       if (batch.length < PAGE) break
+      after = batch[batch.length - 1].vin
     }
-    return { rows: out, complete: !anyPageFailed }
+    return out
   }
+
+  // incremental deltas are small → keyset walk
+  if (sinceIso) return { rows: await walk(), complete: !anyPageFailed }
 
   // full pull → count, then fetch all pages concurrently. If the count query
   // fails (timeout on yard cellular), DON'T assume 1 page — that silently
@@ -753,14 +779,8 @@ export async function fetchTrackingRows(sinceMs?: number): Promise<{ rows: Track
   const { count, error: cntErr } = await supabase.from('tracking_rows').select('vin', { count: 'exact', head: true })
   if (cntErr || count == null) {
     if (cntErr) console.error('[db] fetchTrackingRows count', cntErr)
-    const out: TrackRow[] = []
-    for (let from = 0; ; from += PAGE) {
-      const batch = await page(from)
-      for (const r of batch) out.push(toTrackRow(r))
-      if (batch.length < PAGE) break
-    }
     // no count to verify against → only "complete" if no page ever failed
-    return { rows: out, complete: !anyPageFailed }
+    return { rows: await walk(), complete: !anyPageFailed }
   }
   const pages = Math.max(1, Math.ceil(count / PAGE))
   const all = await Promise.all(Array.from({ length: pages }, (_, i) => page(i * PAGE)))
@@ -813,18 +833,21 @@ export async function fetchTrackingIndex(): Promise<{ vin: string; updatedAt: nu
   // listed only the first 1,000 VINs — and reconcile deleted everything else
   // as "not in the cloud" (16,585 rows collapsed to 571).
   const PAGE = 1000
-  const run = (from: number, cols: string) =>
-    supabase.from('tracking_rows').select(cols).order('vin').range(from, from + PAGE - 1)
+  // keyset (vin > last) instead of range/OFFSET: the index walk covers every row
+  // in the table, and its last pages were paying to skip 15,000 index entries
+  const run = (after: string, cols: string) =>
+    supabase.from('tracking_rows').select(cols).order('vin').gt('vin', after).limit(PAGE)
   const out: { vin: string; updatedAt: number; deletedAt: number | null }[] = []
   try {
     // expected size, so a truncated walk can be detected instead of trusted
     const { count, error: cErr } = await supabase.from('tracking_rows').select('vin', { count: 'exact', head: true })
     if (cErr || count == null) { console.error('[db] fetchTrackingIndex count', cErr); return null }
-    for (let from = 0; ; from += PAGE) {
-      let res: any = await withRetry<{ error: unknown; data: unknown }>(() => run(from, 'vin, updated_at, deleted_at'))
+    let after = ''
+    for (;;) {
+      let res: any = await withRetry<{ error: unknown; data: unknown }>(() => run(after, 'vin, updated_at, deleted_at'))
         .catch(async (e) => {
           // deleted_at may not be migrated — retry without it before giving up
-          if (isMissingColumn(e)) return withRetry<{ error: unknown; data: unknown }>(() => run(from, 'vin, updated_at'))
+          if (isMissingColumn(e)) return withRetry<{ error: unknown; data: unknown }>(() => run(after, 'vin, updated_at'))
           throw e
         })
       const batch = (res.data ?? []) as { vin: string; updated_at: string | null; deleted_at?: string | null }[]
@@ -834,6 +857,7 @@ export async function fetchTrackingIndex(): Promise<{ vin: string; updatedAt: nu
         deletedAt: r.deleted_at ? new Date(r.deleted_at).getTime() : null,
       })
       if (batch.length < PAGE) break
+      after = batch[batch.length - 1].vin
     }
     // a walk that came back short of the counted total is NOT the cloud's
     // full list — returning it would make reconcile delete the difference

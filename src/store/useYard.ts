@@ -1255,8 +1255,13 @@ export const useYard = create<YardState>()(
         //    light, and switching sites re-fetches. Merge per-vin, never drop local.
         const siteId = get().currentSite
         if (!siteId) return // no yard picked yet → wait; setCurrentSite re-runs this
+        // stream: paint cars into the yard plan page by page instead of waiting
+        // for the whole site's units (a 2,000-car yard is 4 pages + damages)
+        const streamUnits = Object.keys(get().units).length === 0
+          ? (batch: Unit[]) => set((s) => ({ units: mergeCloudUnits(s.units, batch) }))
+          : undefined
         const [{ units: cloud, complete }, trailers, cloudBlocks] = await Promise.all([
-          db.fetchAllUnits(siteId),
+          db.fetchAllUnits(siteId, streamUnits),
           db.fetchTrailers(siteId),
           db.fetchBlocks(siteId),
         ])
