@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import {
-  UploadCloud, FileSpreadsheet, Download, Sparkles, Trash2, CheckCircle2, Table2,
+  UploadCloud, FileSpreadsheet, CheckCircle2, Table2,
   Loader2, Database, MapPin, Car, CalendarDays, Hourglass, ClipboardCheck, AlertTriangle,
 } from 'lucide-react'
 import { useYard } from '../store/useYard'
 import { useTracking } from '../store/useTracking'
 import { useOps } from '../store/useOps'
-import { downloadTemplate } from '../lib/excel'
 import { parseTrackingWorkbook, parseImportWorkbook, type ParseResult } from '../lib/excelTracking'
 import { parseLane, parseLaneWorkbook, type LaneParseResult, type LaneRow } from '../lib/laneImport'
 import { coInspectionAccepts, rowInSite, siteForRow } from '../lib/siteScope'
@@ -34,34 +33,17 @@ function dateSortVal(s: string): number {
 }
 
 export function ImportPage() {
-  const { loadSample, clearAll, toast, importDefects, updateLocations } = useYard()
+  const { toast, importDefects, updateLocations } = useYard()
   const blocksBySite = useYard((s) => s.blocksBySite)
   const sites = useYard((s) => s.sites)
   const currentSite = useYard((s) => s.currentSite)
   const laneDepth = useYard((s) => s.laneDepth)
   const curSiteName = sites.find((s) => s.id === currentSite)?.name ?? '—'
   const yardUnits = useYard((s) => s.units)
-  const { commitImport, commitCoInspection, deleteRows, lastImport, loadFromIdb } = useTracking()
+  const { commitImport, commitCoInspection, lastImport, loadFromIdb } = useTracking()
   const existing = useTracking((s) => s.rows)
   const rowCount = Object.keys(existing).length
-  // distinct vehicles across BOTH stores (gated-in cars live in tracking + yard units)
-  const vehicleCount = useMemo(
-    () => new Set([...Object.keys(existing), ...Object.keys(yardUnits)]).size,
-    [existing, yardUnits],
-  )
-  const { createGateInQueue, clearQueues } = useOps()
-
-  // wipe THIS YARD's data only (the old version deleted every yard's rows,
-  // units and queues in the whole cloud from one site's button)
-  const clearEverything = () => {
-    const siteVins = Object.values(existing)
-      .filter((r) => rowInSite(r, currentSite, sites))
-      .map((r) => r.vin)
-    deleteRows(siteVins) // tombstone soft-delete → propagates, no resurrection
-    clearAll()           // this yard's units + trailers (+ local trips)
-    clearQueues()        // this yard's work queues
-    toast('info', `ล้างข้อมูลของยาร์ด ${curSiteName} แล้ว (${siteVins.length.toLocaleString()} คัน)`)
-  }
+  const { createGateInQueue } = useOps()
 
   // load existing rows from IndexedDB so duplicate VINs are detected & skipped
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
@@ -584,29 +566,6 @@ export function ImportPage() {
             )}
           </div>
 
-          {vehicleCount > 0 && (
-            <div className="panel p-5">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="font-semibold text-[14px]">ล้างข้อมูลรายการรถ (เฉพาะยาร์ดนี้)</div>
-                  <div className="text-[12px] mt-0.5" style={{ color: 'var(--muted)' }}>ลบรถของยาร์ด {curSiteName} ออกจากระบบ — ยาร์ดอื่นไม่ถูกลบ</div>
-                </div>
-                <button className="btn btn-danger" onClick={() => {
-                  if (!window.confirm(`ยืนยันลบข้อมูลรถของยาร์ด "${curSiteName}" ?\n(ข้อมูลยาร์ดอื่นจะไม่ถูกลบ)`)) return
-                  if (window.prompt('การลบย้อนกลับไม่ได้ — พิมพ์คำว่า ลบ เพื่อยืนยัน') !== 'ลบ') { toast('err', 'ยกเลิก — ข้อความยืนยันไม่ตรง'); return }
-                  clearEverything()
-                }}><Trash2 size={15} /></button>
-              </div>
-            </div>
-          )}
-
-          <div className="panel p-4">
-            <div className="text-[12px] font-semibold mb-2" style={{ color: 'var(--muted)' }}>เครื่องมือ (เดโม่)</div>
-            <div className="flex gap-2">
-              <button className="btn flex-1" onClick={downloadTemplate}><Download size={14} /> เทมเพลต</button>
-              <button className="btn flex-1" onClick={() => { loadSample(); toast('ok', 'โหลดข้อมูลตัวอย่างหน้าอื่นแล้ว') }}><Sparkles size={14} /> ข้อมูลตัวอย่าง</button>
-            </div>
-          </div>
         </div>
       </div>
     </div>

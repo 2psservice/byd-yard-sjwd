@@ -606,23 +606,8 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
     // (bulkUpdate) so it updates everywhere the group is read (Grouping view etc.).
     nodes.push({ kind: 'divider' })
     nodes.push({ kind: 'item', label: n > 1 ? `Grouping No. (${n})…` : 'Grouping No.…', icon: <FileText size={14} />, onSelect: () => promptApply(GROUPING_KEY) })
-    // Delete: permanently remove the selected VIN(s) from the system (local +
-    // IndexedDB + cloud, via deleteRows). Danger-styled + confirm guard so it
-    // can't be hit by accident.
-    nodes.push({ kind: 'divider' })
-    nodes.push({ kind: 'item', label: n > 1 ? `Delete (${n})` : 'Delete', icon: <Trash2 size={14} />, danger: true, onSelect: () => {
-      const ok = window.confirm(
-        n > 1
-          ? `ลบ ${n} VIN ออกจากระบบถาวร?\n(ลบทั้งในเครื่องและ cloud — ย้อนกลับไม่ได้)`
-          : `ลบ VIN นี้ออกจากระบบถาวร?\n${vin}\n(ลบทั้งในเครื่องและ cloud — ย้อนกลับไม่ได้)`,
-      )
-      if (ok) {
-        deleteRows(targets)
-        setSel(new Set())
-        toast('ok', `ลบ ${n} คันออกจากระบบแล้ว`)
-      }
-      setMenu(null)
-    } })
+    // No Delete here — removing a VIN is a Settings-only admin action so field
+    // staff can't wipe a car from the context menu by accident.
     return nodes
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [menu, columns, rows])
