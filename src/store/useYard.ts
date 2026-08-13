@@ -155,6 +155,31 @@ function persistSlid(
 }
 
 // ── Defect import helpers (Defect-Yard / Defect-Factory → Damage) ───────────
+/** Merge cloud units into the local map, carrying over damage PHOTOS the
+ *  cloud copy omits — fetchAllUnits deliberately loads damages without their
+ *  base64 photo payloads (they stream in later via fetchDamagePhotos), so a
+ *  refetch must not wipe photos this device already holds. */
+function mergeCloudUnits(cur: Record<string, Unit>, cloud: Unit[]): Record<string, Unit> {
+  const merged: Record<string, Unit> = { ...cur }
+  for (const u of cloud) {
+    const old = cur[u.vin]
+    if (old?.damages.length && u.damages.length) {
+      const byId = new Map(old.damages.map((d) => [d.id, d]))
+      let changed = false
+      const damages = u.damages.map((d) => {
+        if (d.photo || d.photos?.length) return d
+        const o = byId.get(d.id)
+        if (o && (o.photo || o.photos?.length)) { changed = true; return { ...d, photo: o.photo, photos: o.photos } }
+        return d
+      })
+      merged[u.vin] = changed ? { ...u, damages } : u
+    } else {
+      merged[u.vin] = u
+    }
+  }
+  return merged
+}
+
 function defHash(s: string): string {
   let h = 5381
   for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0
@@ -1175,11 +1200,36 @@ export const useYard = create<YardState>()(
           if (local.length) db.replaceBlocks(siteId, local).catch((e) => console.error('[db] seedBlocks', e))
         }
         if (!cloud.length && !trailers.length) return
-        set((s) => {
-          const merged: Record<string, Unit> = { ...s.units }
-          for (const u of cloud) merged[u.vin] = u
-          return { units: merged, trailers: trailers.length ? trailers : s.trailers }
-        })
+        set((s) => ({
+          units: mergeCloudUnits(s.units, cloud),
+          trailers: trailers.length ? trailers : s.trailers,
+        }))
+        // 4) photo payloads stream in AFTER positions are on screen — only for
+        //    damages that still lack a photo locally (base64 photos are the
+        //    heavy part; loading them inline made the yard plan wait minutes)
+        const needPhotos = cloud
+          .filter((u) => u.damages.length && u.damages.some((d) => !d.photo && !d.photos?.length))
+          .map((u) => u.vin)
+        db.fetchDamagePhotos(needPhotos, (byVin) => {
+          set((s) => {
+            const units = { ...s.units }
+            let touched = false
+            for (const [vin, list] of byVin) {
+              const u = units[vin]
+              if (!u) continue
+              const byId = new Map(list.map((p) => [p.id, p]))
+              let changed = false
+              const damages = u.damages.map((d) => {
+                const p = byId.get(d.id)
+                if (!p || d.photo || d.photos?.length) return d
+                changed = true
+                return { ...d, photo: p.photo, photos: p.photos }
+              })
+              if (changed) { units[vin] = { ...u, damages }; touched = true }
+            }
+            return touched ? { units } : s
+          })
+        }).catch(() => {})
       },
 
       // Live yard-plan updates: assign / park / gate-in on any device broadcasts
@@ -1231,9 +1281,7 @@ export const useYard = create<YardState>()(
                     db.fetchAllUnits(siteId).then((cloud) => {
                       if (!cloud.length) return
                       set((s) => {
-                        const merged: Record<string, Unit> = { ...s.units }
-                        for (const u of cloud) merged[u.vin] = u
-                        return { units: merged }
+                        return { units: mergeCloudUnits(s.units, cloud) }
                       })
                     }).catch((e) => console.error('[db] damage delete refetch', e))
                   })
@@ -1260,9 +1308,7 @@ export const useYard = create<YardState>()(
                   db.fetchAllUnits(siteId).then((cloud) => {
                     if (!cloud.length) return
                     set((s) => {
-                      const merged: Record<string, Unit> = { ...s.units }
-                      for (const u of cloud) merged[u.vin] = u
-                      return { units: merged }
+                      return { units: mergeCloudUnits(s.units, cloud) }
                     })
                   }).catch((e) => console.error('[db] damage refetch', e))
                 })
@@ -1310,9 +1356,7 @@ export const useYard = create<YardState>()(
               db.fetchAllUnits(sid).then((cloud) => {
                 if (!cloud.length) return
                 set((s) => {
-                  const merged: Record<string, Unit> = { ...s.units }
-                  for (const u of cloud) merged[u.vin] = u
-                  return { units: merged }
+                  return { units: mergeCloudUnits(s.units, cloud) }
                 })
               }).catch(() => {})
               return
