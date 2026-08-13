@@ -76,7 +76,7 @@ export function ImportPage() {
       const res = await parseLaneWorkbook(file)
       setLocParsed(res); setLocFileName(file.name)
     } catch (e: any) {
-      toast('err', e?.message || 'อ่านไฟล์ไม่สำเร็จ — ต้องมีคอลัมน์ VinNo + LaneNo')
+      toast('err', e?.message || 'อ่านไฟล์ไม่สำเร็จ — ต้องมีคอลัมน์ VinNo + LaneNo หรือ Vin + location')
     } finally { setLocBusy(false) }
   }
 
@@ -109,6 +109,7 @@ export function ImportPage() {
     const placements: { vin: string; block: string; row: number; slot: number; modelName?: string; color?: string; gateInAt?: number }[] = []
     const badLane: LaneRow[] = []
     const rowFull: LaneRow[] = []
+    const fileClaimed = new Map<string, Set<number>>() // exact cells taken by earlier rows of THIS file
     for (const r of rows) {
       const lane = parseLane(r.lane)
       if (!lane) { badLane.push(r); continue }
@@ -119,6 +120,17 @@ export function ImportPage() {
       const k = `${block}|${lane.row}`
       if (!occ.has(k)) occ.set(k, new Set())
       const used = occ.get(k)!
+      // full-position code ("K0903" → col 9, EXACT row 3): the file states where
+      // the car physically stands, so it takes that exact cell — only another
+      // row of THIS file claiming the same cell is a conflict
+      if (lane.pos) {
+        const fc = fileClaimed.get(k) ?? new Set<number>()
+        if (fc.has(lane.pos)) { rowFull.push(r); continue }
+        fc.add(lane.pos); fileClaimed.set(k, fc)
+        used.add(lane.pos) // stacking rows below won't reuse this cell
+        placements.push({ vin: r.vin, block, row: lane.pos, slot: lane.row, modelName: r.modelName, color: r.colorName, gateInAt: r.gateInAt })
+        continue
+      }
       // how deep this column may stack: the block's own row count, or the global
       // lane depth when the file names a block this yard has not drawn yet
       const depth = hit?.rows ?? laneDepth
@@ -473,7 +485,7 @@ export function ImportPage() {
                   color="#d97706" soft="rgba(217,119,6,0.1)"
                   icon={<MapPin size={20} style={{ color: '#d97706' }} />}
                   title="ลากไฟล์ Update Location มาวาง หรือคลิก"
-                  sub={<>ต้องมีคอลัมน์ <b>VinNo</b> + <b>LaneNo</b> — เช่น N-O15 → บล็อก <b>OO</b> ช่องที่ <b>15</b> · เรียงลงแถว 1–8 อัตโนมัติ</>}
+                  sub={<>คอลัมน์ <b>VinNo + LaneNo</b> (N-O15 → บล็อก OO ช่อง 15 เรียงลงแถวอัตโนมัติ) หรือ <b>Vin + location</b> รหัสเต็ม (K0903 → บล็อก K แถว 9 คันที่ 3 ตรงตำแหน่ง)</>}
                   busy={locBusy} drag={locDrag} inputRef={locInputRef} onFile={handleLocFile} setDrag={setLocDrag}
                 />
               ) : locPlan && (
