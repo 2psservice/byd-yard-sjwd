@@ -46,6 +46,8 @@ interface TrackingState {
 
   loadFromIdb: () => Promise<void>
   syncCloud: () => Promise<void>
+  /** full per-VIN diff against the cloud index — converges this device 100% */
+  reconcileCloud: () => Promise<void>
   subscribeRealtime: () => void
   unsubscribeRealtime: () => void
   importFile: (file: File) => Promise<ParseResult>
@@ -229,9 +231,15 @@ export const useTracking = create<TrackingState>()(
         for (const lr of Object.values(local)) if (!hasVin(lr) && !drop.includes(lr.vin)) { delete merged[lr.vin]; drop.push(lr.vin) }
         if (phantom.length) db.deleteTrackingRows(phantom).catch(() => {})
 
-        // local → cloud: on a full run, anything the cloud lacks or is older on;
-        // incrementally, just local edits since last sync (covers offline changes).
-        // Never re-push a VIN the cloud has tombstoned — that was the resurrection bug.
+        // local → cloud: push only rows THIS DEVICE changed since its last sync
+        // (offline edits). Never re-push a VIN the cloud has tombstoned. On a
+        // full run the cloud list is complete, so a local row the cloud does
+        // not have — and that we haven't touched since last sync — was deleted
+        // there (possibly with its tombstone already purged): drop it locally
+        // instead of pushing. The old "push anything the cloud lacks" rule
+        // RESURRECTED purged deletions, so long-offline devices re-inflated
+        // the yard count forever. First-ever sync (lastSync = 0) still seeds
+        // the cloud from this device.
         const push: TrackRow[] = []
         for (const lr of Object.values(local)) {
           if (!hasVin(lr)) continue // never re-push phantom rows
@@ -239,6 +247,9 @@ export const useTracking = create<TrackingState>()(
           if (cr?.deletedAt) continue
           if (incremental) {
             if ((lr.updatedAt ?? 0) > lastSync) push.push(lr)
+          } else if (lastSync > 0) {
+            if ((lr.updatedAt ?? 0) > lastSync) push.push(lr)
+            else if (!cr && !drop.includes(lr.vin)) { delete merged[lr.vin]; drop.push(lr.vin) } // cloud 100%
           } else {
             if (!cr || (lr.updatedAt ?? 0) > (cr.updatedAt ?? 0)) push.push(lr)
           }
@@ -251,6 +262,51 @@ export const useTracking = create<TrackingState>()(
         set({ lastSync: startedAt })
         // occasionally clear tombstones older than 30 days so the table stays lean
         if (!incremental) db.purgeTrackingTombstones(30 * 24 * 3600_000).catch(() => {})
+      },
+
+      // ── full per-VIN reconciliation against the cloud ──────────────────────
+      // Incremental syncs drift: a device that misses a tombstone window (or a
+      // realtime event) keeps ghost rows forever, so two screens show different
+      // yard counts (1,978 vs 2,318). This pass diffs a LIGHT index of every
+      // cloud row (vin + updated_at + deleted_at, ~40 bytes each) against local
+      // state and converges on the cloud 100%:
+      //  - cloud newer / missing locally → backfill those rows
+      //  - local rows the cloud tombstoned or no longer has → drop, UNLESS this
+      //    device edited them since its last sync (offline work → push up)
+      reconcileCloud: async () => {
+        if (!db.isConfigured()) return
+        const idx = await db.fetchTrackingIndex()
+        if (idx === null) return // fetch failed — decide nothing from it
+        const local = get().rows
+        const lastSync = get().lastSync ?? 0
+        const byVin = new Map(idx.map((r) => [r.vin, r]))
+        const pullVins: string[] = []
+        for (const r of idx) {
+          if (r.deletedAt) continue
+          const lr = local[r.vin]
+          if (!lr || r.updatedAt > (lr.updatedAt ?? 0)) pullVins.push(r.vin)
+        }
+        const drop: string[] = []
+        const rescue: TrackRow[] = []
+        for (const lr of Object.values(local)) {
+          const cr = byVin.get(lr.vin)
+          if (cr && !cr.deletedAt) continue
+          if (!cr && hasVin(lr) && (lr.updatedAt ?? 0) > lastSync) { rescue.push(lr); continue }
+          drop.push(lr.vin)
+        }
+        const pulled = pullVins.length ? await db.fetchTrackingRowsByVins(pullVins) : []
+        if (!pulled.length && !drop.length && !rescue.length) return
+        set((s) => {
+          const rows = { ...s.rows }
+          for (const vin of drop) delete rows[vin]
+          for (const r of pulled) if (hasVin(r) && !r.deletedAt) rows[r.vin] = r
+          return { rows }
+        })
+        if (pulled.length) idbBulkPut(pulled.filter((r) => hasVin(r) && !r.deletedAt)).catch(() => {})
+        if (drop.length) idbDelete(drop).catch(() => {})
+        if (rescue.length) db.upsertTrackingRows(rescue).catch(() => {})
+        if (drop.length || pulled.length)
+          console.info(`[tracking] reconcile: +${pulled.length} · -${drop.length} · rescued ${rescue.length}`)
       },
 
       // Live updates: any device that changes a car's status / cells broadcasts
