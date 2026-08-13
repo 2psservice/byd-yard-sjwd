@@ -6,6 +6,7 @@ import { createPortal } from 'react-dom'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useYard, useUnits } from '../store/useYard'
 import { useTrackingRows, useTracking } from '../store/useTracking'
+import { countInYardFromTracking } from '../lib/carStatus'
 import { makeT } from '../i18n'
 import type { View } from '../types'
 import { Segmented, cx } from './ui'
@@ -115,13 +116,21 @@ export function Layout({ children }: { children: ReactNode }) {
   const { lang, view, setView, planMode, setPlanMode, setLang, currentUser, sites, currentSite, openSiteModal } = useYard()
   const siteName = sites.find((s) => s.id === currentSite)?.name ?? null
   const units = useUnits()
+  const trackingRows = useTrackingRows()
   const t = makeT(lang)
   const [mobileNav, setMobileNav] = useState(false)
   const [palette, setPalette] = useState(false)
   const [railHover, setRailHover] = useState(false)
   const RAIL = 64
   const FULL = 244
-  const inYard = units.filter((u) => (!currentSite || u.site === currentSite) && ['GATE_IN', 'ASSIGNED', 'PARKED'].includes(u.status)).length
+  // local fallback while cloudInYard is unavailable — MUST be the same rule
+  // the Dashboard card uses (tracking rows → Car Status), not the separate
+  // `units`/yard-plan table: that table only holds cars formally parked in
+  // the visual grid, a much smaller set, and showing it here made the topbar
+  // chip and the Dashboard card disagree on the very same screen (387 vs 1,979).
+  const inYard = trackingRows.length
+    ? countInYardFromTracking(trackingRows, currentSite, sites)
+    : units.filter((u) => (!currentSite || u.site === currentSite) && ['GATE_IN', 'ASSIGNED', 'PARKED'].includes(u.status)).length
   // the CLOUD's In Yard count — one number for every device (local fallback
   // while offline / until the SQL function is installed)
   const cloudInYard = useYard((s) => s.cloudInYard)
