@@ -274,6 +274,7 @@ export default function App() {
     if (!loggedInUserId) return
     const catchUp = () => {
       useTracking.getState().syncCloud().catch(() => {})
+      useTracking.getState().reconcileCloud().catch(() => {})
       useYard.getState().loadFromSupabase().catch(() => {})
     }
     let hiddenAt = 0
@@ -284,7 +285,16 @@ export default function App() {
     }
     document.addEventListener('visibilitychange', onVis)
     window.addEventListener('online', catchUp)
-    return () => { document.removeEventListener('visibilitychange', onVis); window.removeEventListener('online', catchUp) }
+    // full per-VIN reconcile: once shortly after boot (after the incremental
+    // sync settles), then hourly — this is what makes every device converge on
+    // the same yard count even after missed tombstones/events (1,978 vs 2,318)
+    const boot = setTimeout(() => useTracking.getState().reconcileCloud().catch(() => {}), 15_000)
+    const iv = setInterval(() => useTracking.getState().reconcileCloud().catch(() => {}), 3600_000)
+    return () => {
+      document.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('online', catchUp)
+      clearTimeout(boot); clearInterval(iv)
+    }
   }, [loggedInUserId])
 
   // dev-only store handles for automated tests (same pattern as Units' __tracking)

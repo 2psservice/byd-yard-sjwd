@@ -742,6 +742,55 @@ export async function fetchTrackingRows(sinceMs?: number): Promise<TrackRow[]> {
   return all.flat().map(toTrackRow)
 }
 
+/** Lightweight index of EVERY tracking row (vin + updated_at + deleted_at
+ *  only, ~40 bytes each) — the reconciliation pass diffs it against local
+ *  state so all devices converge on the cloud 100%. null = fetch failed
+ *  (offline / error): the caller must not draw any conclusion from it. */
+export async function fetchTrackingIndex(): Promise<{ vin: string; updatedAt: number; deletedAt: number | null }[] | null> {
+  if (!isConfigured()) return null
+  const PAGE = 5000
+  const run = (from: number, cols: string) =>
+    supabase.from('tracking_rows').select(cols).order('vin').range(from, from + PAGE - 1)
+  const out: { vin: string; updatedAt: number; deletedAt: number | null }[] = []
+  try {
+    for (let from = 0; ; from += PAGE) {
+      let res: any = await withRetry<{ error: unknown; data: unknown }>(() => run(from, 'vin, updated_at, deleted_at'))
+        .catch(async (e) => {
+          // deleted_at may not be migrated — retry without it before giving up
+          if (isMissingColumn(e)) return withRetry<{ error: unknown; data: unknown }>(() => run(from, 'vin, updated_at'))
+          throw e
+        })
+      const batch = (res.data ?? []) as { vin: string; updated_at: string | null; deleted_at?: string | null }[]
+      for (const r of batch) out.push({
+        vin: r.vin,
+        updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : 0,
+        deletedAt: r.deleted_at ? new Date(r.deleted_at).getTime() : null,
+      })
+      if (batch.length < PAGE) break
+    }
+    return out
+  } catch (e) {
+    console.error('[db] fetchTrackingIndex', e)
+    return null
+  }
+}
+
+/** Full rows for a specific VIN set (reconciliation backfill), chunked. */
+export async function fetchTrackingRowsByVins(vins: string[]): Promise<TrackRow[]> {
+  if (!isConfigured() || !vins.length) return []
+  const CHUNK = 300
+  const out: TrackRow[] = []
+  for (let i = 0; i < vins.length; i += CHUNK) {
+    const chunk = vins.slice(i, i + CHUNK)
+    try {
+      const { data } = await withRetry<{ error: unknown; data: unknown }>(() =>
+        supabase.from('tracking_rows').select('*').in('vin', chunk))
+      for (const r of (data ?? []) as TrackRowRow[]) out.push(toTrackRow(r))
+    } catch (e) { console.error('[db] fetchTrackingRowsByVins chunk', i / CHUNK, e) }
+  }
+  return out
+}
+
 /**
  * Fetch only the rows for one yard, filtered SERVER-SIDE by "Location yard".
  * Used to reveal the active site fast on a fresh device (≈2 MB vs 11 MB).
