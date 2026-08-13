@@ -293,10 +293,19 @@ export default function App() {
     // instead of sitting on it, so all screens converge on the same number
     const boot = setTimeout(() => useTracking.getState().ensureComplete().catch(() => {}), 12_000)
     const iv = setInterval(() => useTracking.getState().ensureComplete().catch(() => {}), 600_000)
+    // the shared cloud numbers every screen shows: the In Yard count (one
+    // number for every device) + the row total behind the sync-status badge.
+    // 30s keeps all screens within half a minute of each other.
+    const refreshCounts = () => {
+      useYard.getState().refreshCloudInYard().catch(() => {})
+      useTracking.getState().refreshCloudTotal().catch(() => {})
+    }
+    refreshCounts()
+    const ivCounts = setInterval(refreshCounts, 30_000)
     return () => {
       document.removeEventListener('visibilitychange', onVis)
       window.removeEventListener('online', catchUp)
-      clearTimeout(boot); clearInterval(iv)
+      clearTimeout(boot); clearInterval(iv); clearInterval(ivCounts)
     }
   }, [loggedInUserId])
 
