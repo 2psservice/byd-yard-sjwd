@@ -11,7 +11,7 @@
  */
 import type { TrackRow } from './excelTracking'
 import type { FindListRow } from './groupingPrint'
-import { yardLocCode, siteGroupingConfig } from './groupingImport'
+import { yardLocCode, siteGroupingConfig, lastHistoryLoc } from './groupingImport'
 
 export interface MatchResult {
   found: TrackRow[]
@@ -79,9 +79,11 @@ export function toFindListRows(
   const prefix = siteGroupingConfig(siteName).prefix
   return found.map((r) => {
     const u = unitByVin(r.vin)
-    // real placement code only — no cell fallback (storage Yard / Location yard
-    // aren't a position)
-    const code = yardLocCode(u ? { block: u.block, slot: u.slot } : null)
+    // live placement first; else the row's own Location HISTORY (the full code
+    // every move logs) — so the sheet still prints positions when the unit
+    // record is missing/partial on this device. Yard-name cells are never used
+    // (storage Yard / Location yard aren't a position).
+    const code = yardLocCode(u ? { block: u.block, slot: u.slot } : null) || lastHistoryLoc(r)
     const loc = code ? `${prefix}-${code}` : ''
     return {
       vin: r.vin,

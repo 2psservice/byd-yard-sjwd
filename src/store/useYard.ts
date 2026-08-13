@@ -1263,13 +1263,22 @@ export const useYard = create<YardState>()(
           if (complete) {
             const have = new Set(cloud.map((u) => u.vin))
             const cutoff = Date.now() - 5 * 60_000
+            const ghosts: string[] = []
             for (const vin of Object.keys(units)) {
               const u = units[vin]
               if (have.has(vin) || u.site !== siteId) continue
               const freshest = Math.max(u.parkedAt ?? 0, u.assignedAt ?? 0, u.gateInAt ?? 0, u.importedAt ?? 0)
               if (freshest > cutoff) continue
-              if (units === s.units) units = { ...units }
-              delete units[vin]
+              ghosts.push(vin)
+            }
+            // safety brake: dropping a large share of the yard means the cloud
+            // answer itself is suspect (e.g. a site_id mismatch returning a
+            // near-empty set marked "complete") — keep local and log instead
+            const localSiteCount = Object.values(units).filter((u) => u.site === siteId).length
+            if (ghosts.length > Math.max(50, localSiteCount * 0.2)) {
+              console.error(`[db] ghost-drop skipped: would remove ${ghosts.length}/${localSiteCount} units — cloud set looks wrong`)
+            } else {
+              for (const vin of ghosts) delete units[vin]
             }
           }
           return {
