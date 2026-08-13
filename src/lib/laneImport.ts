@@ -21,8 +21,9 @@ export interface LaneParseResult {
   noLane: number // VIN rows with an empty LaneNo
 }
 
-/** Parse a LaneNo into { prefix, block, row } — `row` is the lane digits, used
- *  as the block's column by the planner (cars stack down that column's rows).
+/** Parse a LaneNo into { prefix, block, row, pos? } — `row` is the lane digits,
+ *  used as the block's column by the planner (cars stack down that column's
+ *  rows); `pos` is set only by the full-position form and pins the exact row.
  *
  *  `block` is the RAW token exactly as written in the file ("A", "O", "WCL") —
  *  NEVER guessed/expanded here, because yards name their blocks differently:
@@ -31,14 +32,23 @@ export interface LaneParseResult {
  *  ImportPage), so the same file works in any yard.
  *
  *  Accepted formats:
+ *   E) full position "K0903"     → block "K", col 9, EXACT row 3 (also "N-K0903",
+ *      "WCL1203") — the 4-digit tail is column(2)+row(2), same as ประวัติการย้าย
  *   A) yard-prefixed "N-O15"     → yard "N",  block "O",   col 15 (lenient separators)
  *   B) block-name direct "WCL21" → block "WCL", col 21 (optional "WCL-21")
  *   C) numeric yard, no separator "20A46" → yard "20", block "A", col 46
  *   D) bare single letter "B27"  → block "B", col 27 */
-export function parseLane(lane: string): { prefix: string; block: string; row: number } | null {
+export function parseLane(lane: string): { prefix: string; block: string; row: number; pos?: number } | null {
   const s = String(lane).trim().toUpperCase()
+  // E) "K0903" / "N-K0903" / "WCL1203" — block + column(2) + exact row(2).
+  //    Column digits never reach 4, so a 4-digit tail is unambiguous.
+  let m = s.match(/^(?:([A-Z0-9]{1,3})[-\s]+)?([A-Z]{1,4})\s*-?\s*(\d{2})(\d{2})$/)
+  if (m) {
+    const col = +m[3], pos = +m[4]
+    if (col && pos) return { prefix: m[1] ?? '', block: m[2], row: col, pos }
+  }
   // A) "N-O15" — yard prefix + separator + 1-2 letter block + column
-  let m = s.match(/^([A-Z0-9]{1,3})\s*[-\s]\s*([A-Z]{1,2})\s*[-\s]?\s*0*(\d{1,3})$/)
+  m = s.match(/^([A-Z0-9]{1,3})\s*[-\s]\s*([A-Z]{1,2})\s*[-\s]?\s*0*(\d{1,3})$/)
   if (m) { const row = +m[3]; return row ? { prefix: m[1], block: m[2], row } : null }
   // B) "WCL21" — block name (2-4 letters) directly + column, optional separator
   m = s.match(/^([A-Z]{2,4})\s*-?\s*0*(\d{1,3})$/)
@@ -83,14 +93,14 @@ export async function parseLaneWorkbook(file: File): Promise<LaneParseResult> {
     for (let r = 0; r < Math.min(5, a.length); r++) {
       const hs = (a[r] as any[]).map((h) => String(h).trim())
       const has = (...names: string[]) => hs.some((h) => names.includes(norm(h)))
-      if (has('vinno', 'vin') && has('laneno', 'lane')) { aoa = a; headers = hs; headerAt = r; break outer }
+      if (has('vinno', 'vin') && has('laneno', 'lane', 'location')) { aoa = a; headers = hs; headerAt = r; break outer }
     }
   }
-  if (!aoa) throw new Error('ไม่พบคอลัมน์ VinNo + LaneNo ในไฟล์')
+  if (!aoa) throw new Error('ไม่พบคอลัมน์ VinNo + LaneNo (หรือ Vin + location) ในไฟล์')
 
   const idx = (...names: string[]) => headers.findIndex((h) => names.includes(norm(h)))
   const vinI = idx('vinno', 'vin')
-  const laneI = idx('laneno', 'lane')
+  const laneI = idx('laneno', 'lane', 'location')
   const modelI = idx('modelname', 'model')
   const colorI = idx('colorname', 'color')
   const gateI = idx('gateindatetime', 'gateindate')
