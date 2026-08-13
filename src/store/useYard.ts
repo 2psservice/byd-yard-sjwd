@@ -328,6 +328,8 @@ interface YardState {
   addBlock: (b?: Partial<Block>) => string
   updateBlock: (id: string, patch: Partial<Block>) => void
   removeBlock: (id: string) => void
+  /** rebuild an empty plan from parked units' block/slot/row → count created */
+  restoreBlocksFromUnits: () => number
   /** Rename a block's internal id (badge letter). Returns the applied id, or null when empty/duplicate. */
   // --- gps ---
   startTrip: (vin: string, driver: string, from: string, to: string) => void
@@ -363,7 +365,13 @@ function scheduleBlockSync(get: () => { currentSite: string | null; blocksBySite
     const s = get()
     const sid = s.currentSite
     if (!sid || !db.isConfigured()) return // '_global' layout (no site picked) stays local
-    db.replaceBlocks(sid, s.blocksBySite[siteKey(sid)] ?? [])
+    const blocks = s.blocksBySite[siteKey(sid)] ?? []
+    // NEVER replace the cloud layout with an EMPTY list: a device whose local
+    // cache was wiped (or whose load failed) syncing [] deleted the whole
+    // yard's drawn plan for everyone. Deleting the final block of a yard is
+    // the one edit this skips — redraw flows always add before they sync.
+    if (!blocks.length) { console.warn('[db] syncBlocks skipped — empty local layout'); return }
+    db.replaceBlocks(sid, blocks)
       .then(() => sendSync('blocks', { siteId: sid })) // other clients refetch this yard's layout
       .catch((e) => console.error('[db] syncBlocks', e))
   }, 1200)
@@ -1101,6 +1109,40 @@ export const useYard = create<YardState>()(
         scheduleBlockSync(get)
       },
 
+      // ── disaster recovery: rebuild a lost plan from the cars still parked ──
+      // The parked units keep block/slot/row even when the drawn layout is
+      // gone, so every block a car references can be re-created — sized to the
+      // yard's standard grids (rows 8/16/20 · cols 40/60/63, rounded up from
+      // what the cars actually occupy). Positions auto-lay-out; the admin can
+      // drag boxes to match the real ground plan afterwards.
+      restoreBlocksFromUnits: () => {
+        const s = get()
+        const key = siteKey(s.currentSite)
+        if ((s.blocksBySite[key] ?? []).length) return 0 // never touch an existing plan
+        const seen = new Map<string, { rows: number; cols: number }>()
+        for (const u of Object.values(s.units)) {
+          if (!u.block || !u.slot || !u.row || u.status === 'DEPARTED') continue
+          if (u.site && s.currentSite && u.site !== s.currentSite) continue
+          const name = u.block.trim().toUpperCase()
+          if (!name) continue
+          const cur = seen.get(name) ?? { rows: 0, cols: 0 }
+          seen.set(name, { rows: Math.max(cur.rows, u.row), cols: Math.max(cur.cols, u.slot) })
+        }
+        if (!seen.size) return 0
+        const roundUp = (v: number, steps: number[]) => steps.find((x) => x >= v) ?? v
+        const blocks: Block[] = [...seen.entries()]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([name, m]) => ({
+            id: name, name,
+            rows: roundUp(m.rows, [8, 16, 20]),
+            cols: roundUp(m.cols, [40, 60, 63]),
+            zone: 'Y' as const, kind: 'park' as const,
+          }))
+        set((st) => ({ blocksBySite: { ...st.blocksBySite, [key]: blocks } }))
+        scheduleBlockSync(get)
+        return blocks.length
+      },
+
 
       // ── gps ──────────────────────────────────────────────────────────────
       startTrip: (vin, driver, from, to) =>
@@ -1607,6 +1649,9 @@ onSync('blocks', async (p: { siteId?: string }) => {
   const siteId = p?.siteId
   if (!siteId) return
   const blocks = await db.fetchBlocks(siteId)
+  // an empty result is a failed fetch or a wiped cloud — never let it erase
+  // this device's cached layout (the cache is what re-seeds the cloud)
+  if (!blocks.length) return
   useYard.setState((s) => ({ blocksBySite: { ...s.blocksBySite, [siteId]: blocks } }))
 })
 onSync('trailers', async (p: { siteId?: string }) => {
