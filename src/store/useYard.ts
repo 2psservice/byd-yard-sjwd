@@ -527,7 +527,17 @@ export const useYard = create<YardState>()(
         // username matches case-insensitively — an admin typing "TEST" when
         // creating a user shouldn't lock that person out for typing "test"
         const norm = (v: string) => v.trim().toLowerCase()
-        const user = s.appUsers.find(u => norm(u.username) === norm(username) && u.active)
+        let user = s.appUsers.find(u => norm(u.username) === norm(username) && u.active)
+        // unknown on THIS device → the account may have been created on another
+        // machine after our cached roster; refresh once (capped at 4s so a dead
+        // network can't hang the login button) and retry before rejecting
+        if (!user) {
+          await Promise.race([
+            get().loadAppUsersFromCloud().catch(() => {}),
+            new Promise((r) => setTimeout(r, 4000)),
+          ])
+          user = get().appUsers.find(u => norm(u.username) === norm(username) && u.active)
+        }
         if (!user || !(await verifyPassword(password, user.password))) return false
         // legacy plaintext row → upgrade to a salted hash in place (local + cloud)
         if (!isHashed(user.password)) {

@@ -82,13 +82,20 @@ export default function App() {
   // ── login roster: fetch BEFORE showing the login screen, logged-in or not —
   //    a field account created on the admin's computer must be able to log in
   //    from its own phone, which never had that account in its local cache. ──
-  const [usersReady, setUsersReady] = useState(false)
+  //    LOCAL-FIRST: a device with a cached roster enters immediately — the
+  //    cloud refresh keeps running in the background and applies when it lands
+  //    (incl. the fail-closed logout for deleted accounts). Only a truly fresh
+  //    device waits, and never longer than 5s: the old gate awaited a Supabase
+  //    request with NO timeout, so a slow yard network held everyone on the
+  //    logo screen indefinitely.
+  const [usersReady, setUsersReady] = useState(() => useYard.getState().appUsers.length > 0)
   useEffect(() => {
     let cancelled = false
     useYard.getState().loadAppUsersFromCloud()
       .catch((e) => console.error('[App] appUsers load', e))
       .finally(() => { if (!cancelled) setUsersReady(true) })
-    return () => { cancelled = true }
+    const cap = setTimeout(() => { if (!cancelled) setUsersReady(true) }, 5000)
+    return () => { cancelled = true; clearTimeout(cap) }
   }, [])
 
   // ── branded boot loader: fetches data from Supabase on login,
