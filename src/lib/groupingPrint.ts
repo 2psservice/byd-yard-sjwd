@@ -62,13 +62,17 @@ const PLAN_CSS = `
 @page { size: A4 portrait; margin: 5mm 6mm 6mm 5mm; }
 * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 body { margin: 0; color: #000; font-family: 'Aptos Narrow','Aptos','Arial Narrow','Sarabun','Noto Sans Thai',Tahoma,'Leelawadee UI',sans-serif; }
-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-th, td { border: 1pt solid #000; vertical-align: middle; overflow: hidden; }
-th.bar { background: #E87033; font-size: 19.3pt; font-weight: 700; height: 35.8pt; padding: 2pt 4pt; text-align: center; }
+table { width: 100%; border-collapse: collapse; }
+/* auto layout + nowrap: every column sizes itself so nothing ever breaks onto
+   a second line (Model incl.) — the หมายเหตุ column is the flexible one that
+   absorbs whatever width is left, so the rest keep the Plan PM proportions */
+th, td { border: 1pt solid #000; vertical-align: middle; white-space: nowrap; }
+th.bar { background: #E87033; font-size: 19.3pt; font-weight: 700; height: 35.8pt; padding: 2pt 4pt; text-align: center; white-space: normal; }
 th.h { background: #ffff00; font-size: 10.6pt; font-weight: 700; height: 43pt; padding: 2pt 3pt; text-align: center; }
-td { font-size: 14.2pt; height: 31.3pt; padding: 2pt 4pt; text-align: center; }
+td { font-size: 14.2pt; height: 31.3pt; padding: 2pt 6pt; text-align: center; }
 td.no { font-size: 17.6pt; font-weight: 600; }
 td.loc { background: #D9D9D9; }
+td.rem { white-space: normal; min-width: 80pt; }
 `
 
 /** thead shared by both ใบหารถ variants — orange title bar + yellow header. */
@@ -150,7 +154,7 @@ export function buildFindCarHtml(rows: GroupPrintRow[], meta: GroupPrintMeta): s
     <td>${esc(r.color)}</td>
     <td class="loc">${esc(locOf(r.yardLocation) || '—')}</td>
     <td>${esc(r.laneLoad)}</td>
-    <td>${esc(r.remark)}</td>
+    <td class="rem">${esc(r.remark)}</td>
   </tr>`).join('')
 
   // column proportions measured off the Plan PM sheet (No 7.8% · Vin 25% …)
@@ -187,7 +191,7 @@ function findListTableHtml(rows: FindListRow[], title: string): string {
     <td>${esc(r.model)}</td>
     <td>${esc(r.color)}</td>
     <td class="loc">${esc(r.location || '—')}</td>
-    <td>${esc(r.remark)}</td>
+    <td class="rem">${esc(r.remark)}</td>
   </tr>`).join('')
   return `<table>
     <colgroup>
