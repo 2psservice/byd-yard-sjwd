@@ -4,7 +4,7 @@ import { useYard, useUnits } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { useOps, type WorkQueue } from '../store/useOps'
 import { PageHead } from '../components/ui'
-import { parseGroupingWorkbook, siteGroupingConfig, yardLocCode } from '../lib/groupingImport'
+import { parseGroupingWorkbook, siteGroupingConfig, yardLocCode, lastHistoryLoc } from '../lib/groupingImport'
 import { printGrouping, printFindCar, exportGroupingXlsx, exportFindCarXlsx, type GroupPrintRow, type GroupPrintMeta } from '../lib/groupingPrint'
 import { printIr, printDn, printIrPaper } from '../lib/dnir'
 import type { TrackRow } from '../lib/excelTracking'
@@ -94,7 +94,7 @@ export function Grouping() {
         const u = unitByVin.get(r.vin)
         const inSystem = trackVins.has(r.vin) || !!u
         inSystem ? found++ : notFound++
-        const loc = yardLocCode(u)
+        const loc = yardLocCode(u) || lastHistoryLoc(rowByVin.get(r.vin))
         if (loc) placed++
         return {
           no: i + 1, vin: r.vin, modelName: r.modelName, model: r.model, color: r.color,
@@ -160,9 +160,11 @@ export function Grouping() {
   // table and every print (ใบ Grouping / ใบหารถ) must read the LIVE placement,
   // falling back to the import-time value for cars this device can't see.
   const liveRows = useMemo(() => rows?.map((r) => {
-    const live = yardLocCode(unitByVin.get(r.vin))
-    return live && live !== r.yardLocation ? { ...r, yardLocation: live } : r
-  }) ?? null, [rows, unitByVin])
+    // live slot → import-time snapshot → last Location history entry, so a
+    // reprint after the cars left the yard still shows where they stood
+    const live = yardLocCode(unitByVin.get(r.vin)) || r.yardLocation || lastHistoryLoc(rowByVin.get(r.vin))
+    return live !== r.yardLocation ? { ...r, yardLocation: live } : r
+  }) ?? null, [rows, unitByVin, rowByVin])
 
   // which delivery run the sheet displays: a queue card clicked below wins,
   // else a fresh import this session, else the newest run
@@ -204,7 +206,7 @@ export function Grouping() {
         color: String(r?.cells['Color'] ?? ''),
         deliveryLocation: i.dest || String(r?.cells['Dealer Location'] ?? ''),
         grouping: i.group ?? '', groupUnit: count.get(i.group ?? '') ?? 0,
-        yardLocation: yardLocCode(unitByVin.get(i.vin)) || '',
+        yardLocation: yardLocCode(unitByVin.get(i.vin)) || lastHistoryLoc(r) || '',
         laneLoad: i.laneLoad ?? '', receiveDate: '', remark: '',
       }
     })
