@@ -697,23 +697,36 @@ const toTrackRow = (r: TrackRowRow): TrackRow => ({
  * - omitted → FULL: all rows, fetched with every page IN PARALLEL (≈1 round-trip
  *   instead of 8 sequential ones → ~10s becomes ~1s).
  */
-export async function fetchTrackingRows(sinceMs?: number): Promise<TrackRow[]> {
-  if (!isConfigured()) return []
+/** `complete` = every page of the pull arrived. A false value means the result
+ *  is PARTIAL: merge it additively, never conclude anything from what's absent,
+ *  and don't advance lastSync (the next run must pull fully again). */
+export async function fetchTrackingRows(sinceMs?: number): Promise<{ rows: TrackRow[]; complete: boolean }> {
+  if (!isConfigured()) return { rows: [], complete: false }
   const PAGE = 1000
   const sinceIso = sinceMs ? new Date(sinceMs).toISOString() : null
 
+  // a page that fails after its retries marks the whole pull incomplete — the
+  // caller must NOT treat a short result as the cloud's full contents (that is
+  // how a device got stuck showing 213 of 1,980 rows forever: the partial pull
+  // was accepted and lastSync moved on, so nothing ever backfilled it)
+  let anyPageFailed = false
   const page = async (from: number): Promise<TrackRowRow[]> => {
     const run = (cols: string) => {
       let q: any = supabase.from('tracking_rows').select(cols).order('vin')
       if (sinceIso) q = q.gt('updated_at', sinceIso)
       return q.range(from, from + PAGE - 1)
     }
-    let res: any = await run('vin, cells, updated_at, site, history, deleted_at')
-    if (res.error) res = await run('vin, cells, updated_at, site, history') // `deleted_at` column not migrated yet
-    if (res.error) res = await run('vin, cells, updated_at, site') // `history` column not migrated yet
-    if (res.error) res = await run('vin, cells, updated_at') // `site` column not migrated yet
-    if (res.error) { console.error('[db] fetchTrackingRows', res.error); return [] }
-    return (res.data ?? []) as TrackRowRow[]
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let res: any = await run('vin, cells, updated_at, site, history, deleted_at')
+      if (res.error) res = await run('vin, cells, updated_at, site, history') // `deleted_at` column not migrated yet
+      if (res.error) res = await run('vin, cells, updated_at, site') // `history` column not migrated yet
+      if (res.error) res = await run('vin, cells, updated_at') // `site` column not migrated yet
+      if (!res.error) return (res.data ?? []) as TrackRowRow[]
+      console.error('[db] fetchTrackingRows page', from, 'attempt', attempt + 1, res.error)
+      await sleep(500 * (attempt + 1))
+    }
+    anyPageFailed = true
+    return []
   }
 
   // incremental deltas are small → walk sequentially
@@ -724,7 +737,7 @@ export async function fetchTrackingRows(sinceMs?: number): Promise<TrackRow[]> {
       for (const r of batch) out.push(toTrackRow(r))
       if (batch.length < PAGE) break
     }
-    return out
+    return { rows: out, complete: !anyPageFailed }
   }
 
   // full pull → count, then fetch all pages concurrently. If the count query
@@ -740,11 +753,26 @@ export async function fetchTrackingRows(sinceMs?: number): Promise<TrackRow[]> {
       for (const r of batch) out.push(toTrackRow(r))
       if (batch.length < PAGE) break
     }
-    return out
+    // no count to verify against → only "complete" if no page ever failed
+    return { rows: out, complete: !anyPageFailed }
   }
   const pages = Math.max(1, Math.ceil(count / PAGE))
   const all = await Promise.all(Array.from({ length: pages }, (_, i) => page(i * PAGE)))
-  return all.flat().map(toTrackRow)
+  const rows = all.flat().map(toTrackRow)
+  // rows can legitimately exceed `count` (writes landing mid-pull); short of it
+  // means pages were lost even if no request reported an error
+  const complete = !anyPageFailed && rows.length >= count
+  if (!complete) console.error(`[db] fetchTrackingRows incomplete: ${rows.length}/${count}`)
+  return { rows, complete }
+}
+
+/** Exact number of tracking rows in the cloud (null = query failed). Used to
+ *  verify a device holds the complete set before trusting its local view. */
+export async function countTrackingRows(): Promise<number | null> {
+  if (!isConfigured()) return null
+  const { count, error } = await supabase.from('tracking_rows').select('vin', { count: 'exact', head: true })
+  if (error || count == null) { console.error('[db] countTrackingRows', error); return null }
+  return count
 }
 
 /** Lightweight index of EVERY tracking row (vin + updated_at + deleted_at
