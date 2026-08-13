@@ -12,7 +12,7 @@ import { printIr, printDn, printIrPaper } from '../lib/dnir'
 import { useYard } from '../store/useYard'
 import { useTracking, useTrackingRows, useVisibleColumns } from '../store/useTracking'
 import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, LOCATION_KEY, MAX_FILTERS, DEFAULT_FILTER_COLS, agingPmDays, cleanStorage, isDateColumn, fmtSerialToDate, type ColGroup, type Column } from '../lib/trackingColumns'
-import { yardLocFull } from '../lib/groupingImport'
+import { yardLocFull, lastHistoryLocFull } from '../lib/groupingImport'
 import { CAR_STATUS_META, deriveCarStatus, IN_YARD_STATUSES, PARKED_STATUSES, isWaitingRepair, finalColor, vinOfStatusColor, taxStatusColor } from '../lib/carStatus'
 import { rowsToCsv, type TrackRow, type RowEvent } from '../lib/excelTracking'
 import { printFindList } from '../lib/groupingPrint'
@@ -192,7 +192,9 @@ export function Units() {
   // ONLY the real placement code — no cell fallback (storage Yard / Location yard
   // are junk / the site name, not a position → they showed stray numbers).
   const allUnits = useYard((s) => s.units)
-  const locOf = (r: TrackRow) => yardLocFull(allUnits[r.vin])
+  // live slot first, else the row's own Location history (full code) — the
+  // column and ใบหารถ must not go blank when the unit record is missing here
+  const locOf = (r: TrackRow) => yardLocFull(allUnits[r.vin]) || lastHistoryLocFull(r)
 
   // the page's working state lives in a PERSISTED store: switching sidebar
   // pages (this component unmounts), closing the app, or the next-day
@@ -440,7 +442,7 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
   const units = useYard((s) => s.units)
   const sites = useYard((s) => s.sites)
   const currentSite = useYard((s) => s.currentSite)
-  const locFor = (r: TrackRow) => yardLocFull(units[r.vin])
+  const locFor = (r: TrackRow) => yardLocFull(units[r.vin]) || lastHistoryLocFull(r)
   const [dragCol, setDragCol] = useState<string | null>(null)
   const [overCol, setOverCol] = useState<string | null>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
@@ -1121,7 +1123,7 @@ function MylistView({ allRows, visCols, sel, setSel, sortKey, sortDir, toggleSor
       const out = (wantLoc || wantAging)
         ? found.map((r) => ({ ...r, cells: {
             ...r.cells,
-            ...(wantLoc ? { [LOCATION_KEY]: yardLocFull(units[r.vin]) } : {}),
+            ...(wantLoc ? { [LOCATION_KEY]: yardLocFull(units[r.vin]) || lastHistoryLocFull(r) } : {}),
             ...(wantAging && !r.cells['Aging PM'] ? { 'Aging PM': fmtAgingPm(r.cells) } : {}),
           } }))
         : found

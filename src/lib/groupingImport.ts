@@ -80,6 +80,20 @@ export function lastHistoryLoc(r: { history?: { field: string; from: string; to:
   return ''
 }
 
+/** Same walk, but keeps the FULL code ("N2705", row digits included) — for the
+ *  Unit List Location column, which shows the exact cell, not just the lane. */
+export function lastHistoryLocFull(r: { history?: { field: string; from: string; to: string }[] } | undefined | null): string {
+  const hist = r?.history
+  if (!hist) return ''
+  for (let i = hist.length - 1; i >= 0; i--) {
+    const e = hist[i]
+    if (e.field !== 'Location') continue
+    const v = (e.to || e.from || '').trim().toUpperCase()
+    if (v) return v
+  }
+  return ''
+}
+
 /** Full yard location: block name + 2-digit column (ช่อง) + 2-digit order —
  *  e.g. "T1201" = block T, column 12, 1st car down that column. Matches how
  *  the yard extends its lane codes (T12 → T1201, T1202, …). Empty when
