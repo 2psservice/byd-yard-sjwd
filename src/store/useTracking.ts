@@ -46,6 +46,12 @@ interface TrackingState {
   lastSync: number // epoch ms of the last successful cloud sync (0 = never → full pull)
 
   loadFromIdb: () => Promise<void>
+  /** fetch just the ACTIVE site's rows (server-filtered, ~2 MB not the whole
+   *  table) and merge them in ahead of the generic sync — called whenever the
+   *  operator picks/switches a yard, so ITS numbers are accurate first instead
+   *  of waiting on a full multi-site sync that has no idea which yard matters
+   *  right now. */
+  loadSiteFirst: () => Promise<void>
   syncCloud: () => Promise<void>
   /** full per-VIN diff against the cloud index — converges this device 100% */
   reconcileCloud: () => Promise<void>
@@ -203,24 +209,35 @@ export const useTracking = create<TrackingState>()(
           // fresh device (e.g. a new phone): pull the ACTIVE yard first — a
           // server-side "Location yard" filter (~2 MB, not the full 11 MB) — so the
           // current site fills in fast, before the full background sync
-          const y = useYard.getState()
-          const siteName = y.sites.find((s) => s.id === y.currentSite)?.name
-          if (siteName) {
-            try {
-              const siteRows = await db.fetchTrackingRowsForSite(siteName)
-              if (siteRows.length) {
-                const rec: Record<string, TrackRow> = {}
-                for (const r of siteRows) if (hasVin(r)) rec[r.vin] = r
-                set({ rows: rec })
-                idbBulkPut(siteRows.filter(hasVin)).catch(() => {})
-              }
-            } catch { /* fall through to the full sync below */ }
-          }
+          await get().loadSiteFirst().catch(() => {})
         }
         // reconcile every yard in the background (incremental after the first
         // run), then verify the device actually holds the cloud's full set —
         // a first load that came up short used to stay short forever
         get().syncCloud().then(() => get().ensureComplete()).catch(() => {})
+      },
+
+      loadSiteFirst: async () => {
+        if (!db.isConfigured()) return
+        const y = useYard.getState()
+        const siteName = y.sites.find((s) => s.id === y.currentSite)?.name
+        if (!siteName) return
+        try {
+          const siteRows = await db.fetchTrackingRowsForSite(siteName)
+          if (!siteRows.length) return
+          set((s) => {
+            const rows = { ...s.rows }
+            for (const r of siteRows) {
+              if (!hasVin(r) || r.deletedAt) continue
+              const cur = rows[r.vin]
+              // never clobber an edit this device made that the cloud hasn't
+              // seen yet (same last-write-wins rule syncCloud uses)
+              if (!cur || (r.updatedAt ?? 0) >= (cur.updatedAt ?? 0)) rows[r.vin] = r
+            }
+            return { rows }
+          })
+          idbBulkPut(siteRows.filter((r) => hasVin(r) && !r.deletedAt)).catch(() => {})
+        } catch { /* the generic background sync catches this up regardless */ }
       },
 
       refreshCloudTotal: async () => {

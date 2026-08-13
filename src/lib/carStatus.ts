@@ -3,6 +3,9 @@
  * the same status off an imported tracking row.
  *   Pre Gate-in → Gate-in → In Yard → (Moving / PDI) → Ready → Gate-out
  */
+import { rowInSite } from './siteScope'
+import type { TrackRow } from './excelTracking'
+import type { Site } from '../types'
 export const CAR_STATUS_META: Record<string, { color: string; bg: string }> = {
   'Pre Gate-in':  { color: '#5b4a00', bg: '#facc15' }, // เหลือง
   'Gate-in':      { color: '#fff',    bg: '#0ea5e9' }, // ฟ้า
@@ -143,6 +146,23 @@ export function deriveCarStatus(c: Record<string, string>): string {
   const loc = c['Location yard'] || ''
   if (storage || /yard/i.test(loc)) return 'In Yard'
   return 'Gate-in'
+}
+
+/** The single "In Yard" count every screen must agree on when tracking data
+ *  exists — the Dashboard card, the topbar chip's local fallback, and the
+ *  cloud RPC (supabase-inyard-count.sql) are all this same rule computed in
+ *  three different places. The topbar used to fall back to a count of the
+ *  separate `units` (yard-plan/position) table instead, which is a smaller,
+ *  unrelated universe — cars only ever get a Unit row once they're formally
+ *  parked in the visual grid, so that count could read e.g. 387 while this
+ *  one (and the Dashboard) read 1,979 on the very same screen. */
+export function countInYardFromTracking(rows: TrackRow[], currentSite: string | null, sites: Site[]): number {
+  let n = 0
+  for (const r of rows) {
+    if (!rowInSite(r, currentSite, sites)) continue
+    if (IN_YARD_STATUSES.has(deriveCarStatus(r.cells))) n++
+  }
+  return n
 }
 
 /** true if the row should count as "damaged / needs review" */

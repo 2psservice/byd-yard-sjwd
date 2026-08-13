@@ -125,6 +125,17 @@ export default function App() {
     if (!currentSite) openSiteModal()
   }, [currentSite, openSiteModal])
 
+  // as soon as a yard is picked/switched, pull THAT site's tracking rows first
+  // (server-filtered, ~2 MB not the whole multi-site table) — units/yard-plan
+  // already do this via loadFromSupabase's siteId scoping; the tracking dataset
+  // (Unit List / Dashboard numbers) otherwise just kept crawling through its
+  // generic all-sites sync with no idea which yard the operator actually needs
+  // right now.
+  useEffect(() => {
+    if (!loggedInUserId || !currentSite) return
+    useTracking.getState().loadSiteFirst().catch(() => {})
+  }, [loggedInUserId, currentSite])
+
   // stale-session cleanup: if the signed-in account was deleted/deactivated
   // while this device was open, clear the session state too (the render gate
   // below already fails closed — this keeps loggedInUserId consistent).
