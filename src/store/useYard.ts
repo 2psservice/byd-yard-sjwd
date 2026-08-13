@@ -1628,11 +1628,9 @@ export const useYard = create<YardState>()(
       name: 'byd-yard-control',
       version: 6,
       storage: debouncedLocalStorage(),
-      // ONLINE 100%: drop any car list an older build (or a spell with the
-      // local cache switched on) left behind, so the first thing on screen is
-      // the cloud's answer — never this device's leftovers. The yard-plan
-      // layout is kept for this session only: loadFromSupabase replaces it
-      // with the cloud's, or seeds the cloud from it when the cloud has none.
+      // ONLINE-100% devices only: drop any cached car list at boot so the
+      // first thing on screen is the cloud's answer. In the default cache
+      // mode this is a no-op — the cache IS the fast first paint.
       onRehydrateStorage: () => (state) => {
         if (state && isOnlineOnly()) { state.units = {}; state.trailers = [] }
       },
@@ -1680,9 +1678,9 @@ export const useYard = create<YardState>()(
       // back), and re-picking the yard mid-shift lost the screen they were on.
       // The previous-shift safety still holds: sessions expire at midnight and
       // logout() clears currentSite, so every LOGIN still re-picks the yard.
-      // ONLINE 100%: yard data (cars, positions, yard-plan layout) is NOT kept
-      // on the device — it is pulled from the cloud on every load, so no two
-      // devices can drift apart. UI prefs + the login roster still persist.
+      // Default (mirror + cache): yard data persists so the app opens
+      // instantly from the last known state. A device that opted into
+      // ONLINE-100% keeps nothing — every load pulls fresh from the cloud.
       partialize: (s) => ({
         lang: s.lang, planMode: s.planMode, currentUser: s.currentUser, currentDriver: s.currentDriver,
         groupModelsInRow: s.groupModelsInRow, laneDepth: s.laneDepth, view: s.view, appUsers: s.appUsers, loggedInUserId: s.loggedInUserId,
