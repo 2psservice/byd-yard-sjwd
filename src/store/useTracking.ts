@@ -48,6 +48,8 @@ interface TrackingState {
   syncCloud: () => Promise<void>
   /** full per-VIN diff against the cloud index — converges this device 100% */
   reconcileCloud: () => Promise<void>
+  /** verify local row count matches the cloud's, reconciling until it does */
+  ensureComplete: () => Promise<void>
   subscribeRealtime: () => void
   unsubscribeRealtime: () => void
   importFile: (file: File) => Promise<ParseResult>
@@ -185,8 +187,29 @@ export const useTracking = create<TrackingState>()(
             } catch { /* fall through to the full sync below */ }
           }
         }
-        // reconcile every yard in the background (incremental after the first run)
-        get().syncCloud()
+        // reconcile every yard in the background (incremental after the first
+        // run), then verify the device actually holds the cloud's full set —
+        // a first load that came up short used to stay short forever
+        get().syncCloud().then(() => get().ensureComplete()).catch(() => {})
+      },
+
+      // ── convergence check: does this device hold every cloud row? ──────────
+      // Compares the cloud's exact row count with the local one and runs the
+      // per-VIN reconcile until they agree (max 3 tries). This is what makes 20
+      // devices opening at once all land on the same number instead of each
+      // freezing at whatever its first load happened to fetch.
+      ensureComplete: async () => {
+        if (!db.isConfigured()) return
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const cloudCount = await db.countTrackingRows()
+          if (cloudCount == null) return // can't verify → decide nothing
+          const localCount = Object.keys(get().rows).length
+          if (localCount >= cloudCount) return // in sync (local may hold newer local-only rows)
+          console.warn(`[tracking] incomplete: ${localCount}/${cloudCount} rows — reconciling (try ${attempt + 1})`)
+          await get().reconcileCloud()
+          if (Object.keys(get().rows).length >= cloudCount) return
+          await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)))
+        }
       },
 
       // Two-way merge between this device (IndexedDB) and Supabase, keyed by VIN
@@ -206,7 +229,8 @@ export const useTracking = create<TrackingState>()(
         const since = incremental ? lastSync - 120_000 : undefined
 
         let cloud: TrackRow[] = []
-        try { cloud = await db.fetchTrackingRows(since) } catch { return }
+        let complete = false
+        try { const res = await db.fetchTrackingRows(since); cloud = res.rows; complete = res.complete } catch { return }
         const cloudByVin = new Map(cloud.map((r) => [r.vin, r]))
 
         // cloud → local: apply tombstones (remove) and pull rows missing locally
@@ -249,7 +273,9 @@ export const useTracking = create<TrackingState>()(
             if ((lr.updatedAt ?? 0) > lastSync) push.push(lr)
           } else if (lastSync > 0) {
             if ((lr.updatedAt ?? 0) > lastSync) push.push(lr)
-            else if (!cr && !drop.includes(lr.vin)) { delete merged[lr.vin]; drop.push(lr.vin) } // cloud 100%
+            // cloud 100% — but ONLY when the pull actually returned everything;
+            // a partial pull must never be read as "these rows are gone"
+            else if (complete && !cr && !drop.includes(lr.vin)) { delete merged[lr.vin]; drop.push(lr.vin) }
           } else {
             if (!cr || (lr.updatedAt ?? 0) > (cr.updatedAt ?? 0)) push.push(lr)
           }
@@ -259,7 +285,11 @@ export const useTracking = create<TrackingState>()(
         if (pull.length) idbBulkPut(pull).catch(() => {})
         if (drop.length) idbDelete(drop).catch(() => {})
         if (push.length) db.upsertTrackingRows(push).catch(() => {})
-        set({ lastSync: startedAt })
+        // a PARTIAL pull must not advance lastSync: doing so switched the next
+        // run to incremental and the missing rows were never fetched again —
+        // that is how a device stayed stuck at 213 of 1,980 rows forever
+        if (complete) set({ lastSync: startedAt })
+        else console.error('[tracking] partial sync — lastSync not advanced, will pull fully again')
         // occasionally clear tombstones older than 30 days so the table stays lean
         if (!incremental) db.purgeTrackingTombstones(30 * 24 * 3600_000).catch(() => {})
       },
