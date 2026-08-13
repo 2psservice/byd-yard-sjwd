@@ -1272,14 +1272,34 @@ export const useYard = create<YardState>()(
           if (local.length) db.replaceBlocks(siteId, local).catch((e) => console.error('[db] seedBlocks', e))
         }
         set((s) => {
-          // ADD-ONLY: merge the cloud in, never delete a car just because the
-          // cloud's answer didn't list it. A stale ghost row is a cosmetic
-          // count problem; dropping real positions because of a partial or
-          // wrong fetch is data loss. Cars leave only when something actually
-          // removes them (gate-out sweep, explicit delete), which propagates
-          // on its own.
+          // MIRROR: the screen shows the CLOUD, 100%. Every device that pulls the
+          // same yard therefore holds the same set of cars — no local-only ghosts
+          // that make one screen read 2,318 while another reads 1,978.
+          //
+          // The single guard: cars are removed ONLY when `complete` is true, i.e.
+          // the fetch walked every page and the row count matched the server's
+          // exact count. A partial / failed fetch merges additively and deletes
+          // nothing, so offline or a flaky page never wipes real positions.
           const units = mergeCloudUnits(s.units, cloud)
-          void complete // kept for logging/diagnostics; no longer gates deletes
+          if (complete) {
+            const onCloud = new Set(cloud.map((u) => u.vin))
+            const FRESH = 5 * 60_000 // a write from the last 5 min may not have landed yet
+            const now = Date.now()
+            const drop: string[] = []
+            for (const vin in units) {
+              if (onCloud.has(vin)) continue
+              const u = units[vin]
+              // only this yard's scope — fetchAllUnits pulls site_id = siteId OR NULL
+              if (u.site && u.site !== siteId) continue
+              const touched = Math.max(u.parkedAt ?? 0, u.assignedAt ?? 0, u.gateInAt ?? 0, u.importedAt ?? 0)
+              if (now - touched < FRESH) continue // just written here → let it push first
+              drop.push(vin)
+            }
+            if (drop.length) {
+              for (const vin of drop) delete units[vin]
+              if (drop.length > 50) console.warn(`[yard] mirror: removing ${drop.length} cars not present on the cloud`)
+            }
+          }
           return {
             units,
             trailers: trailers.length ? trailers : s.trailers,

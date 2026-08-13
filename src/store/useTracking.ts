@@ -213,10 +213,10 @@ export const useTracking = create<TrackingState>()(
           const cloudCount = await db.countTrackingRows()
           if (cloudCount == null) return // can't verify → decide nothing
           const localCount = Object.keys(get().rows).length
-          if (localCount >= cloudCount) return // in sync (local may hold newer local-only rows)
-          console.warn(`[tracking] incomplete: ${localCount}/${cloudCount} rows — reconciling (try ${attempt + 1})`)
+          if (localCount === cloudCount) return // exact mirror of the cloud
+          console.warn(`[tracking] out of sync: local ${localCount} vs cloud ${cloudCount} — reconciling (try ${attempt + 1})`)
           await get().reconcileCloud()
-          if (Object.keys(get().rows).length >= cloudCount) return
+          if (Object.keys(get().rows).length === cloudCount) return
           await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)))
         }
       },
@@ -264,14 +264,14 @@ export const useTracking = create<TrackingState>()(
         for (const lr of Object.values(local)) if (!hasVin(lr) && !drop.includes(lr.vin)) { delete merged[lr.vin]; drop.push(lr.vin) }
         if (phantom.length) db.deleteTrackingRows(phantom).catch(() => {})
 
-        // local → cloud: ADD-ONLY. A row this device has that the cloud lacks
-        // is uploaded, never deleted locally — the yard's data is worth more
-        // than a tidy count, and inferring "gone from the cloud = delete it"
-        // is exactly what wiped thousands of rows. The ONLY thing that removes
-        // a row anywhere is a real tombstone (deleted_at), which is handled
-        // above and is never re-pushed (no resurrection of intentional
-        // deletes). Devices therefore converge on the UNION of what everyone
-        // has, plus every deliberate delete.
+        // local → cloud: MIRROR mode — the screen shows the CLOUD, 100%.
+        // On a full pull that is VERIFIED COMPLETE (every page arrived and the
+        // row total matches the cloud's exact count), a local row the cloud
+        // does not have is removed from this device — EXCEPT rows this device
+        // itself edited after its last sync (offline work): those are pushed
+        // up instead of lost. An INCOMPLETE pull never deletes anything and
+        // never advances lastSync — that completeness guard is what was
+        // missing when a truncated pull wiped thousands of rows.
         const push: TrackRow[] = []
         for (const lr of Object.values(local)) {
           if (!hasVin(lr)) continue // never re-push phantom rows
@@ -279,7 +279,11 @@ export const useTracking = create<TrackingState>()(
           if (cr?.deletedAt) continue
           if (incremental) {
             if ((lr.updatedAt ?? 0) > lastSync) push.push(lr)
+          } else if (lastSync > 0) {
+            if ((lr.updatedAt ?? 0) > lastSync) push.push(lr) // own un-pushed edits → keep + upload
+            else if (complete && !cr && !drop.includes(lr.vin)) { delete merged[lr.vin]; drop.push(lr.vin) }
           } else {
+            // first-ever sync: seed the cloud from this device
             if (!cr || (lr.updatedAt ?? 0) > (cr.updatedAt ?? 0)) push.push(lr)
           }
         }
@@ -287,12 +291,16 @@ export const useTracking = create<TrackingState>()(
         if (pull.length || drop.length) { set({ rows: merged }) }
         if (pull.length) idbBulkPut(pull).catch(() => {})
         if (drop.length) idbDelete(drop).catch(() => {})
-        if (push.length) db.upsertTrackingRows(push).catch(() => {})
-        // a PARTIAL pull must not advance lastSync: doing so switched the next
-        // run to incremental and the missing rows were never fetched again —
+        // await the push: if it FAILED, lastSync must stay put so these edits
+        // keep counting as "newer than lastSync" and the next mirror pass
+        // rescues them instead of deleting rows the cloud never received
+        const pushOk = push.length ? await db.upsertTrackingRows(push).catch(() => false) : true
+        // a PARTIAL pull must not advance lastSync either: doing so switched the
+        // next run to incremental and the missing rows were never fetched again —
         // that is how a device stayed stuck at 213 of 1,980 rows forever
-        if (complete) set({ lastSync: startedAt })
-        else console.error('[tracking] partial sync — lastSync not advanced, will pull fully again')
+        if (complete && pushOk) set({ lastSync: startedAt })
+        else if (!complete) console.error('[tracking] partial sync — lastSync not advanced, will pull fully again')
+        else console.error('[tracking] push failed — lastSync not advanced so local edits stay protected')
         // occasionally clear tombstones older than 30 days so the table stays lean
         if (!incremental) db.purgeTrackingTombstones(30 * 24 * 3600_000).catch(() => {})
       },
@@ -319,18 +327,23 @@ export const useTracking = create<TrackingState>()(
           const lr = local[r.vin]
           if (!lr || r.updatedAt > (lr.updatedAt ?? 0)) pullVins.push(r.vin)
         }
-        // ADD-ONLY here too: remove ONLY rows the cloud has tombstoned. A row
-        // the cloud simply doesn't list is uploaded (it exists here, so it is
-        // real) instead of deleted — no amount of truncated/partial index data
-        // can destroy anything.
+        // MIRROR against the index — which is safe to trust because
+        // fetchTrackingIndex verifies its walk against the cloud's exact count
+        // and returns null on any shortfall (the truncation bug can't recur).
+        // Rows the cloud doesn't list are removed so every screen shows the
+        // cloud 100%; the one exception is this device's own edits newer than
+        // its last sync (offline work) — pushed up instead of lost.
         const drop: string[] = []
         const rescue: TrackRow[] = []
         for (const lr of Object.values(local)) {
           const cr = byVin.get(lr.vin)
           if (cr && !cr.deletedAt) continue
           if (cr?.deletedAt) { drop.push(lr.vin); continue } // deliberate delete
-          if (hasVin(lr)) rescue.push(lr) // cloud never saw it → push it up
+          if (hasVin(lr) && (lr.updatedAt ?? 0) > lastSync) { rescue.push(lr); continue }
+          drop.push(lr.vin) // not on the verified-complete cloud → not shown
         }
+        if (drop.length > 50)
+          console.warn(`[tracking] mirror: removing ${drop.length} rows not present on the cloud`)
         const pulled = pullVins.length ? await db.fetchTrackingRowsByVins(pullVins) : []
         if (!pulled.length && !drop.length && !rescue.length) return
         set((s) => {

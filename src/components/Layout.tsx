@@ -128,7 +128,10 @@ export function Layout({ children }: { children: ReactNode }) {
   // sync-status badge: does this device hold the cloud's full row set yet?
   const cloudTotal = useTracking((s) => s.cloudTotal)
   const localRowCount = useTracking((s) => Object.keys(s.rows).length)
-  const syncComplete = cloudTotal !== null ? localRowCount >= cloudTotal : null
+  // mirror mode: "ครบ" means EXACTLY the cloud's set — more rows than the cloud
+  // is just as out-of-sync as fewer (it means local-only leftovers are still here)
+  const syncComplete = cloudTotal !== null ? localRowCount === cloudTotal : null
+  const syncExtra = cloudTotal !== null && localRowCount > cloudTotal
   const today = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
 
   useEffect(() => {
@@ -233,12 +236,16 @@ export function Layout({ children }: { children: ReactNode }) {
             {syncComplete !== null && (
               <div className="hidden lg:flex items-center gap-1.5 text-[12px] font-semibold px-2.5 py-1 rounded-md"
                 title={syncComplete
-                  ? `ข้อมูลครบตรงกับคลาวด์ (${localRowCount.toLocaleString()} รายการ)`
-                  : `กำลังเติมข้อมูลจากคลาวด์ ${localRowCount.toLocaleString()} / ${cloudTotal!.toLocaleString()} รายการ`}
+                  ? `ข้อมูลตรงกับคลาวด์ 100% (${localRowCount.toLocaleString()} รายการ)`
+                  : `กำลังปรับให้ตรงกับคลาวด์ ${localRowCount.toLocaleString()} / ${cloudTotal!.toLocaleString()} รายการ`}
                 style={syncComplete
                   ? { color: 'var(--st-yard)', background: '#e7f6ec' }
                   : { color: '#a16207', background: 'rgba(234,179,8,0.14)' }}>
-                {syncComplete ? '✓ ข้อมูลครบ' : `กำลังเติม ${Math.round((localRowCount / Math.max(1, cloudTotal!)) * 100)}%`}
+                {syncComplete
+                  ? '✓ ตรงกับคลาวด์'
+                  : syncExtra
+                    ? 'กำลังปรับข้อมูล'
+                    : `กำลังเติม ${Math.round((localRowCount / Math.max(1, cloudTotal!)) * 100)}%`}
               </div>
             )}
             <Segmented
