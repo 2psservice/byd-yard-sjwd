@@ -269,7 +269,13 @@ export async function fetchAllUnits(siteId?: string | null): Promise<{ units: Un
     }),
   )
   if (failed) console.error(`[db] fetchAllUnits: ${failed} page(s) missing — merged what arrived (additive)`)
-  return { units: pages.flat().map(rowToUnit), complete: failed === 0 }
+  const units = pages.flat().map(rowToUnit)
+  // count-verify the walk as well: a page that comes back SHORT without
+  // reporting an error still means this is not the yard's full set, and the
+  // caller is allowed to delete from it (mirror mode) — so say so honestly
+  if (!failed && units.length < total)
+    console.error(`[db] fetchAllUnits truncated: ${units.length}/${total} — treating as partial`)
+  return { units, complete: failed === 0 && units.length >= total }
 }
 
 /** Stream the damage PHOTO payloads for the given vins, small chunks with
@@ -786,7 +792,12 @@ export async function fetchInYardCount(siteId: string | null, siteNames: string[
  *  verify a device holds the complete set before trusting its local view. */
 export async function countTrackingRows(): Promise<number | null> {
   if (!isConfigured()) return null
-  const { count, error } = await supabase.from('tracking_rows').select('vin', { count: 'exact', head: true })
+  // LIVE rows only: tombstones stay in the table but are never shown, so this
+  // is the number a device's own row count must match exactly (mirror mode).
+  let res: any = await supabase.from('tracking_rows').select('vin', { count: 'exact', head: true }).is('deleted_at', null)
+  if (res.error && isMissingColumn(res.error))
+    res = await supabase.from('tracking_rows').select('vin', { count: 'exact', head: true })
+  const { count, error } = res as { count: number | null; error: unknown }
   if (error || count == null) { console.error('[db] countTrackingRows', error); return null }
   return count
 }
@@ -878,9 +889,14 @@ export async function fetchTrackingRowsForSite(locationYard: string): Promise<Tr
 }
 
 /** บันทึก/อัปเดตรายการรถ (batch ทีละ 500 แถว) */
-export async function upsertTrackingRows(rows: TrackRow[]): Promise<void> {
-  if (!isConfigured() || !rows.length) return
+/** Returns true only when EVERY chunk was written — the caller uses that to
+ *  decide whether it may advance lastSync (a silently-failed push must keep
+ *  those local edits marked "newer than lastSync" so they are rescued, not
+ *  deleted, by the next mirror pass). */
+export async function upsertTrackingRows(rows: TrackRow[]): Promise<boolean> {
+  if (!isConfigured() || !rows.length) return true
   const CHUNK = 500
+  let ok = true
   for (let i = 0; i < rows.length; i += CHUNK) {
     const slice = rows.slice(i, i + CHUNK)
     // full payload; `deleted_at` is always written (null on a live row) so any
@@ -905,8 +921,9 @@ export async function upsertTrackingRows(rows: TrackRow[]): Promise<void> {
       ;({ error } = await supabase.from('tracking_rows').upsert(slice.map(build), { onConflict: 'vin' }))
       if (!error) break
     }
-    if (error) console.error('[db] upsertTrackingRows chunk', i, error)
+    if (error) { console.error('[db] upsertTrackingRows chunk', i, error); ok = false }
   }
+  return ok
 }
 
 /** ลบรถออกจาก Unit List — soft-delete (tombstone): เขียน `deleted_at` แทนการลบแถวจริง
