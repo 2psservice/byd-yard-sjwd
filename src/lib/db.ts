@@ -209,43 +209,60 @@ export async function fetchUnitsByVins(vins: string[]): Promise<Unit[]> {
  *  500 cars (whole lanes vanished). Photos stream in via fetchDamagePhotos. */
 const DMG_META_COLS = 'id,vin,area,area_th,type,item,item_th,severity,note,remark,recorded_at,recorded_by,source,station,category_ng,category_repair,incharge,status_repair,repair_date,repaired_by,repair_history'
 
+/** Resolved once per session: the light no-photos select when the DB has all
+ *  the named columns, else the legacy full embed. Probed with a 1-row query so
+ *  a missing column can never fail the real fetch. */
+let dmgSelectCache: string | null = null
+async function resolveUnitsSelect(): Promise<string> {
+  if (dmgSelectCache) return dmgSelectCache
+  const probe = await supabase.from('units').select(`vin, damages(${DMG_META_COLS})`).limit(1)
+  if (probe.error) {
+    console.error('[db] damages meta select unavailable — using damages(*)', probe.error)
+    dmgSelectCache = '*, damages(*)'
+  } else {
+    dmgSelectCache = `*, damages(${DMG_META_COLS})`
+  }
+  return dmgSelectCache
+}
+
 /** โหลดรถทุกคัน (+ ความเสียหายแบบไม่รวมรูป) จาก Supabase; กรองตาม site หากระบุ.
  *  Paginated — PostgREST caps a single request at 1,000 rows, so a >1,000-unit
  *  yard silently lost the tail (units past the cap never loaded → their damages
  *  "vanished" after refresh even though they were safely in the cloud).
- *  Each page retries on transient failure; a page that still fails after the
- *  retries rejects the whole call so a partial yard is never merged as truth. */
-async function fetchUnitsPaged(siteId: string | null | undefined, select: string): Promise<Unit[]> {
-  const PAGE = 500
+ *  Each page retries on transient failure; a page that STILL fails is skipped
+ *  (logged) rather than failing the whole call — the store merge is additive
+ *  per-vin, so a partial result can only add cars, never remove them. */
+export async function fetchAllUnits(siteId?: string | null): Promise<Unit[]> {
+  if (!isConfigured()) return []
+  const select = await resolveUnitsSelect()
+  // photo-free pages are tiny; the full-embed fallback carries base64 photos,
+  // so smaller pages keep each request under the gateway timeout
+  const PAGE = select.includes('damages(*)') ? 200 : 500
   let head = supabase.from('units').select('vin', { count: 'exact', head: true })
   if (siteId) head = (head as any).eq('site_id', siteId)
   const { count, error: cErr } = await head
   if (cErr) { console.error('[db] fetchAllUnits count', cErr); return [] }
   const total = count ?? 0
   if (!total) return []
+  let failed = 0
   const pages = await Promise.all(
     Array.from({ length: Math.ceil(total / PAGE) }, async (_, p) => {
-      const { data } = await withRetry<{ error: unknown; data: unknown }>(() => {
-        let q = supabase.from('units').select(select)
-        if (siteId) q = (q as any).eq('site_id', siteId)
-        return (q as any).order('vin').range(p * PAGE, p * PAGE + PAGE - 1)
-      })
-      return (data ?? []) as unknown as DbUnitWithDamages[]
+      try {
+        const { data } = await withRetry<{ error: unknown; data: unknown }>(() => {
+          let q = supabase.from('units').select(select)
+          if (siteId) q = (q as any).eq('site_id', siteId)
+          return (q as any).order('vin').range(p * PAGE, p * PAGE + PAGE - 1)
+        }, 4)
+        return (data ?? []) as unknown as DbUnitWithDamages[]
+      } catch (e) {
+        failed++
+        console.error('[db] fetchAllUnits page failed after retries', p, e)
+        return [] as DbUnitWithDamages[]
+      }
     }),
   )
+  if (failed) console.error(`[db] fetchAllUnits: ${failed} page(s) missing — merged what arrived (additive)`)
   return pages.flat().map(rowToUnit)
-}
-
-export async function fetchAllUnits(siteId?: string | null): Promise<Unit[]> {
-  if (!isConfigured()) return []
-  try {
-    return await fetchUnitsPaged(siteId, `*, damages(${DMG_META_COLS})`)
-  } catch (e) {
-    // a DB whose damages table predates one of the named columns rejects the
-    // narrow select — fall back to the legacy full fetch (slow but correct)
-    console.error('[db] fetchAllUnits meta select failed — falling back to damages(*)', e)
-    return fetchUnitsPaged(siteId, '*, damages(*)')
-  }
 }
 
 /** Stream the damage PHOTO payloads for the given vins, small chunks with
