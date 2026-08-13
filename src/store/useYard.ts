@@ -5,6 +5,7 @@ import type {
   AppUser, Block, Damage, DamageInput, GpsPoint, Lang, ParkingPolicy, Site, SlotCandidate, Trailer, Trip, Unit, UserRole, VehicleModel, View,
 } from '../types'
 import { BLOCKS, DEFAULT_POLICIES, MODELS, generateSample, matchModel, paintHex } from '../lib/sampleData'
+import { isOnlineOnly } from '../lib/onlineMode'
 import { autoAssign } from '../lib/parkingEngine'
 import { haversineM, makeDemoTrip, mulberry32, slotToLatLng } from '../lib/geo'
 import { IN_YARD_STATUSES } from '../lib/carStatus'
@@ -1622,6 +1623,14 @@ export const useYard = create<YardState>()(
       name: 'byd-yard-control',
       version: 6,
       storage: debouncedLocalStorage(),
+      // ONLINE 100%: drop any car list an older build (or a spell with the
+      // local cache switched on) left behind, so the first thing on screen is
+      // the cloud's answer — never this device's leftovers. The yard-plan
+      // layout is kept for this session only: loadFromSupabase replaces it
+      // with the cloud's, or seeds the cloud from it when the cloud has none.
+      onRehydrateStorage: () => (state) => {
+        if (state && isOnlineOnly()) { state.units = {}; state.trailers = [] }
+      },
       migrate: (state: any, fromVersion: number) => {
         let s = state
         if (fromVersion < 2) {
@@ -1666,11 +1675,17 @@ export const useYard = create<YardState>()(
       // back), and re-picking the yard mid-shift lost the screen they were on.
       // The previous-shift safety still holds: sessions expire at midnight and
       // logout() clears currentSite, so every LOGIN still re-picks the yard.
+      // ONLINE 100%: yard data (cars, positions, yard-plan layout) is NOT kept
+      // on the device — it is pulled from the cloud on every load, so no two
+      // devices can drift apart. UI prefs + the login roster still persist.
       partialize: (s) => ({
         lang: s.lang, planMode: s.planMode, currentUser: s.currentUser, currentDriver: s.currentDriver,
         groupModelsInRow: s.groupModelsInRow, laneDepth: s.laneDepth, view: s.view, appUsers: s.appUsers, loggedInUserId: s.loggedInUserId,
         loginAt: s.loginAt, currentSite: s.currentSite,
-        units: s.units, trailers: s.trailers, policies: s.policies, blocksBySite: s.blocksBySite, models: s.models,
+        units: isOnlineOnly() ? {} : s.units,
+        trailers: isOnlineOnly() ? [] : s.trailers,
+        blocksBySite: isOnlineOnly() ? {} : s.blocksBySite,
+        policies: s.policies, models: s.models,
         // trips grew forever (full GPS path per drive) until localStorage hit its
         // quota and EVERY state change silently stopped persisting. Keep the 30
         // most recent, each capped to its last 600 fixes (~10 min at 1 Hz).
