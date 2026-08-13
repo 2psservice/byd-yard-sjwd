@@ -164,6 +164,7 @@ export function Dashboard() {
   const setUnitPreset = useYard((s) => s.setUnitPreset)
   const currentSite = useYard((s) => s.currentSite)
   const sites = useYard((s) => s.sites)
+  const toast = useYard((s) => s.toast)
   const allUnits = useUnits()
   const blocks = useBlocks()
   const allTrackingRows = useTrackingRows()
@@ -282,28 +283,48 @@ export function Dashboard() {
   // ── yard capacity (คัน) — the Car Status donut's denominator. The old
   // divisor was EVERY tracking row (incl. ~15k gate-out history), so a full
   // yard read "12%". The % now means: cars in the yard ÷ the yard's capacity.
-  // Admin sets the capacity per yard (pencil next to the number, synced via
-  // app_config); default = the plan's drawn slots.
-  const [capOverride, setCapOverride] = useState<number | null>(null)
+  // Shares the Daily-Stock report's config row ({ [siteId]: cap } under
+  // 'yardCapacity') so the pencil here and the Max Cap cell there edit the
+  // same number; the localStorage copy keeps it after a refresh even while
+  // the cloud read is in flight (or failing). Default = the plan's drawn slots.
+  const [caps, setCaps] = useState<Record<string, number>>(() => {
+    try { return JSON.parse(localStorage.getItem('sjwd.yardCapacity') || '{}') } catch { return {} }
+  })
   useEffect(() => {
     let dead = false
-    setCapOverride(null)
-    if (currentSite) {
-      db.fetchAppConfig<number>(`yard_capacity_${currentSite}`)
-        .then((v) => { if (!dead && typeof v === 'number' && v > 0) setCapOverride(v) })
-        .catch(() => {})
-    }
+    db.fetchAppConfig<Record<string, number>>('yardCapacity')
+      .then(async (v) => {
+        let next = v ?? {}
+        // one-time adoption of the legacy per-site row the old pencil wrote
+        if (currentSite && !(next[currentSite] > 0)) {
+          const legacy = await db.fetchAppConfig<number>(`yard_capacity_${currentSite}`).catch(() => null)
+          if (typeof legacy === 'number' && legacy > 0) {
+            next = { ...next, [currentSite]: legacy }
+            db.saveAppConfig('yardCapacity', next).catch(() => {})
+          }
+        }
+        if (dead || !Object.keys(next).length) return
+        setCaps((cur) => ({ ...cur, ...next }))
+        try { localStorage.setItem('sjwd.yardCapacity', JSON.stringify(next)) } catch { /* full/blocked */ }
+      })
+      .catch(() => {})
     return () => { dead = true }
   }, [currentSite])
+  const capOverride = currentSite && caps[currentSite] > 0 ? caps[currentSite] : null
   const blockCap = useMemo(() => blocks.reduce((a, b) => a + b.rows * b.cols, 0), [blocks])
   const yardCap = capOverride ?? (blockCap || s.total)
   const editCap = () => {
+    if (!currentSite) return
     const v = window.prompt('ความจุลานทั้งหมด (คัน) — ใช้เป็นตัวหารเปอร์เซ็นต์ "อยู่ในลาน"', String(yardCap))
     if (v == null) return
     const n = parseInt(v.replace(/[^0-9]/g, ''), 10)
     if (!n || n <= 0) return
-    setCapOverride(n)
-    if (currentSite) db.saveAppConfig(`yard_capacity_${currentSite}`, n).catch(() => {})
+    const next = { ...caps, [currentSite]: n }
+    setCaps(next)
+    try { localStorage.setItem('sjwd.yardCapacity', JSON.stringify(next)) } catch { /* full/blocked */ }
+    db.saveAppConfig('yardCapacity', next)
+      .then(() => toast('ok', `บันทึกความจุลาน ${n.toLocaleString()} คัน`))
+      .catch(() => toast('err', 'บันทึกความจุขึ้นคลาวด์ไม่สำเร็จ — เครื่องนี้ยังใช้ค่าใหม่ได้'))
   }
 
   const fill = fromTracking ? pct(s.inYard, yardCap) : pct(s.occupied, s.cap)
