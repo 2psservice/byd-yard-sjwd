@@ -230,10 +230,12 @@ async function resolveUnitsSelect(): Promise<string> {
  *  yard silently lost the tail (units past the cap never loaded → their damages
  *  "vanished" after refresh even though they were safely in the cloud).
  *  Each page retries on transient failure; a page that STILL fails is skipped
- *  (logged) rather than failing the whole call — the store merge is additive
- *  per-vin, so a partial result can only add cars, never remove them. */
-export async function fetchAllUnits(siteId?: string | null): Promise<Unit[]> {
-  if (!isConfigured()) return []
+ *  (logged) rather than failing the whole call.
+ *  `complete` marks a fetch where EVERY page arrived — only then may a caller
+ *  treat the result as the yard's full truth (and e.g. drop local ghosts);
+ *  a partial result must only ever be merged additively. */
+export async function fetchAllUnits(siteId?: string | null): Promise<{ units: Unit[]; complete: boolean }> {
+  if (!isConfigured()) return { units: [], complete: false }
   const select = await resolveUnitsSelect()
   // photo-free pages are tiny; the full-embed fallback carries base64 photos,
   // so smaller pages keep each request under the gateway timeout
@@ -241,9 +243,9 @@ export async function fetchAllUnits(siteId?: string | null): Promise<Unit[]> {
   let head = supabase.from('units').select('vin', { count: 'exact', head: true })
   if (siteId) head = (head as any).eq('site_id', siteId)
   const { count, error: cErr } = await head
-  if (cErr) { console.error('[db] fetchAllUnits count', cErr); return [] }
+  if (cErr) { console.error('[db] fetchAllUnits count', cErr); return { units: [], complete: false } }
   const total = count ?? 0
-  if (!total) return []
+  if (!total) return { units: [], complete: true } // the site truly has no units
   let failed = 0
   const pages = await Promise.all(
     Array.from({ length: Math.ceil(total / PAGE) }, async (_, p) => {
@@ -262,7 +264,7 @@ export async function fetchAllUnits(siteId?: string | null): Promise<Unit[]> {
     }),
   )
   if (failed) console.error(`[db] fetchAllUnits: ${failed} page(s) missing — merged what arrived (additive)`)
-  return pages.flat().map(rowToUnit)
+  return { units: pages.flat().map(rowToUnit), complete: failed === 0 }
 }
 
 /** Stream the damage PHOTO payloads for the given vins, small chunks with
@@ -570,11 +572,19 @@ function rowToBlock(r: any): Block {
   }
 }
 
-export async function fetchBlocks(siteId: string): Promise<Block[]> {
-  if (!isConfigured()) return []
-  const { data, error } = await supabase.from('blocks').select('*').eq('site_id', siteId)
-  if (error) { console.error('[db] fetchBlocks', error); return [] }
-  return (data ?? []).map(rowToBlock)
+/** null = fetch FAILED (offline / error) — callers must keep their cache;
+ *  [] = the cloud truly has no layout for this site. Collapsing the two was
+ *  how a transient error once masqueraded as "no plan". */
+export async function fetchBlocks(siteId: string): Promise<Block[] | null> {
+  if (!isConfigured()) return null
+  try {
+    const { data } = await withRetry<{ error: unknown; data: unknown }>(() =>
+      supabase.from('blocks').select('*').eq('site_id', siteId))
+    return ((data ?? []) as any[]).map(rowToBlock)
+  } catch (e) {
+    console.error('[db] fetchBlocks', e)
+    return null
+  }
 }
 
 /** Mirror a site's whole layout to the cloud: upsert every block, then prune
