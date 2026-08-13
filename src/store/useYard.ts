@@ -1237,25 +1237,46 @@ export const useYard = create<YardState>()(
         //    light, and switching sites re-fetches. Merge per-vin, never drop local.
         const siteId = get().currentSite
         if (!siteId) return // no yard picked yet → wait; setCurrentSite re-runs this
-        const [cloud, trailers, cloudBlocks] = await Promise.all([
+        const [{ units: cloud, complete }, trailers, cloudBlocks] = await Promise.all([
           db.fetchAllUnits(siteId),
           db.fetchTrailers(siteId),
           db.fetchBlocks(siteId),
         ])
-        // 3) yard-plan layout: cloud is the source of truth (any device's edit
-        //    pushed there); when the cloud has none, seed it from this device so
-        //    an existing local layout propagates to other machines.
-        if (cloudBlocks.length) {
+        // 3) yard-plan layout: the cloud is the 100% source of truth. On a
+        //    SUCCESSFUL fetch adopt it verbatim; null = fetch failed → keep the
+        //    local cache (offline). A truly-empty cloud is seeded once from a
+        //    device that still holds a layout (initialization, not override).
+        if (cloudBlocks === null) {
+          // offline / fetch error — local cache stands in until the next load
+        } else if (cloudBlocks.length) {
           set((s) => ({ blocksBySite: { ...s.blocksBySite, [siteKey(siteId)]: cloudBlocks } }))
         } else {
           const local = get().blocksBySite[siteKey(siteId)] ?? []
           if (local.length) db.replaceBlocks(siteId, local).catch((e) => console.error('[db] seedBlocks', e))
         }
-        if (!cloud.length && !trailers.length) return
-        set((s) => ({
-          units: mergeCloudUnits(s.units, cloud),
-          trailers: trailers.length ? trailers : s.trailers,
-        }))
+        set((s) => {
+          let units = mergeCloudUnits(s.units, cloud)
+          // cloud 100%: a COMPLETE fetch is the yard's full truth — drop this
+          // site's local-only units (ghost cars deleted elsewhere). Very fresh
+          // local units are kept: they're this device's own writes still in
+          // flight to the cloud. Partial fetches only ever merge additively.
+          if (complete) {
+            const have = new Set(cloud.map((u) => u.vin))
+            const cutoff = Date.now() - 5 * 60_000
+            for (const vin of Object.keys(units)) {
+              const u = units[vin]
+              if (have.has(vin) || u.site !== siteId) continue
+              const freshest = Math.max(u.parkedAt ?? 0, u.assignedAt ?? 0, u.gateInAt ?? 0, u.importedAt ?? 0)
+              if (freshest > cutoff) continue
+              if (units === s.units) units = { ...units }
+              delete units[vin]
+            }
+          }
+          return {
+            units,
+            trailers: trailers.length ? trailers : s.trailers,
+          }
+        })
         // 4) photo payloads stream in AFTER positions are on screen — only for
         //    damages that still lack a photo locally (base64 photos are the
         //    heavy part; loading them inline made the yard plan wait minutes)
@@ -1330,7 +1351,7 @@ export const useYard = create<YardState>()(
                   scheduleDamageRefetch(() => {
                     const siteId = get().currentSite
                     if (!siteId) return
-                    db.fetchAllUnits(siteId).then((cloud) => {
+                    db.fetchAllUnits(siteId).then(({ units: cloud }) => {
                       if (!cloud.length) return
                       set((s) => {
                         return { units: mergeCloudUnits(s.units, cloud) }
@@ -1357,7 +1378,7 @@ export const useYard = create<YardState>()(
                 scheduleDamageRefetch(() => {
                   const siteId = get().currentSite
                   if (!siteId) return
-                  db.fetchAllUnits(siteId).then((cloud) => {
+                  db.fetchAllUnits(siteId).then(({ units: cloud }) => {
                     if (!cloud.length) return
                     set((s) => {
                       return { units: mergeCloudUnits(s.units, cloud) }
@@ -1405,7 +1426,7 @@ export const useYard = create<YardState>()(
               unitsHadDrop = false
               const sid = get().currentSite
               if (!sid) return
-              db.fetchAllUnits(sid).then((cloud) => {
+              db.fetchAllUnits(sid).then(({ units: cloud }) => {
                 if (!cloud.length) return
                 set((s) => {
                   return { units: mergeCloudUnits(s.units, cloud) }
@@ -1649,9 +1670,9 @@ onSync('blocks', async (p: { siteId?: string }) => {
   const siteId = p?.siteId
   if (!siteId) return
   const blocks = await db.fetchBlocks(siteId)
-  // an empty result is a failed fetch or a wiped cloud — never let it erase
-  // this device's cached layout (the cache is what re-seeds the cloud)
-  if (!blocks.length) return
+  // null = fetch failed, [] = wiped cloud — neither may erase this device's
+  // cached layout (the cache is what re-seeds the cloud)
+  if (!blocks || !blocks.length) return
   useYard.setState((s) => ({ blocksBySite: { ...s.blocksBySite, [siteId]: blocks } }))
 })
 onSync('trailers', async (p: { siteId?: string }) => {
