@@ -315,7 +315,7 @@ export function ImportPage() {
   }, [siteRows])
 
   return (
-    <div className="max-w-[1100px] mx-auto">
+    <div>
       <PageHead title="นำเข้าข้อมูล" sub="อัปโหลดไฟล์ Excel (Vin list / Yard-to-Yard transfer) ที่มีคอลัมน์ Vin — ดาวน์โหลดเทมเพลตด้านขวาเพื่อดูคอลัมน์ที่รองรับ" />
 
       <div className="grid lg:grid-cols-5 gap-4">
