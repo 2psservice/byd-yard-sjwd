@@ -42,7 +42,9 @@ export default defineConfig({
         // Skip the lazily-imported Excel engines (~1.4 MB) — they're admin
         // import/export features a field phone never runs; fetched on demand.
         globPatterns: ['**/*.{js,css,html,png,svg,woff2}'],
-        globIgnores: ['**/exceljs*', '**/xlsx-*'],
+        // skip the Excel engines (admin-only, fetched on demand) and font
+        // subsets no screen renders (Thai + Latin are the only scripts used)
+        globIgnores: ['**/exceljs*', '**/xlsx-*', '**/*cyrillic*', '**/*greek*', '**/*vietnamese*'],
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
         navigateFallback: '/index.html',
         // never cache the Supabase API/realtime — data must stay live
