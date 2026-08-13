@@ -13,6 +13,7 @@ import { useTrackingRows } from '../store/useTracking'
 import { rowInSite } from '../lib/siteScope'
 import { appendMasterSheets } from '../lib/masterSheets'
 import { dateKey, todayKey, addDays, fmtDateTh, gateInDateKey, gateOutDateKey } from '../lib/dayKey'
+import { deriveCarStatus } from '../lib/carStatus'
 import * as db from '../lib/db'
 import type { TrackRow } from '../lib/excelTracking'
 
@@ -79,9 +80,17 @@ export function DailyStockReport() {
     const stock: TrackRow[] = []
     let opening = 0
     let undated = 0
+    let outNoDate = 0
     for (const r of rows) {
+      // status is the same source of truth the dashboard reads — the date
+      // ledger below must not count a car the dashboard says is not in the yard
+      const cs = deriveCarStatus(r.cells)
+      if (cs === 'Pre Gate-in') { undated++; continue } // not physically here yet
       const gi = gateInDateKey(r)
       const go = gateOutDateKey(r)
+      // departed but no parsable date (e.g. an admin set Car Status = Gate-out
+      // by hand) — can't place it on a day, so keep it out of every term
+      if (cs === 'Gate-out' && !go) { outNoDate++; continue }
       if (!gi && !go) { undated++; continue }        // never gated in — not in the yard yet
       if (gi === day) inRows.push(r)
       if (go === day) outRows.push(r)
@@ -106,7 +115,7 @@ export function DailyStockReport() {
       [...list].sort((a, b) => modelOf(a).localeCompare(modelOf(b)) || a.vin.localeCompare(b.vin))
     return {
       inRows: sortRows(inRows), outRows: sortRows(outRows), stockRows: sortRows(stock),
-      opening, colors, byModel, colorTotals, undated,
+      opening, colors, byModel, colorTotals, undated, outNoDate,
     }
   }, [rows, day])
 
@@ -371,7 +380,8 @@ export function DailyStockReport() {
 
         {data.undated > 0 && (
           <div className="text-[11.5px] mt-3" style={{ color: 'var(--muted)' }}>
-            หมายเหตุ · มีรถ {data.undated.toLocaleString()} คันที่ยังไม่มีวันที่ Gate-in (เช่น สถานะ Pre Gate-in) จึงไม่ถูกนับในยอดคงเหลือ
+            หมายเหตุ · มีรถ {data.undated.toLocaleString()} คันที่ยังไม่เข้าลาน/ไม่มีวันที่ Gate-in (เช่น สถานะ Pre Gate-in) จึงไม่ถูกนับในยอดคงเหลือ
+            {data.outNoDate > 0 && <> · รถออกจากลานแล้วแต่ไม่มีวันที่ Gate-out {data.outNoDate.toLocaleString()} คัน (ไม่ถูกนับเช่นกัน)</>}
           </div>
         )}
       </div>

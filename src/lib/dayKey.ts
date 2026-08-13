@@ -5,7 +5,7 @@
  * an event to the same day — the report reconstructs history from these keys,
  * so a second copy of the parsing rules would silently disagree with the board.
  */
-import { isGateOutStamp } from './carStatus'
+import { isGateOutStamp, isLapsedPlan } from './carStatus'
 import type { TrackRow } from './excelTracking'
 
 export const MONTH_ABBR: Record<string, number> = {
@@ -59,10 +59,35 @@ export function gateInDateKey(r: TrackRow): string | null {
   return d ? dateKey(d) : null
 }
 
-/** Gate-out day, or null if the car has not actually left. */
+/** dd/mm/yyyy found ANYWHERE in a string (parseLooseDate is start-anchored, so
+ *  it can't read the date out of a plan text like "แผนรับวันที่ 10/07/2026"). */
+function embeddedDMY(s: string | undefined): Date | null {
+  const m = (s ?? '').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/)
+  if (!m) return null
+  const d = new Date(+m[3], +m[2] - 1, +m[1])
+  return isNaN(d.getTime()) ? null : d
+}
+
+/** Gate-out day, or null if the car has not actually left.
+ *  Reads every gate-out signal deriveCarStatus accepts, so the daily-stock
+ *  ledger and the dashboard agree on who is still in the yard:
+ *  - a bare date in "Gate Out time stamp" (ops scan / tracking sheet)
+ *  - a bare date in "Gate Out Date" (Vin List Inventory — sold cars)
+ *  - a pickup PLAN whose date lapsed past the grace period → left ~plan day */
 export function gateOutDateKey(r: TrackRow): string | null {
-  // a pickup-PLAN value ("แผนรับวันที่ …") is not a gate-out — don't count its date
-  if (!isGateOutStamp(r.cells['Gate Out time stamp'])) return null
-  const d = parseLooseDate(r.cells['Gate Out time stamp'])
-  return d ? dateKey(d) : null
+  const stamp = r.cells['Gate Out time stamp']
+  if (isGateOutStamp(stamp)) {
+    const d = parseLooseDate(stamp)
+    if (d) return dateKey(d)
+  }
+  const dateCol = r.cells['Gate Out Date']
+  if (isGateOutStamp(dateCol)) {
+    const d = parseLooseDate(dateCol)
+    if (d) return dateKey(d)
+  }
+  if (isLapsedPlan(stamp)) {
+    const d = embeddedDMY(stamp)
+    if (d) return dateKey(d)
+  }
+  return null
 }
