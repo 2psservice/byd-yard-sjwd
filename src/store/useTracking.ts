@@ -255,15 +255,14 @@ export const useTracking = create<TrackingState>()(
         for (const lr of Object.values(local)) if (!hasVin(lr) && !drop.includes(lr.vin)) { delete merged[lr.vin]; drop.push(lr.vin) }
         if (phantom.length) db.deleteTrackingRows(phantom).catch(() => {})
 
-        // local → cloud: push only rows THIS DEVICE changed since its last sync
-        // (offline edits). Never re-push a VIN the cloud has tombstoned. On a
-        // full run the cloud list is complete, so a local row the cloud does
-        // not have — and that we haven't touched since last sync — was deleted
-        // there (possibly with its tombstone already purged): drop it locally
-        // instead of pushing. The old "push anything the cloud lacks" rule
-        // RESURRECTED purged deletions, so long-offline devices re-inflated
-        // the yard count forever. First-ever sync (lastSync = 0) still seeds
-        // the cloud from this device.
+        // local → cloud: ADD-ONLY. A row this device has that the cloud lacks
+        // is uploaded, never deleted locally — the yard's data is worth more
+        // than a tidy count, and inferring "gone from the cloud = delete it"
+        // is exactly what wiped thousands of rows. The ONLY thing that removes
+        // a row anywhere is a real tombstone (deleted_at), which is handled
+        // above and is never re-pushed (no resurrection of intentional
+        // deletes). Devices therefore converge on the UNION of what everyone
+        // has, plus every deliberate delete.
         const push: TrackRow[] = []
         for (const lr of Object.values(local)) {
           if (!hasVin(lr)) continue // never re-push phantom rows
@@ -271,11 +270,6 @@ export const useTracking = create<TrackingState>()(
           if (cr?.deletedAt) continue
           if (incremental) {
             if ((lr.updatedAt ?? 0) > lastSync) push.push(lr)
-          } else if (lastSync > 0) {
-            if ((lr.updatedAt ?? 0) > lastSync) push.push(lr)
-            // cloud 100% — but ONLY when the pull actually returned everything;
-            // a partial pull must never be read as "these rows are gone"
-            else if (complete && !cr && !drop.includes(lr.vin)) { delete merged[lr.vin]; drop.push(lr.vin) }
           } else {
             if (!cr || (lr.updatedAt ?? 0) > (cr.updatedAt ?? 0)) push.push(lr)
           }
@@ -316,22 +310,17 @@ export const useTracking = create<TrackingState>()(
           const lr = local[r.vin]
           if (!lr || r.updatedAt > (lr.updatedAt ?? 0)) pullVins.push(r.vin)
         }
+        // ADD-ONLY here too: remove ONLY rows the cloud has tombstoned. A row
+        // the cloud simply doesn't list is uploaded (it exists here, so it is
+        // real) instead of deleted — no amount of truncated/partial index data
+        // can destroy anything.
         const drop: string[] = []
         const rescue: TrackRow[] = []
         for (const lr of Object.values(local)) {
           const cr = byVin.get(lr.vin)
           if (cr && !cr.deletedAt) continue
-          if (!cr && hasVin(lr) && (lr.updatedAt ?? 0) > lastSync) { rescue.push(lr); continue }
-          drop.push(lr.vin)
-        }
-        // safety brake: deleting a large share of the table means the index we
-        // diffed against is wrong (truncated page walk, partial outage), not
-        // that the yard emptied. Keep everything and log — data loss is never
-        // the safer failure. (A real bulk delete still lands via tombstones.)
-        const localCount = Object.keys(local).length
-        if (drop.length > Math.max(200, localCount * 0.1)) {
-          console.error(`[tracking] reconcile aborted: would drop ${drop.length}/${localCount} rows — index looks wrong`)
-          return
+          if (cr?.deletedAt) { drop.push(lr.vin); continue } // deliberate delete
+          if (hasVin(lr)) rescue.push(lr) // cloud never saw it → push it up
         }
         const pulled = pullVins.length ? await db.fetchTrackingRowsByVins(pullVins) : []
         if (!pulled.length && !drop.length && !rescue.length) return
