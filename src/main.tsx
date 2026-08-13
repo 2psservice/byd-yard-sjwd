@@ -25,10 +25,12 @@ import './index.css'
 // open session (the old auto-reload wiped in-progress checklists/forms within
 // a minute of every push). Instead show a small banner; the operator applies
 // the update when they're between tasks.
+let swRegistration: ServiceWorkerRegistration | null = null
 const updateSW = registerSW({
   immediate: true,
   onRegisteredSW(_url, registration) {
     if (!registration) return
+    swRegistration = registration
     setInterval(() => registration.update(), 60_000)
   },
   onNeedRefresh() { showUpdateBanner() },
@@ -43,7 +45,25 @@ function showUpdateBanner() {
   const btn = document.createElement('button')
   btn.textContent = 'อัปเดตเลย'
   btn.style.cssText = 'padding:8px 16px;border:none;border-radius:10px;background:#2563eb;color:#fff;font-weight:700;font-size:13.5px;cursor:pointer'
-  btn.onclick = () => { btn.textContent = 'กำลังอัปเดต…'; btn.disabled = true; updateSW(true) }
+  // "อัปเดตเลย" reloads the page HERE rather than trusting the plugin's own
+  // reload: the worker is built with skipWaiting + clientsClaim, so by the time
+  // this banner appears the new build has usually activated already — there is
+  // no "waiting" worker left to message and no controllerchange left to fire,
+  // and the button sat on "กำลังอัปเดต…" forever. Reloading is all that is
+  // actually needed to run the new build.
+  btn.onclick = () => {
+    btn.textContent = 'กำลังอัปเดต…'
+    btn.disabled = true
+    let done = false
+    const reload = () => { if (done) return; done = true; window.location.reload() }
+    // whichever happens first: the new worker taking over, or 1.5s
+    navigator.serviceWorker?.addEventListener('controllerchange', reload, { once: true })
+    setTimeout(reload, 1500)
+    try {
+      swRegistration?.waiting?.postMessage({ type: 'SKIP_WAITING' })
+      void Promise.resolve(updateSW(true)).catch(() => reload())
+    } catch { reload() }
+  }
   const later = document.createElement('button')
   later.textContent = 'ไว้ก่อน'
   later.style.cssText = 'padding:8px 12px;border:none;border-radius:10px;background:rgba(255,255,255,.14);color:#fff;font-size:13px;cursor:pointer'
