@@ -50,6 +50,9 @@ interface TrackingState {
   reconcileCloud: () => Promise<void>
   /** verify local row count matches the cloud's, reconciling until it does */
   ensureComplete: () => Promise<void>
+  /** cloud's exact row total (null = unknown) — powers the sync-status badge */
+  cloudTotal: number | null
+  refreshCloudTotal: () => Promise<void>
   subscribeRealtime: () => void
   unsubscribeRealtime: () => void
   importFile: (file: File) => Promise<ParseResult>
@@ -143,6 +146,7 @@ export const useTracking = create<TrackingState>()(
       importing: false,
       lastImport: null,
       lastSync: 0,
+      cloudTotal: null,
 
       loadFromIdb: async () => {
         if (get().loaded) return
@@ -191,6 +195,11 @@ export const useTracking = create<TrackingState>()(
         // run), then verify the device actually holds the cloud's full set —
         // a first load that came up short used to stay short forever
         get().syncCloud().then(() => get().ensureComplete()).catch(() => {})
+      },
+
+      refreshCloudTotal: async () => {
+        const n = await db.countTrackingRows()
+        if (n !== null) set({ cloudTotal: n })
       },
 
       // ── convergence check: does this device hold every cloud row? ──────────
@@ -396,7 +405,12 @@ export const useTracking = create<TrackingState>()(
             }
             if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
               trackingHadDrop = true
-              if (trackingChannel) { supabase.removeChannel(trackingChannel); trackingChannel = null }
+              if (trackingChannel) {
+                // defer: removing the channel INSIDE its own status callback
+                // recurses in supabase-js when the socket closes instantly
+                const ch = trackingChannel; trackingChannel = null
+                setTimeout(() => { supabase.removeChannel(ch).catch(() => {}) }, 0)
+              }
               setTimeout(() => {
                 if (!trackingChannel && useYard.getState().loggedInUserId) get().subscribeRealtime()
               }, 4000)

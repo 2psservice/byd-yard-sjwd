@@ -766,6 +766,22 @@ export async function fetchTrackingRows(sinceMs?: number): Promise<{ rows: Track
   return { rows, complete }
 }
 
+/** ยอด In Yard นับบนคลาวด์ (supabase-inyard-count.sql) — ทุกเครื่องได้เลขเดียว
+ *  กัน. null = ออฟไลน์ / ฟังก์ชันยังไม่ได้ติดตั้ง → ผู้เรียก fallback เป็นเลขที่นับ
+ *  ในเครื่องตามเดิม. */
+let inYardRpcMissing = false
+export async function fetchInYardCount(siteId: string | null, siteNames: string[]): Promise<number | null> {
+  if (!isConfigured() || inYardRpcMissing) return null
+  const { data, error } = await supabase.rpc('in_yard_count', { p_site_id: siteId, p_names: siteNames })
+  if (error) {
+    // PGRST202 = function not installed yet — remember and stop asking
+    if ((error as { code?: string }).code === 'PGRST202') { inYardRpcMissing = true; return null }
+    console.error('[db] fetchInYardCount', error)
+    return null
+  }
+  return typeof data === 'number' ? data : null
+}
+
 /** Exact number of tracking rows in the cloud (null = query failed). Used to
  *  verify a device holds the complete set before trusting its local view. */
 export async function countTrackingRows(): Promise<number | null> {

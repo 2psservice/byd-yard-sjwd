@@ -277,6 +277,10 @@ interface YardState {
   setGroupModels: (b: boolean) => void
   setLaneDepth: (n: number) => void
   toast: (kind: Toast['kind'], msg: string) => void
+  /** In Yard count from the CLOUD (null = offline / rpc not installed) — the
+   *  one number every device shows so no screen ever disagrees. */
+  cloudInYard: number | null
+  refreshCloudInYard: () => Promise<void>
   dismissToast: (id: number) => void
   setFocus: (vin: string | null) => void
 
@@ -611,7 +615,8 @@ export const useYard = create<YardState>()(
         db.deleteSite(id).catch((e) => console.error('[db] removeSite', e))
       },
       setCurrentSite: (id) => {
-        set({ currentSite: id, siteModalOpen: false })
+        set({ currentSite: id, siteModalOpen: false, cloudInYard: null })
+        get().refreshCloudInYard().catch(() => {})
         // units/trailers are loaded per-site → fetch the newly selected yard,
         // then close up any lane holes left from before compaction existed
         get().loadFromSupabase()
@@ -620,6 +625,18 @@ export const useYard = create<YardState>()(
       },
       openSiteModal: () => set({ siteModalOpen: true }),
       closeSiteModal: () => set({ siteModalOpen: false }),
+
+      cloudInYard: null,
+      refreshCloudInYard: async () => {
+        const s0 = get()
+        const site = s0.sites.find((x) => x.id === s0.currentSite)
+        if (!site) { set({ cloudInYard: null }); return }
+        const normName = (v?: string) => (v ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
+        const names = [site.name, site.code].filter(Boolean).map((v) => normName(v as string))
+        const n = await db.fetchInYardCount(site.id, names)
+        // only adopt real answers — a failed call keeps the last good number
+        if (n !== null && get().currentSite === site.id) set({ cloudInYard: n })
+      },
 
       toast: (kind, msg) => {
         const id = ++tid
@@ -1427,7 +1444,12 @@ export const useYard = create<YardState>()(
             }
             if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
               unitsHadDrop = true
-              if (unitsChannel) { supabase.removeChannel(unitsChannel); unitsChannel = null }
+              if (unitsChannel) {
+                // defer: removing the channel INSIDE its own status callback
+                // recurses in supabase-js when the socket closes instantly
+                const ch = unitsChannel; unitsChannel = null
+                setTimeout(() => { supabase.removeChannel(ch).catch(() => {}) }, 0)
+              }
               setTimeout(() => {
                 // still logged in and nobody resubscribed already (site switch)?
                 if (!unitsChannel && get().loggedInUserId) get().subscribeRealtime()

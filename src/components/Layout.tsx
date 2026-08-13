@@ -5,7 +5,7 @@ import {
 import { createPortal } from 'react-dom'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useYard, useUnits } from '../store/useYard'
-import { useTrackingRows } from '../store/useTracking'
+import { useTrackingRows, useTracking } from '../store/useTracking'
 import { makeT } from '../i18n'
 import type { View } from '../types'
 import { Segmented, cx } from './ui'
@@ -122,6 +122,13 @@ export function Layout({ children }: { children: ReactNode }) {
   const RAIL = 64
   const FULL = 244
   const inYard = units.filter((u) => (!currentSite || u.site === currentSite) && ['GATE_IN', 'ASSIGNED', 'PARKED'].includes(u.status)).length
+  // the CLOUD's In Yard count — one number for every device (local fallback
+  // while offline / until the SQL function is installed)
+  const cloudInYard = useYard((s) => s.cloudInYard)
+  // sync-status badge: does this device hold the cloud's full row set yet?
+  const cloudTotal = useTracking((s) => s.cloudTotal)
+  const localRowCount = useTracking((s) => Object.keys(s.rows).length)
+  const syncComplete = cloudTotal !== null ? localRowCount >= cloudTotal : null
   const today = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
 
   useEffect(() => {
@@ -216,9 +223,24 @@ export function Layout({ children }: { children: ReactNode }) {
             <div className="hidden xl:flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1 rounded-md" style={{ color: 'var(--st-yard)', background: '#e7f6ec' }}>
               <span className="live">●</span> Connected
             </div>
-            <div className="hidden lg:flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1 rounded-md" style={{ color: 'var(--muted)', background: 'var(--chip)' }}>
-              <Plug size={12} /> {inYard.toLocaleString()} In Yard
+            <div className="hidden lg:flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1 rounded-md"
+              title={cloudInYard !== null ? 'ยอด In Yard นับจากคลาวด์ — ทุกเครื่องเห็นเลขเดียวกัน' : 'ยอด In Yard นับจากข้อมูลในเครื่อง'}
+              style={{ color: 'var(--muted)', background: 'var(--chip)' }}>
+              <Plug size={12} /> {(cloudInYard ?? inYard).toLocaleString()} In Yard{cloudInYard !== null && <span style={{ fontSize: 10 }}>☁</span>}
             </div>
+            {/* sync-status: green = this device holds the cloud's full data set;
+                amber = still backfilling (ensureComplete is working on it) */}
+            {syncComplete !== null && (
+              <div className="hidden lg:flex items-center gap-1.5 text-[12px] font-semibold px-2.5 py-1 rounded-md"
+                title={syncComplete
+                  ? `ข้อมูลครบตรงกับคลาวด์ (${localRowCount.toLocaleString()} รายการ)`
+                  : `กำลังเติมข้อมูลจากคลาวด์ ${localRowCount.toLocaleString()} / ${cloudTotal!.toLocaleString()} รายการ`}
+                style={syncComplete
+                  ? { color: 'var(--st-yard)', background: '#e7f6ec' }
+                  : { color: '#a16207', background: 'rgba(234,179,8,0.14)' }}>
+                {syncComplete ? '✓ ข้อมูลครบ' : `กำลังเติม ${Math.round((localRowCount / Math.max(1, cloudTotal!)) * 100)}%`}
+              </div>
+            )}
             <Segmented
               value={planMode}
               onChange={setPlanMode}
