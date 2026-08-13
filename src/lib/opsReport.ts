@@ -104,6 +104,9 @@ export interface ReportCtx {
   dayFrom: string            // 'YYYY-MM-DD' (inclusive)
   dayTo: string              // 'YYYY-MM-DD' (inclusive)
   siteLabel: string
+  /** admin remarks keyed `${menuId}|${dayFrom}` — shown under the time
+   *  matrices and appended to their Excel sheets */
+  remarks?: Record<string, string>
 }
 
 function rowMap(ctx: ReportCtx) { return new Map(ctx.rows.map((r) => [r.vin, r])) }
@@ -318,7 +321,7 @@ export async function exportOpsReport(ctx: ReportCtx) {
       row.eachCell({ includeEmpty: true }, (cell: any, col: number) => { if (col <= 8) { cell.font = font; cell.border = border } })
     }
   }
-  const addTimeSheet = (name: string, m: TimeMatrix) => {
+  const addTimeSheet = (name: string, m: TimeMatrix, remark?: string) => {
     const ws = wb.addWorksheet(name)
     ws.columns = [{ width: 16 }, { width: 11 }, ...TIME_PERIODS.map(() => ({ width: 15 }))]
     const bAll = (row: any, opts?: { fillC?: string; bold?: boolean; color?: string }) =>
@@ -342,13 +345,22 @@ export async function exportOpsReport(ctx: ReportCtx) {
     const ngRow = ws.addRow(['NG', m.ngTotal, ...m.ng]); bAll(ngRow, { fillC: 'FFFCD5B4', color: 'FFFF0000' })
     const ngR = ws.addRow(['Ratio(NG)', pctStr(m.ngTotal, m.total), ...m.ng.map((n) => pctStr(n, m.total))]); bAll(ngR, { fillC: 'FFFCD5B4', color: 'FFFF0000' })
     const totRow = ws.addRow(['Total', m.total]); bAll(totRow, { bold: true, fillC: 'FFFFFF00' })
+    if (remark?.trim()) {
+      const rr = ws.addRow(['Remark', remark.trim()])
+      rr.getCell(1).font = { ...font, bold: true }
+      rr.getCell(2).font = font
+      rr.getCell(2).alignment = { vertical: 'top', wrapText: true }
+      ws.mergeCells(rr.number, 2, rr.number, 7)
+      rr.getCell(1).border = border
+      rr.getCell(2).border = border
+    }
   }
 
   for (const s of LIST_SHEETS) {
     const rows = buildList(ctx, s.id)
     addListSheet(`${s.sheet}(${ctx.siteLabel})`.slice(0, 31), rows, s.id === 'pdiout' || s.id === 'hold' ? 'Group No' : 'LOT\nM-D-lot')
-    if (s.id === 'fc') { addDefectSheet('FC(Defect)', buildDefects(ctx, 'fcdefect')); addTimeSheet('เช็คเวลาFC', buildTimeMatrix(ctx, 'fctime')) }
-    if (s.id === 'pm') { addDefectSheet('PM(Defect)', buildDefects(ctx, 'pmdefect')); addTimeSheet('เช็คเวลาPM', buildTimeMatrix(ctx, 'pmtime')) }
+    if (s.id === 'fc') { addDefectSheet('FC(Defect)', buildDefects(ctx, 'fcdefect')); addTimeSheet('เช็คเวลาFC', buildTimeMatrix(ctx, 'fctime'), ctx.remarks?.[`fctime|${ctx.dayFrom}`]) }
+    if (s.id === 'pm') { addDefectSheet('PM(Defect)', buildDefects(ctx, 'pmdefect')); addTimeSheet('เช็คเวลาPM', buildTimeMatrix(ctx, 'pmtime'), ctx.remarks?.[`pmtime|${ctx.dayFrom}`]) }
   }
 
   const buf = await wb.xlsx.writeBuffer()

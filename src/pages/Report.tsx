@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Download, ClipboardList } from 'lucide-react'
+import * as db from '../lib/db'
 import { useYard, useUnits } from '../store/useYard'
 import { useTrackingRows } from '../store/useTracking'
 import { useOps } from '../store/useOps'
@@ -47,6 +48,27 @@ function OpsReportSection() {
   const [dayTo, setDayTo] = useState(dayKeyOf(new Date()))
   const [exporting, setExporting] = useState(false)
 
+  // admin remarks under the time matrices — shared across devices via
+  // app_config (`ops_report_remarks_<site>`), cached locally so the box is
+  // filled instantly on boot and survives an offline refresh
+  const [remarks, setRemarks] = useState<Record<string, string>>({})
+  useEffect(() => {
+    if (!currentSite) return
+    let dead = false
+    try {
+      const cached = localStorage.getItem(`sjwd.opsRemarks.${currentSite}`)
+      setRemarks(cached ? JSON.parse(cached) : {})
+    } catch { setRemarks({}) }
+    db.fetchAppConfig<Record<string, string>>(`ops_report_remarks_${currentSite}`)
+      .then((v) => {
+        if (dead || !v) return
+        setRemarks(v)
+        try { localStorage.setItem(`sjwd.opsRemarks.${currentSite}`, JSON.stringify(v)) } catch { /* full/blocked */ }
+      })
+      .catch(() => {})
+    return () => { dead = true }
+  }, [currentSite])
+
   const site = sites.find((s) => s.id === currentSite)
   // "NYB2" style short label for sheet names/titles
   const siteLabel = useMemo(() => {
@@ -65,8 +87,9 @@ function OpsReportSection() {
       queues: queues.filter((q) => !currentSite || !q.site || q.site === currentSite),
       dayFrom: f, dayTo: t,
       siteLabel,
+      remarks,
     }
-  }, [allRows, units, queues, currentSite, sites, dayFrom, dayTo, siteLabel])
+  }, [allRows, units, queues, currentSite, sites, dayFrom, dayTo, siteLabel, remarks])
 
   const active = REPORT_MENUS.find((m) => m.id === menu) ?? REPORT_MENUS[0]
   const listRows = useMemo(() => (active.kind === 'list' ? buildList(ctx, active.id) : []), [ctx, active])
@@ -80,6 +103,18 @@ function OpsReportSection() {
       toast('ok', `ออกไฟล์ Report_operation (${rangeLabel(ctx)}) แล้ว`)
     } catch (e) { console.error('[opsReport] export', e); toast('err', 'ออกไฟล์ไม่สำเร็จ ลองใหม่อีกครั้ง') }
     finally { setExporting(false) }
+  }
+
+  const remarkKey = `${active.id}|${ctx.dayFrom}`
+  const saveRemark = (text: string) => {
+    if (!currentSite) return
+    const next = { ...remarks }
+    if (text.trim()) next[remarkKey] = text.trim(); else delete next[remarkKey]
+    setRemarks(next)
+    try { localStorage.setItem(`sjwd.opsRemarks.${currentSite}`, JSON.stringify(next)) } catch { /* full/blocked */ }
+    db.saveAppConfig(`ops_report_remarks_${currentSite}`, next)
+      .then(() => toast('ok', 'บันทึก Remark แล้ว'))
+      .catch(() => toast('err', 'บันทึก Remark ขึ้นคลาวด์ไม่สำเร็จ — เครื่องนี้ยังเห็นค่าใหม่'))
   }
 
   const th = 'text-left px-3 py-2 text-[11.5px] font-bold whitespace-nowrap'
@@ -242,6 +277,18 @@ function OpsReportSection() {
                 </tr>
               </tbody>
             </table>
+          </div>
+          {/* admin remark — saved on blur, shared to every device + the Excel sheet */}
+          <div className="px-4 py-3 border-t hairline">
+            <div className="text-[11px] font-bold uppercase tracking-wider mb-1.5" style={{ color: 'var(--muted)' }}>
+              Remark (แอดมิน) · {rangeLabel(ctx)}
+            </div>
+            <textarea key={remarkKey} rows={2}
+              className="input w-full text-[13px] py-2"
+              style={{ resize: 'vertical', minHeight: 44 }}
+              placeholder="พิมพ์หมายเหตุของรายงานนี้ — บันทึกอัตโนมัติเมื่อคลิกออกจากช่อง และแนบลงไฟล์ Excel ให้ด้วย"
+              defaultValue={remarks[remarkKey] ?? ''}
+              onBlur={(e) => { if ((remarks[remarkKey] ?? '') !== e.target.value.trim()) saveRemark(e.target.value) }} />
           </div>
         </div>
       )}
