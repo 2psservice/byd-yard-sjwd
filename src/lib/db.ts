@@ -240,8 +240,13 @@ export async function fetchAllUnits(siteId?: string | null): Promise<{ units: Un
   // photo-free pages are tiny; the full-embed fallback carries base64 photos,
   // so smaller pages keep each request under the gateway timeout
   const PAGE = select.includes('damages(*)') ? 200 : 500
+  // legacy units carry NO site_id (created before site tagging) yet every
+  // screen scopes them as "!u.site || u.site === currentSite" — the fetch must
+  // match, or those cars exist only on whichever device still caches them
+  // (one screen showed 656 In Yard while another showed 1,979)
+  const siteFilter = siteId ? `site_id.eq.${siteId},site_id.is.null` : null
   let head = supabase.from('units').select('vin', { count: 'exact', head: true })
-  if (siteId) head = (head as any).eq('site_id', siteId)
+  if (siteFilter) head = (head as any).or(siteFilter)
   const { count, error: cErr } = await head
   if (cErr) { console.error('[db] fetchAllUnits count', cErr); return { units: [], complete: false } }
   const total = count ?? 0
@@ -252,7 +257,7 @@ export async function fetchAllUnits(siteId?: string | null): Promise<{ units: Un
       try {
         const { data } = await withRetry<{ error: unknown; data: unknown }>(() => {
           let q = supabase.from('units').select(select)
-          if (siteId) q = (q as any).eq('site_id', siteId)
+          if (siteFilter) q = (q as any).or(siteFilter)
           return (q as any).order('vin').range(p * PAGE, p * PAGE + PAGE - 1)
         }, 4)
         return (data ?? []) as unknown as DbUnitWithDamages[]
