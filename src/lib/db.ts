@@ -203,12 +203,19 @@ export async function fetchUnitsByVins(vins: string[]): Promise<Unit[]> {
   return out
 }
 
-/** โหลดรถทุกคัน (+ ความเสียหาย) จาก Supabase; กรองตาม site หากระบุ.
+/** Damage columns WITHOUT the photo payloads — photo_url/photo_urls hold
+ *  base64 dataURLs, easily megabytes per yard. Fetching them inline made the
+ *  yard-plan wait minutes for positions and let a timed-out page silently drop
+ *  500 cars (whole lanes vanished). Photos stream in via fetchDamagePhotos. */
+const DMG_META_COLS = 'id,vin,area,area_th,type,item,item_th,severity,note,remark,recorded_at,recorded_by,source,station,category_ng,category_repair,incharge,status_repair,repair_date,repaired_by,repair_history'
+
+/** โหลดรถทุกคัน (+ ความเสียหายแบบไม่รวมรูป) จาก Supabase; กรองตาม site หากระบุ.
  *  Paginated — PostgREST caps a single request at 1,000 rows, so a >1,000-unit
  *  yard silently lost the tail (units past the cap never loaded → their damages
- *  "vanished" after refresh even though they were safely in the cloud). */
-export async function fetchAllUnits(siteId?: string | null): Promise<Unit[]> {
-  if (!isConfigured()) return []
+ *  "vanished" after refresh even though they were safely in the cloud).
+ *  Each page retries on transient failure; a page that still fails after the
+ *  retries rejects the whole call so a partial yard is never merged as truth. */
+async function fetchUnitsPaged(siteId: string | null | undefined, select: string): Promise<Unit[]> {
   const PAGE = 500
   let head = supabase.from('units').select('vin', { count: 'exact', head: true })
   if (siteId) head = (head as any).eq('site_id', siteId)
@@ -218,14 +225,57 @@ export async function fetchAllUnits(siteId?: string | null): Promise<Unit[]> {
   if (!total) return []
   const pages = await Promise.all(
     Array.from({ length: Math.ceil(total / PAGE) }, async (_, p) => {
-      let q = supabase.from('units').select('*, damages(*)')
-      if (siteId) q = (q as any).eq('site_id', siteId)
-      const { data, error } = await (q as any).order('vin').range(p * PAGE, p * PAGE + PAGE - 1)
-      if (error) { console.error('[db] fetchAllUnits page', p, error); return [] as DbUnitWithDamages[] }
-      return (data ?? []) as DbUnitWithDamages[]
+      const { data } = await withRetry<{ error: unknown; data: unknown }>(() => {
+        let q = supabase.from('units').select(select)
+        if (siteId) q = (q as any).eq('site_id', siteId)
+        return (q as any).order('vin').range(p * PAGE, p * PAGE + PAGE - 1)
+      })
+      return (data ?? []) as unknown as DbUnitWithDamages[]
     }),
   )
   return pages.flat().map(rowToUnit)
+}
+
+export async function fetchAllUnits(siteId?: string | null): Promise<Unit[]> {
+  if (!isConfigured()) return []
+  try {
+    return await fetchUnitsPaged(siteId, `*, damages(${DMG_META_COLS})`)
+  } catch (e) {
+    // a DB whose damages table predates one of the named columns rejects the
+    // narrow select — fall back to the legacy full fetch (slow but correct)
+    console.error('[db] fetchAllUnits meta select failed — falling back to damages(*)', e)
+    return fetchUnitsPaged(siteId, '*, damages(*)')
+  }
+}
+
+/** Stream the damage PHOTO payloads for the given vins, small chunks with
+ *  retry, invoking onChunk as each batch lands — the UI shows positions and
+ *  damage facts immediately and photos fill in behind. */
+export async function fetchDamagePhotos(
+  vins: string[],
+  onChunk: (byVin: Map<string, { id: string; photo?: string; photos?: string[] }[]>) => void,
+): Promise<void> {
+  if (!isConfigured() || !vins.length) return
+  const CHUNK = 40
+  for (let i = 0; i < vins.length; i += CHUNK) {
+    const chunk = vins.slice(i, i + CHUNK)
+    try {
+      const { data } = await withRetry(() =>
+        supabase.from('damages').select('id,vin,photo_url,photo_urls')
+          .in('vin', chunk).not('photo_url', 'is', null))
+      const rows = (data ?? []) as { id: string; vin: string; photo_url: string | null; photo_urls: string[] | null }[]
+      if (!rows.length) continue
+      const byVin = new Map<string, { id: string; photo?: string; photos?: string[] }[]>()
+      for (const r of rows) {
+        const list = byVin.get(r.vin) ?? []
+        list.push({ id: r.id, photo: r.photo_url ?? undefined, photos: r.photo_urls ?? undefined })
+        byVin.set(r.vin, list)
+      }
+      onChunk(byVin)
+    } catch (e) {
+      console.error('[db] fetchDamagePhotos chunk', i / CHUNK, e) // photos are cosmetic — keep going
+    }
+  }
 }
 
 /** บันทึกหรืออัปเดตรถ 1 คัน (ไม่รวม damages) — retries on transient failure, throws if it never lands */
