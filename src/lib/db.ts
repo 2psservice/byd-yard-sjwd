@@ -284,6 +284,18 @@ export async function fetchAllUnits(
   return { units, complete: failed === 0 && units.length >= total }
 }
 
+/** Exact count of units visible for a site (same site_id-or-null scope as
+ *  fetchAllUnits) — cheap HEAD request used to verify a device's local yard
+ *  plan actually matches the cloud, the same way countTrackingRows backs
+ *  ensureComplete() for the Unit List. */
+export async function countUnitsForSite(siteId: string): Promise<number | null> {
+  if (!isConfigured()) return null
+  const { count, error } = await supabase.from('units').select('vin', { count: 'exact', head: true })
+    .or(`site_id.eq.${siteId},site_id.is.null`)
+  if (error || count == null) { console.error('[db] countUnitsForSite', error); return null }
+  return count
+}
+
 /** Stream the damage PHOTO payloads for the given vins, small chunks with
  *  retry, invoking onChunk as each batch lands — the UI shows positions and
  *  damage facts immediately and photos fill in behind. */
