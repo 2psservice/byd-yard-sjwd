@@ -1178,9 +1178,14 @@ export const useYard = create<YardState>()(
           set((s) => {
             const units = { ...s.units }
             let added = 0
-            for (const u of cached) if (u?.vin && !units[u.vin]) { units[u.vin] = u; added++ }
+            // departed cars are history, not the yard — keep them out of memory
+            for (const u of cached) if (u?.vin && u.status !== 'DEPARTED' && !units[u.vin]) { units[u.vin] = u; added++ }
             return added ? { units } : s
           })
+          // sweep departed entries written before the in-yard-only rule out of
+          // the store, so the next boot doesn't read 18k history rows again
+          const departed = cached.filter((u) => u?.vin && u.status === 'DEPARTED').map((u) => u.vin)
+          if (departed.length) idbDeleteUnits(departed).catch(() => {})
         } catch { /* IndexedDB unavailable — the cloud load fills in as before */ }
       },
 
@@ -1607,11 +1612,15 @@ let unitsIdbLastKeys: Set<string> | null = null
 function flushUnitsIdb() {
   if (unitsIdbTimer) { clearTimeout(unitsIdbTimer); unitsIdbTimer = null }
   const units = useYard.getState().units
-  const vals = Object.values(units).map((u) => (u.damages.length
+  // in-yard only: DEPARTED cars are excluded from the cache — and by leaving
+  // them out of `keys`, any departed car still sitting in the IDB store from
+  // an earlier version is deleted by the gone-diff below
+  const live = Object.values(units).filter((u) => u.status !== 'DEPARTED')
+  const vals = live.map((u) => (u.damages.length
     ? { ...u, damages: u.damages.map((d) => ({ ...d, photo: undefined, photos: undefined })) }
     : u))
   idbPutUnits(vals).catch((e) => console.error('[idb] units put', e))
-  const keys = new Set(Object.keys(units))
+  const keys = new Set(live.map((u) => u.vin))
   if (unitsIdbLastKeys) {
     const gone = [...unitsIdbLastKeys].filter((k) => !keys.has(k))
     if (gone.length) idbDeleteUnits(gone).catch(() => {})

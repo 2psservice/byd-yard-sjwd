@@ -216,7 +216,12 @@ export async function fetchAllUnits(
 ): Promise<Unit[]> {
   if (!isConfigured()) return []
   const PAGE = 500
-  let head = supabase.from('units').select('vin', { count: 'exact', head: true })
+  // in-yard only: the units table keeps every car that EVER passed through
+  // (20k+ DEPARTED history rows) while the plan needs the ~2k still on site —
+  // pulling the history multiplied the load ~10× for cars no screen paints.
+  // Departed cars' data stays safely in the cloud; per-VIN lookups still find
+  // them (fetchUnitsByVins has no status filter).
+  let head = supabase.from('units').select('vin', { count: 'exact', head: true }).neq('status', 'DEPARTED')
   if (siteId) head = (head as any).eq('site_id', siteId)
   const { count, error: cErr } = await head
   if (cErr) { console.error('[db] fetchAllUnits count', cErr); return [] }
@@ -224,7 +229,7 @@ export async function fetchAllUnits(
   if (!total) return []
   const pages = await Promise.all(
     Array.from({ length: Math.ceil(total / PAGE) }, async (_, p) => {
-      let q = supabase.from('units').select('*, damages(*)')
+      let q = supabase.from('units').select('*, damages(*)').neq('status', 'DEPARTED')
       if (siteId) q = (q as any).eq('site_id', siteId)
       const { data, error } = await (q as any).order('vin').range(p * PAGE, p * PAGE + PAGE - 1)
       if (error) { console.error('[db] fetchAllUnits page', p, error); return [] as Unit[] }
