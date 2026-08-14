@@ -282,6 +282,9 @@ interface YardState {
    *  one number every device shows so no screen ever disagrees. */
   cloudInYard: number | null
   refreshCloudInYard: () => Promise<void>
+  /** N4-style: เลขสรุปหน้า Dashboard ทั้งหน้าจากเซิร์ฟเวอร์ — ทุกจอชุดเดียวกัน */
+  cloudStats: { at: number; siteId: string; data: db.DashboardStats } | null
+  refreshCloudStats: () => Promise<void>
   dismissToast: (id: number) => void
   setFocus: (vin: string | null) => void
 
@@ -619,8 +622,9 @@ export const useYard = create<YardState>()(
         db.deleteSite(id).catch((e) => console.error('[db] removeSite', e))
       },
       setCurrentSite: (id) => {
-        set({ currentSite: id, siteModalOpen: false, cloudInYard: null })
+        set({ currentSite: id, siteModalOpen: false, cloudInYard: null, cloudStats: null })
         get().refreshCloudInYard().catch(() => {})
+        get().refreshCloudStats().catch(() => {})
         // units/trailers are loaded per-site → fetch the newly selected yard,
         // then close up any lane holes left from before compaction existed
         get().loadFromSupabase()
@@ -629,6 +633,18 @@ export const useYard = create<YardState>()(
       },
       openSiteModal: () => set({ siteModalOpen: true }),
       closeSiteModal: () => set({ siteModalOpen: false }),
+
+      cloudStats: null,
+      refreshCloudStats: async () => {
+        const s0 = get()
+        const site = s0.sites.find((x) => x.id === s0.currentSite)
+        if (!site) { set({ cloudStats: null }); return }
+        const normName = (v?: string) => (v ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
+        const names = [site.name, site.code].filter(Boolean).map((v) => normName(v as string))
+        const data = await db.fetchDashboardStats(site.id, names)
+        // only adopt real answers — a failed call keeps the last good snapshot
+        if (data && get().currentSite === site.id) set({ cloudStats: { at: Date.now(), siteId: site.id, data } })
+      },
 
       cloudInYard: null,
       refreshCloudInYard: async () => {

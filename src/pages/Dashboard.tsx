@@ -185,7 +185,34 @@ export function Dashboard() {
   const t = makeT(lang)
   const [popup, setPopup] = useState<PopupDef | null>(null)
 
+  // ── N4-style: the whole page's numbers computed on the SERVER ──────────────
+  // dashboard_stats (supabase-dashboard-stats.sql) runs the same deriveCarStatus
+  // logic over the cloud's rows, so every device asking gets the SAME snapshot —
+  // no dependence on how much this device has synced. Refreshed every 30s and
+  // pushed on every realtime change; adopt it while fresh (≤2 min), otherwise
+  // fall back to computing from local rows exactly as before.
+  const cloudStats = useYard((st) => st.cloudStats)
+  const [statsTick, setStatsTick] = useState(0) // re-check freshness each 30s
+  useEffect(() => { const iv = setInterval(() => setStatsTick((v) => v + 1), 30_000); return () => clearInterval(iv) }, [])
+  const serverStats = useMemo(() => {
+    void statsTick
+    if (!cloudStats || cloudStats.siteId !== (currentSite ?? '')) return null
+    return Date.now() - cloudStats.at < 2 * 60_000 ? cloudStats.data : null
+  }, [cloudStats, currentSite, statsTick])
+
   const s = useMemo(() => {
+    // server snapshot wins — every screen shows the same numbers
+    if (serverStats) {
+      const c = serverStats.cards
+      const byStatus = new Map(serverStats.status_breakdown.map((x) => [x.st, x.n]))
+      const statusBreakdown = CAR_STATUS_ORDER.map((st) => ({ st, n: byStatus.get(st) ?? 0 })).filter((x) => x.n > 0)
+      const mix = serverStats.model_mix.slice(0, 8).map((x) => ({ m: x.model, n: x.n }))
+      return {
+        total: serverStats.total, inYard: c.in_yard, parked: c.parked, gatein: c.gate_in,
+        expected: c.pre_gate_in, preGateOut: c.pre_gate_out, preload: c.preload, damaged: c.waiting_repair,
+        occupied: c.parked, cap: c.in_yard, mix, byZone: [] as [string, { used: number; cap: number }][], statusBreakdown,
+      }
+    }
     // ── real imported data (tracking rows) — driven by Car Status ──
     if (fromTracking) {
       let inYard = 0, parked = 0, gatein = 0, expected = 0, preGateOut = 0, preload = 0, damaged = 0
@@ -247,7 +274,7 @@ export function Dashboard() {
       byZone: [...byZone.entries()],
       statusBreakdown: [] as { st: string; n: number }[],
     }
-  }, [fromTracking, trackingRows, units, blocks])
+  }, [serverStats, fromTracking, trackingRows, units, blocks])
 
   // VINs that are real (from Excel) — used to exclude sample units from live events
   const trackingVins = useMemo(() => new Set(trackingRows.map(r => r.vin)), [trackingRows])
@@ -331,7 +358,7 @@ export function Dashboard() {
 
   // headline In Yard: cloud-counted so every screen agrees; the tables below
   // still reflect this device's rows (they converge via ensureComplete)
-  const inYardShown = fromTracking ? (cloudInYard ?? s.inYard) : s.inYard
+  const inYardShown = serverStats ? s.inYard : fromTracking ? (cloudInYard ?? s.inYard) : s.inYard
   const fill = fromTracking ? pct(inYardShown, yardCap) : pct(s.occupied, s.cap)
 
   const openPopup = (label: string, accent: string, filter: (u: Unit) => boolean) =>
@@ -345,7 +372,7 @@ export function Dashboard() {
     <div className="max-w-[1400px] mx-auto">
       <PageHead
         title={t('dashboard')}
-        sub={`${new Date().toLocaleDateString('th-TH', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}`}
+        sub={`${new Date().toLocaleDateString('th-TH', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}${serverStats ? ' · ☁ เลขจากเซิร์ฟเวอร์ (ทุกเครื่องชุดเดียวกัน)' : ''}`}
         right={<LiveClock />}
       />
 
@@ -370,7 +397,7 @@ export function Dashboard() {
       {popup && <VinPopup def={popup} onClose={() => setPopup(null)} />}
 
       {/* ── Summary: Model × Final Status (คลิกตัวเลขเพื่อดู VIN) ── */}
-      <YardSummary />
+      <YardSummary serverPivots={serverStats ? { final: serverStats.pivot_final, vos: serverStats.pivot_vos } : null} />
 
       <div className="grid lg:grid-cols-2 gap-4">
         {/* yard fill / car-status breakdown */}
