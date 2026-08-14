@@ -82,13 +82,20 @@ export default function App() {
   // ── login roster: fetch BEFORE showing the login screen, logged-in or not —
   //    a field account created on the admin's computer must be able to log in
   //    from its own phone, which never had that account in its local cache. ──
-  const [usersReady, setUsersReady] = useState(false)
+  //    …but a device that ALREADY holds a roster must not sit on the loading
+  //    screen re-confirming it: on flaky yard wifi that held the whole app —
+  //    yard plan included — for seconds before anything drew. Open straight
+  //    away when we have a local roster; the fetch still runs and refreshes it
+  //    the moment it lands. A first-ever device (no roster) still waits, but
+  //    never longer than 4s.
+  const [usersReady, setUsersReady] = useState(() => useYard.getState().appUsers.length > 0)
   useEffect(() => {
     let cancelled = false
     useYard.getState().loadAppUsersFromCloud()
       .catch((e) => console.error('[App] appUsers load', e))
       .finally(() => { if (!cancelled) setUsersReady(true) })
-    return () => { cancelled = true }
+    const t = setTimeout(() => { if (!cancelled) setUsersReady(true) }, 4000)
+    return () => { cancelled = true; clearTimeout(t) }
   }, [])
 
   // ── branded boot loader: fetches data from Supabase on login,
