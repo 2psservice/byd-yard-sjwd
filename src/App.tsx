@@ -317,6 +317,7 @@ export default function App() {
     // 30s keeps all screens within half a minute of each other.
     const refreshCounts = () => {
       useYard.getState().refreshCloudInYard().catch(() => {})
+      useYard.getState().refreshCloudStats().catch(() => {})
       useTracking.getState().refreshCloudTotal().catch(() => {})
     }
     refreshCounts()

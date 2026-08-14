@@ -834,6 +834,30 @@ export async function fetchInYardCount(siteId: string | null, siteNames: string[
   return typeof data === 'number' ? data : null
 }
 
+// ── N4-style server-computed dashboard ──────────────────────────────────────
+export interface DashboardStats {
+  total: number
+  cards: { in_yard: number; pre_gate_in: number; gate_in: number; parked: number; pre_gate_out: number; preload: number; waiting_repair: number }
+  status_breakdown: { st: string; n: number }[]
+  model_mix: { model: string; n: number }[]
+  pivot_final: { model: string; value: string; n: number }[]
+  pivot_vos: { model: string; value: string; n: number }[]
+}
+/** ตัวเลขสรุปหน้า Dashboard ทั้งหน้า คำนวณบนเซิร์ฟเวอร์ (supabase-dashboard-stats.sql)
+ *  — ทุกจอถามฟังก์ชันเดียวกันจึงได้เลขชุดเดียวกันเสมอ. null = ออฟไลน์ / ฟังก์ชัน
+ *  ยังไม่ติดตั้ง → ผู้เรียก fallback เป็นการคำนวณจากข้อมูลในเครื่องตามเดิม. */
+let dashStatsMissingUntil = 0
+export async function fetchDashboardStats(siteId: string | null, siteNames: string[]): Promise<DashboardStats | null> {
+  if (!isConfigured() || Date.now() < dashStatsMissingUntil) return null
+  const { data, error } = await supabase.rpc('dashboard_stats', { p_site_id: siteId, p_names: siteNames })
+  if (error) {
+    if ((error as { code?: string }).code === 'PGRST202') { dashStatsMissingUntil = Date.now() + 5 * 60_000; return null }
+    console.error('[db] fetchDashboardStats', error)
+    return null
+  }
+  return (data && typeof data === 'object') ? data as DashboardStats : null
+}
+
 /** Exact number of tracking rows in the cloud (null = query failed). Used to
  *  verify a device holds the complete set before trusting its local view. */
 export async function countTrackingRows(): Promise<number | null> {

@@ -879,6 +879,7 @@ function scheduleCountsRefresh() {
   countsTimer = setTimeout(() => {
     countsTimer = null
     useYard.getState().refreshCloudInYard().catch(() => {})
+    useYard.getState().refreshCloudStats().catch(() => {})
     useTracking.getState().refreshCloudTotal().catch(() => {})
   }, 1500)
 }

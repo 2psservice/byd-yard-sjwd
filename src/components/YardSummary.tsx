@@ -17,8 +17,14 @@ const EMPTY_COL = '(ว่าง)'
 
 /** One Model × <column> pivot. `presetKey` is the Unit-List preset prefix
  *  ('sum' = Final Status, 'vos' = Vin Of Status). */
-function Pivot({ rows, cellKey, presetKey, title, caption, icon }: {
+export type ServerPivotCell = { model: string; value: string; n: number }
+
+function Pivot({ rows, serverCells, cellKey, presetKey, title, caption, icon }: {
   rows: TrackRow[]
+  /** N4-style: pre-aggregated cells from dashboard_stats on the server — when
+   *  present they REPLACE the local computation, so every device shows the
+   *  same table regardless of how much it has synced. */
+  serverCells?: ServerPivotCell[] | null
   cellKey: string
   presetKey: 'sum' | 'vos'
   title: string
@@ -38,7 +44,16 @@ function Pivot({ rows, cellKey, presetKey, title, caption, icon }: {
   const data = useMemo(() => {
     const matrix = new Map<string, Map<string, number>>() // model → value → count
     const colTotals = new Map<string, number>()
-    for (const r of rows) {
+    if (serverCells) {
+      // server snapshot — one aggregation for every screen (the SQL uses the
+      // same '(ว่าง)' empty bucket as EMPTY_COL)
+      for (const c of serverCells) {
+        if (!matrix.has(c.model)) matrix.set(c.model, new Map())
+        const byValue = matrix.get(c.model)!
+        byValue.set(c.value, (byValue.get(c.value) ?? 0) + c.n)
+        colTotals.set(c.value, (colTotals.get(c.value) ?? 0) + c.n)
+      }
+    } else for (const r of rows) {
       if (!IN_YARD_STATUSES.has(deriveCarStatus(r.cells))) continue
       const model = (r.cells['Model'] || r.cells['Model name'] || '—').trim() || '—'
       const value = (r.cells[cellKey] || '').trim() || EMPTY_COL
@@ -55,7 +70,7 @@ function Pivot({ rows, cellKey, presetKey, title, caption, icon }: {
       .map(([model, byValue]) => ({ model, byValue, total: [...byValue.values()].reduce((n, v) => n + v, 0) }))
       .sort((a, b) => b.total - a.total)
     return { cols, models, colTotals, grand: models.reduce((n, m) => n + m.total, 0) }
-  }, [rows, cellKey])
+  }, [rows, serverCells, cellKey])
 
   if (!data.grand) return null
 
@@ -143,7 +158,9 @@ function Pivot({ rows, cellKey, presetKey, title, caption, icon }: {
   )
 }
 
-export function YardSummary() {
+export function YardSummary({ serverPivots }: {
+  serverPivots?: { final: ServerPivotCell[]; vos: ServerPivotCell[] } | null
+} = {}) {
   const allRows = useTrackingRows()
   const sites = useYard((s) => s.sites)
   const currentSite = useYard((s) => s.currentSite)
@@ -153,18 +170,20 @@ export function YardSummary() {
     <>
       <Pivot
         rows={rows}
+        serverCells={serverPivots?.final ?? null}
         cellKey="Final Status"
         presetKey="sum"
         title="Summary"
-        caption="Model × Final Status"
+        caption={serverPivots ? 'Model × Final Status · ☁' : 'Model × Final Status'}
         icon={<Table2 size={14} style={{ color: 'var(--brand)' }} />}
       />
       <Pivot
         rows={rows}
+        serverCells={serverPivots?.vos ?? null}
         cellKey="Vin Of Status"
         presetKey="vos"
         title="Vin Of Status"
-        caption="Model × Vin Of Status"
+        caption={serverPivots ? 'Model × Vin Of Status · ☁' : 'Model × Vin Of Status'}
         icon={<ShieldAlert size={14} style={{ color: 'var(--st-damage)' }} />}
       />
     </>
