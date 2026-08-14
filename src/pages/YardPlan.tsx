@@ -7,6 +7,7 @@ import {
 import { useYard, useUnits, useBlocks } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { yardLocFull } from '../lib/groupingImport'
+import { isConfigured } from '../lib/db'
 import { deriveCarStatus, IN_YARD_STATUSES, CAR_STATUS_META } from '../lib/carStatus'
 import { rowInSite } from '../lib/siteScope'
 import { blockTag, blockKeyOfTag } from '../lib/format'
@@ -118,6 +119,8 @@ function MiniSlotGrid({
 
 export function YardPlan() {
   const lang = useYard((s) => s.lang)
+  // final-number gate: no cloud configured = nothing to wait for
+  const unitsCloudDone = useYard((s) => s.unitsCloudDone) || !isConfigured()
   const allUnits = useUnits()
   const blocks = useBlocks()
   const currentSite = useYard((s) => s.currentSite)
@@ -386,7 +389,15 @@ export function YardPlan() {
                 Total {totals.filled.toLocaleString()} / {totals.cap.toLocaleString()} · {totals.pct}%
               </span>
             )}
-            {(inYardStats.unplaced + inYardStats.offMap) > 0 && (
+            {/* while the cloud units are still landing, the unplaced math is a
+                transient countdown (216 → 90 → 0) that reads as "ต้องรอโหลด" —
+                show a quiet loading chip instead, and reveal the REAL number
+                once, complete, when the fetch finishes */}
+            {!unitsCloudDone ? (
+              <span className="badge tabular" style={{ color: 'var(--muted)', background: 'var(--chip)', fontSize: 13, padding: '3px 10px' }}>
+                <span className="animate-pulse">กำลังโหลดรถ…</span>
+              </span>
+            ) : (inYardStats.unplaced + inYardStats.offMap) > 0 && (
               <button onClick={() => setShowUnplaced(true)}
                 title={`In Yard ${inYardStats.inYard.toLocaleString()} คัน — บนผัง ${totals.filled.toLocaleString()} · ไม่แสดงบนผัง ${(inYardStats.unplaced + inYardStats.offMap).toLocaleString()} (บล็อกไม่ตรงผัง ${inYardStats.offMap.toLocaleString()} · ยังไม่จัดช่อง ${inYardStats.unplaced.toLocaleString()}) · คลิกเพื่อดู/คัดลอกรายการ VIN`}
                 className="badge tabular" style={{ color: '#a16207', background: 'rgba(234,179,8,0.16)', fontSize: 13, padding: '3px 10px', cursor: 'pointer' }}>

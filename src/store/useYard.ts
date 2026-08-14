@@ -323,6 +323,9 @@ interface YardState {
   loadFromSupabase: () => Promise<void>
   /** boot cache: fill the yard plan from IndexedDB before the network answers */
   loadUnitsFromIdb: () => Promise<void>
+  /** true once the cloud's units for the active site have fully landed —
+   *  the Yard Plan shows its "ไม่แสดงบนผัง" number only when it's FINAL */
+  unitsCloudDone: boolean
   subscribeRealtime: () => void
   unsubscribeRealtime: () => void
   // --- co-inspection defects ---
@@ -1168,6 +1171,8 @@ export const useYard = create<YardState>()(
           return { units }
         }),
 
+      unitsCloudDone: false,
+
       // ── boot cache: the yard plan's cars, straight from IndexedDB ─────────
       // Fills only VINs the store doesn't hold yet (an in-memory copy — a
       // fresher localStorage hydration or a write this session — always wins).
@@ -1208,6 +1213,11 @@ export const useYard = create<YardState>()(
         //    light, and switching sites re-fetches. Merge per-vin, never drop local.
         const siteId = get().currentSite
         if (!siteId) return // no yard picked yet → wait; setCurrentSite re-runs this
+        // the cars are ABOUT to refresh from the cloud — while that runs the
+        // "ไม่แสดงบนผัง" math is transient, so the plan shows a loading chip
+        // instead of a shrinking number (re-armed on every site switch too)
+        set({ unitsCloudDone: false })
+        try {
         // 3) yard-plan layout FIRST, on its own: the block list is a few KB and
         //    comes back in a blink, while fetchAllUnits pages through ~800 cars
         //    WITH their damages (seconds). Awaiting them together held the
@@ -1239,12 +1249,14 @@ export const useYard = create<YardState>()(
           db.fetchTrailers(siteId),
         ])
         await blocksDone // callers may assume the layout is settled on return
-        if (!cloud.length && !trailers.length) return
-        set((s) => {
-          const merged: Record<string, Unit> = { ...s.units }
-          for (const u of cloud) merged[u.vin] = u
-          return { units: merged, trailers: trailers.length ? trailers : s.trailers }
-        })
+        if (cloud.length || trailers.length) {
+          set((s) => {
+            const merged: Record<string, Unit> = { ...s.units }
+            for (const u of cloud) merged[u.vin] = u
+            return { units: merged, trailers: trailers.length ? trailers : s.trailers }
+          })
+        }
+        } finally { set({ unitsCloudDone: true }) }
       },
 
       // Live yard-plan updates: assign / park / gate-in on any device broadcasts
