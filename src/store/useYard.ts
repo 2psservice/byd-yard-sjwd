@@ -12,6 +12,7 @@ import { blockKeyOfTag } from '../lib/format'
 import type { RawRow } from '../lib/excel'
 import type { DefectRow, TrackRow } from '../lib/excelTracking'
 import * as db from '../lib/db'
+import { useUnitsView } from './useUnitsView'
 import { onSync, sendSync } from '../lib/syncBus'
 import { hashPassword, verifyPassword, isHashed } from '../lib/password'
 import { resolvePart, resolveDefect } from '../lib/masterDefect'
@@ -21,6 +22,13 @@ import type { RealtimeChannel } from '@supabase/supabase-js'
 
 export interface Toast { id: number; kind: 'ok' | 'err' | 'info'; msg: string }
 let tid = 0
+
+/** Put the Unit List in a state where a drill-down's cars are actually visible:
+ *  the Units tab, with the leftover search / grouping / per-column filters
+ *  cleared so nothing silently ANDs the result down to zero rows. */
+const revealUnitList = () => {
+  useUnitsView.getState().patch({ tab: 'units', q: '', fGroup: '', colFilters: {} })
+}
 
 /** Append a damage audit line to the car's tracking-row history so it shows in
  *  the admin Unit → Event tab and survives the damage being deleted. Loaded
@@ -438,8 +446,24 @@ export const useYard = create<YardState>()(
       // changing view clears any dashboard quick-filter; the dashboard re-sets it
       // right after navigating (StrictMode-safe — no mount-effect consumption).
       setView: (view) => set({ view, unitPreset: null, unitVinFilter: null }),
-      setUnitPreset: (unitPreset) => set({ unitPreset }),
-      setUnitVinFilter: (unitVinFilter) => set({ unitVinFilter }),
+      // ── drill-down = "show me EXACTLY these cars" ────────────────────────
+      // The Unit List keeps its filter state (tab / search / grouping box /
+      // per-column pickers) in a PERSISTED store, so whatever the operator
+      // last used is still armed when a dashboard card sends them over — and
+      // it ANDs with the drill-down. A stale "Car Status = In Yard" column
+      // filter therefore made "Pre Gate-in 302" open an EMPTY table (the In
+      // Yard card looked fine only because that leftover filter agreed with
+      // it). A left-over Grouping/Mylist tab hid the result the same way.
+      // Clearing here covers every drill-down source at once (KPI cards,
+      // Summary + Vin-Of-Status pivot cells, PM-plan VIN sets).
+      setUnitPreset: (unitPreset) => {
+        if (unitPreset) { revealUnitList(); set({ unitVinFilter: null }) }
+        set({ unitPreset })
+      },
+      setUnitVinFilter: (unitVinFilter) => {
+        if (unitVinFilter) { revealUnitList(); set({ unitPreset: null }) }
+        set({ unitVinFilter })
+      },
       setPlanMode: (planMode) => set({ planMode }),
       setUser: (currentUser) => set({ currentUser }),
       setDriver: (currentDriver) => set({ currentDriver }),
