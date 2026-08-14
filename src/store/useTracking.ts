@@ -52,6 +52,9 @@ interface TrackingState {
    *  of waiting on a full multi-site sync that has no idea which yard matters
    *  right now. */
   loadSiteFirst: () => Promise<void>
+  /** merge rows fetched from the cloud (server-paged Unit List window) into the
+   *  local store — ADDITIVE, newer-wins, mirror-safe (they came from the cloud) */
+  mergeServerRows: (rows: TrackRow[]) => void
   syncCloud: () => Promise<void>
   /** full per-VIN diff against the cloud index — converges this device 100% */
   reconcileCloud: () => Promise<void>
@@ -215,6 +218,24 @@ export const useTracking = create<TrackingState>()(
         // run), then verify the device actually holds the cloud's full set —
         // a first load that came up short used to stay short forever
         get().syncCloud().then(() => get().ensureComplete()).catch(() => {})
+      },
+
+      mergeServerRows: (fetched) => {
+        if (!fetched.length) return
+        const put: TrackRow[] = []
+        set((s) => {
+          const rows = { ...s.rows }
+          for (const r of fetched) {
+            if (!hasVin(r) || r.deletedAt) continue
+            const cur = rows[r.vin]
+            if (cur && (cur.updatedAt ?? 0) >= (r.updatedAt ?? 0)) continue
+            if (!r.history?.length && cur?.history?.length) r.history = cur.history
+            rows[r.vin] = r
+            put.push(r)
+          }
+          return put.length ? { rows } : s
+        })
+        if (put.length) idbBulkPut(put).catch(() => {})
       },
 
       loadSiteFirst: async () => {
