@@ -263,42 +263,7 @@ export const useTracking = create<TrackingState>()(
           .on(
             'postgres_changes',
             { event: '*', schema: 'public', table: 'tracking_rows' },
-            (payload) => {
-              if (payload.eventType === 'DELETE') {
-                const vin = (payload.old as { vin?: string })?.vin
-                if (!vin) return
-                set((s) => { if (!s.rows[vin]) return s; const rows = { ...s.rows }; delete rows[vin]; return { rows } })
-                idbDelete([vin]).catch(() => {})
-                return
-              }
-              const r = payload.new as { vin?: string; cells?: Record<string, string> | null; updated_at?: string | null; site?: string | null; deleted_at?: string | null; history?: TrackRow['history'] | null }
-              if (!r?.vin) return
-              // soft-delete arrives here as an UPDATE with deleted_at set → drop locally
-              if (r.deleted_at) {
-                const vin = r.vin
-                set((s) => { if (!s.rows[vin]) return s; const rows = { ...s.rows }; delete rows[vin]; return { rows } })
-                idbDelete([vin]).catch(() => {})
-                return
-              }
-              if (!(r.cells?.['Vin'] ?? '').trim()) return // ignore phantom blank-Vin inserts
-              const incoming: TrackRow = {
-                vin: r.vin,
-                cells: r.cells ?? {},
-                updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : Date.now(),
-                site: r.site ?? undefined,
-                history: r.history ?? undefined,
-              }
-              set((s) => {
-                const cur = s.rows[incoming.vin]
-                if (cur && (cur.updatedAt ?? 0) >= (incoming.updatedAt ?? 0)) return s // stale / self-echo
-                // payload without history (column omitted / truncated) must NOT wipe
-                // the local audit trail — a later updateCell on this device would then
-                // upsert history:null to the cloud, destroying it everywhere.
-                if (!incoming.history?.length && cur?.history?.length) incoming.history = cur.history
-                idbPut(incoming).catch(() => {})
-                return { rows: { ...s.rows, [incoming.vin]: incoming } }
-              })
-            },
+            handleTrackingRealtime,
           )
           // self-healing subscription — mirror of the units channel: reconnect
           // after a silent websocket death and run an incremental syncCloud to
@@ -731,6 +696,68 @@ export const useTracking = create<TrackingState>()(
 // admin published a new shared default → adopt it live on every other open
 // client (version-checked inside seedViewDefault, so it only pulls when newer).
 onSync('viewdefault', () => { useTracking.getState().seedViewDefault().catch((e) => console.error('[viewdefault] sync pull', e)) })
+
+// ── realtime event handling (exported so sims can feed payloads) ─────────────
+// During a bulk import thousands of row events stream in within seconds; one
+// setState per event made EVERY open screen (Unit List's 17k-row filter, the
+// Dashboard's full recount, the ops queues) recompute per event — that serial
+// recompute is what made the whole app feel sticky. Buffer the incoming rows
+// and apply them as ONE store update per 600ms window, with the exact same
+// last-write-wins + history-preserving semantics as the old per-event apply.
+// Deletes are rare and stay immediate.
+let rtBuf: TrackRow[] = []
+let rtTimer: ReturnType<typeof setTimeout> | null = null
+function queueRealtimeRow(row: TrackRow) {
+  rtBuf.push(row)
+  if (rtTimer) return
+  rtTimer = setTimeout(() => {
+    rtTimer = null
+    const batch = rtBuf; rtBuf = []
+    const put: TrackRow[] = []
+    useTracking.setState((s) => {
+      const rows = { ...s.rows }
+      for (const incoming of batch) {
+        const cur = rows[incoming.vin]
+        if (cur && (cur.updatedAt ?? 0) >= (incoming.updatedAt ?? 0)) continue // stale / self-echo
+        // payload without history (column omitted / truncated) must NOT wipe
+        // the local audit trail — a later updateCell on this device would then
+        // upsert history:null to the cloud, destroying it everywhere.
+        if (!incoming.history?.length && cur?.history?.length) incoming.history = cur.history
+        rows[incoming.vin] = incoming
+        put.push(incoming)
+      }
+      return put.length ? { rows } : s
+    })
+    if (put.length) idbBulkPut(put).catch(() => {})
+  }, 600)
+}
+export function handleTrackingRealtime(payload: { eventType: string; old?: unknown; new?: unknown }): void {
+  const { setState: set } = useTracking
+  if (payload.eventType === 'DELETE') {
+    const vin = (payload.old as { vin?: string })?.vin
+    if (!vin) return
+    set((s) => { if (!s.rows[vin]) return s; const rows = { ...s.rows }; delete rows[vin]; return { rows } })
+    idbDelete([vin]).catch(() => {})
+    return
+  }
+  const r = payload.new as { vin?: string; cells?: Record<string, string> | null; updated_at?: string | null; site?: string | null; deleted_at?: string | null; history?: TrackRow['history'] | null } | undefined
+  if (!r?.vin) return
+  // soft-delete arrives here as an UPDATE with deleted_at set → drop locally
+  if (r.deleted_at) {
+    const vin = r.vin
+    set((s) => { if (!s.rows[vin]) return s; const rows = { ...s.rows }; delete rows[vin]; return { rows } })
+    idbDelete([vin]).catch(() => {})
+    return
+  }
+  if (!(r.cells?.['Vin'] ?? '').trim()) return // ignore phantom blank-Vin inserts
+  queueRealtimeRow({
+    vin: r.vin,
+    cells: r.cells ?? {},
+    updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : Date.now(),
+    site: r.site ?? undefined,
+    history: r.history ?? undefined,
+  })
+}
 
 // memoized array of rows to avoid new-reference selector loops
 export function useTrackingRows(): TrackRow[] {

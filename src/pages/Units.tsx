@@ -1,4 +1,4 @@
-import { Fragment, createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, createContext, useContext, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Search, Filter, Download, Columns3, RefreshCw, Trash2, X,
@@ -275,15 +275,20 @@ export function Units() {
     [rows],
   )
 
+  // typing must never wait for the 17k-row filter+sort: the box updates at
+  // input priority, the heavy recompute follows on the DEFERRED values
+  const dq = useDeferredValue(q)
+  const dGroup = useDeferredValue(fGroup)
+  const dColFilters = useDeferredValue(colFilters)
   const filtered = useMemo(() => {
-    const query = normKey(q)
-    const g = normKey(fGroup)
+    const query = normKey(dq)
+    const g = normKey(dGroup)
     let arr = rows.filter((r, i) => {
       if (query && !searchIndex[i].includes(query)) return false
       if (g && !normKey(r.cells[GROUPING_KEY] || '').includes(g)) return false
       // per-column filters — only those whose column is currently visible
       for (const key of activeFilterCols) {
-        const val = colFilters[key]
+        const val = dColFilters[key]
         if (!val || val === 'ALL') continue
         const cell = key === 'Car Status' ? deriveCarStatus(r.cells) : key === LOCATION_KEY ? locOf(r) : (r.cells[key] ?? '')
         if (cell !== val) return false
@@ -302,7 +307,7 @@ export function Units() {
       return av < bv ? -sortDir : av > bv ? sortDir : 0
     })
     return arr
-  }, [rows, searchIndex, q, fGroup, colFilters, activeFilterCols, allUnits, unitPreset, vinFilterSet, sortKey, sortDir])
+  }, [rows, searchIndex, dq, dGroup, dColFilters, activeFilterCols, allUnits, unitPreset, vinFilterSet, sortKey, sortDir])
 
   const toggleSort = (key: string) => {
     if (sortKey === key) patchView({ sortDir: (sortDir * -1) as SortDir })
@@ -476,8 +481,10 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
   const totalWidth = useMemo(() => GUTTER + visCols.reduce((s, c) => s + c.width, 0), [visCols])
   const total = rows.length
   totalRef.current = total
-  const start = Math.max(0, Math.floor(scrollTop / ROW_H) - 8)
-  const end = Math.min(total, Math.ceil((scrollTop + viewH) / ROW_H) + 8)
+  // overscan 24: at 8, a fast flick on a tablet outran the paint and showed
+  // blank rows until the next scroll event landed
+  const start = Math.max(0, Math.floor(scrollTop / ROW_H) - 24)
+  const end = Math.min(total, Math.ceil((scrollTop + viewH) / ROW_H) + 24)
   const slice = rows.slice(start, end)
 
   const selectRange = (a: number, b: number) => {
