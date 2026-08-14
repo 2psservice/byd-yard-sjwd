@@ -1,6 +1,22 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { registerSW } from 'virtual:pwa-register'
+// self-hosted fonts (bundled + precached by the PWA) — replaces the Google
+// Fonts stylesheet that render-blocked the first paint for 10s+ whenever the
+// yard network was slow or the CDN unreachable
+import '@fontsource/inter/400.css'
+import '@fontsource/inter/500.css'
+import '@fontsource/inter/600.css'
+import '@fontsource/inter/700.css'
+import '@fontsource/inter/800.css'
+import '@fontsource/ibm-plex-sans-thai/300.css'
+import '@fontsource/ibm-plex-sans-thai/400.css'
+import '@fontsource/ibm-plex-sans-thai/500.css'
+import '@fontsource/ibm-plex-sans-thai/600.css'
+import '@fontsource/ibm-plex-sans-thai/700.css'
+import '@fontsource/jetbrains-mono/400.css'
+import '@fontsource/jetbrains-mono/500.css'
+import '@fontsource/jetbrains-mono/700.css'
 import App from './App'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import './index.css'
