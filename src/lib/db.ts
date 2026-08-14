@@ -260,8 +260,9 @@ export async function fetchAllUnits(
   const total = count ?? 0
   if (!total) return { units: [], complete: true } // the site truly has no units
   let failed = 0
-  const pages = await Promise.all(
-    Array.from({ length: Math.ceil(total / PAGE) }, async (_, p) => {
+  const nPages = Math.ceil(total / PAGE)
+  const fetchPage = (
+    async (p: number) => {
       try {
         const { data } = await withRetry<{ error: unknown; data: unknown }>(() => {
           let q = supabase.from('units').select(select)
@@ -276,8 +277,13 @@ export async function fetchAllUnits(
         console.error('[db] fetchAllUnits page failed after retries', p, e)
         return [] as DbUnitWithDamages[]
       }
-    }),
-  )
+    })
+  const pages: DbUnitWithDamages[][] = []
+  const CONC_U = 4 // nano-friendly (was: all pages at once)
+  for (let i = 0; i < nPages; i += CONC_U) {
+    const batch = await Promise.all(Array.from({ length: Math.min(CONC_U, nPages - i) }, (_, k) => fetchPage(i + k)))
+    pages.push(...batch)
+  }
   if (failed) console.error(`[db] fetchAllUnits: ${failed} page(s) missing — merged what arrived (additive)`)
   const units = pages.flat().map(rowToUnit)
   // count-verify the walk as well: a page that comes back SHORT without
@@ -811,7 +817,14 @@ export async function fetchTrackingRows(
     return { rows: await walk(), complete: !anyPageFailed }
   }
   const pages = Math.max(1, Math.ceil(count / PAGE))
-  const all = await Promise.all(Array.from({ length: pages }, (_, i) => page(i * PAGE)))
+  // cap concurrency: firing all ~17 pages at once flattened the (nano-sized)
+  // database — 4 at a time is nearly as fast and doesn't starve everyone else
+  const all: TrackRowRow[][] = []
+  const CONC = 4
+  for (let i = 0; i < pages; i += CONC) {
+    const batch = await Promise.all(Array.from({ length: Math.min(CONC, pages - i) }, (_, k) => page((i + k) * PAGE)))
+    all.push(...batch)
+  }
   const rows = all.flat().map(toTrackRow)
   // rows can legitimately exceed `count` (writes landing mid-pull); short of it
   // means pages were lost even if no request reported an error
@@ -859,7 +872,13 @@ export async function fetchDashboardStats(siteId: string | null, siteNames: stri
     console.error('[db] fetchDashboardStats', error)
     return null
   }
-  return (data && typeof data === 'object') ? data as DashboardStats : null
+  // validate the shape — adopting a malformed answer (e.g. an empty array from
+  // a proxy/timeout page) crashed the Dashboard on .map of undefined
+  const d = data as DashboardStats
+  if (!d || typeof d !== 'object' || Array.isArray(d) || !d.cards
+      || !Array.isArray(d.status_breakdown) || !Array.isArray(d.model_mix)
+      || !Array.isArray(d.pivot_final) || !Array.isArray(d.pivot_vos)) return null
+  return d
 }
 
 // ── N4-style server-computed Daily Stock ────────────────────────────────────
@@ -880,7 +899,11 @@ export async function fetchDailyStock(siteId: string | null, siteNames: string[]
     console.error('[db] fetchDailyStock', error)
     return null
   }
-  return (data && typeof data === 'object') ? data as DailyStockData : null
+  const d = data as DailyStockData
+  if (!d || typeof d !== 'object' || Array.isArray(d)
+      || !Array.isArray(d.in_list) || !Array.isArray(d.out_list)
+      || !Array.isArray(d.stock_list) || !Array.isArray(d.stock_matrix)) return null
+  return d
 }
 
 // ── N4-style server-side search/sort window for the Unit List ───────────────

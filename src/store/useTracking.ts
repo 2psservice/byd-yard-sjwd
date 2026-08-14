@@ -182,6 +182,27 @@ export const useTracking = create<TrackingState>()(
           clearTimeout(reveal)
           set({ loaded: true }) // release the loader even if the network failed
           get().ensureComplete().catch(() => {})
+          // ── NEVER a silent zero ────────────────────────────────────────────
+          // In online mode this device just WIPED its cache and bet everything
+          // on the pull. If the server buckled (an exhausted instance times out
+          // exactly when 17k rows are requested), the screen showed 0 with no
+          // explanation and no second attempt. Verify against the cloud's
+          // count, tell the operator, and keep retrying with backoff.
+          const retryEmpty = async (attempt: number): Promise<void> => {
+            if (!isOnlineOnly() || Object.keys(get().rows).length > 0) return
+            const cloudCount = await db.countTrackingRows().catch(() => null)
+            if (cloudCount === 0) return // cloud truly empty — 0 is the answer
+            if (attempt === 0)
+              useYard.getState().toast('err', 'โหลดข้อมูลจากคลาวด์ไม่สำเร็จ (เซิร์ฟเวอร์ไม่ตอบ) — กำลังลองใหม่อัตโนมัติ')
+            await get().syncCloud().catch(() => {})
+            if (Object.keys(get().rows).length > 0) {
+              useYard.getState().toast('ok', 'เชื่อมต่อคลาวด์สำเร็จ — ข้อมูลกลับมาแล้ว')
+              return
+            }
+            if (attempt < 6) setTimeout(() => { retryEmpty(attempt + 1).catch(() => {}) }, 8000 * (attempt + 1))
+            else useYard.getState().toast('err', 'เซิร์ฟเวอร์ไม่ตอบสนองต่อเนื่อง — แนะนำปิดโหมดออนไลน์ 100% ชั่วคราว (ตั้งค่า → โหมดข้อมูล)')
+          }
+          setTimeout(() => { retryEmpty(0).catch(() => {}) }, 4000)
           return
         }
 
