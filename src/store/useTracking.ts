@@ -617,20 +617,31 @@ export const useTracking = create<TrackingState>()(
           }
           const existing = rows[r.vin]
           if (existing) {
+            // ── field-first rule: a car the OPS SCAN gated out recently carries a
+            // live 'Gate Out Time' epoch. The uploaded file was exported BEFORE
+            // that scan, so its blank stamp must not clear the gate-out or roll
+            // the status back — "ข้อมูลต้องยึดตามหน้างาน". After 72h the file
+            // becomes authoritative again (covers real transfers between yards,
+            // which take days — the reason the clear rule exists at all).
+            const goEpoch = Number(existing.cells['Gate Out Time'] || 0)
+            const liveGateOut = goEpoch > 0 && now - goEpoch < 72 * 3600_000
             const cells = { ...existing.cells }
             let didChange = false
             for (const [k, v] of Object.entries(r.cells)) {
               if (k === 'Car Status') continue // don't blindly copy the file's status
+              if (liveGateOut && (k === GATE_OUT_TS || k === 'Gate Out Time')) continue
               if (v != null && v !== '' && cells[k] !== v) { cells[k] = v; didChange = true }
             }
             // "Gate Out time stamp" is AUTHORITATIVE in the master sheet, so it must be
             // able to CLEAR. The non-empty-only overlay above can never erase a stale
             // stamp, which would pin a transferred-in car to Gate-out forever.
-            if (GATE_OUT_TS in r.cells) {
+            if (!liveGateOut && GATE_OUT_TS in r.cells) {
               const incoming = (r.cells[GATE_OUT_TS] ?? '').trim()
               if ((cells[GATE_OUT_TS] ?? '') !== incoming) { cells[GATE_OUT_TS] = incoming; didChange = true }
             }
-            if (promote(cells)) didChange = true
+            // a live gate-out also keeps its status cell exactly as the field
+            // left it (Pre Gate-out / Preload / Gate-out) — no promote/demote
+            if (!liveGateOut && promote(cells)) didChange = true
             // a car that moved yards carries a NEW "Location yard" → re-tag it to that
             // site (the old `existing.site ?? …` pinned it to the yard it came from).
             const site = siteIdForLocation(cells, sites) ?? existing.site ?? siteForRow(cells, sites, currentSite)
@@ -941,6 +952,24 @@ function scheduleGapSync() {
   }, 2000)
 }
 
+// During a bulk import thousands of row events stream in within seconds; each
+// one used to be its own setState, and every subscribed screen (Unit List
+// search index, Dashboard, ops queues) recomputed per event — that serial
+// recompute is what made the whole app crawl. Buffer the incoming rows and
+// apply them as ONE store update per window; mergeServerRows keeps the exact
+// same newer-wins + history-preserving semantics as the old inline apply.
+let rtBuf: TrackRow[] = []
+let rtTimer: ReturnType<typeof setTimeout> | null = null
+function queueRealtimeRow(r: TrackRow) {
+  rtBuf.push(r)
+  if (rtTimer) return
+  rtTimer = setTimeout(() => {
+    rtTimer = null
+    const batch = rtBuf; rtBuf = []
+    useTracking.getState().mergeServerRows(batch)
+  }, 600)
+}
+
 /** Apply one tracking_rows realtime event. Extracted so sims can feed
  *  payloads directly — including the TRUNCATED ones Supabase delivers when a
  *  row's body exceeds the broadcast size cap (65 cells + a long history do).
@@ -977,33 +1006,17 @@ export function handleTrackingRealtime(payload: { eventType: string; old?: unkno
     db.fetchTrackingRowsByVins([vin]).then((rows) => {
       const fresh = rows.find((x) => x.vin === vin)
       if (!fresh || fresh.deletedAt || !(fresh.cells?.['Vin'] ?? '').trim()) return
-      set((s) => {
-        const cur = s.rows[vin]
-        if (cur && (cur.updatedAt ?? 0) >= (fresh.updatedAt ?? 0)) return s
-        if (!fresh.history?.length && cur?.history?.length) fresh.history = cur.history
-        idbPut(fresh).catch(() => {})
-        return { rows: { ...s.rows, [vin]: fresh } }
-      })
+      queueRealtimeRow(fresh)
     }).catch(() => scheduleGapSync())
     return
   }
   if (!(r.cells?.['Vin'] ?? '').trim()) return // ignore phantom blank-Vin inserts
-  const incoming: TrackRow = {
+  queueRealtimeRow({
     vin: r.vin,
     cells: r.cells ?? {},
     updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : Date.now(),
     site: r.site ?? undefined,
     history: r.history ?? undefined,
-  }
-  set((s) => {
-    const cur = s.rows[incoming.vin]
-    if (cur && (cur.updatedAt ?? 0) >= (incoming.updatedAt ?? 0)) return s // stale / self-echo
-    // payload without history (column omitted / truncated) must NOT wipe
-    // the local audit trail — a later updateCell on this device would then
-    // upsert history:null to the cloud, destroying it everywhere.
-    if (!incoming.history?.length && cur?.history?.length) incoming.history = cur.history
-    idbPut(incoming).catch(() => {})
-    return { rows: { ...s.rows, [incoming.vin]: incoming } }
   })
 }
 

@@ -223,6 +223,53 @@ interface OpsState {
   loadFromCloud: (authoritative?: boolean) => Promise<void>
 }
 
+/** เวลาการกระทำล่าสุดของ item — ใช้ตัดสินว่าฝั่งไหนใหม่กว่าเมื่อ merge:
+ *  ติ๊กเสร็จ / ตรวจ / ส่งถึงสถานี / ขับกลับ / เอาติ๊กออกเอง ล้วนนับเป็น action */
+function latestActionAt(i: QueueItem): number {
+  return Math.max(
+    i.doneAt ?? 0, i.checkedAt ?? 0, i.deliveredAt ?? 0, i.returnedAt ?? 0,
+    i.atWashAt ?? 0, i.atLaneAt ?? 0, i.drivingAt ?? 0, i.manualUndoneAt ?? 0,
+    i.addedAt ?? 0,
+  )
+}
+/** Merge the cloud's queues with local state, item by item. Cloud rules on
+ *  queue membership (add/remove/create/delete) — except very recent local work
+ *  whose push hasn't landed yet — and per ITEM the side with the latest action
+ *  wins. Returns queue ids where LOCAL had newer items (caller pushes those
+ *  back so the cloud converges). */
+function mergeQueues(cloud: WorkQueue[], local: WorkQueue[]): { merged: WorkQueue[]; dirty: string[] } {
+  const now = Date.now()
+  const RECENT = 10 * 60_000
+  const localById = new Map(local.map((q) => [q.id, q]))
+  const dirty: string[] = []
+  const merged = cloud.map((cq) => {
+    const lq = localById.get(cq.id)
+    if (!lq) return cq
+    let changed = false
+    const localItems = new Map(lq.items.map((i) => [i.vin, i]))
+    const items = cq.items.map((ci) => {
+      const li = localItems.get(ci.vin)
+      if (!li || latestActionAt(li) <= latestActionAt(ci)) return ci
+      changed = true
+      return li
+    })
+    // items only THIS device has: keep them while fresh (upload still in flight);
+    // older ones were removed from the queue on purpose → let them go
+    const cloudVins = new Set(cq.items.map((i) => i.vin))
+    for (const li of lq.items) {
+      if (!cloudVins.has(li.vin) && now - latestActionAt(li) < RECENT) { items.push(li); changed = true }
+    }
+    if (!changed) return cq
+    dirty.push(cq.id)
+    return { ...cq, items }
+  })
+  // a queue created moments ago whose first upload hasn't landed must survive the refetch
+  for (const lq of local) {
+    if (!cloud.some((q) => q.id === lq.id) && now - (lq.createdAt ?? 0) < RECENT) merged.push(lq)
+  }
+  return { merged: sanitizeQueues(merged), dirty }
+}
+
 /** Push one queue to the cloud + tell other clients to refetch (fire-and-forget). */
 function pushQueue(get: () => OpsState, id: string) {
   const q = get().queues.find((x) => x.id === id)
@@ -543,7 +590,17 @@ export const useOps = create<OpsState>()(
         const fetched = await db.fetchOpsQueues()
         if (fetched === null) return // table missing / offline — keep local state
         const cloud = sanitizeQueues(fetched)
-        if (cloud.length) set({ queues: cloud })
+        if (cloud.length) {
+          // MERGE per item instead of replacing wholesale. A queue uploads as
+          // ONE row, so a device holding a slightly stale copy that pushed any
+          // change overwrote every other station's fresh work in that queue —
+          // "PM ตรวจแล้ว สักพักเด้งกลับเป็นยังไม่ตรวจ". Per item the copy with
+          // the LATEST action wins, and items this device advanced beyond the
+          // cloud copy are pushed back up so the cloud converges too.
+          const { merged, dirty } = mergeQueues(cloud, get().queues)
+          set({ queues: merged })
+          for (const id of dirty) pushQueue(get, id)
+        }
         else if (authoritative) set({ queues: [] }) // e.g. another device cleared all
         else {
           // first run: cloud empty → seed it from this device's local queues
