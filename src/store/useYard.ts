@@ -353,7 +353,7 @@ interface YardState {
   subscribeRealtime: () => void
   unsubscribeRealtime: () => void
   // --- co-inspection defects ---
-  importDefects: (defects: DefectRow[], trackingRows: Record<string, TrackRow>) => Promise<{ units: number; damages: number }>
+  importDefects: (defects: DefectRow[], trackingRows: Record<string, TrackRow>, onProgress?: (done: number, total: number) => void) => Promise<{ units: number; damages: number }>
 }
 
 /** Next free block id — single letters A–Z, then B1, B2… */
@@ -1569,7 +1569,7 @@ export const useYard = create<YardState>()(
       // Creates a minimal unit (from the tracking row) when one doesn't exist yet,
       // so imported defects display in the Unit List / Check views. Deterministic
       // damage ids mean re-importing the same file updates rather than duplicates.
-      importDefects: async (defects, trackingRows) => {
+      importDefects: async (defects, trackingRows, onProgress) => {
         if (!defects.length) return { units: 0, damages: 0 }
         const units = { ...get().units }
         const site = get().currentSite ?? undefined
@@ -1693,9 +1693,14 @@ export const useYard = create<YardState>()(
         // can keep a "saving…" state up and the user won't reload mid-upload (that
         // was silently truncating the 16k-row damage push → units synced, damages lost)
         try {
+          // progress: one running total across both pushes so the import screen
+          // can show "อัปโหลดแล้ว X / Y (Z%)" while the user waits
+          const total = changedUnits.length + dmgItems.length
+          onProgress?.(0, total)
           if (removedIds.length) await db.deleteDamages(removedIds)
-          await db.upsertUnits(changedUnits) // FK parents first
-          await db.upsertDamages(dmgItems)
+          await db.upsertUnits(changedUnits, (n) => onProgress?.(n, total)) // FK parents first
+          await db.upsertDamages(dmgItems, (n) => onProgress?.(changedUnits.length + n, total))
+          onProgress?.(total, total)
         } catch (e) { console.error('[db] importDefects', e) }
         return { units: newUnits, damages: dmgCount }
       },

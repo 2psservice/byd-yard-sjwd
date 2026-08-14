@@ -225,9 +225,12 @@ export function ImportPage() {
     [coParsed, existing],
   )
 
+  // upload progress for the co-inspection cloud push (done/total records)
+  const [coProg, setCoProg] = useState<{ done: number; total: number } | null>(null)
   const confirmCo = async () => {
     if (!coParsed || coSaving) return
     setCoSaving(true)
+    setCoProg(null)
     try {
       const { updated, added, skipped, gateOut, moved } = commitCoInspection(coParsed)
       // defects: only for VINs that belong to this yard (accepted from the file, or already here)
@@ -235,7 +238,7 @@ export function ImportPage() {
       const defectsForSite = coParsed.defects.filter((d) => okVins.has(d.vin) || rowInSite(existing[d.vin], currentSite, sites))
       // AWAIT the cloud write — importDefects can push 10k+ damage rows; blocking here
       // (with the overlay below) stops the user reloading before it finishes
-      const def = await importDefects(defectsForSite, existing)
+      const def = await importDefects(defectsForSite, existing, (done, total) => setCoProg({ done, total }))
       toast(
         'ok',
         `Co Inspection · เติม ${updated.toLocaleString()} คัน${added ? ` · ใหม่ ${added.toLocaleString()}` : ''}` +
@@ -247,7 +250,7 @@ export function ImportPage() {
       setCoParsed(null); setCoFileName('')
     } catch (e: any) {
       toast('err', e?.message || 'บันทึกไม่สำเร็จ')
-    } finally { setCoSaving(false) }
+    } finally { setCoSaving(false); setCoProg(null) }
   }
 
   // yard scoping: Pre Gate-in imports only the ACTIVE site's sheet — a Vin List
@@ -476,6 +479,21 @@ export function ImportPage() {
                       })}
                     </div>
                   )}
+                  {/* live upload progress: how many records reached the cloud, and the % */}
+                  {coSaving && coProg && coProg.total > 0 && (
+                    <div className="mt-3">
+                      <div className="flex items-center justify-between text-[12px] mb-1">
+                        <b style={{ color: '#0891b2' }}>
+                          อัปโหลดแล้ว {coProg.done.toLocaleString()} / {coProg.total.toLocaleString()} รายการ
+                        </b>
+                        <b className="tabular" style={{ color: '#0891b2' }}>{Math.round((coProg.done / coProg.total) * 100)}%</b>
+                      </div>
+                      <div className="h-2 rounded-full overflow-hidden" style={{ background: 'rgba(8,145,178,0.12)' }}>
+                        <div className="h-full rounded-full transition-all duration-300"
+                          style={{ width: `${Math.round((coProg.done / coProg.total) * 100)}%`, background: '#0891b2' }} />
+                      </div>
+                    </div>
+                  )}
                   <div className="flex items-center justify-between gap-2 mt-3 flex-wrap">
                     <span className="text-[12px]" style={{ color: coSaving ? '#0891b2' : 'var(--muted)' }}>
                       {coSaving
@@ -485,7 +503,9 @@ export function ImportPage() {
                     <div className="flex items-center gap-2">
                       <button className="btn" onClick={() => { setCoParsed(null); setCoFileName('') }} disabled={coSaving}>ยกเลิก</button>
                       <button className="btn" style={{ background: coSaving ? '#6b8fd4' : '#0891b2', color: '#fff' }} onClick={confirmCo} disabled={coSaving || coMatched + coNew + coGateOut === 0}>
-                        {coSaving ? <><Loader2 size={15} className="animate-spin" /> กำลังบันทึก…</> : <><CheckCircle2 size={15} /> ยืนยัน Merge ({(coMatched + coNew + coGateOut).toLocaleString()})</>}
+                        {coSaving
+                          ? <><Loader2 size={15} className="animate-spin" /> กำลังบันทึก…{coProg && coProg.total > 0 ? ` ${Math.round((coProg.done / coProg.total) * 100)}%` : ''}</>
+                          : <><CheckCircle2 size={15} /> ยืนยัน Merge ({(coMatched + coNew + coGateOut).toLocaleString()})</>}
                       </button>
                     </div>
                   </div>
