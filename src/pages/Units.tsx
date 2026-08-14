@@ -362,6 +362,20 @@ export function Units() {
     else patchView({ sortKey: key, sortDir: 1 })
   }
 
+  // ── pagination (Units tab): ≤3,000 VINs per page — 17k rows in one DOM/print
+  // pass made tablets crawl. Filters/sort work on the FULL set first, then the
+  // page window slices the result, so page 1 always shows the top of the list.
+  const PAGE_SIZE = 3000
+  const [page, setPage] = useState(0)
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const pageSafe = Math.min(page, pageCount - 1)
+  const paged = useMemo(
+    () => (filtered.length > PAGE_SIZE ? filtered.slice(pageSafe * PAGE_SIZE, (pageSafe + 1) * PAGE_SIZE) : filtered),
+    [filtered, pageSafe],
+  )
+  // any change that reshapes the result set jumps back to page 1
+  useEffect(() => { setPage(0) }, [q, fGroup, colFilters, unitPreset, unitVinFilter, sortKey, sortDir, tab])
+
   const counts = useMemo(() => {
     let ok = 0, wait = 0
     for (const r of rows) {
@@ -467,9 +481,15 @@ export function Units() {
         {rows.length === 0 ? (
           <EmptyState />
         ) : tab === 'units' ? (
-          <DataGrid rows={filtered} visCols={visCols} sel={sel} setSel={setSel}
+          <DataGrid rows={paged} visCols={visCols} sel={sel} setSel={setSel}
             sortKey={sortKey} sortDir={sortDir} toggleSort={toggleSort} optionsFor={optionsFor}
-            footer={<GridFooter sel={sel} shown={filtered.length} total={rows.length} lastImport={lastImport} />} />
+            footer={<GridFooter sel={sel} shown={paged.length} total={rows.length} lastImport={lastImport}
+              pager={pageCount > 1 ? {
+                page: pageSafe, pageCount, setPage,
+                from: pageSafe * PAGE_SIZE + 1,
+                to: pageSafe * PAGE_SIZE + paged.length,
+                filteredTotal: filtered.length,
+              } : undefined} />} />
         ) : tab === 'grouping' ? (
           <GroupingView rows={filtered} visCols={visCols} sel={sel} setSel={setSel}
             sortKey={sortKey} sortDir={sortDir} toggleSort={toggleSort} optionsFor={optionsFor} />
@@ -990,14 +1010,36 @@ function InputPromptModal({ input, onSubmit, onClose }: {
   )
 }
 
-function GridFooter({ sel, shown, total, lastImport }: { sel: Set<string>; shown: number; total: number; lastImport: any }) {
+interface FooterPager { page: number; pageCount: number; setPage: (p: number) => void; from: number; to: number; filteredTotal: number }
+function GridFooter({ sel, shown, total, lastImport, pager }: { sel: Set<string>; shown: number; total: number; lastImport: any; pager?: FooterPager }) {
   return (
     <div className="flex items-center justify-between gap-3 px-3 py-1 border-t hairline text-[11.5px] flex-wrap shrink-0" style={{ color: 'var(--muted)' }}>
       <div className="flex items-center gap-3">
         <span>เลือก: <b className="tabular" style={{ color: sel.size ? 'var(--brand)' : 'var(--text)' }}>{sel.size.toLocaleString()}</b></span>
-        <span>แสดง: <b className="tabular" style={{ color: 'var(--text)' }}>{shown.toLocaleString()}</b> จาก {total.toLocaleString()}</span>
+        {pager
+          ? <span>แสดง: <b className="tabular" style={{ color: 'var(--text)' }}>{pager.from.toLocaleString()}–{pager.to.toLocaleString()}</b> จาก {pager.filteredTotal.toLocaleString()}</span>
+          : <span>แสดง: <b className="tabular" style={{ color: 'var(--text)' }}>{shown.toLocaleString()}</b> จาก {total.toLocaleString()}</span>}
         {lastImport && <span className="hidden lg:inline" style={{ color: 'var(--faint)' }}>· นำเข้าล่าสุด {new Date(lastImport.at).toLocaleString('th-TH', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>}
       </div>
+      {pager && (
+        <div className="flex items-center gap-1">
+          <button className="btn btn-ghost px-2 py-0.5 text-[11.5px]" disabled={pager.page === 0}
+            style={pager.page === 0 ? { opacity: 0.4 } : undefined}
+            onClick={() => pager.setPage(pager.page - 1)}>‹ ก่อนหน้า</button>
+          {Array.from({ length: pager.pageCount }, (_, i) => i).map((i) => (
+            <button key={i} onClick={() => pager.setPage(i)}
+              className="tabular rounded-md px-2 py-0.5 text-[11.5px] font-semibold transition"
+              style={i === pager.page
+                ? { background: 'var(--brand)', color: '#fff' }
+                : { color: 'var(--muted)' }}>
+              {i + 1}
+            </button>
+          ))}
+          <button className="btn btn-ghost px-2 py-0.5 text-[11.5px]" disabled={pager.page >= pager.pageCount - 1}
+            style={pager.page >= pager.pageCount - 1 ? { opacity: 0.4 } : undefined}
+            onClick={() => pager.setPage(pager.page + 1)}>ถัดไป ›</button>
+        </div>
+      )}
       <div className="hidden md:flex items-center gap-2" style={{ color: 'var(--faint)' }}>
         <Hint k="คลุม/ลาก">เลือกหลายแถว</Hint><Hint k="Shift+Click">ช่วง</Hint><Hint k="คลิกขวา">แก้ไข/ลบ</Hint><Hint k="Ctrl+A">ทั้งหมด</Hint><Hint k="Ctrl+C">คัดลอก VIN</Hint>
       </div>
