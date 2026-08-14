@@ -1341,8 +1341,16 @@ function WalkView() {
   // scanning works exactly the same, and once gated-in the row leaves
   // Pre Gate-in and drops off this list by itself.
   const gateInQueues = useMemo(() => {
+    // exclude only VINs already VISIBLE in a live queue card. Counting "in any
+    // queue" (incl. completed/hidden ones) reopened the original hole on
+    // phones: before ops_queues synced through the cloud each device kept its
+    // own local queues, so a phone could hold an old COMPLETED queue that
+    // still lists the VIN — the completed queue isn't displayed, the VIN was
+    // excluded from the virtual card, and the phone showed nothing while the
+    // desktop (no such stale queue) showed the card. The car's STATUS is the
+    // source of truth: still Pre Gate-in + not on any visible card → show it.
     const queued = new Set<string>()
-    for (const q of queues) for (const i of q.items) queued.add(i.vin)
+    for (const q of baseGateInQueues) for (const i of q.items) queued.add(i.vin)
     const uncovered = trackingRows.filter(r => !queued.has(r.vin) && deriveCarStatus(r.cells) === 'Pre Gate-in')
     if (!uncovered.length) return baseGateInQueues
     const virtual: WorkQueue = {
@@ -1352,7 +1360,7 @@ function WalkView() {
       items: uncovered.map((r): QueueItem => ({ vin: r.vin, addedAt: 0, done: false })),
     }
     return [...baseGateInQueues, virtual]
-  }, [baseGateInQueues, queues, trackingRows])
+  }, [baseGateInQueues, trackingRows])
   // resolve from gateInQueues (not the raw store) so the virtual card opens too
   const selectedQueue = selectedQueueId ? gateInQueues.find(q => q.id === selectedQueueId) ?? null : null
   // NG ⟺ the gate-in walk-around recorded damage on this car (what the operator
