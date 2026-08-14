@@ -5,7 +5,6 @@ import type {
   AppUser, Block, Damage, DamageInput, GpsPoint, Lang, ParkingPolicy, Site, SlotCandidate, Trailer, Trip, Unit, UserRole, VehicleModel, View,
 } from '../types'
 import { BLOCKS, DEFAULT_POLICIES, MODELS, generateSample, matchModel, paintHex } from '../lib/sampleData'
-import { isOnlineOnly } from '../lib/onlineMode'
 import { autoAssign } from '../lib/parkingEngine'
 import { haversineM, makeDemoTrip, mulberry32, slotToLatLng } from '../lib/geo'
 import { IN_YARD_STATUSES } from '../lib/carStatus'
@@ -156,31 +155,6 @@ function persistSlid(
 }
 
 // ── Defect import helpers (Defect-Yard / Defect-Factory → Damage) ───────────
-/** Merge cloud units into the local map, carrying over damage PHOTOS the
- *  cloud copy omits — fetchAllUnits deliberately loads damages without their
- *  base64 photo payloads (they stream in later via fetchDamagePhotos), so a
- *  refetch must not wipe photos this device already holds. */
-function mergeCloudUnits(cur: Record<string, Unit>, cloud: Unit[]): Record<string, Unit> {
-  const merged: Record<string, Unit> = { ...cur }
-  for (const u of cloud) {
-    const old = cur[u.vin]
-    if (old?.damages.length && u.damages.length) {
-      const byId = new Map(old.damages.map((d) => [d.id, d]))
-      let changed = false
-      const damages = u.damages.map((d) => {
-        if (d.photo || d.photos?.length) return d
-        const o = byId.get(d.id)
-        if (o && (o.photo || o.photos?.length)) { changed = true; return { ...d, photo: o.photo, photos: o.photos } }
-        return d
-      })
-      merged[u.vin] = changed ? { ...u, damages } : u
-    } else {
-      merged[u.vin] = u
-    }
-  }
-  return merged
-}
-
 function defHash(s: string): string {
   let h = 5381
   for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0
@@ -278,13 +252,6 @@ interface YardState {
   setGroupModels: (b: boolean) => void
   setLaneDepth: (n: number) => void
   toast: (kind: Toast['kind'], msg: string) => void
-  /** In Yard count from the CLOUD (null = offline / rpc not installed) — the
-   *  one number every device shows so no screen ever disagrees. */
-  cloudInYard: number | null
-  refreshCloudInYard: () => Promise<void>
-  /** N4-style: เลขสรุปหน้า Dashboard ทั้งหน้าจากเซิร์ฟเวอร์ — ทุกจอชุดเดียวกัน */
-  cloudStats: { at: number; siteId: string; data: db.DashboardStats } | null
-  refreshCloudStats: () => Promise<void>
   dismissToast: (id: number) => void
   setFocus: (vin: string | null) => void
 
@@ -336,8 +303,6 @@ interface YardState {
   addBlock: (b?: Partial<Block>) => string
   updateBlock: (id: string, patch: Partial<Block>) => void
   removeBlock: (id: string) => void
-  /** rebuild an empty plan from parked units' block/slot/row → count created */
-  restoreBlocksFromUnits: () => number
   /** Rename a block's internal id (badge letter). Returns the applied id, or null when empty/duplicate. */
   // --- gps ---
   startTrip: (vin: string, driver: string, from: string, to: string) => void
@@ -347,13 +312,10 @@ interface YardState {
   ensureUnitSites: () => void
   // --- supabase ---
   loadFromSupabase: () => Promise<void>
-  /** verify this device's local unit count for the active site matches the
-   *  cloud's exact count, retrying loadFromSupabase until it does */
-  ensureUnitsComplete: () => Promise<void>
   subscribeRealtime: () => void
   unsubscribeRealtime: () => void
   // --- co-inspection defects ---
-  importDefects: (defects: DefectRow[], trackingRows: Record<string, TrackRow>, onProgress?: (done: number, total: number, phase: string) => void) => Promise<{ units: number; damages: number }>
+  importDefects: (defects: DefectRow[], trackingRows: Record<string, TrackRow>) => Promise<{ units: number; damages: number }>
 }
 
 /** Next free block id — single letters A–Z, then B1, B2… */
@@ -376,13 +338,7 @@ function scheduleBlockSync(get: () => { currentSite: string | null; blocksBySite
     const s = get()
     const sid = s.currentSite
     if (!sid || !db.isConfigured()) return // '_global' layout (no site picked) stays local
-    const blocks = s.blocksBySite[siteKey(sid)] ?? []
-    // NEVER replace the cloud layout with an EMPTY list: a device whose local
-    // cache was wiped (or whose load failed) syncing [] deleted the whole
-    // yard's drawn plan for everyone. Deleting the final block of a yard is
-    // the one edit this skips — redraw flows always add before they sync.
-    if (!blocks.length) { console.warn('[db] syncBlocks skipped — empty local layout'); return }
-    db.replaceBlocks(sid, blocks)
+    db.replaceBlocks(sid, s.blocksBySite[siteKey(sid)] ?? [])
       .then(() => sendSync('blocks', { siteId: sid })) // other clients refetch this yard's layout
       .catch((e) => console.error('[db] syncBlocks', e))
   }, 1200)
@@ -546,17 +502,7 @@ export const useYard = create<YardState>()(
         // username matches case-insensitively — an admin typing "TEST" when
         // creating a user shouldn't lock that person out for typing "test"
         const norm = (v: string) => v.trim().toLowerCase()
-        let user = s.appUsers.find(u => norm(u.username) === norm(username) && u.active)
-        // unknown on THIS device → the account may have been created on another
-        // machine after our cached roster; refresh once (capped at 4s so a dead
-        // network can't hang the login button) and retry before rejecting
-        if (!user) {
-          await Promise.race([
-            get().loadAppUsersFromCloud().catch(() => {}),
-            new Promise((r) => setTimeout(r, 4000)),
-          ])
-          user = get().appUsers.find(u => norm(u.username) === norm(username) && u.active)
-        }
+        const user = s.appUsers.find(u => norm(u.username) === norm(username) && u.active)
         if (!user || !(await verifyPassword(password, user.password))) return false
         // legacy plaintext row → upgrade to a salted hash in place (local + cloud)
         if (!isHashed(user.password)) {
@@ -622,9 +568,7 @@ export const useYard = create<YardState>()(
         db.deleteSite(id).catch((e) => console.error('[db] removeSite', e))
       },
       setCurrentSite: (id) => {
-        set({ currentSite: id, siteModalOpen: false, cloudInYard: null, cloudStats: null })
-        get().refreshCloudInYard().catch(() => {})
-        get().refreshCloudStats().catch(() => {})
+        set({ currentSite: id, siteModalOpen: false })
         // units/trailers are loaded per-site → fetch the newly selected yard,
         // then close up any lane holes left from before compaction existed
         get().loadFromSupabase()
@@ -633,61 +577,6 @@ export const useYard = create<YardState>()(
       },
       openSiteModal: () => set({ siteModalOpen: true }),
       closeSiteModal: () => set({ siteModalOpen: false }),
-
-      cloudStats: null,
-      refreshCloudStats: async () => {
-        const s0 = get()
-        const site = s0.sites.find((x) => x.id === s0.currentSite)
-        if (!site) { set({ cloudStats: null }); return }
-        const normName = (v?: string) => (v ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
-        const names = [site.name, site.code].filter(Boolean).map((v) => normName(v as string))
-        const data = await db.fetchDashboardStats(site.id, names)
-        // only adopt real answers — a failed call keeps the last good snapshot
-        if (data && get().currentSite === site.id) set({ cloudStats: { at: Date.now(), siteId: site.id, data } })
-      },
-
-      cloudInYard: null,
-      refreshCloudInYard: async () => {
-        const s0 = get()
-        const site = s0.sites.find((x) => x.id === s0.currentSite)
-        if (!site) { set({ cloudInYard: null }); return }
-        const normName = (v?: string) => (v ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
-        const names = [site.name, site.code].filter(Boolean).map((v) => normName(v as string))
-        const n = await db.fetchInYardCount(site.id, names)
-        // only adopt real answers — a failed call keeps the last good number
-        if (n !== null) {
-          if (get().currentSite === site.id) set({ cloudInYard: n })
-          return
-        }
-        // ── RPC not installed / unreachable: shared "agreed" count ──────────
-        // Without the SQL function each device fell back to counting its OWN
-        // rows — which is exactly the number that differs while a device is
-        // still backfilling. Instead: any device whose local set is VERIFIED
-        // COMPLETE (rows === the cloud's exact count → its derived In Yard IS
-        // the cloud's) publishes that number to app_config, and every device
-        // shows the published value. One number everywhere, no SQL required.
-        try {
-          const [{ useTracking }, { countInYardFromTracking }] = await Promise.all([
-            import('./useTracking'), import('../lib/carStatus'),
-          ])
-          const key = `inyard_agreed_${site.id}`
-          const t = useTracking.getState()
-          const complete = t.cloudTotal !== null && Object.keys(t.rows).length === t.cloudTotal
-          if (complete) {
-            const mine = countInYardFromTracking(Object.values(t.rows), site.id, get().sites)
-            if (get().currentSite === site.id) set({ cloudInYard: mine })
-            // publish only on change — 20 idle devices must not write every 30s
-            const cur = await db.fetchAppConfig<{ n: number; at: number }>(key)
-            if (cur?.n !== mine) db.saveAppConfig(key, { n: mine, at: Date.now() }).catch(() => {})
-            return
-          }
-          const agreed = await db.fetchAppConfig<{ n: number; at: number }>(key)
-          // trust a published number only while it's fresh (a complete device
-          // refreshed it within the last 10 min) — never a stale leftover
-          if (agreed && typeof agreed.n === 'number' && Date.now() - agreed.at < 10 * 60_000 && get().currentSite === site.id)
-            set({ cloudInYard: agreed.n })
-        } catch { /* keep the last good number */ }
-      },
 
       toast: (kind, msg) => {
         const id = ++tid
@@ -1177,40 +1066,6 @@ export const useYard = create<YardState>()(
         scheduleBlockSync(get)
       },
 
-      // ── disaster recovery: rebuild a lost plan from the cars still parked ──
-      // The parked units keep block/slot/row even when the drawn layout is
-      // gone, so every block a car references can be re-created — sized to the
-      // yard's standard grids (rows 8/16/20 · cols 40/60/63, rounded up from
-      // what the cars actually occupy). Positions auto-lay-out; the admin can
-      // drag boxes to match the real ground plan afterwards.
-      restoreBlocksFromUnits: () => {
-        const s = get()
-        const key = siteKey(s.currentSite)
-        if ((s.blocksBySite[key] ?? []).length) return 0 // never touch an existing plan
-        const seen = new Map<string, { rows: number; cols: number }>()
-        for (const u of Object.values(s.units)) {
-          if (!u.block || !u.slot || !u.row || u.status === 'DEPARTED') continue
-          if (u.site && s.currentSite && u.site !== s.currentSite) continue
-          const name = u.block.trim().toUpperCase()
-          if (!name) continue
-          const cur = seen.get(name) ?? { rows: 0, cols: 0 }
-          seen.set(name, { rows: Math.max(cur.rows, u.row), cols: Math.max(cur.cols, u.slot) })
-        }
-        if (!seen.size) return 0
-        const roundUp = (v: number, steps: number[]) => steps.find((x) => x >= v) ?? v
-        const blocks: Block[] = [...seen.entries()]
-          .sort(([a], [b]) => a.localeCompare(b))
-          .map(([name, m]) => ({
-            id: name, name,
-            rows: roundUp(m.rows, [8, 16, 20]),
-            cols: roundUp(m.cols, [40, 60, 63]),
-            zone: 'Y' as const, kind: 'park' as const,
-          }))
-        set((st) => ({ blocksBySite: { ...st.blocksBySite, [key]: blocks } }))
-        scheduleBlockSync(get)
-        return blocks.length
-      },
-
 
       // ── gps ──────────────────────────────────────────────────────────────
       startTrip: (vin, driver, from, to) =>
@@ -1305,114 +1160,26 @@ export const useYard = create<YardState>()(
         //    light, and switching sites re-fetches. Merge per-vin, never drop local.
         const siteId = get().currentSite
         if (!siteId) return // no yard picked yet → wait; setCurrentSite re-runs this
-        // stream: paint cars into the yard plan page by page instead of waiting
-        // for the whole site's units (a 2,000-car yard is 4 pages + damages)
-        const streamUnits = Object.keys(get().units).length === 0
-          ? (batch: Unit[]) => set((s) => ({ units: mergeCloudUnits(s.units, batch) }))
-          : undefined
-        const [{ units: cloud, complete }, trailers, cloudBlocks] = await Promise.all([
-          db.fetchAllUnits(siteId, streamUnits),
+        const [cloud, trailers, cloudBlocks] = await Promise.all([
+          db.fetchAllUnits(siteId),
           db.fetchTrailers(siteId),
           db.fetchBlocks(siteId),
         ])
-        // 3) yard-plan layout: the cloud is the 100% source of truth. On a
-        //    SUCCESSFUL fetch adopt it verbatim; null = fetch failed → keep the
-        //    local cache (offline). A truly-empty cloud is seeded once from a
-        //    device that still holds a layout (initialization, not override).
-        if (cloudBlocks === null) {
-          // offline / fetch error — local cache stands in until the next load
-        } else if (cloudBlocks.length) {
+        // 3) yard-plan layout: cloud is the source of truth (any device's edit
+        //    pushed there); when the cloud has none, seed it from this device so
+        //    an existing local layout propagates to other machines.
+        if (cloudBlocks.length) {
           set((s) => ({ blocksBySite: { ...s.blocksBySite, [siteKey(siteId)]: cloudBlocks } }))
         } else {
           const local = get().blocksBySite[siteKey(siteId)] ?? []
           if (local.length) db.replaceBlocks(siteId, local).catch((e) => console.error('[db] seedBlocks', e))
         }
+        if (!cloud.length && !trailers.length) return
         set((s) => {
-          // MIRROR: the screen shows the CLOUD, 100%. Every device that pulls the
-          // same yard therefore holds the same set of cars — no local-only ghosts
-          // that make one screen read 2,318 while another reads 1,978.
-          //
-          // The single guard: cars are removed ONLY when `complete` is true, i.e.
-          // the fetch walked every page and the row count matched the server's
-          // exact count. A partial / failed fetch merges additively and deletes
-          // nothing, so offline or a flaky page never wipes real positions.
-          const units = mergeCloudUnits(s.units, cloud)
-          if (complete) {
-            const onCloud = new Set(cloud.map((u) => u.vin))
-            const FRESH = 5 * 60_000 // a write from the last 5 min may not have landed yet
-            const now = Date.now()
-            const drop: string[] = []
-            for (const vin in units) {
-              if (onCloud.has(vin)) continue
-              const u = units[vin]
-              // only this yard's scope — fetchAllUnits pulls site_id = siteId OR NULL
-              if (u.site && u.site !== siteId) continue
-              const touched = Math.max(u.parkedAt ?? 0, u.assignedAt ?? 0, u.gateInAt ?? 0, u.importedAt ?? 0)
-              if (now - touched < FRESH) continue // just written here → let it push first
-              drop.push(vin)
-            }
-            if (drop.length) {
-              for (const vin of drop) delete units[vin]
-              if (drop.length > 50) console.warn(`[yard] mirror: removing ${drop.length} cars not present on the cloud`)
-            }
-          }
-          return {
-            units,
-            trailers: trailers.length ? trailers : s.trailers,
-          }
+          const merged: Record<string, Unit> = { ...s.units }
+          for (const u of cloud) merged[u.vin] = u
+          return { units: merged, trailers: trailers.length ? trailers : s.trailers }
         })
-        // 4) photo payloads stream in AFTER positions are on screen — only for
-        //    damages that still lack a photo locally (base64 photos are the
-        //    heavy part; loading them inline made the yard plan wait minutes)
-        const needPhotos = cloud
-          .filter((u) => u.damages.length && u.damages.some((d) => !d.photo && !d.photos?.length))
-          .map((u) => u.vin)
-        db.fetchDamagePhotos(needPhotos, (byVin) => {
-          set((s) => {
-            const units = { ...s.units }
-            let touched = false
-            for (const [vin, list] of byVin) {
-              const u = units[vin]
-              if (!u) continue
-              const byId = new Map(list.map((p) => [p.id, p]))
-              let changed = false
-              const damages = u.damages.map((d) => {
-                const p = byId.get(d.id)
-                if (!p || d.photo || d.photos?.length) return d
-                changed = true
-                return { ...d, photo: p.photo, photos: p.photos }
-              })
-              if (changed) { units[vin] = { ...u, damages }; touched = true }
-            }
-            return touched ? { units } : s
-          })
-        }).catch(() => {})
-      },
-
-      // ── convergence check: does this device hold every unit the cloud has
-      //    for the active site? ──────────────────────────────────────────────
-      // loadFromSupabase() only self-heals a partial fetch on its NEXT call —
-      // a tablet that boots once, gets a page timeout on a bad wifi moment, and
-      // then stays open for a whole shift never gets another chance (no tab
-      // hidden/online event fires). That is how one screen stayed stuck at 259
-      // cars while others read ~1,980: the first load was partial and nothing
-      // ever re-triggered it. This mirrors useTracking's ensureComplete (exact
-      // count vs local, retry with backoff) but for the units/yard-plan table.
-      ensureUnitsComplete: async () => {
-        if (!db.isConfigured()) return
-        const siteId = get().currentSite
-        if (!siteId) return
-        for (let attempt = 0; attempt < 3; attempt++) {
-          const cloudCount = await db.countUnitsForSite(siteId)
-          if (cloudCount == null) return // can't verify → decide nothing
-          const localCount = Object.values(get().units).filter((u) => !u.site || u.site === siteId).length
-          if (localCount === cloudCount) return
-          console.warn(`[yard] units out of sync: local ${localCount} vs cloud ${cloudCount} — reloading (try ${attempt + 1})`)
-          await get().loadFromSupabase().catch(() => {})
-          const after = Object.values(get().units).filter((u) => !u.site || u.site === siteId).length
-          if (after === cloudCount) return
-          await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)))
-        }
       },
 
       // Live yard-plan updates: assign / park / gate-in on any device broadcasts
@@ -1461,10 +1228,12 @@ export const useYard = create<YardState>()(
                   scheduleDamageRefetch(() => {
                     const siteId = get().currentSite
                     if (!siteId) return
-                    db.fetchAllUnits(siteId).then(({ units: cloud }) => {
+                    db.fetchAllUnits(siteId).then((cloud) => {
                       if (!cloud.length) return
                       set((s) => {
-                        return { units: mergeCloudUnits(s.units, cloud) }
+                        const merged: Record<string, Unit> = { ...s.units }
+                        for (const u of cloud) merged[u.vin] = u
+                        return { units: merged }
                       })
                     }).catch((e) => console.error('[db] damage delete refetch', e))
                   })
@@ -1488,10 +1257,12 @@ export const useYard = create<YardState>()(
                 scheduleDamageRefetch(() => {
                   const siteId = get().currentSite
                   if (!siteId) return
-                  db.fetchAllUnits(siteId).then(({ units: cloud }) => {
+                  db.fetchAllUnits(siteId).then((cloud) => {
                     if (!cloud.length) return
                     set((s) => {
-                      return { units: mergeCloudUnits(s.units, cloud) }
+                      const merged: Record<string, Unit> = { ...s.units }
+                      for (const u of cloud) merged[u.vin] = u
+                      return { units: merged }
                     })
                   }).catch((e) => console.error('[db] damage refetch', e))
                 })
@@ -1536,22 +1307,19 @@ export const useYard = create<YardState>()(
               unitsHadDrop = false
               const sid = get().currentSite
               if (!sid) return
-              db.fetchAllUnits(sid).then(({ units: cloud }) => {
+              db.fetchAllUnits(sid).then((cloud) => {
                 if (!cloud.length) return
                 set((s) => {
-                  return { units: mergeCloudUnits(s.units, cloud) }
+                  const merged: Record<string, Unit> = { ...s.units }
+                  for (const u of cloud) merged[u.vin] = u
+                  return { units: merged }
                 })
               }).catch(() => {})
               return
             }
             if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
               unitsHadDrop = true
-              if (unitsChannel) {
-                // defer: removing the channel INSIDE its own status callback
-                // recurses in supabase-js when the socket closes instantly
-                const ch = unitsChannel; unitsChannel = null
-                setTimeout(() => { supabase.removeChannel(ch).catch(() => {}) }, 0)
-              }
+              if (unitsChannel) { supabase.removeChannel(unitsChannel); unitsChannel = null }
               setTimeout(() => {
                 // still logged in and nobody resubscribed already (site switch)?
                 if (!unitsChannel && get().loggedInUserId) get().subscribeRealtime()
@@ -1569,7 +1337,7 @@ export const useYard = create<YardState>()(
       // Creates a minimal unit (from the tracking row) when one doesn't exist yet,
       // so imported defects display in the Unit List / Check views. Deterministic
       // damage ids mean re-importing the same file updates rather than duplicates.
-      importDefects: async (defects, trackingRows, onProgress) => {
+      importDefects: async (defects, trackingRows) => {
         if (!defects.length) return { units: 0, damages: 0 }
         const units = { ...get().units }
         const site = get().currentSite ?? undefined
@@ -1693,20 +1461,9 @@ export const useYard = create<YardState>()(
         // can keep a "saving…" state up and the user won't reload mid-upload (that
         // was silently truncating the 16k-row damage push → units synced, damages lost)
         try {
-          // progress: ONE running total across every cloud operation — including
-          // the replace-semantics DELETE of old file-defects, which can be tens
-          // of thousands of rows and used to run invisibly BEFORE the counter
-          // started (the screen sat at "0 / N · 0%" for minutes while the
-          // server was actually working flat out)
-          const total = removedIds.length + changedUnits.length + dmgItems.length
-          onProgress?.(0, total, removedIds.length ? 'ลบ defect ชุดเก่าที่ถูกแทนที่' : 'อัปโหลดข้อมูลรถ')
-          if (removedIds.length)
-            await db.deleteDamages(removedIds, (n) => onProgress?.(n, total, 'ลบ defect ชุดเก่าที่ถูกแทนที่'))
-          const base1 = removedIds.length
-          await db.upsertUnits(changedUnits, (n) => onProgress?.(base1 + n, total, 'อัปโหลดข้อมูลรถ')) // FK parents first
-          const base2 = base1 + changedUnits.length
-          await db.upsertDamages(dmgItems, (n) => onProgress?.(base2 + n, total, 'อัปโหลด defect ใหม่'))
-          onProgress?.(total, total, 'เสร็จสิ้น')
+          if (removedIds.length) await db.deleteDamages(removedIds)
+          await db.upsertUnits(changedUnits) // FK parents first
+          await db.upsertDamages(dmgItems)
         } catch (e) { console.error('[db] importDefects', e) }
         return { units: newUnits, damages: dmgCount }
       },
@@ -1715,12 +1472,6 @@ export const useYard = create<YardState>()(
       name: 'byd-yard-control',
       version: 6,
       storage: debouncedLocalStorage(),
-      // ONLINE-100% devices only: drop any cached car list at boot so the
-      // first thing on screen is the cloud's answer. In the default cache
-      // mode this is a no-op — the cache IS the fast first paint.
-      onRehydrateStorage: () => (state) => {
-        if (state && isOnlineOnly()) { state.units = {}; state.trailers = [] }
-      },
       migrate: (state: any, fromVersion: number) => {
         let s = state
         if (fromVersion < 2) {
@@ -1765,17 +1516,11 @@ export const useYard = create<YardState>()(
       // back), and re-picking the yard mid-shift lost the screen they were on.
       // The previous-shift safety still holds: sessions expire at midnight and
       // logout() clears currentSite, so every LOGIN still re-picks the yard.
-      // Default (mirror + cache): yard data persists so the app opens
-      // instantly from the last known state. A device that opted into
-      // ONLINE-100% keeps nothing — every load pulls fresh from the cloud.
       partialize: (s) => ({
         lang: s.lang, planMode: s.planMode, currentUser: s.currentUser, currentDriver: s.currentDriver,
         groupModelsInRow: s.groupModelsInRow, laneDepth: s.laneDepth, view: s.view, appUsers: s.appUsers, loggedInUserId: s.loggedInUserId,
         loginAt: s.loginAt, currentSite: s.currentSite,
-        units: isOnlineOnly() ? {} : s.units,
-        trailers: isOnlineOnly() ? [] : s.trailers,
-        blocksBySite: isOnlineOnly() ? {} : s.blocksBySite,
-        policies: s.policies, models: s.models,
+        units: s.units, trailers: s.trailers, policies: s.policies, blocksBySite: s.blocksBySite, models: s.models,
         // trips grew forever (full GPS path per drive) until localStorage hit its
         // quota and EVERY state change silently stopped persisting. Keep the 30
         // most recent, each capped to its last 600 fixes (~10 min at 1 Hz).
@@ -1808,9 +1553,6 @@ onSync('blocks', async (p: { siteId?: string }) => {
   const siteId = p?.siteId
   if (!siteId) return
   const blocks = await db.fetchBlocks(siteId)
-  // null = fetch failed, [] = wiped cloud — neither may erase this device's
-  // cached layout (the cache is what re-seeds the cloud)
-  if (!blocks || !blocks.length) return
   useYard.setState((s) => ({ blocksBySite: { ...s.blocksBySite, [siteId]: blocks } }))
 })
 onSync('trailers', async (p: { siteId?: string }) => {

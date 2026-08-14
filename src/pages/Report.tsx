@@ -1,28 +1,86 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Download, ClipboardList } from 'lucide-react'
-import * as db from '../lib/db'
 import { useYard, useUnits } from '../store/useYard'
 import { useTrackingRows } from '../store/useTracking'
 import { useOps } from '../store/useOps'
 import { rowInSite } from '../lib/siteScope'
 import { PageHead, cx } from '../components/ui'
 import { DailyStockReport } from '../components/DailyStockReport'
-import { dayKeyOf } from './Grouping'
+import { DayPicker, dayKeyOf } from './Grouping'
+import type { TrackRow } from '../lib/excelTracking'
+import { appendMasterSheets } from '../lib/masterSheets'
 import {
   REPORT_MENUS, TIME_PERIODS, buildList, buildDefects, buildTimeMatrix, exportOpsReport,
-  rangeLabel, type ReportCtx,
+  dayKeyOfTs, type ReportCtx,
 } from '../lib/opsReport'
 
 export function Report() {
   const lang = useYard((s) => s.lang)
+  const sites = useYard((s) => s.sites)
+  const currentSite = useYard((s) => s.currentSite)
+  const toast = useYard((s) => s.toast)
+  const units = useUnits()
+  const allRows = useTrackingRows()
+  const allYards = false // master export always covers the current yard now
+  const [exporting, setExporting] = useState(false)
+
+  const siteName = sites.find((s) => s.id === currentSite)?.name ?? '—'
+
+  const scopedRows = useMemo<TrackRow[]>(() => {
+    const rows = allYards || !currentSite ? allRows : allRows.filter((r) => rowInSite(r, currentSite, sites))
+    return [...rows].sort((a, b) => a.vin.localeCompare(b.vin))
+  }, [allRows, allYards, currentSite, sites])
+
+  const scopedUnits = useMemo(
+    () => (allYards || !currentSite ? units : units.filter((u) => !u.site || u.site === currentSite)),
+    [units, allYards, currentSite],
+  )
+
+  const doExport = async () => {
+    if (!scopedRows.length && !scopedUnits.length) { toast('info', 'ยังไม่มีข้อมูลให้ออกรายงาน'); return }
+    setExporting(true)
+    try {
+      // exceljs (not SheetJS) — the free SheetJS build can't write fonts/fills,
+      // and this export reproduces the master file's formatting exactly.
+      const XJS: any = await import('exceljs')
+      const ExcelJS = XJS.default ?? XJS
+      const wb = new ExcelJS.Workbook()
+      wb.creator = 'SJWD Yard Control'
+      appendMasterSheets(wb, scopedRows, scopedUnits)
+
+      const d = new Date()
+      const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      const scopeTag = allYards ? 'All-Yards' : siteName.replace(/[^\w]+/g, '-')
+      const buf = await wb.xlsx.writeBuffer()
+      const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `SJWD-Report-${scopeTag}-${stamp}.xlsx`
+      a.click()
+      URL.revokeObjectURL(url)
+      toast('ok', `ออกรายงานแล้ว — ${scopedRows.length.toLocaleString()} คัน`)
+    } catch (e) {
+      console.error('[report] export', e)
+      toast('err', 'ออกรายงานไม่สำเร็จ ลองใหม่อีกครั้ง')
+    } finally {
+      setExporting(false)
+    }
+  }
 
   return (
     <div>
       <PageHead
         title={lang === 'th' ? 'รายงาน (Report)' : 'Report'}
         sub={lang === 'th'
-          ? 'รายงาน Operation ส่งทุกเบรค · ดูย้อนหลังได้ทุกวัน · Export Excel ได้ทุกเมนู'
-          : 'Operation report per break, any past date, Excel export for every menu'}
+          ? 'รายงานประจำวัน (ดูย้อนหลังได้ทุกวัน) และรายงาน Excel รูปแบบเดียวกับไฟล์ master 100%'
+          : 'Daily stock report for any past date, plus the Excel export mirroring the master workbook'}
+        right={
+          <button className="btn btn-primary px-4 py-2.5 text-[13.5px]" onClick={doExport} disabled={exporting}>
+            <Download size={16} className="mr-1.5" />
+            {exporting ? (lang === 'th' ? 'กำลังสร้างไฟล์…' : 'Building…') : (lang === 'th' ? 'ออกรายงาน Excel' : 'Export Excel')}
+          </button>
+        }
       />
 
       {/* ── operation report (ส่งทุกเบรค) — 14 เมนู realtime จากหน้างาน ──
@@ -43,31 +101,8 @@ function OpsReportSection() {
   const units = useUnits()
   const queues = useOps((s) => s.queues)
   const [menu, setMenu] = useState('stock')
-  // date RANGE (inclusive) — one day by default; pick from–to for a period
-  const [dayFrom, setDayFrom] = useState(dayKeyOf(new Date()))
-  const [dayTo, setDayTo] = useState(dayKeyOf(new Date()))
+  const [day, setDay] = useState<string | 'all'>(dayKeyOf(new Date()))
   const [exporting, setExporting] = useState(false)
-
-  // admin remarks under the time matrices — shared across devices via
-  // app_config (`ops_report_remarks_<site>`), cached locally so the box is
-  // filled instantly on boot and survives an offline refresh
-  const [remarks, setRemarks] = useState<Record<string, string>>({})
-  useEffect(() => {
-    if (!currentSite) return
-    let dead = false
-    try {
-      const cached = localStorage.getItem(`sjwd.opsRemarks.${currentSite}`)
-      setRemarks(cached ? JSON.parse(cached) : {})
-    } catch { setRemarks({}) }
-    db.fetchAppConfig<Record<string, string>>(`ops_report_remarks_${currentSite}`)
-      .then((v) => {
-        if (dead || !v) return
-        setRemarks(v)
-        try { localStorage.setItem(`sjwd.opsRemarks.${currentSite}`, JSON.stringify(v)) } catch { /* full/blocked */ }
-      })
-      .catch(() => {})
-    return () => { dead = true }
-  }, [currentSite])
 
   const site = sites.find((s) => s.id === currentSite)
   // "NYB2" style short label for sheet names/titles
@@ -78,18 +113,24 @@ function OpsReportSection() {
     return site?.code || site?.name || 'Yard'
   }, [site])
 
-  const ctx = useMemo<ReportCtx>(() => {
-    // tolerate a reversed pick (from > to) — swap instead of showing nothing
-    const [f, t] = dayFrom <= dayTo ? [dayFrom, dayTo] : [dayTo, dayFrom]
-    return {
-      rows: currentSite ? allRows.filter((r) => rowInSite(r, currentSite, sites)) : allRows,
-      units: currentSite ? units.filter((u) => !u.site || u.site === currentSite) : units,
-      queues: queues.filter((q) => !currentSite || !q.site || q.site === currentSite),
-      dayFrom: f, dayTo: t,
-      siteLabel,
-      remarks,
+  const ctx = useMemo<ReportCtx>(() => ({
+    rows: currentSite ? allRows.filter((r) => rowInSite(r, currentSite, sites)) : allRows,
+    units: currentSite ? units.filter((u) => !u.site || u.site === currentSite) : units,
+    queues: queues.filter((q) => !currentSite || !q.site || q.site === currentSite),
+    day: day === 'all' ? dayKeyOf(new Date()) : day,
+    siteLabel,
+  }), [allRows, units, queues, currentSite, sites, day, siteLabel])
+
+  // calendar marks: days that have queue activity or gate scans
+  const dayCounts = useMemo(() => {
+    const m = new Map<string, number>()
+    const add = (k: string) => m.set(k, (m.get(k) ?? 0) + 1)
+    for (const q of ctx.queues) for (const i of q.items) {
+      const t = i.checkedAt ?? i.doneAt
+      if (t) add(dayKeyOfTs(t))
     }
-  }, [allRows, units, queues, currentSite, sites, dayFrom, dayTo, siteLabel, remarks])
+    return m
+  }, [ctx.queues])
 
   const active = REPORT_MENUS.find((m) => m.id === menu) ?? REPORT_MENUS[0]
   const listRows = useMemo(() => (active.kind === 'list' ? buildList(ctx, active.id) : []), [ctx, active])
@@ -100,21 +141,9 @@ function OpsReportSection() {
     setExporting(true)
     try {
       await exportOpsReport(ctx)
-      toast('ok', `ออกไฟล์ Report_operation (${rangeLabel(ctx)}) แล้ว`)
+      toast('ok', `ออกไฟล์ Report_operation (${ctx.day.split('-').reverse().join('/')}) แล้ว`)
     } catch (e) { console.error('[opsReport] export', e); toast('err', 'ออกไฟล์ไม่สำเร็จ ลองใหม่อีกครั้ง') }
     finally { setExporting(false) }
-  }
-
-  const remarkKey = `${active.id}|${ctx.dayFrom}`
-  const saveRemark = (text: string) => {
-    if (!currentSite) return
-    const next = { ...remarks }
-    if (text.trim()) next[remarkKey] = text.trim(); else delete next[remarkKey]
-    setRemarks(next)
-    try { localStorage.setItem(`sjwd.opsRemarks.${currentSite}`, JSON.stringify(next)) } catch { /* full/blocked */ }
-    db.saveAppConfig(`ops_report_remarks_${currentSite}`, next)
-      .then(() => toast('ok', 'บันทึก Remark แล้ว'))
-      .catch(() => toast('err', 'บันทึก Remark ขึ้นคลาวด์ไม่สำเร็จ — เครื่องนี้ยังเห็นค่าใหม่'))
   }
 
   const th = 'text-left px-3 py-2 text-[11.5px] font-bold whitespace-nowrap'
@@ -126,20 +155,8 @@ function OpsReportSection() {
         <div className="text-[12px] font-bold uppercase tracking-wider flex items-center gap-1.5" style={{ color: 'var(--muted)' }}>
           <ClipboardList size={14} /> รายงาน Operation ({siteLabel}) · ส่งทุกเบรค — นับ realtime จากที่หน้างานบันทึก
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          {/* จาก–ถึง: เลือกวันเดียว (ค่าเริ่มต้น = วันนี้) หรือทั้งช่วง */}
-          <div className="flex items-center gap-1.5 text-[12px]" style={{ color: 'var(--muted)' }}>
-            <span>จาก</span>
-            <input type="date" className="input py-1 px-2 text-[12.5px] tabular" value={dayFrom}
-              onChange={(e) => { if (e.target.value) setDayFrom(e.target.value) }} />
-            <span>ถึง</span>
-            <input type="date" className="input py-1 px-2 text-[12.5px] tabular" value={dayTo}
-              onChange={(e) => { if (e.target.value) setDayTo(e.target.value) }} />
-            <button className="btn px-2 py-1 text-[12px]"
-              onClick={() => { const t = dayKeyOf(new Date()); setDayFrom(t); setDayTo(t) }}>
-              วันนี้
-            </button>
-          </div>
+        <div className="flex items-center gap-2">
+          <DayPicker days={dayCounts} value={day} onChange={setDay} />
           <button className="btn btn-primary px-3 py-1.5 text-[12.5px]" onClick={doExport} disabled={exporting}>
             <Download size={14} /> {exporting ? 'กำลังสร้างไฟล์…' : 'Export Excel (ทุกเมนู)'}
           </button>
@@ -162,7 +179,7 @@ function OpsReportSection() {
         <div className="panel overflow-hidden">
           <div className="px-4 py-2 border-b hairline flex items-center gap-2 text-[12.5px] font-bold" style={{ background: 'var(--chip)' }}>
             {active.label} · Total <span style={{ color: 'var(--brand)' }}>{listRows.length}</span>
-            <span className="font-medium" style={{ color: 'var(--faint)' }}>· {rangeLabel(ctx)}</span>
+            <span className="font-medium" style={{ color: 'var(--faint)' }}>· {ctx.day.split('-').reverse().join('/')}</span>
           </div>
           <div className="overflow-x-auto max-h-[60vh] overflow-y-auto">
             <table className="w-full text-[12.5px]">
@@ -193,7 +210,7 @@ function OpsReportSection() {
         <div className="panel overflow-hidden">
           <div className="px-4 py-2 border-b hairline flex items-center gap-2 text-[12.5px] font-bold" style={{ background: 'var(--chip)' }}>
             {active.label} · Total <span style={{ color: '#dc2626' }}>{defRows.length}</span>
-            <span className="font-medium" style={{ color: 'var(--faint)' }}>· {rangeLabel(ctx)}</span>
+            <span className="font-medium" style={{ color: 'var(--faint)' }}>· {ctx.day.split('-').reverse().join('/')}</span>
           </div>
           <div className="overflow-x-auto max-h-[60vh] overflow-y-auto">
             <table className="w-full text-[12.5px]">
@@ -223,7 +240,7 @@ function OpsReportSection() {
       {active.kind === 'time' && matrix && (
         <div className="panel overflow-hidden">
           <div className="px-4 py-2 border-b hairline text-center text-[13px] font-bold" style={{ background: '#000', color: '#fff' }}>
-            {matrix.title} · {rangeLabel(ctx)}
+            {matrix.title} · {ctx.day.split('-').reverse().join('/')}
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-[12.5px] text-center" style={{ borderCollapse: 'collapse' }}>
@@ -277,18 +294,6 @@ function OpsReportSection() {
                 </tr>
               </tbody>
             </table>
-          </div>
-          {/* admin remark — saved on blur, shared to every device + the Excel sheet */}
-          <div className="px-4 py-3 border-t hairline">
-            <div className="text-[11px] font-bold uppercase tracking-wider mb-1.5" style={{ color: 'var(--muted)' }}>
-              Remark (แอดมิน) · {rangeLabel(ctx)}
-            </div>
-            <textarea key={remarkKey} rows={2}
-              className="input w-full text-[13px] py-2"
-              style={{ resize: 'vertical', minHeight: 44 }}
-              placeholder="พิมพ์หมายเหตุของรายงานนี้ — บันทึกอัตโนมัติเมื่อคลิกออกจากช่อง และแนบลงไฟล์ Excel ให้ด้วย"
-              defaultValue={remarks[remarkKey] ?? ''}
-              onBlur={(e) => { if ((remarks[remarkKey] ?? '') !== e.target.value.trim()) saveRemark(e.target.value) }} />
           </div>
         </div>
       )}

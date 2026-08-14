@@ -11,9 +11,12 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <link rel="icon" type="image/png" href="/pwa-192.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <!-- fonts are self-hosted (@fontsource, imported in src/main.tsx) — the old
-         Google Fonts stylesheet was RENDER-BLOCKING: on slow/filtered yard
-         networks the whole app sat on a white screen for 10s+ waiting for it -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Sans+Thai:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
   </head>
   <body>
     <div id="root"></div>

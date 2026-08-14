@@ -12,7 +12,7 @@ import { printIr, printDn, printIrPaper } from '../lib/dnir'
 import { useYard } from '../store/useYard'
 import { useTracking, useTrackingRows, useVisibleColumns } from '../store/useTracking'
 import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, LOCATION_KEY, MAX_FILTERS, DEFAULT_FILTER_COLS, agingPmDays, cleanStorage, isDateColumn, fmtSerialToDate, type ColGroup, type Column } from '../lib/trackingColumns'
-import { yardLocFull, lastHistoryLocFull } from '../lib/groupingImport'
+import { yardLocFull } from '../lib/groupingImport'
 import { CAR_STATUS_META, deriveCarStatus, IN_YARD_STATUSES, PARKED_STATUSES, isWaitingRepair, finalColor, vinOfStatusColor, taxStatusColor } from '../lib/carStatus'
 import { rowsToCsv, type TrackRow, type RowEvent } from '../lib/excelTracking'
 import { printFindList } from '../lib/groupingPrint'
@@ -24,7 +24,6 @@ import { resolvePart, resolveDefect, MASTER_PARTS, MASTER_DEFECTS } from '../lib
 import { cx, PhotoLightbox } from '../components/ui'
 import { useQueues, queueTypeOf } from '../store/useOps'
 import { useUnitsView } from '../store/useUnitsView'
-import * as db from '../lib/db'
 import { buildWorkRows, buildEventLog, readingsHist as libReadingsHist, histOf, fmtHistAt, filledDates, PDI_DATE_KEYS, PM_DATE_KEYS } from '../lib/carHistory'
 
 const DMG_SRC: Record<string, string> = { walkaround: 'Walk-around', pdi: 'PDI', mechanic: 'ช่าง', update: 'Update', yardDefect: 'Defect-Yard', factoryDefect: 'Defect-Factory', whaleDefect: 'Defect-Whale', manual: 'เพิ่มเอง' }
@@ -182,34 +181,18 @@ export function Units() {
   const currentSite = useYard((s) => s.currentSite)
   const sites = useYard((s) => s.sites)
   const allRows = useTrackingRows()
-  const storeRows = useTracking((s) => s.rows)
-  // server-side filtered window (see the fetch effect below) — state lives up
-  // here because the rows memo depends on it
-  const [serverWin, setServerWin] = useState<{ vins: string[]; total: number } | null>(null)
-  // per-yard separation: the whole Unit List only ever shows the active site.
-  // With a server window active, the window's vins (already server-filtered +
-  // merged into the store) are the row source instead of whatever this device
-  // happens to hold — resolved THROUGH the store so live edits render.
-  const rows = useMemo(() => {
-    if (serverWin) {
-      const out: TrackRow[] = []
-      for (const vin of serverWin.vins) {
-        const r = storeRows[vin]
-        if (r && rowInSite(r, currentSite, sites)) out.push(r)
-      }
-      return out
-    }
-    return currentSite ? allRows.filter((r) => rowInSite(r, currentSite, sites)) : allRows
-  }, [serverWin, storeRows, allRows, currentSite, sites])
+  // per-yard separation: the whole Unit List only ever shows the active site
+  const rows = useMemo(
+    () => (currentSite ? allRows.filter((r) => rowInSite(r, currentSite, sites)) : allRows),
+    [allRows, currentSite, sites],
+  )
   const visCols = useVisibleColumns()
   const { lastImport, loadFromIdb } = useTracking()
   // computed yard-location code (prefix-block+ช่อง+ลำดับ, e.g. "N-R1402"), for the Location column.
   // ONLY the real placement code — no cell fallback (storage Yard / Location yard
   // are junk / the site name, not a position → they showed stray numbers).
   const allUnits = useYard((s) => s.units)
-  // live slot first, else the row's own Location history (full code) — the
-  // column and ใบหารถ must not go blank when the unit record is missing here
-  const locOf = (r: TrackRow) => yardLocFull(allUnits[r.vin]) || lastHistoryLocFull(r)
+  const locOf = (r: TrackRow) => yardLocFull(allUnits[r.vin])
 
   // the page's working state lives in a PERSISTED store: switching sidebar
   // pages (this component unmounts), closing the app, or the next-day
@@ -241,42 +224,6 @@ export function Units() {
 
   const [sel, setSel] = useState<Set<string>>(new Set())
   const [colMgr, setColMgr] = useState(false)
-
-  // ── N4-style server window: a device that hasn't finished syncing must not
-  // show a shorter list than everyone else. While local < cloud, the list is
-  // fed from a server-side filtered/sorted window (≤2,000 rows + exact total):
-  // the server does the heavy reduction, the exact client filters below then
-  // run on that window, and fetched rows merge into the local store (additive,
-  // newer-wins) so editing/selection work identically. Fully-synced devices
-  // (the normal case) never enter this path — zero change to their behavior.
-  const cloudTotal = useTracking((s) => s.cloudTotal)
-  const localRowCount = useTracking((s) => Object.keys(s.rows).length)
-  const mergeServerRows = useTracking((s) => s.mergeServerRows)
-  const serverEligible = db.isConfigured() && cloudTotal !== null && localRowCount < cloudTotal
-    && !unitPreset && !unitVinFilter // drill-down presets are local-only views
-  const colFiltersKey = JSON.stringify(colFilters)
-  useEffect(() => {
-    if (!serverEligible) { setServerWin(null); return }
-    let stale = false
-    const t = setTimeout(() => {
-      const plain: Record<string, string> = {}
-      for (const key of activeFilterCols) {
-        const val = colFilters[key]
-        if (!val || val === 'ALL' || key === 'Car Status' || key === LOCATION_KEY) continue
-        plain[key] = val
-      }
-      db.fetchTrackingPage({
-        siteId: currentSite, q, group: fGroup, colFilters: plain,
-        sortKey, sortDir, limit: 2000,
-      }).then((res: { rows: TrackRow[]; total: number } | null) => {
-        if (stale || !res) return
-        mergeServerRows(res.rows)
-        setServerWin({ vins: res.rows.map((r: TrackRow) => r.vin), total: res.total })
-      }).catch(() => {})
-    }, 400)
-    return () => { stale = true; clearTimeout(t) }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serverEligible, q, fGroup, colFiltersKey, sortKey, sortDir, currentSite, activeFilterCols.join('|')])
 
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
   useEffect(() => { if (import.meta.env.DEV) (window as any).__tracking = useTracking }, [])
@@ -361,20 +308,6 @@ export function Units() {
     if (sortKey === key) patchView({ sortDir: (sortDir * -1) as SortDir })
     else patchView({ sortKey: key, sortDir: 1 })
   }
-
-  // ── pagination (Units tab): ≤3,000 VINs per page — 17k rows in one DOM/print
-  // pass made tablets crawl. Filters/sort work on the FULL set first, then the
-  // page window slices the result, so page 1 always shows the top of the list.
-  const PAGE_SIZE = 3000
-  const [page, setPage] = useState(0)
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
-  const pageSafe = Math.min(page, pageCount - 1)
-  const paged = useMemo(
-    () => (filtered.length > PAGE_SIZE ? filtered.slice(pageSafe * PAGE_SIZE, (pageSafe + 1) * PAGE_SIZE) : filtered),
-    [filtered, pageSafe],
-  )
-  // any change that reshapes the result set jumps back to page 1
-  useEffect(() => { setPage(0) }, [q, fGroup, colFilters, unitPreset, unitVinFilter, sortKey, sortDir, tab])
 
   const counts = useMemo(() => {
     let ok = 0, wait = 0
@@ -466,30 +399,14 @@ export function Units() {
         </div>
       )}
 
-      {/* server-window banner: this device is still backfilling, so the list is
-          fed from a server-side filtered window — same list on every screen */}
-      {serverWin && (
-        <div className="flex items-center gap-2 px-3 py-1.5 mb-2 rounded-lg text-[12px] font-semibold"
-          style={{ color: '#1d4ed8', background: 'rgba(37,99,235,0.08)', border: '1px solid rgba(37,99,235,0.18)' }}
-          title="เครื่องนี้ยังซิงค์ไม่ครบ — รายการถูกค้นหา/เรียงบนเซิร์ฟเวอร์โดยตรง จึงเห็นรายการเดียวกับทุกเครื่อง">
-          ☁ ค้นหา/เรียงบนเซิร์ฟเวอร์ · แสดง {Math.min(serverWin.vins.length, serverWin.total).toLocaleString()} จาก {serverWin.total.toLocaleString()} รายการ
-          {serverWin.total > serverWin.vins.length && <span style={{ fontWeight: 500, color: 'var(--muted)' }}>· พิมพ์ค้นหา/กรองเพื่อระบุรายการให้แคบลง</span>}
-        </div>
-      )}
       {/* body */}
       <div className="flex gap-2 flex-1 min-h-0">
         {rows.length === 0 ? (
           <EmptyState />
         ) : tab === 'units' ? (
-          <DataGrid rows={paged} visCols={visCols} sel={sel} setSel={setSel}
+          <DataGrid rows={filtered} visCols={visCols} sel={sel} setSel={setSel}
             sortKey={sortKey} sortDir={sortDir} toggleSort={toggleSort} optionsFor={optionsFor}
-            footer={<GridFooter sel={sel} shown={paged.length} total={rows.length} lastImport={lastImport}
-              pager={pageCount > 1 ? {
-                page: pageSafe, pageCount, setPage,
-                from: pageSafe * PAGE_SIZE + 1,
-                to: pageSafe * PAGE_SIZE + paged.length,
-                filteredTotal: filtered.length,
-              } : undefined} />} />
+            footer={<GridFooter sel={sel} shown={filtered.length} total={rows.length} lastImport={lastImport} />} />
         ) : tab === 'grouping' ? (
           <GroupingView rows={filtered} visCols={visCols} sel={sel} setSel={setSel}
             sortKey={sortKey} sortDir={sortDir} toggleSort={toggleSort} optionsFor={optionsFor} />
@@ -523,7 +440,7 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
   const units = useYard((s) => s.units)
   const sites = useYard((s) => s.sites)
   const currentSite = useYard((s) => s.currentSite)
-  const locFor = (r: TrackRow) => yardLocFull(units[r.vin]) || lastHistoryLocFull(r)
+  const locFor = (r: TrackRow) => yardLocFull(units[r.vin])
   const [dragCol, setDragCol] = useState<string | null>(null)
   const [overCol, setOverCol] = useState<string | null>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
@@ -689,8 +606,23 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
     // (bulkUpdate) so it updates everywhere the group is read (Grouping view etc.).
     nodes.push({ kind: 'divider' })
     nodes.push({ kind: 'item', label: n > 1 ? `Grouping No. (${n})…` : 'Grouping No.…', icon: <FileText size={14} />, onSelect: () => promptApply(GROUPING_KEY) })
-    // No Delete here — removing a VIN is a Settings-only admin action so field
-    // staff can't wipe a car from the context menu by accident.
+    // Delete: permanently remove the selected VIN(s) from the system (local +
+    // IndexedDB + cloud, via deleteRows). Danger-styled + confirm guard so it
+    // can't be hit by accident.
+    nodes.push({ kind: 'divider' })
+    nodes.push({ kind: 'item', label: n > 1 ? `Delete (${n})` : 'Delete', icon: <Trash2 size={14} />, danger: true, onSelect: () => {
+      const ok = window.confirm(
+        n > 1
+          ? `ลบ ${n} VIN ออกจากระบบถาวร?\n(ลบทั้งในเครื่องและ cloud — ย้อนกลับไม่ได้)`
+          : `ลบ VIN นี้ออกจากระบบถาวร?\n${vin}\n(ลบทั้งในเครื่องและ cloud — ย้อนกลับไม่ได้)`,
+      )
+      if (ok) {
+        deleteRows(targets)
+        setSel(new Set())
+        toast('ok', `ลบ ${n} คันออกจากระบบแล้ว`)
+      }
+      setMenu(null)
+    } })
     return nodes
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [menu, columns, rows])
@@ -1010,36 +942,14 @@ function InputPromptModal({ input, onSubmit, onClose }: {
   )
 }
 
-interface FooterPager { page: number; pageCount: number; setPage: (p: number) => void; from: number; to: number; filteredTotal: number }
-function GridFooter({ sel, shown, total, lastImport, pager }: { sel: Set<string>; shown: number; total: number; lastImport: any; pager?: FooterPager }) {
+function GridFooter({ sel, shown, total, lastImport }: { sel: Set<string>; shown: number; total: number; lastImport: any }) {
   return (
     <div className="flex items-center justify-between gap-3 px-3 py-1 border-t hairline text-[11.5px] flex-wrap shrink-0" style={{ color: 'var(--muted)' }}>
       <div className="flex items-center gap-3">
         <span>เลือก: <b className="tabular" style={{ color: sel.size ? 'var(--brand)' : 'var(--text)' }}>{sel.size.toLocaleString()}</b></span>
-        {pager
-          ? <span>แสดง: <b className="tabular" style={{ color: 'var(--text)' }}>{pager.from.toLocaleString()}–{pager.to.toLocaleString()}</b> จาก {pager.filteredTotal.toLocaleString()}</span>
-          : <span>แสดง: <b className="tabular" style={{ color: 'var(--text)' }}>{shown.toLocaleString()}</b> จาก {total.toLocaleString()}</span>}
+        <span>แสดง: <b className="tabular" style={{ color: 'var(--text)' }}>{shown.toLocaleString()}</b> จาก {total.toLocaleString()}</span>
         {lastImport && <span className="hidden lg:inline" style={{ color: 'var(--faint)' }}>· นำเข้าล่าสุด {new Date(lastImport.at).toLocaleString('th-TH', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>}
       </div>
-      {pager && (
-        <div className="flex items-center gap-1">
-          <button className="btn btn-ghost px-2 py-0.5 text-[11.5px]" disabled={pager.page === 0}
-            style={pager.page === 0 ? { opacity: 0.4 } : undefined}
-            onClick={() => pager.setPage(pager.page - 1)}>‹ ก่อนหน้า</button>
-          {Array.from({ length: pager.pageCount }, (_, i) => i).map((i) => (
-            <button key={i} onClick={() => pager.setPage(i)}
-              className="tabular rounded-md px-2 py-0.5 text-[11.5px] font-semibold transition"
-              style={i === pager.page
-                ? { background: 'var(--brand)', color: '#fff' }
-                : { color: 'var(--muted)' }}>
-              {i + 1}
-            </button>
-          ))}
-          <button className="btn btn-ghost px-2 py-0.5 text-[11.5px]" disabled={pager.page >= pager.pageCount - 1}
-            style={pager.page >= pager.pageCount - 1 ? { opacity: 0.4 } : undefined}
-            onClick={() => pager.setPage(pager.page + 1)}>ถัดไป ›</button>
-        </div>
-      )}
       <div className="hidden md:flex items-center gap-2" style={{ color: 'var(--faint)' }}>
         <Hint k="คลุม/ลาก">เลือกหลายแถว</Hint><Hint k="Shift+Click">ช่วง</Hint><Hint k="คลิกขวา">แก้ไข/ลบ</Hint><Hint k="Ctrl+A">ทั้งหมด</Hint><Hint k="Ctrl+C">คัดลอก VIN</Hint>
       </div>
@@ -1226,7 +1136,7 @@ function MylistView({ allRows, visCols, sel, setSel, sortKey, sortDir, toggleSor
       const out = (wantLoc || wantAging)
         ? found.map((r) => ({ ...r, cells: {
             ...r.cells,
-            ...(wantLoc ? { [LOCATION_KEY]: yardLocFull(units[r.vin]) || lastHistoryLocFull(r) } : {}),
+            ...(wantLoc ? { [LOCATION_KEY]: yardLocFull(units[r.vin]) } : {}),
             ...(wantAging && !r.cells['Aging PM'] ? { 'Aging PM': fmtAgingPm(r.cells) } : {}),
           } }))
         : found

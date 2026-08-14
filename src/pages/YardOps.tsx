@@ -36,7 +36,7 @@ import { yardLocCode, yardLocFull, blockCode, byYardLocation } from '../lib/grou
 import { parseLane } from '../lib/laneImport'
 import { LOCATION_KEY } from '../lib/trackingColumns'
 import { blockTag, blockKeyOfTag, resolveBlockByName } from '../lib/format'
-import { fetchTrackingRowsByVins, fetchUnitsByVins, isConfigured } from '../lib/db'
+import { fetchUnitsByVins, isConfigured } from '../lib/db'
 import { useRecentOps } from '../store/useRecentOps'
 import { buildWorkRows, buildEventLog, fmtHistAt, histOf } from '../lib/carHistory'
 
@@ -82,29 +82,6 @@ function useSiteQueues(): WorkQueue[] {
   const all = useActiveQueues() // already excludes gated-out cars; then scope to this yard
   const currentSite = useYard((s) => s.currentSite)
   return useMemo(() => (currentSite ? all.filter((q) => !q.site || q.site === currentSite) : all), [all, currentSite])
-}
-/** first non-empty, non-"—" value — the queue card must not show a dash just
- *  because a cell exists as an empty string */
-function pickVal(...xs: (string | undefined)[]): string {
-  for (const x of xs) { const t = (x ?? '').trim(); if (t && t !== '—') return t }
-  return '—'
-}
-/** A work queue and its tracking rows travel on DIFFERENT sync paths (ops_queues
- *  vs the 16k-row tracking mirror), so on a device that hasn't finished pulling
- *  today's import the queue card arrives first and its VINs have no local row —
- *  model/color showed as "— · — · —". Backfill exactly the missing rows from
- *  the server (one batched query per queue) and merge them into the store. */
-function useQueueRowBackfill(queue: WorkQueue | null) {
-  const tried = useRef(new Set<string>())
-  useEffect(() => {
-    if (!queue || !isConfigured() || tried.current.has(queue.id)) return
-    const missing = queue.items.filter((i) => !useTracking.getState().rows[i.vin]).map((i) => i.vin)
-    if (!missing.length) return
-    tried.current.add(queue.id)
-    fetchTrackingRowsByVins(missing)
-      .then((rows) => { if (rows.length) useTracking.getState().mergeServerRows(rows) })
-      .catch(() => tried.current.delete(queue.id))
-  }, [queue])
 }
 /** Explains a failed scan: if the VIN exists but belongs to another yard,
  *  name that yard instead of the misleading "ไม่พบ VIN". */
@@ -1348,46 +1325,12 @@ function WalkView() {
   // Pre Gate-in queues "(M-D-N)" — process queues (PDI / PM / Wash) live under the
   // PDI role, not here. Completed queues stay listed so the station can still read
   // its own progress ("17/17 · เหลือ 0"), same as the Driver's delivery-run cards.
-  const baseGateInQueues = useMemo(() =>
+  const gateInQueues = useMemo(() =>
     // completed queues drop off the live Ops-Scan list (they've filed under their day)
     queues.filter(q => isPreGateInQueue(q.name) && !isQueueComplete(q)),
     [queues],
   )
-  // ── safety net: Pre Gate-in cars whose work queue never reached this device ──
-  // The admin's status (tracking row → Pre Gate-in) and the work queue travel
-  // through DIFFERENT sync paths: rows through tracking_rows, queues through the
-  // ops_queues cloud table. When the queue doesn't arrive (table missing /
-  // import ran without a Gate-in date / queue tagged to another yard), the
-  // station used to show NOTHING for a car the admin clearly lists as waiting —
-  // "ในแอดมินขึ้น Pre Gate-in แต่ใน ops scan ไม่มีคิวงาน". Collect every
-  // site-scoped Pre Gate-in row that is in NO queue into a virtual card:
-  // scanning works exactly the same, and once gated-in the row leaves
-  // Pre Gate-in and drops off this list by itself.
-  const gateInQueues = useMemo(() => {
-    // exclude only VINs already VISIBLE in a live queue card. Counting "in any
-    // queue" (incl. completed/hidden ones) reopened the original hole on
-    // phones: before ops_queues synced through the cloud each device kept its
-    // own local queues, so a phone could hold an old COMPLETED queue that
-    // still lists the VIN — the completed queue isn't displayed, the VIN was
-    // excluded from the virtual card, and the phone showed nothing while the
-    // desktop (no such stale queue) showed the card. The car's STATUS is the
-    // source of truth: still Pre Gate-in + not on any visible card → show it.
-    const queued = new Set<string>()
-    for (const q of baseGateInQueues) for (const i of q.items) queued.add(i.vin)
-    const uncovered = trackingRows.filter(r => !queued.has(r.vin) && deriveCarStatus(r.cells) === 'Pre Gate-in')
-    if (!uncovered.length) return baseGateInQueues
-    const virtual: WorkQueue = {
-      id: '__pregatein_noqueue',
-      name: '(รอ Gate-in · ยังไม่มีคิวงาน)',
-      createdAt: 0,
-      items: uncovered.map((r): QueueItem => ({ vin: r.vin, addedAt: 0, done: false })),
-    }
-    return [...baseGateInQueues, virtual]
-  }, [baseGateInQueues, trackingRows])
-  // resolve from gateInQueues (not the raw store) so the virtual card opens too
-  const selectedQueue = selectedQueueId ? gateInQueues.find(q => q.id === selectedQueueId) ?? null : null
-  useQueueRowBackfill(selectedQueue)
-  const rowMap = useTracking(s => s.rows)
+  const selectedQueue = selectedQueueId ? queues.find(q => q.id === selectedQueueId) ?? null : null
   // NG ⟺ the gate-in walk-around recorded damage on this car (what the operator
   // pressed OK / NG on) — not the imported "Status" column.
   const ngVins = useMemo(() => {
@@ -1397,18 +1340,17 @@ function WalkView() {
   }, [allUnits])
   const queueCars = useMemo(() => {
     if (!selectedQueue) return [] as { vin: string; model: string; color: string; grouping: string; location: string; done: boolean; ng: boolean; doneAt?: number; doneBy?: string }[]
-    const unitByVin = new Map(allUnits.map(x => [x.vin, x]))
     return selectedQueue.items.map(i => {
-      const row = rowMap[i.vin]
-      const u = unitByVin.get(i.vin)
+      const row = trackingRows.find(r => r.vin === i.vin)
+      const u = allUnits.find(x => x.vin === i.vin)
       // when the car was gate-in scanned: the queue item's doneAt, or the
       // "Gate In Time" cell that doTrackingGateIn stamps on the tracking row
       const gitCell = row?.cells['Gate In Time']
       return {
         vin: i.vin,
-        model: pickVal(row?.cells['Model name'], row?.cells['Model'], u?.modelName),
-        color: pickVal(row?.cells['Color'], u?.color),
-        grouping: pickVal(row?.cells['Grouping  Number']),
+        model: row?.cells['Model'] ?? row?.cells['Model name'] ?? u?.modelName ?? '—',
+        color: row?.cells['Color'] ?? u?.color ?? '—',
+        grouping: row?.cells['Grouping  Number'] || '—',
         location: yardLocCode(u) || '—',
         done: i.done,
         ng: ngVins.has(i.vin),
@@ -1416,7 +1358,7 @@ function WalkView() {
         doneBy: i.doneBy ?? row?.cells['Gate In Inspector'] ?? '',
       }
     }).sort((a, b) => Number(a.done) - Number(b.done)) // ยังไม่สแกน ขึ้นก่อน
-  }, [selectedQueue, rowMap, allUnits, ngVins])
+  }, [selectedQueue, trackingRows, allUnits, ngVins])
 
   const unit = vin ? units.find(u => u.vin === vin) ?? null : null
   const trackRow = trackingVin ? (trackingRows.find(r => r.vin === trackingVin) ?? null) : null
@@ -2829,19 +2771,16 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
   // operator who had just created it thought the queue never arrived).
   const procQueues = useMemo(() => queues.filter(q => !isPreGateInQueue(q.name) && !isQueueComplete(q) && !isStationWorkComplete(q)), [queues])
   const selectedQueue = selectedQueueId ? queues.find(q => q.id === selectedQueueId) ?? null : null
-  useQueueRowBackfill(selectedQueue)
-  const rowMap = useTracking(s => s.rows)
   const queueCars = useMemo(() => {
     if (!selectedQueue) return []
-    const unitByVin = new Map(units.map(x => [x.vin, x]))
     return selectedQueue.items.filter(i => !i.done).map(i => {
-      const u = unitByVin.get(i.vin)
-      const row = rowMap[i.vin]
+      const u = units.find(x => x.vin === i.vin)
+      const row = trackingRows.find(r => r.vin === i.vin)
       return {
         vin: i.vin,
-        model: pickVal(u?.modelName, row?.cells['Model name'], row?.cells['Model']),
-        color: pickVal(row?.cells['Color'], u?.color),
-        grouping: pickVal(row?.cells['Grouping  Number']),
+        model: u?.modelName ?? row?.cells['Model name'] ?? row?.cells['Model'] ?? '—',
+        color: row?.cells['Color'] ?? u?.color ?? '—',
+        grouping: row?.cells['Grouping  Number'] || '—',
         location: yardLocCode(u) || '—',
         stage: stageOf(i),
         drivingBy: drivingNow(i),
@@ -2850,7 +2789,7 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
         checkedAt: i.checkedAt ?? i.doneAt,
       }
     }).sort((a, b) => byYardLocation(a.location, b.location))
-  }, [selectedQueue, units, rowMap])
+  }, [selectedQueue, units, trackingRows])
 
   const unit = vin ? units.find(u => u.vin === vin) ?? null : null
   // the station task this car is currently in (PDI / FINAL PM / Wash …)

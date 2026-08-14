@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import { Layout } from './components/Layout'
-import { OfflineGate } from './components/OfflineGate'
 import { LoginScreen } from './components/LoginScreen'
 import { LogoLoaderOverlay } from './components/LogoLoader'
 import { Toaster } from './components/ui'
@@ -83,20 +82,13 @@ export default function App() {
   // ── login roster: fetch BEFORE showing the login screen, logged-in or not —
   //    a field account created on the admin's computer must be able to log in
   //    from its own phone, which never had that account in its local cache. ──
-  //    LOCAL-FIRST: a device with a cached roster enters immediately — the
-  //    cloud refresh keeps running in the background and applies when it lands
-  //    (incl. the fail-closed logout for deleted accounts). Only a truly fresh
-  //    device waits, and never longer than 5s: the old gate awaited a Supabase
-  //    request with NO timeout, so a slow yard network held everyone on the
-  //    logo screen indefinitely.
-  const [usersReady, setUsersReady] = useState(() => useYard.getState().appUsers.length > 0)
+  const [usersReady, setUsersReady] = useState(false)
   useEffect(() => {
     let cancelled = false
     useYard.getState().loadAppUsersFromCloud()
       .catch((e) => console.error('[App] appUsers load', e))
       .finally(() => { if (!cancelled) setUsersReady(true) })
-    const cap = setTimeout(() => { if (!cancelled) setUsersReady(true) }, 5000)
-    return () => { cancelled = true; clearTimeout(cap) }
+    return () => { cancelled = true }
   }, [])
 
   // ── branded boot loader: fetches data from Supabase on login,
@@ -124,17 +116,6 @@ export default function App() {
   useEffect(() => {
     if (!currentSite) openSiteModal()
   }, [currentSite, openSiteModal])
-
-  // as soon as a yard is picked/switched, pull THAT site's tracking rows first
-  // (server-filtered, ~2 MB not the whole multi-site table) — units/yard-plan
-  // already do this via loadFromSupabase's siteId scoping; the tracking dataset
-  // (Unit List / Dashboard numbers) otherwise just kept crawling through its
-  // generic all-sites sync with no idea which yard the operator actually needs
-  // right now.
-  useEffect(() => {
-    if (!loggedInUserId || !currentSite) return
-    useTracking.getState().loadSiteFirst().catch(() => {})
-  }, [loggedInUserId, currentSite])
 
   // stale-session cleanup: if the signed-in account was deleted/deactivated
   // while this device was open, clear the session state too (the render gate
@@ -286,10 +267,7 @@ export default function App() {
     if (!loggedInUserId) return
     const catchUp = () => {
       useTracking.getState().syncCloud().catch(() => {})
-      useTracking.getState().ensureComplete().catch(() => {})
       useYard.getState().loadFromSupabase().catch(() => {})
-      useYard.getState().ensureUnitsComplete().catch(() => {})
-      refreshCounts() // hidden tabs skip the count refresh — catch up on wake
     }
     let hiddenAt = 0
     const onVis = () => {
@@ -299,31 +277,7 @@ export default function App() {
     }
     document.addEventListener('visibilitychange', onVis)
     window.addEventListener('online', catchUp)
-    // verify completeness once shortly after boot (the first sync has settled
-    // by then) — a device whose first pull came up short backfills the rest
-    // instead of sitting on it. No periodic re-poll after this: catchUp()
-    // above re-runs it whenever the tab wakes from ≥60s hidden or the network
-    // returns, and realtime pushes cover everything in between — same as the
-    // pre-mirror design (boot + catch-up + realtime, no background timer).
-    const boot = setTimeout(() => useTracking.getState().ensureComplete().catch(() => {}), 12_000)
-    // same convergence check for the yard-plan/units table — staggered 15s so
-    // it doesn't compete with the tracking check above for bandwidth.
-    const bootUnits = setTimeout(() => useYard.getState().ensureUnitsComplete().catch(() => {}), 15_000)
-    // the shared cloud numbers every screen shows (In Yard count, dashboard
-    // stats): pulled once now, then only on realtime push + catch-up — no
-    // blind timer polling a database that already has enough real traffic.
-    const refreshCounts = () => {
-      if (document.visibilityState === 'hidden') return
-      useYard.getState().refreshCloudInYard().catch(() => {})
-      useYard.getState().refreshCloudStats().catch(() => {})
-      useTracking.getState().refreshCloudTotal().catch(() => {})
-    }
-    refreshCounts()
-    return () => {
-      document.removeEventListener('visibilitychange', onVis)
-      window.removeEventListener('online', catchUp)
-      clearTimeout(boot); clearTimeout(bootUnits)
-    }
+    return () => { document.removeEventListener('visibilitychange', onVis); window.removeEventListener('online', catchUp) }
   }, [loggedInUserId])
 
   // dev-only store handles for automated tests (same pattern as Units' __tracking)
@@ -388,13 +342,11 @@ export default function App() {
   // roster) or is deactivated goes back to login. It used to fall through with
   // a null role — `isOpsOnlyRole(undefined) === false` — straight into the
   // full admin shell.
-  if (!loggedInUserId || !me || !me.active) return <><LoginScreen /><OfflineGate /><Toaster /></>
+  if (!loggedInUserId || !me || !me.active) return <><LoginScreen /><Toaster /></>
 
-  // brand loader while the boot animation plays or yard data is still loading.
-  // In online-100% mode `trackingLoaded` only flips once CLOUD rows are in
-  // hand, so the first thing on screen is never this device's own leftovers.
+  // brand loader while the boot animation plays or yard data is still loading
   if (booting || !trackingLoaded)
-    return <><LogoLoaderOverlay label="กำลังโหลดข้อมูลจากคลาวด์" /><OfflineGate /><Toaster /></>
+    return <><LogoLoaderOverlay label="กำลังโหลดข้อมูล" /><Toaster /></>
 
   // field roles (driver / walk-around / PM / mechanic) — and ANY account on a
   // phone — live in Yard Ops only: no sidebar, no admin pages
@@ -403,7 +355,6 @@ export default function App() {
       <>
         <OpsShell><YardOps /></OpsShell>
         <SelectSiteModal />
-        <OfflineGate />
         <Toaster />
       </>
     )
@@ -412,7 +363,6 @@ export default function App() {
     <>
       <Layout>{pages[view]}</Layout>
       <SelectSiteModal />
-      <OfflineGate />
       <Toaster />
     </>
   )

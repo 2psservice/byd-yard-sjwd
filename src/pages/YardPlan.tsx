@@ -122,7 +122,7 @@ export function YardPlan() {
   const blocks = useBlocks()
   const currentSite = useYard((s) => s.currentSite)
   const sites = useYard((s) => s.sites)
-  const { autoParkAll, addBlock, updateBlock, removeBlock, restoreBlocksFromUnits, toast } = useYard()
+  const { autoParkAll, addBlock, updateBlock, removeBlock, toast } = useYard()
   const t = makeT(lang)
   const siteName = sites.find((x) => x.id === currentSite)?.name
 
@@ -182,11 +182,6 @@ export function YardPlan() {
   const units = useMemo(
     () => (currentSite ? allUnits.filter((u) => u.site === currentSite) : allUnits),
     [allUnits, currentSite],
-  )
-  // cars that still carry a slot — the raw material for the plan-restore button
-  const positionedCount = useMemo(
-    () => units.filter((u) => u.block && u.slot && u.row && u.status !== 'DEPARTED').length,
-    [units],
   )
 
   // ── find-car (ใบหารถ): Ctrl+F opens a bulk VIN search over this yard ──
@@ -632,19 +627,6 @@ export function YardPlan() {
                 <Square size={40} className="mb-3" />
                 <div className="text-[15px] font-semibold">ยังไม่มีบล็อกในผัง</div>
                 <div className="text-[13px] mt-1">กด “แก้ไขผัง” แล้ว “เพิ่มบล็อก” เพื่อเริ่มจัดวาง</div>
-                {/* the parked cars still remember their block/slot/row — one tap
-                    rebuilds every referenced block when the drawn plan was lost */}
-                {positionedCount > 0 && (
-                  <button className="btn btn-primary mt-4 px-4 py-2 text-[13.5px]"
-                    onClick={() => {
-                      const n = restoreBlocksFromUnits()
-                      toast(n ? 'ok' : 'err', n
-                        ? `กู้ผังแล้ว ${n} บล็อก จากตำแหน่งรถ ${positionedCount.toLocaleString()} คัน — ลากจัดตำแหน่งกล่องได้ในโหมดแก้ไขผัง`
-                        : 'ไม่พบตำแหน่งรถสำหรับกู้ผัง')
-                    }}>
-                    กู้ผังอัตโนมัติจากตำแหน่งรถ ({positionedCount.toLocaleString()} คัน)
-                  </button>
-                )}
               </div>
             )}
           </div>

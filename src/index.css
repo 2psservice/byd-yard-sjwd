@@ -119,8 +119,6 @@ input, textarea, select, [contenteditable='true'] {
 .panel-solid { background: var(--panel); border: 1px solid rgba(0, 0, 0, 0.05); border-radius: var(--radius); }
 .hairline { border-color: var(--line); }
 .divider { height: 1px; background: var(--line); }
-/* vertical column separators for report-style tables */
-.tbl-vlines th + th, .tbl-vlines td + td { border-left: 1px solid var(--line); }
 .glow-ring { box-shadow: 0 24px 70px -18px rgba(0, 0, 0, 0.32), 0 0 0 0.5px rgba(0, 0, 0, 0.05); }
 
 /* ---------- buttons (iOS: rounded, tap-dim) ---------- */
