@@ -289,6 +289,7 @@ export default function App() {
       useTracking.getState().ensureComplete().catch(() => {})
       useYard.getState().loadFromSupabase().catch(() => {})
       useYard.getState().ensureUnitsComplete().catch(() => {})
+      refreshCounts() // hidden tabs skip the periodic poll — catch up on wake
     }
     let hiddenAt = 0
     const onVis = () => {
@@ -316,12 +317,20 @@ export default function App() {
     // number for every device) + the row total behind the sync-status badge.
     // 30s keeps all screens within half a minute of each other.
     const refreshCounts = () => {
+      // a tab nobody is looking at must not keep the server busy — 20 devices
+      // with background tabs were polling the (nano-sized) database forever;
+      // catchUp() refreshes the moment the tab becomes visible again
+      if (document.visibilityState === 'hidden') return
       useYard.getState().refreshCloudInYard().catch(() => {})
       useYard.getState().refreshCloudStats().catch(() => {})
       useTracking.getState().refreshCloudTotal().catch(() => {})
     }
     refreshCounts()
-    const ivCounts = setInterval(refreshCounts, 30_000)
+    // 60s: the periodic poll is only a SAFETY NET — the real freshness comes
+    // from the realtime push (every edit anywhere triggers a refresh within
+    // seconds), so a slower heartbeat costs nothing visible but halves the
+    // steady load on the shared database
+    const ivCounts = setInterval(refreshCounts, 60_000)
     return () => {
       document.removeEventListener('visibilitychange', onVis)
       window.removeEventListener('online', catchUp)

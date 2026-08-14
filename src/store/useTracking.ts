@@ -897,12 +897,16 @@ onSync('viewdefault', () => { useTracking.getState().seedViewDefault().catch((e)
 let countsTimer: ReturnType<typeof setTimeout> | null = null
 function scheduleCountsRefresh() {
   if (countsTimer) clearTimeout(countsTimer)
+  // 3s debounce: during a bulk import thousands of realtime events stream in —
+  // the refresh (which now includes the heavier dashboard_stats scan) must
+  // coalesce them instead of hammering the shared database once per burst
   countsTimer = setTimeout(() => {
     countsTimer = null
+    if (document.visibilityState === 'hidden') return // background tab — wake catch-up covers it
     useYard.getState().refreshCloudInYard().catch(() => {})
     useYard.getState().refreshCloudStats().catch(() => {})
     useTracking.getState().refreshCloudTotal().catch(() => {})
-  }, 1500)
+  }, 3000)
 }
 // Truncated INSERT/UPDATE with no VIN at all → we know SOMETHING changed but
 // not what: run an incremental syncCloud (cheap — only rows newer than
