@@ -13,6 +13,7 @@ import type { RawRow } from '../lib/excel'
 import type { DefectRow, TrackRow } from '../lib/excelTracking'
 import * as db from '../lib/db'
 import { useUnitsView } from './useUnitsView'
+import { idbGetAllUnits, idbPutUnits, idbDeleteUnits } from '../lib/idb'
 import { onSync, sendSync } from '../lib/syncBus'
 import { hashPassword, verifyPassword, isHashed } from '../lib/password'
 import { resolvePart, resolveDefect } from '../lib/masterDefect'
@@ -320,6 +321,8 @@ interface YardState {
   ensureUnitSites: () => void
   // --- supabase ---
   loadFromSupabase: () => Promise<void>
+  /** boot cache: fill the yard plan from IndexedDB before the network answers */
+  loadUnitsFromIdb: () => Promise<void>
   subscribeRealtime: () => void
   unsubscribeRealtime: () => void
   // --- co-inspection defects ---
@@ -1165,6 +1168,22 @@ export const useYard = create<YardState>()(
           return { units }
         }),
 
+      // ── boot cache: the yard plan's cars, straight from IndexedDB ─────────
+      // Fills only VINs the store doesn't hold yet (an in-memory copy — a
+      // fresher localStorage hydration or a write this session — always wins).
+      loadUnitsFromIdb: async () => {
+        try {
+          const cached = await idbGetAllUnits()
+          if (!cached.length) return
+          set((s) => {
+            const units = { ...s.units }
+            let added = 0
+            for (const u of cached) if (u?.vin && !units[u.vin]) { units[u.vin] = u; added++ }
+            return added ? { units } : s
+          })
+        } catch { /* IndexedDB unavailable — the cloud load fills in as before */ }
+      },
+
       // ── Supabase ───────────────────────────────────────────────────────────
       loadFromSupabase: async () => {
         if (!db.isConfigured()) return
@@ -1202,8 +1221,16 @@ export const useYard = create<YardState>()(
             if (local.length) db.replaceBlocks(siteId, local).catch((e) => console.error('[db] seedBlocks', e))
           }
         }).catch((e) => console.error('[db] fetchBlocks', e))
+        // stream: paint cars into the yard plan page by page — a cold device
+        // used to stare at an empty plan until the LAST page of ~2,000 cars
+        // (+ damages) had arrived; now they flow in with the layout
+        const streamUnits = (batch: Unit[]) => set((s) => {
+          const units = { ...s.units }
+          for (const u of batch) units[u.vin] = u
+          return { units }
+        })
         const [cloud, trailers] = await Promise.all([
-          db.fetchAllUnits(siteId),
+          db.fetchAllUnits(siteId, streamUnits),
           db.fetchTrailers(siteId),
         ])
         await blocksDone // callers may assume the layout is settled on return
@@ -1553,7 +1580,11 @@ export const useYard = create<YardState>()(
         lang: s.lang, planMode: s.planMode, currentUser: s.currentUser, currentDriver: s.currentDriver,
         groupModelsInRow: s.groupModelsInRow, laneDepth: s.laneDepth, view: s.view, appUsers: s.appUsers, loggedInUserId: s.loggedInUserId,
         loginAt: s.loginAt, currentSite: s.currentSite,
-        units: s.units, trailers: s.trailers, policies: s.policies, blocksBySite: s.blocksBySite, models: s.models,
+        // units moved to IndexedDB (see the write-through above): the snapshot
+        // here regularly outgrew localStorage's ~5 MB cap and the whole save
+        // then failed silently — losing not just units but EVERYTHING in this
+        // key. {} keeps the shape for hydration; loadUnitsFromIdb refills.
+        units: {}, trailers: s.trailers, policies: s.policies, blocksBySite: s.blocksBySite, models: s.models,
         // trips grew forever (full GPS path per drive) until localStorage hit its
         // quota and EVERY state change silently stopped persisting. Keep the 30
         // most recent, each capped to its last 600 fixes (~10 min at 1 Hz).
@@ -1563,6 +1594,42 @@ export const useYard = create<YardState>()(
     },
   ),
 )
+
+// ── units → IndexedDB write-through (yard-plan boot cache) ──────────────────
+// localStorage caps at ~5 MB and fails SILENTLY past it — with ~2,000 cars +
+// damages the units snapshot stopped saving on heavier devices, so the plan
+// opened empty and re-downloaded everything every time. IndexedDB has no such
+// cap. Debounced; photos stripped (multi-hundred-KB base64 — cloud owns them);
+// flushed when the tab hides (mobile PWAs die without beforeunload).
+let unitsIdbTimer: ReturnType<typeof setTimeout> | null = null
+let unitsIdbLastRef: Record<string, Unit> | null = null
+let unitsIdbLastKeys: Set<string> | null = null
+function flushUnitsIdb() {
+  if (unitsIdbTimer) { clearTimeout(unitsIdbTimer); unitsIdbTimer = null }
+  const units = useYard.getState().units
+  const vals = Object.values(units).map((u) => (u.damages.length
+    ? { ...u, damages: u.damages.map((d) => ({ ...d, photo: undefined, photos: undefined })) }
+    : u))
+  idbPutUnits(vals).catch((e) => console.error('[idb] units put', e))
+  const keys = new Set(Object.keys(units))
+  if (unitsIdbLastKeys) {
+    const gone = [...unitsIdbLastKeys].filter((k) => !keys.has(k))
+    if (gone.length) idbDeleteUnits(gone).catch(() => {})
+  }
+  unitsIdbLastKeys = keys
+}
+useYard.subscribe((s) => {
+  if (s.units === unitsIdbLastRef) return
+  unitsIdbLastRef = s.units
+  if (unitsIdbTimer) clearTimeout(unitsIdbTimer)
+  unitsIdbTimer = setTimeout(flushUnitsIdb, 1500)
+})
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', () => { if (unitsIdbTimer) flushUnitsIdb() })
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && unitsIdbTimer) flushUnitsIdb()
+  })
+}
 
 // ── realtime lane compaction ─────────────────────────────────────────────────
 // Lanes must never sit with holes, no matter which device caused them: a

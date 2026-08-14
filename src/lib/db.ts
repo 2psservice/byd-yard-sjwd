@@ -207,7 +207,13 @@ export async function fetchUnitsByVins(vins: string[]): Promise<Unit[]> {
  *  Paginated — PostgREST caps a single request at 1,000 rows, so a >1,000-unit
  *  yard silently lost the tail (units past the cap never loaded → their damages
  *  "vanished" after refresh even though they were safely in the cloud). */
-export async function fetchAllUnits(siteId?: string | null): Promise<Unit[]> {
+export async function fetchAllUnits(
+  siteId?: string | null,
+  /** called with each page THE MOMENT it lands — lets the yard plan paint cars
+   *  while the rest of the pull is still in flight, instead of holding every
+   *  car back until the last page arrived */
+  onPage?: (units: Unit[]) => void,
+): Promise<Unit[]> {
   if (!isConfigured()) return []
   const PAGE = 500
   let head = supabase.from('units').select('vin', { count: 'exact', head: true })
@@ -221,11 +227,13 @@ export async function fetchAllUnits(siteId?: string | null): Promise<Unit[]> {
       let q = supabase.from('units').select('*, damages(*)')
       if (siteId) q = (q as any).eq('site_id', siteId)
       const { data, error } = await (q as any).order('vin').range(p * PAGE, p * PAGE + PAGE - 1)
-      if (error) { console.error('[db] fetchAllUnits page', p, error); return [] as DbUnitWithDamages[] }
-      return (data ?? []) as DbUnitWithDamages[]
+      if (error) { console.error('[db] fetchAllUnits page', p, error); return [] as Unit[] }
+      const units = ((data ?? []) as DbUnitWithDamages[]).map(rowToUnit)
+      if (units.length) onPage?.(units)
+      return units
     }),
   )
-  return pages.flat().map(rowToUnit)
+  return pages.flat()
 }
 
 /** บันทึกหรืออัปเดตรถ 1 คัน (ไม่รวม damages) — retries on transient failure, throws if it never lands */
