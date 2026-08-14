@@ -639,7 +639,38 @@ export const useYard = create<YardState>()(
         const names = [site.name, site.code].filter(Boolean).map((v) => normName(v as string))
         const n = await db.fetchInYardCount(site.id, names)
         // only adopt real answers — a failed call keeps the last good number
-        if (n !== null && get().currentSite === site.id) set({ cloudInYard: n })
+        if (n !== null) {
+          if (get().currentSite === site.id) set({ cloudInYard: n })
+          return
+        }
+        // ── RPC not installed / unreachable: shared "agreed" count ──────────
+        // Without the SQL function each device fell back to counting its OWN
+        // rows — which is exactly the number that differs while a device is
+        // still backfilling. Instead: any device whose local set is VERIFIED
+        // COMPLETE (rows === the cloud's exact count → its derived In Yard IS
+        // the cloud's) publishes that number to app_config, and every device
+        // shows the published value. One number everywhere, no SQL required.
+        try {
+          const [{ useTracking }, { countInYardFromTracking }] = await Promise.all([
+            import('./useTracking'), import('../lib/carStatus'),
+          ])
+          const key = `inyard_agreed_${site.id}`
+          const t = useTracking.getState()
+          const complete = t.cloudTotal !== null && Object.keys(t.rows).length === t.cloudTotal
+          if (complete) {
+            const mine = countInYardFromTracking(Object.values(t.rows), site.id, get().sites)
+            if (get().currentSite === site.id) set({ cloudInYard: mine })
+            // publish only on change — 20 idle devices must not write every 30s
+            const cur = await db.fetchAppConfig<{ n: number; at: number }>(key)
+            if (cur?.n !== mine) db.saveAppConfig(key, { n: mine, at: Date.now() }).catch(() => {})
+            return
+          }
+          const agreed = await db.fetchAppConfig<{ n: number; at: number }>(key)
+          // trust a published number only while it's fresh (a complete device
+          // refreshed it within the last 10 min) — never a stale leftover
+          if (agreed && typeof agreed.n === 'number' && Date.now() - agreed.at < 10 * 60_000 && get().currentSite === site.id)
+            set({ cloudInYard: agreed.n })
+        } catch { /* keep the last good number */ }
       },
 
       toast: (kind, msg) => {
