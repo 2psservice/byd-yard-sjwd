@@ -1184,20 +1184,29 @@ export const useYard = create<YardState>()(
         //    light, and switching sites re-fetches. Merge per-vin, never drop local.
         const siteId = get().currentSite
         if (!siteId) return // no yard picked yet → wait; setCurrentSite re-runs this
-        const [cloud, trailers, cloudBlocks] = await Promise.all([
+        // 3) yard-plan layout FIRST, on its own: the block list is a few KB and
+        //    comes back in a blink, while fetchAllUnits pages through ~800 cars
+        //    WITH their damages (seconds). Awaiting them together held the
+        //    layout hostage, so a device with a cold cache stared at an empty
+        //    grid ("ยังไม่มีบล็อกในผัง") for the whole units fetch. Painting it
+        //    the moment it lands means the yard's shape is on screen straight
+        //    away and the cars fill into it behind.
+        //    Cloud is the source of truth (any device's edit pushed there);
+        //    when the cloud has none, seed it from this device so an existing
+        //    local layout propagates to other machines.
+        const blocksDone = db.fetchBlocks(siteId).then((cloudBlocks) => {
+          if (cloudBlocks.length) {
+            set((s) => ({ blocksBySite: { ...s.blocksBySite, [siteKey(siteId)]: cloudBlocks } }))
+          } else {
+            const local = get().blocksBySite[siteKey(siteId)] ?? []
+            if (local.length) db.replaceBlocks(siteId, local).catch((e) => console.error('[db] seedBlocks', e))
+          }
+        }).catch((e) => console.error('[db] fetchBlocks', e))
+        const [cloud, trailers] = await Promise.all([
           db.fetchAllUnits(siteId),
           db.fetchTrailers(siteId),
-          db.fetchBlocks(siteId),
         ])
-        // 3) yard-plan layout: cloud is the source of truth (any device's edit
-        //    pushed there); when the cloud has none, seed it from this device so
-        //    an existing local layout propagates to other machines.
-        if (cloudBlocks.length) {
-          set((s) => ({ blocksBySite: { ...s.blocksBySite, [siteKey(siteId)]: cloudBlocks } }))
-        } else {
-          const local = get().blocksBySite[siteKey(siteId)] ?? []
-          if (local.length) db.replaceBlocks(siteId, local).catch((e) => console.error('[db] seedBlocks', e))
-        }
+        await blocksDone // callers may assume the layout is settled on return
         if (!cloud.length && !trailers.length) return
         set((s) => {
           const merged: Record<string, Unit> = { ...s.units }
