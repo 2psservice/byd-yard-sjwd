@@ -35,10 +35,11 @@ async function withRetry<T>(fn: () => PromiseLike<{ error: unknown } & T>, attem
  * Upsert many rows in parallel chunks, retrying failed chunks up to 2× — a big
  * defect import (16k+ rows) must not silently drop a chunk on a transient error.
  */
-async function bulkUpsert(table: string, rows: any[], chunkSize: number, onConflict: string, concurrency = 5, stripFallback?: (row: any) => any): Promise<void> {
+async function bulkUpsert(table: string, rows: any[], chunkSize: number, onConflict: string, concurrency = 5, stripFallback?: (row: any) => any, onProgress?: (done: number) => void): Promise<void> {
   if (!rows.length) return
   const chunks: any[][] = []
   for (let i = 0; i < rows.length; i += chunkSize) chunks.push(rows.slice(i, i + chunkSize))
+  let done = 0
   const runChunk = async (c: any[], attempt = 0): Promise<void> => {
     const { error } = await supabase.from(table).upsert(c, { onConflict })
     if (error) {
@@ -52,7 +53,10 @@ async function bulkUpsert(table: string, rows: any[], chunkSize: number, onConfl
     }
   }
   for (let i = 0; i < chunks.length; i += concurrency) {
-    await Promise.all(chunks.slice(i, i + concurrency).map((c) => runChunk(c)))
+    // report per completed chunk, not per batch, so a big import's progress bar
+    // moves smoothly instead of jumping every (concurrency × chunkSize) rows
+    await Promise.all(chunks.slice(i, i + concurrency).map((c) =>
+      runChunk(c).then(() => { done += c.length; onProgress?.(done) })))
   }
 }
 
@@ -338,9 +342,9 @@ export async function upsertUnit(u: Unit): Promise<void> {
 }
 
 /** บันทึกหรืออัปเดตรถหลายคันพร้อมกัน (batch) */
-export async function upsertUnits(units: Unit[]): Promise<void> {
+export async function upsertUnits(units: Unit[], onProgress?: (done: number) => void): Promise<void> {
   if (!isConfigured() || !units.length) return
-  await bulkUpsert('units', units.map(unitToRow), 200, 'vin')
+  await bulkUpsert('units', units.map(unitToRow), 200, 'vin', 5, undefined, onProgress)
 }
 
 /** ลบรถ (cascade → ลบ damages + trips อัตโนมัติ) */
@@ -700,7 +704,7 @@ export async function clearOpsQueues(): Promise<void> {
 
 // ── bulk damage upsert (migration / resilience — onConflict id, FK-safe) ────
 
-export async function upsertDamages(items: { vin: string; d: Damage }[]): Promise<void> {
+export async function upsertDamages(items: { vin: string; d: Damage }[], onProgress?: (done: number) => void): Promise<void> {
   if (!isConfigured() || !items.length) return
   // parallel chunks + retry — 16k+ defect rows finish in a few seconds and no
   // chunk is silently dropped on a transient error (that stranded ~6k rows before).
@@ -709,7 +713,7 @@ export async function upsertDamages(items: { vin: string; d: Damage }[]): Promis
   // with NULL — heterogeneous chunks were randomly NULLing remark/area_th/item_th
   // on rows that happened to share a chunk with a row that had them.
   const rows = items.map(({ vin, d }) => ({ remark: null, area_th: null, item_th: null, ...damageToRow(vin, d) }))
-  await bulkUpsert('damages', rows, 500, 'id', 5, stripOptionalDamageCols)
+  await bulkUpsert('damages', rows, 500, 'id', 5, stripOptionalDamageCols, onProgress)
 }
 
 // ── tracking rows (master vehicle list — flexible JSONB columns) ────────────
