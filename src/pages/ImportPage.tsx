@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import {
-  UploadCloud, FileSpreadsheet, CheckCircle2, Table2, Trash2,
+  UploadCloud, FileSpreadsheet, Download, Sparkles, Trash2, CheckCircle2, Table2,
   Loader2, Database, MapPin, Car, CalendarDays, Hourglass, ClipboardCheck, AlertTriangle,
 } from 'lucide-react'
-import { useYard, useMe } from '../store/useYard'
+import { useYard } from '../store/useYard'
 import { useTracking } from '../store/useTracking'
 import { useOps } from '../store/useOps'
+import { downloadTemplate } from '../lib/excel'
 import { parseTrackingWorkbook, parseImportWorkbook, type ParseResult } from '../lib/excelTracking'
 import { parseLane, parseLaneWorkbook, type LaneParseResult, type LaneRow } from '../lib/laneImport'
 import { coInspectionAccepts, rowInSite, siteForRow } from '../lib/siteScope'
@@ -33,7 +34,7 @@ function dateSortVal(s: string): number {
 }
 
 export function ImportPage() {
-  const { toast, importDefects, updateLocations, clearAll } = useYard()
+  const { loadSample, clearAll, toast, importDefects, updateLocations } = useYard()
   const blocksBySite = useYard((s) => s.blocksBySite)
   const sites = useYard((s) => s.sites)
   const currentSite = useYard((s) => s.currentSite)
@@ -49,11 +50,6 @@ export function ImportPage() {
     [existing, yardUnits],
   )
   const { createGateInQueue, clearQueues } = useOps()
-  // deliberately the specific "admin" LOGIN (username), not any admin-role
-  // account — a destructive per-yard wipe is not something every admin should
-  // be able to reach, only the one account this yard's operator actually is
-  const me = useMe()
-  const isRootAdmin = me?.username === 'admin'
 
   // wipe THIS YARD's data only (the old version deleted every yard's rows,
   // units and queues in the whole cloud from one site's button)
@@ -98,7 +94,7 @@ export function ImportPage() {
       const res = await parseLaneWorkbook(file)
       setLocParsed(res); setLocFileName(file.name)
     } catch (e: any) {
-      toast('err', e?.message || 'อ่านไฟล์ไม่สำเร็จ — ต้องมีคอลัมน์ VinNo + LaneNo หรือ Vin + location')
+      toast('err', e?.message || 'อ่านไฟล์ไม่สำเร็จ — ต้องมีคอลัมน์ VinNo + LaneNo')
     } finally { setLocBusy(false) }
   }
 
@@ -131,7 +127,6 @@ export function ImportPage() {
     const placements: { vin: string; block: string; row: number; slot: number; modelName?: string; color?: string; gateInAt?: number }[] = []
     const badLane: LaneRow[] = []
     const rowFull: LaneRow[] = []
-    const fileClaimed = new Map<string, Set<number>>() // exact cells taken by earlier rows of THIS file
     for (const r of rows) {
       const lane = parseLane(r.lane)
       if (!lane) { badLane.push(r); continue }
@@ -142,17 +137,6 @@ export function ImportPage() {
       const k = `${block}|${lane.row}`
       if (!occ.has(k)) occ.set(k, new Set())
       const used = occ.get(k)!
-      // full-position code ("K0903" → col 9, EXACT row 3): the file states where
-      // the car physically stands, so it takes that exact cell — only another
-      // row of THIS file claiming the same cell is a conflict
-      if (lane.pos) {
-        const fc = fileClaimed.get(k) ?? new Set<number>()
-        if (fc.has(lane.pos)) { rowFull.push(r); continue }
-        fc.add(lane.pos); fileClaimed.set(k, fc)
-        used.add(lane.pos) // stacking rows below won't reuse this cell
-        placements.push({ vin: r.vin, block, row: lane.pos, slot: lane.row, modelName: r.modelName, color: r.colorName, gateInAt: r.gateInAt })
-        continue
-      }
       // how deep this column may stack: the block's own row count, or the global
       // lane depth when the file names a block this yard has not drawn yet
       const depth = hit?.rows ?? laneDepth
@@ -225,12 +209,9 @@ export function ImportPage() {
     [coParsed, existing],
   )
 
-  // upload progress for the co-inspection cloud push (done/total records)
-  const [coProg, setCoProg] = useState<{ done: number; total: number; phase: string } | null>(null)
   const confirmCo = async () => {
     if (!coParsed || coSaving) return
     setCoSaving(true)
-    setCoProg(null)
     try {
       const { updated, added, skipped, gateOut, moved } = commitCoInspection(coParsed)
       // defects: only for VINs that belong to this yard (accepted from the file, or already here)
@@ -238,7 +219,7 @@ export function ImportPage() {
       const defectsForSite = coParsed.defects.filter((d) => okVins.has(d.vin) || rowInSite(existing[d.vin], currentSite, sites))
       // AWAIT the cloud write — importDefects can push 10k+ damage rows; blocking here
       // (with the overlay below) stops the user reloading before it finishes
-      const def = await importDefects(defectsForSite, existing, (done, total, phase) => setCoProg({ done, total, phase }))
+      const def = await importDefects(defectsForSite, existing)
       toast(
         'ok',
         `Co Inspection · เติม ${updated.toLocaleString()} คัน${added ? ` · ใหม่ ${added.toLocaleString()}` : ''}` +
@@ -250,7 +231,7 @@ export function ImportPage() {
       setCoParsed(null); setCoFileName('')
     } catch (e: any) {
       toast('err', e?.message || 'บันทึกไม่สำเร็จ')
-    } finally { setCoSaving(false); setCoProg(null) }
+    } finally { setCoSaving(false) }
   }
 
   // yard scoping: Pre Gate-in imports only the ACTIVE site's sheet — a Vin List
@@ -334,7 +315,7 @@ export function ImportPage() {
   }, [siteRows])
 
   return (
-    <div>
+    <div className="max-w-[1100px] mx-auto">
       <PageHead title="นำเข้าข้อมูล" sub="อัปโหลดไฟล์ Excel (Vin list / Yard-to-Yard transfer) ที่มีคอลัมน์ Vin — ดาวน์โหลดเทมเพลตด้านขวาเพื่อดูคอลัมน์ที่รองรับ" />
 
       <div className="grid lg:grid-cols-5 gap-4">
@@ -479,21 +460,6 @@ export function ImportPage() {
                       })}
                     </div>
                   )}
-                  {/* live upload progress: how many records reached the cloud, and the % */}
-                  {coSaving && coProg && coProg.total > 0 && (
-                    <div className="mt-3">
-                      <div className="flex items-center justify-between text-[12px] mb-1">
-                        <b style={{ color: '#0891b2' }}>
-                          {coProg.phase} · {coProg.done.toLocaleString()} / {coProg.total.toLocaleString()} รายการ
-                        </b>
-                        <b className="tabular" style={{ color: '#0891b2' }}>{Math.round((coProg.done / coProg.total) * 100)}%</b>
-                      </div>
-                      <div className="h-2 rounded-full overflow-hidden" style={{ background: 'rgba(8,145,178,0.12)' }}>
-                        <div className="h-full rounded-full transition-all duration-300"
-                          style={{ width: `${Math.round((coProg.done / coProg.total) * 100)}%`, background: '#0891b2' }} />
-                      </div>
-                    </div>
-                  )}
                   <div className="flex items-center justify-between gap-2 mt-3 flex-wrap">
                     <span className="text-[12px]" style={{ color: coSaving ? '#0891b2' : 'var(--muted)' }}>
                       {coSaving
@@ -503,9 +469,7 @@ export function ImportPage() {
                     <div className="flex items-center gap-2">
                       <button className="btn" onClick={() => { setCoParsed(null); setCoFileName('') }} disabled={coSaving}>ยกเลิก</button>
                       <button className="btn" style={{ background: coSaving ? '#6b8fd4' : '#0891b2', color: '#fff' }} onClick={confirmCo} disabled={coSaving || coMatched + coNew + coGateOut === 0}>
-                        {coSaving
-                          ? <><Loader2 size={15} className="animate-spin" /> กำลังบันทึก…{coProg && coProg.total > 0 ? ` ${Math.round((coProg.done / coProg.total) * 100)}%` : ''}</>
-                          : <><CheckCircle2 size={15} /> ยืนยัน Merge ({(coMatched + coNew + coGateOut).toLocaleString()})</>}
+                        {coSaving ? <><Loader2 size={15} className="animate-spin" /> กำลังบันทึก…</> : <><CheckCircle2 size={15} /> ยืนยัน Merge ({(coMatched + coNew + coGateOut).toLocaleString()})</>}
                       </button>
                     </div>
                   </div>
@@ -527,7 +491,7 @@ export function ImportPage() {
                   color="#d97706" soft="rgba(217,119,6,0.1)"
                   icon={<MapPin size={20} style={{ color: '#d97706' }} />}
                   title="ลากไฟล์ Update Location มาวาง หรือคลิก"
-                  sub={<>คอลัมน์ <b>VinNo + LaneNo</b> (N-O15 → บล็อก OO ช่อง 15 เรียงลงแถวอัตโนมัติ) หรือ <b>Vin + location</b> รหัสเต็ม (K0903 → บล็อก K แถว 9 คันที่ 3 ตรงตำแหน่ง)</>}
+                  sub={<>ต้องมีคอลัมน์ <b>VinNo</b> + <b>LaneNo</b> — เช่น N-O15 → บล็อก <b>OO</b> ช่องที่ <b>15</b> · เรียงลงแถว 1–8 อัตโนมัติ</>}
                   busy={locBusy} drag={locDrag} inputRef={locInputRef} onFile={handleLocFile} setDrag={setLocDrag}
                 />
               ) : locPlan && (
@@ -620,7 +584,7 @@ export function ImportPage() {
             )}
           </div>
 
-          {isRootAdmin && vehicleCount > 0 && (
+          {vehicleCount > 0 && (
             <div className="panel p-5">
               <div className="flex items-center justify-between">
                 <div>
@@ -636,6 +600,13 @@ export function ImportPage() {
             </div>
           )}
 
+          <div className="panel p-4">
+            <div className="text-[12px] font-semibold mb-2" style={{ color: 'var(--muted)' }}>เครื่องมือ (เดโม่)</div>
+            <div className="flex gap-2">
+              <button className="btn flex-1" onClick={downloadTemplate}><Download size={14} /> เทมเพลต</button>
+              <button className="btn flex-1" onClick={() => { loadSample(); toast('ok', 'โหลดข้อมูลตัวอย่างหน้าอื่นแล้ว') }}><Sparkles size={14} /> ข้อมูลตัวอย่าง</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>

@@ -164,9 +164,6 @@ export function Dashboard() {
   const setUnitPreset = useYard((s) => s.setUnitPreset)
   const currentSite = useYard((s) => s.currentSite)
   const sites = useYard((s) => s.sites)
-  const toast = useYard((s) => s.toast)
-  // the CLOUD's In Yard count — same number on every device (fallback: local)
-  const cloudInYard = useYard((s) => s.cloudInYard)
   const allUnits = useUnits()
   const blocks = useBlocks()
   const allTrackingRows = useTrackingRows()
@@ -185,34 +182,7 @@ export function Dashboard() {
   const t = makeT(lang)
   const [popup, setPopup] = useState<PopupDef | null>(null)
 
-  // ── N4-style: the whole page's numbers computed on the SERVER ──────────────
-  // dashboard_stats (supabase-dashboard-stats.sql) runs the same deriveCarStatus
-  // logic over the cloud's rows, so every device asking gets the SAME snapshot —
-  // no dependence on how much this device has synced. Refreshed every 30s and
-  // pushed on every realtime change; adopt it while fresh (≤2 min), otherwise
-  // fall back to computing from local rows exactly as before.
-  const cloudStats = useYard((st) => st.cloudStats)
-  const [statsTick, setStatsTick] = useState(0) // re-check freshness each 30s
-  useEffect(() => { const iv = setInterval(() => setStatsTick((v) => v + 1), 30_000); return () => clearInterval(iv) }, [])
-  const serverStats = useMemo(() => {
-    void statsTick
-    if (!cloudStats || cloudStats.siteId !== (currentSite ?? '')) return null
-    return Date.now() - cloudStats.at < 2 * 60_000 ? cloudStats.data : null
-  }, [cloudStats, currentSite, statsTick])
-
   const s = useMemo(() => {
-    // server snapshot wins — every screen shows the same numbers
-    if (serverStats) {
-      const c = serverStats.cards
-      const byStatus = new Map(serverStats.status_breakdown.map((x) => [x.st, x.n]))
-      const statusBreakdown = CAR_STATUS_ORDER.map((st) => ({ st, n: byStatus.get(st) ?? 0 })).filter((x) => x.n > 0)
-      const mix = serverStats.model_mix.slice(0, 8).map((x) => ({ m: x.model, n: x.n }))
-      return {
-        total: serverStats.total, inYard: c.in_yard, parked: c.parked, gatein: c.gate_in,
-        expected: c.pre_gate_in, preGateOut: c.pre_gate_out, preload: c.preload, damaged: c.waiting_repair,
-        occupied: c.parked, cap: c.in_yard, mix, byZone: [] as [string, { used: number; cap: number }][], statusBreakdown,
-      }
-    }
     // ── real imported data (tracking rows) — driven by Car Status ──
     if (fromTracking) {
       let inYard = 0, parked = 0, gatein = 0, expected = 0, preGateOut = 0, preload = 0, damaged = 0
@@ -274,7 +244,7 @@ export function Dashboard() {
       byZone: [...byZone.entries()],
       statusBreakdown: [] as { st: string; n: number }[],
     }
-  }, [serverStats, fromTracking, trackingRows, units, blocks])
+  }, [fromTracking, trackingRows, units, blocks])
 
   // VINs that are real (from Excel) — used to exclude sample units from live events
   const trackingVins = useMemo(() => new Set(trackingRows.map(r => r.vin)), [trackingRows])
@@ -312,54 +282,31 @@ export function Dashboard() {
   // ── yard capacity (คัน) — the Car Status donut's denominator. The old
   // divisor was EVERY tracking row (incl. ~15k gate-out history), so a full
   // yard read "12%". The % now means: cars in the yard ÷ the yard's capacity.
-  // Shares the Daily-Stock report's config row ({ [siteId]: cap } under
-  // 'yardCapacity') so the pencil here and the Max Cap cell there edit the
-  // same number; the localStorage copy keeps it after a refresh even while
-  // the cloud read is in flight (or failing). Default = the plan's drawn slots.
-  const [caps, setCaps] = useState<Record<string, number>>(() => {
-    try { return JSON.parse(localStorage.getItem('sjwd.yardCapacity') || '{}') } catch { return {} }
-  })
+  // Admin sets the capacity per yard (pencil next to the number, synced via
+  // app_config); default = the plan's drawn slots.
+  const [capOverride, setCapOverride] = useState<number | null>(null)
   useEffect(() => {
     let dead = false
-    db.fetchAppConfig<Record<string, number>>('yardCapacity')
-      .then(async (v) => {
-        let next = v ?? {}
-        // one-time adoption of the legacy per-site row the old pencil wrote
-        if (currentSite && !(next[currentSite] > 0)) {
-          const legacy = await db.fetchAppConfig<number>(`yard_capacity_${currentSite}`).catch(() => null)
-          if (typeof legacy === 'number' && legacy > 0) {
-            next = { ...next, [currentSite]: legacy }
-            db.saveAppConfig('yardCapacity', next).catch(() => {})
-          }
-        }
-        if (dead || !Object.keys(next).length) return
-        setCaps((cur) => ({ ...cur, ...next }))
-        try { localStorage.setItem('sjwd.yardCapacity', JSON.stringify(next)) } catch { /* full/blocked */ }
-      })
-      .catch(() => {})
+    setCapOverride(null)
+    if (currentSite) {
+      db.fetchAppConfig<number>(`yard_capacity_${currentSite}`)
+        .then((v) => { if (!dead && typeof v === 'number' && v > 0) setCapOverride(v) })
+        .catch(() => {})
+    }
     return () => { dead = true }
   }, [currentSite])
-  const capOverride = currentSite && caps[currentSite] > 0 ? caps[currentSite] : null
   const blockCap = useMemo(() => blocks.reduce((a, b) => a + b.rows * b.cols, 0), [blocks])
   const yardCap = capOverride ?? (blockCap || s.total)
   const editCap = () => {
-    if (!currentSite) return
     const v = window.prompt('ความจุลานทั้งหมด (คัน) — ใช้เป็นตัวหารเปอร์เซ็นต์ "อยู่ในลาน"', String(yardCap))
     if (v == null) return
     const n = parseInt(v.replace(/[^0-9]/g, ''), 10)
     if (!n || n <= 0) return
-    const next = { ...caps, [currentSite]: n }
-    setCaps(next)
-    try { localStorage.setItem('sjwd.yardCapacity', JSON.stringify(next)) } catch { /* full/blocked */ }
-    db.saveAppConfig('yardCapacity', next)
-      .then(() => toast('ok', `บันทึกความจุลาน ${n.toLocaleString()} คัน`))
-      .catch(() => toast('err', 'บันทึกความจุขึ้นคลาวด์ไม่สำเร็จ — เครื่องนี้ยังใช้ค่าใหม่ได้'))
+    setCapOverride(n)
+    if (currentSite) db.saveAppConfig(`yard_capacity_${currentSite}`, n).catch(() => {})
   }
 
-  // headline In Yard: cloud-counted so every screen agrees; the tables below
-  // still reflect this device's rows (they converge via ensureComplete)
-  const inYardShown = serverStats ? s.inYard : fromTracking ? (cloudInYard ?? s.inYard) : s.inYard
-  const fill = fromTracking ? pct(inYardShown, yardCap) : pct(s.occupied, s.cap)
+  const fill = fromTracking ? pct(s.inYard, yardCap) : pct(s.occupied, s.cap)
 
   const openPopup = (label: string, accent: string, filter: (u: Unit) => boolean) =>
     setPopup({ label, accent, units: units.filter(filter) })
@@ -372,12 +319,12 @@ export function Dashboard() {
     <div className="max-w-[1400px] mx-auto">
       <PageHead
         title={t('dashboard')}
-        sub={`${new Date().toLocaleDateString('th-TH', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}${serverStats ? ' · ☁ เลขจากเซิร์ฟเวอร์ (ทุกเครื่องชุดเดียวกัน)' : ''}`}
+        sub={`${new Date().toLocaleDateString('th-TH', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}`}
         right={<LiveClock />}
       />
 
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3 mb-4">
-        <Stat label={t('inYard')} value={<Num n={inYardShown} />} accent="var(--brand)" icon={<Car size={17} />}
+        <Stat label={t('inYard')} value={<Num n={s.inYard} />} accent="var(--brand)" icon={<Car size={17} />}
           sub={`${t('total')} ${s.total}`} image="/side.png" imageVariant="side"
           onClick={kpiClick(t('inYard'), 'var(--brand)', u => ['GATE_IN','ASSIGNED','PARKED'].includes(u.status), 'inYard')} />
         <Stat label={t('expected')} value={<Num n={s.expected} />} accent="var(--st-pending)" icon={<Hourglass size={17} />}
@@ -397,7 +344,7 @@ export function Dashboard() {
       {popup && <VinPopup def={popup} onClose={() => setPopup(null)} />}
 
       {/* ── Summary: Model × Final Status (คลิกตัวเลขเพื่อดู VIN) ── */}
-      <YardSummary serverPivots={serverStats ? { final: serverStats.pivot_final, vos: serverStats.pivot_vos } : null} />
+      <YardSummary />
 
       <div className="grid lg:grid-cols-2 gap-4">
         {/* yard fill / car-status breakdown */}
@@ -407,7 +354,7 @@ export function Dashboard() {
             <span className="text-[12px] flex items-center gap-1" style={{ color: 'var(--muted)' }}>
               {fromTracking ? (
                 <>
-                  {inYardShown.toLocaleString()} / {yardCap.toLocaleString()}
+                  {s.inYard.toLocaleString()} / {yardCap.toLocaleString()}
                   <button onClick={editCap} title="ตั้งค่าความจุลาน (ตัวหารเปอร์เซ็นต์)" className="p-0.5" style={{ color: 'var(--faint)' }}>
                     <Pencil size={11} />
                   </button>

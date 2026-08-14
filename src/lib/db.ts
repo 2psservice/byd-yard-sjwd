@@ -35,11 +35,10 @@ async function withRetry<T>(fn: () => PromiseLike<{ error: unknown } & T>, attem
  * Upsert many rows in parallel chunks, retrying failed chunks up to 2× — a big
  * defect import (16k+ rows) must not silently drop a chunk on a transient error.
  */
-async function bulkUpsert(table: string, rows: any[], chunkSize: number, onConflict: string, concurrency = 5, stripFallback?: (row: any) => any, onProgress?: (done: number) => void): Promise<void> {
+async function bulkUpsert(table: string, rows: any[], chunkSize: number, onConflict: string, concurrency = 5, stripFallback?: (row: any) => any): Promise<void> {
   if (!rows.length) return
   const chunks: any[][] = []
   for (let i = 0; i < rows.length; i += chunkSize) chunks.push(rows.slice(i, i + chunkSize))
-  let done = 0
   const runChunk = async (c: any[], attempt = 0): Promise<void> => {
     const { error } = await supabase.from(table).upsert(c, { onConflict })
     if (error) {
@@ -53,10 +52,7 @@ async function bulkUpsert(table: string, rows: any[], chunkSize: number, onConfl
     }
   }
   for (let i = 0; i < chunks.length; i += concurrency) {
-    // report per completed chunk, not per batch, so a big import's progress bar
-    // moves smoothly instead of jumping every (concurrency × chunkSize) rows
-    await Promise.all(chunks.slice(i, i + concurrency).map((c) =>
-      runChunk(c).then(() => { done += c.length; onProgress?.(done) })))
+    await Promise.all(chunks.slice(i, i + concurrency).map((c) => runChunk(c)))
   }
 }
 
@@ -207,133 +203,29 @@ export async function fetchUnitsByVins(vins: string[]): Promise<Unit[]> {
   return out
 }
 
-/** Damage columns WITHOUT the photo payloads — photo_url/photo_urls hold
- *  base64 dataURLs, easily megabytes per yard. Fetching them inline made the
- *  yard-plan wait minutes for positions and let a timed-out page silently drop
- *  500 cars (whole lanes vanished). Photos stream in via fetchDamagePhotos. */
-const DMG_META_COLS = 'id,vin,area,area_th,type,item,item_th,severity,note,remark,recorded_at,recorded_by,source,station,category_ng,category_repair,incharge,status_repair,repair_date,repaired_by,repair_history'
-
-/** Resolved once per session: the light no-photos select when the DB has all
- *  the named columns, else the legacy full embed. Probed with a 1-row query so
- *  a missing column can never fail the real fetch. */
-let dmgSelectCache: string | null = null
-async function resolveUnitsSelect(): Promise<string> {
-  if (dmgSelectCache) return dmgSelectCache
-  const probe = await supabase.from('units').select(`vin, damages(${DMG_META_COLS})`).limit(1)
-  if (probe.error) {
-    console.error('[db] damages meta select unavailable — using damages(*)', probe.error)
-    dmgSelectCache = '*, damages(*)'
-  } else {
-    dmgSelectCache = `*, damages(${DMG_META_COLS})`
-  }
-  return dmgSelectCache
-}
-
-/** โหลดรถทุกคัน (+ ความเสียหายแบบไม่รวมรูป) จาก Supabase; กรองตาม site หากระบุ.
+/** โหลดรถทุกคัน (+ ความเสียหาย) จาก Supabase; กรองตาม site หากระบุ.
  *  Paginated — PostgREST caps a single request at 1,000 rows, so a >1,000-unit
  *  yard silently lost the tail (units past the cap never loaded → their damages
- *  "vanished" after refresh even though they were safely in the cloud).
- *  Each page retries on transient failure; a page that STILL fails is skipped
- *  (logged) rather than failing the whole call.
- *  `complete` marks a fetch where EVERY page arrived — only then may a caller
- *  treat the result as the yard's full truth (and e.g. drop local ghosts);
- *  a partial result must only ever be merged additively. */
-export async function fetchAllUnits(
-  siteId?: string | null,
-  /** called with each page as it lands, so the yard plan paints progressively */
-  onPage?: (units: Unit[]) => void,
-): Promise<{ units: Unit[]; complete: boolean }> {
-  if (!isConfigured()) return { units: [], complete: false }
-  const select = await resolveUnitsSelect()
-  // photo-free pages are tiny; the full-embed fallback carries base64 photos,
-  // so smaller pages keep each request under the gateway timeout
-  const PAGE = select.includes('damages(*)') ? 200 : 500
-  // legacy units carry NO site_id (created before site tagging) yet every
-  // screen scopes them as "!u.site || u.site === currentSite" — the fetch must
-  // match, or those cars exist only on whichever device still caches them
-  // (one screen showed 656 In Yard while another showed 1,979)
-  const siteFilter = siteId ? `site_id.eq.${siteId},site_id.is.null` : null
+ *  "vanished" after refresh even though they were safely in the cloud). */
+export async function fetchAllUnits(siteId?: string | null): Promise<Unit[]> {
+  if (!isConfigured()) return []
+  const PAGE = 500
   let head = supabase.from('units').select('vin', { count: 'exact', head: true })
-  if (siteFilter) head = (head as any).or(siteFilter)
+  if (siteId) head = (head as any).eq('site_id', siteId)
   const { count, error: cErr } = await head
-  if (cErr) { console.error('[db] fetchAllUnits count', cErr); return { units: [], complete: false } }
+  if (cErr) { console.error('[db] fetchAllUnits count', cErr); return [] }
   const total = count ?? 0
-  if (!total) return { units: [], complete: true } // the site truly has no units
-  let failed = 0
-  const nPages = Math.ceil(total / PAGE)
-  const fetchPage = (
-    async (p: number) => {
-      try {
-        const { data } = await withRetry<{ error: unknown; data: unknown }>(() => {
-          let q = supabase.from('units').select(select)
-          if (siteFilter) q = (q as any).or(siteFilter)
-          return (q as any).order('vin').range(p * PAGE, p * PAGE + PAGE - 1)
-        }, 4)
-        const rows = (data ?? []) as unknown as DbUnitWithDamages[]
-        if (onPage && rows.length) onPage(rows.map(rowToUnit))
-        return rows
-      } catch (e) {
-        failed++
-        console.error('[db] fetchAllUnits page failed after retries', p, e)
-        return [] as DbUnitWithDamages[]
-      }
-    })
-  const pages: DbUnitWithDamages[][] = []
-  const CONC_U = 4 // nano-friendly (was: all pages at once)
-  for (let i = 0; i < nPages; i += CONC_U) {
-    const batch = await Promise.all(Array.from({ length: Math.min(CONC_U, nPages - i) }, (_, k) => fetchPage(i + k)))
-    pages.push(...batch)
-  }
-  if (failed) console.error(`[db] fetchAllUnits: ${failed} page(s) missing — merged what arrived (additive)`)
-  const units = pages.flat().map(rowToUnit)
-  // count-verify the walk as well: a page that comes back SHORT without
-  // reporting an error still means this is not the yard's full set, and the
-  // caller is allowed to delete from it (mirror mode) — so say so honestly
-  if (!failed && units.length < total)
-    console.error(`[db] fetchAllUnits truncated: ${units.length}/${total} — treating as partial`)
-  return { units, complete: failed === 0 && units.length >= total }
-}
-
-/** Exact count of units visible for a site (same site_id-or-null scope as
- *  fetchAllUnits) — cheap HEAD request used to verify a device's local yard
- *  plan actually matches the cloud, the same way countTrackingRows backs
- *  ensureComplete() for the Unit List. */
-export async function countUnitsForSite(siteId: string): Promise<number | null> {
-  if (!isConfigured()) return null
-  const { count, error } = await supabase.from('units').select('vin', { count: 'exact', head: true })
-    .or(`site_id.eq.${siteId},site_id.is.null`)
-  if (error || count == null) { console.error('[db] countUnitsForSite', error); return null }
-  return count
-}
-
-/** Stream the damage PHOTO payloads for the given vins, small chunks with
- *  retry, invoking onChunk as each batch lands — the UI shows positions and
- *  damage facts immediately and photos fill in behind. */
-export async function fetchDamagePhotos(
-  vins: string[],
-  onChunk: (byVin: Map<string, { id: string; photo?: string; photos?: string[] }[]>) => void,
-): Promise<void> {
-  if (!isConfigured() || !vins.length) return
-  const CHUNK = 40
-  for (let i = 0; i < vins.length; i += CHUNK) {
-    const chunk = vins.slice(i, i + CHUNK)
-    try {
-      const { data } = await withRetry(() =>
-        supabase.from('damages').select('id,vin,photo_url,photo_urls')
-          .in('vin', chunk).not('photo_url', 'is', null))
-      const rows = (data ?? []) as { id: string; vin: string; photo_url: string | null; photo_urls: string[] | null }[]
-      if (!rows.length) continue
-      const byVin = new Map<string, { id: string; photo?: string; photos?: string[] }[]>()
-      for (const r of rows) {
-        const list = byVin.get(r.vin) ?? []
-        list.push({ id: r.id, photo: r.photo_url ?? undefined, photos: r.photo_urls ?? undefined })
-        byVin.set(r.vin, list)
-      }
-      onChunk(byVin)
-    } catch (e) {
-      console.error('[db] fetchDamagePhotos chunk', i / CHUNK, e) // photos are cosmetic — keep going
-    }
-  }
+  if (!total) return []
+  const pages = await Promise.all(
+    Array.from({ length: Math.ceil(total / PAGE) }, async (_, p) => {
+      let q = supabase.from('units').select('*, damages(*)')
+      if (siteId) q = (q as any).eq('site_id', siteId)
+      const { data, error } = await (q as any).order('vin').range(p * PAGE, p * PAGE + PAGE - 1)
+      if (error) { console.error('[db] fetchAllUnits page', p, error); return [] as DbUnitWithDamages[] }
+      return (data ?? []) as DbUnitWithDamages[]
+    }),
+  )
+  return pages.flat().map(rowToUnit)
 }
 
 /** บันทึกหรืออัปเดตรถ 1 คัน (ไม่รวม damages) — retries on transient failure, throws if it never lands */
@@ -348,9 +240,9 @@ export async function upsertUnit(u: Unit): Promise<void> {
 }
 
 /** บันทึกหรืออัปเดตรถหลายคันพร้อมกัน (batch) */
-export async function upsertUnits(units: Unit[], onProgress?: (done: number) => void): Promise<void> {
+export async function upsertUnits(units: Unit[]): Promise<void> {
   if (!isConfigured() || !units.length) return
-  await bulkUpsert('units', units.map(unitToRow), 200, 'vin', 5, undefined, onProgress)
+  await bulkUpsert('units', units.map(unitToRow), 200, 'vin')
 }
 
 /** ลบรถ (cascade → ลบ damages + trips อัตโนมัติ) */
@@ -389,15 +281,6 @@ function isMissingColumn(e: unknown): boolean {
   const s = JSON.stringify(e ?? '')
   return s.includes('PGRST204') || s.includes('42703') || s.includes('schema cache') || s.includes('does not exist')
 }
-
-// tracking_rows' optional columns (deleted_at / history / site) may not be
-// migrated in a given deployment. Learn that from the FIRST missing-column
-// error and stop issuing the failing variant — the fallback chains used to
-// retry the full column list on EVERY call, so a database without the columns
-// errored on a steady rhythm (the Supabase dashboard showed ~99% of Postgres
-// requests failing: the 30s count poll + rpc alone ≈ thousands of errors/hr).
-let trackingDelAtMissing = false
-export function trackingColsKnownMissing(): boolean { return trackingDelAtMissing }
 /** Drop the optional (maybe-unmigrated) damage columns so a write still succeeds. */
 function stripOptionalDamageCols<T extends object>(row: T): T {
   const { remark, area_th, item_th, ...rest } = row as Record<string, unknown>
@@ -476,16 +359,12 @@ export async function deleteDamage(id: string): Promise<void> {
   if (error) console.error('[db] deleteDamage', id, error)
 }
 
-export async function deleteDamages(ids: string[], onProgress?: (done: number) => void): Promise<void> {
+export async function deleteDamages(ids: string[]): Promise<void> {
   if (!isConfigured() || !ids.length) return
-  // 500-id chunks (PK IN-list deletes handle this fine) — the old 200 made a
-  // big replace-import take 2.5× the round-trips on an already-loaded server
-  const CHUNK = 500
+  const CHUNK = 200
   for (let i = 0; i < ids.length; i += CHUNK) {
-    const slice = ids.slice(i, i + CHUNK)
-    const { error } = await supabase.from('damages').delete().in('id', slice)
+    const { error } = await supabase.from('damages').delete().in('id', ids.slice(i, i + CHUNK))
     if (error) console.error('[db] deleteDamages chunk', i, error)
-    onProgress?.(Math.min(i + CHUNK, ids.length))
   }
 }
 
@@ -624,19 +503,11 @@ function rowToBlock(r: any): Block {
   }
 }
 
-/** null = fetch FAILED (offline / error) — callers must keep their cache;
- *  [] = the cloud truly has no layout for this site. Collapsing the two was
- *  how a transient error once masqueraded as "no plan". */
-export async function fetchBlocks(siteId: string): Promise<Block[] | null> {
-  if (!isConfigured()) return null
-  try {
-    const { data } = await withRetry<{ error: unknown; data: unknown }>(() =>
-      supabase.from('blocks').select('*').eq('site_id', siteId))
-    return ((data ?? []) as any[]).map(rowToBlock)
-  } catch (e) {
-    console.error('[db] fetchBlocks', e)
-    return null
-  }
+export async function fetchBlocks(siteId: string): Promise<Block[]> {
+  if (!isConfigured()) return []
+  const { data, error } = await supabase.from('blocks').select('*').eq('site_id', siteId)
+  if (error) { console.error('[db] fetchBlocks', error); return [] }
+  return (data ?? []).map(rowToBlock)
 }
 
 /** Mirror a site's whole layout to the cloud: upsert every block, then prune
@@ -714,7 +585,7 @@ export async function clearOpsQueues(): Promise<void> {
 
 // ── bulk damage upsert (migration / resilience — onConflict id, FK-safe) ────
 
-export async function upsertDamages(items: { vin: string; d: Damage }[], onProgress?: (done: number) => void): Promise<void> {
+export async function upsertDamages(items: { vin: string; d: Damage }[]): Promise<void> {
   if (!isConfigured() || !items.length) return
   // parallel chunks + retry — 16k+ defect rows finish in a few seconds and no
   // chunk is silently dropped on a transient error (that stranded ~6k rows before).
@@ -723,7 +594,7 @@ export async function upsertDamages(items: { vin: string; d: Damage }[], onProgr
   // with NULL — heterogeneous chunks were randomly NULLing remark/area_th/item_th
   // on rows that happened to share a chunk with a row that had them.
   const rows = items.map(({ vin, d }) => ({ remark: null, area_th: null, item_th: null, ...damageToRow(vin, d) }))
-  await bulkUpsert('damages', rows, 500, 'id', 5, stripOptionalDamageCols, onProgress)
+  await bulkUpsert('damages', rows, 500, 'id', 5, stripOptionalDamageCols)
 }
 
 // ── tracking rows (master vehicle list — flexible JSONB columns) ────────────
@@ -744,71 +615,35 @@ const toTrackRow = (r: TrackRowRow): TrackRow => ({
  * - omitted → FULL: all rows, fetched with every page IN PARALLEL (≈1 round-trip
  *   instead of 8 sequential ones → ~10s becomes ~1s).
  */
-/** `complete` = every page of the pull arrived. A false value means the result
- *  is PARTIAL: merge it additively, never conclude anything from what's absent,
- *  and don't advance lastSync (the next run must pull fully again). */
-export async function fetchTrackingRows(
-  sinceMs?: number,
-  /** called with each page THE MOMENT it lands — lets the caller paint rows
-   *  while the rest of the pull is still in flight (online-100% devices used to
-   *  sit on the logo screen until all ~17 pages had arrived) */
-  onPage?: (rows: TrackRow[]) => void,
-): Promise<{ rows: TrackRow[]; complete: boolean }> {
-  if (!isConfigured()) return { rows: [], complete: false }
+export async function fetchTrackingRows(sinceMs?: number): Promise<TrackRow[]> {
+  if (!isConfigured()) return []
   const PAGE = 1000
   const sinceIso = sinceMs ? new Date(sinceMs).toISOString() : null
 
-  // a page that fails after its retries marks the whole pull incomplete — the
-  // caller must NOT treat a short result as the cloud's full contents (that is
-  // how a device got stuck showing 213 of 1,980 rows forever: the partial pull
-  // was accepted and lastSync moved on, so nothing ever backfilled it)
-  let anyPageFailed = false
-  // `after` = keyset cursor (the last VIN of the previous page). PostgreSQL can
-  // jump straight to it on the primary-key index, where OFFSET 15000 has to walk
-  // and discard 15,000 index entries first — the deep pages of a 16k-row yard
-  // were the slowest part of the load.
-  const page = async (from: number, after?: string): Promise<TrackRowRow[]> => {
+  const page = async (from: number): Promise<TrackRowRow[]> => {
     const run = (cols: string) => {
       let q: any = supabase.from('tracking_rows').select(cols).order('vin')
       if (sinceIso) q = q.gt('updated_at', sinceIso)
-      if (after != null) return q.gt('vin', after).limit(PAGE)
       return q.range(from, from + PAGE - 1)
     }
-    for (let attempt = 0; attempt < 3; attempt++) {
-      let res: any = trackingDelAtMissing ? { error: 'skip' } : await run('vin, cells, updated_at, site, history, deleted_at')
-      if (res.error) {
-        if (res.error !== 'skip' && isMissingColumn(res.error)) trackingDelAtMissing = true
-        res = await run('vin, cells, updated_at, site, history') // `deleted_at` column not migrated yet
-      }
-      if (res.error) res = await run('vin, cells, updated_at, site') // `history` column not migrated yet
-      if (res.error) res = await run('vin, cells, updated_at') // `site` column not migrated yet
-      if (!res.error) {
-        const data = (res.data ?? []) as TrackRowRow[]
-        if (onPage && data.length) onPage(data.map(toTrackRow))
-        return data
-      }
-      console.error('[db] fetchTrackingRows page', from, 'attempt', attempt + 1, res.error)
-      await sleep(500 * (attempt + 1))
-    }
-    anyPageFailed = true
-    return []
+    let res: any = await run('vin, cells, updated_at, site, history, deleted_at')
+    if (res.error) res = await run('vin, cells, updated_at, site, history') // `deleted_at` column not migrated yet
+    if (res.error) res = await run('vin, cells, updated_at, site') // `history` column not migrated yet
+    if (res.error) res = await run('vin, cells, updated_at') // `site` column not migrated yet
+    if (res.error) { console.error('[db] fetchTrackingRows', res.error); return [] }
+    return (res.data ?? []) as TrackRowRow[]
   }
 
-  /** sequential keyset walk — no counts, no deep offsets, each page streams out */
-  const walk = async (): Promise<TrackRow[]> => {
+  // incremental deltas are small → walk sequentially
+  if (sinceIso) {
     const out: TrackRow[] = []
-    let after: string | undefined
-    for (;;) {
-      const batch = await page(0, after ?? '')
+    for (let from = 0; ; from += PAGE) {
+      const batch = await page(from)
       for (const r of batch) out.push(toTrackRow(r))
       if (batch.length < PAGE) break
-      after = batch[batch.length - 1].vin
     }
     return out
   }
-
-  // incremental deltas are small → keyset walk
-  if (sinceIso) return { rows: await walk(), complete: !anyPageFailed }
 
   // full pull → count, then fetch all pages concurrently. If the count query
   // fails (timeout on yard cellular), DON'T assume 1 page — that silently
@@ -817,298 +652,17 @@ export async function fetchTrackingRows(
   const { count, error: cntErr } = await supabase.from('tracking_rows').select('vin', { count: 'exact', head: true })
   if (cntErr || count == null) {
     if (cntErr) console.error('[db] fetchTrackingRows count', cntErr)
-    // no count to verify against → only "complete" if no page ever failed
-    return { rows: await walk(), complete: !anyPageFailed }
-  }
-  const pages = Math.max(1, Math.ceil(count / PAGE))
-  // cap concurrency: firing all ~17 pages at once flattened the (nano-sized)
-  // database — 4 at a time is nearly as fast and doesn't starve everyone else
-  const all: TrackRowRow[][] = []
-  const CONC = 4
-  for (let i = 0; i < pages; i += CONC) {
-    const batch = await Promise.all(Array.from({ length: Math.min(CONC, pages - i) }, (_, k) => page((i + k) * PAGE)))
-    all.push(...batch)
-  }
-  const rows = all.flat().map(toTrackRow)
-  // rows can legitimately exceed `count` (writes landing mid-pull); short of it
-  // means pages were lost even if no request reported an error
-  const complete = !anyPageFailed && rows.length >= count
-  if (!complete) console.error(`[db] fetchTrackingRows incomplete: ${rows.length}/${count}`)
-  return { rows, complete }
-}
-
-// ── shared snapshot: เครื่องเดียวคำนวณ ทุกเครื่องใช้ผลร่วมกัน ────────────────
-/** ยอด/สรุปที่ได้จากการสแกนตารางใหญ่ (in_yard_count / dashboard_stats /
- *  daily_stock) เคยถูกเรียกแยกจากทุกเครื่องทุกนาที — 20 เครื่อง = สแกน 16,000
- *  แถว ~40 ครั้ง/นาที จน CPU ฐานข้อมูลเต็มแม้อัปเกรดเครื่องแล้ว. ตอนนี้ผลถูก
- *  แชร์ผ่าน app_config: เครื่องแรกที่พบว่า snapshot หมดอายุเป็นคนคำนวณและ
- *  publish, เครื่องที่เหลืออ่านแถวเดียว (แทบไม่มีต้นทุน). jitter + อ่านซ้ำกัน
- *  หลายเครื่องแย่งกันคำนวณตอนตื่นพร้อมกัน. อายุวัดจาก updated_at ฝั่ง
- *  เซิร์ฟเวอร์ — ยอมรับ timestamp ล้ำอนาคตได้ถึง 10 นาที (นาฬิกาเครื่อง
- *  publisher เพี้ยน) แต่ไม่ยอมรับของเก่าเกิน ttl. */
-async function sharedSnapshot<T>(
-  id: string, ttlMs: number,
-  validate: (v: unknown) => T | null,
-  compute: () => Promise<T | null>,
-): Promise<T | null> {
-  const read = async (): Promise<T | null> => {
-    const { data, error } = await supabase.from('app_config').select('value,updated_at').eq('id', id).maybeSingle()
-    if (error || !data) return null
-    const age = Date.now() - Date.parse(data.updated_at ?? '')
-    if (Number.isNaN(age) || age >= ttlMs || age < -10 * 60_000) return null
-    return validate(data.value)
-  }
-  const cached = await read()
-  if (cached !== null) return cached
-  await new Promise((r) => setTimeout(r, 300 + Math.random() * 2200))
-  const again = await read()
-  if (again !== null) return again
-  const fresh = await compute()
-  if (fresh !== null) {
-    const { error } = await supabase.from('app_config')
-      .upsert({ id, value: fresh, updated_at: new Date().toISOString() }, { onConflict: 'id' })
-    if (error && (error as { code?: string }).code !== '42P01') console.error('[db] sharedSnapshot publish', id, error)
-  }
-  return fresh
-}
-
-/** ยอด In Yard นับบนคลาวด์ (supabase-inyard-count.sql) — ทุกเครื่องได้เลขเดียว
- *  กัน. null = ออฟไลน์ / ฟังก์ชันยังไม่ได้ติดตั้ง → ผู้เรียก fallback เป็นเลขที่นับ
- *  ในเครื่องตามเดิม. */
-let inYardRpcMissingUntil = 0
-async function rpcInYardCount(siteId: string | null, siteNames: string[]): Promise<number | null> {
-  if (Date.now() < inYardRpcMissingUntil) return null
-  const { data, error } = await supabase.rpc('in_yard_count', { p_site_id: siteId, p_names: siteNames })
-  if (error) {
-    // PGRST202 = function not installed yet. Back off for a while but keep
-    // retrying — the old permanent flag meant that installing the SQL later
-    // did nothing until every device happened to fully reload.
-    if ((error as { code?: string }).code === 'PGRST202') { inYardRpcMissingUntil = Date.now() + 5 * 60_000; return null }
-    console.error('[db] fetchInYardCount', error)
-    return null
-  }
-  return typeof data === 'number' ? data : null
-}
-export async function fetchInYardCount(siteId: string | null, siteNames: string[]): Promise<number | null> {
-  if (!isConfigured()) return null
-  return sharedSnapshot(`snap_inyard_${siteId ?? 'all'}`, 60_000,
-    (v) => (typeof v === 'number' ? v : null),
-    () => rpcInYardCount(siteId, siteNames))
-}
-
-// ── N4-style server-computed dashboard ──────────────────────────────────────
-export interface DashboardStats {
-  total: number
-  cards: { in_yard: number; pre_gate_in: number; gate_in: number; parked: number; pre_gate_out: number; preload: number; waiting_repair: number }
-  status_breakdown: { st: string; n: number }[]
-  model_mix: { model: string; n: number }[]
-  pivot_final: { model: string; value: string; n: number }[]
-  pivot_vos: { model: string; value: string; n: number }[]
-}
-/** ตัวเลขสรุปหน้า Dashboard ทั้งหน้า คำนวณบนเซิร์ฟเวอร์ (supabase-dashboard-stats.sql)
- *  — ทุกจอถามฟังก์ชันเดียวกันจึงได้เลขชุดเดียวกันเสมอ. null = ออฟไลน์ / ฟังก์ชัน
- *  ยังไม่ติดตั้ง → ผู้เรียก fallback เป็นการคำนวณจากข้อมูลในเครื่องตามเดิม. */
-// validate the shape — adopting a malformed answer (e.g. an empty array from
-// a proxy/timeout page, or a corrupt shared snapshot) crashed the Dashboard
-// on .map of undefined
-const validDashboardStats = (v: unknown): DashboardStats | null => {
-  const d = v as DashboardStats
-  if (!d || typeof d !== 'object' || Array.isArray(d) || !d.cards
-      || !Array.isArray(d.status_breakdown) || !Array.isArray(d.model_mix)
-      || !Array.isArray(d.pivot_final) || !Array.isArray(d.pivot_vos)) return null
-  return d
-}
-let dashStatsMissingUntil = 0
-async function rpcDashboardStats(siteId: string | null, siteNames: string[]): Promise<DashboardStats | null> {
-  if (Date.now() < dashStatsMissingUntil) return null
-  const { data, error } = await supabase.rpc('dashboard_stats', { p_site_id: siteId, p_names: siteNames })
-  if (error) {
-    if ((error as { code?: string }).code === 'PGRST202') { dashStatsMissingUntil = Date.now() + 5 * 60_000; return null }
-    console.error('[db] fetchDashboardStats', error)
-    return null
-  }
-  return validDashboardStats(data)
-}
-export async function fetchDashboardStats(siteId: string | null, siteNames: string[]): Promise<DashboardStats | null> {
-  if (!isConfigured()) return null
-  return sharedSnapshot(`snap_dash_${siteId ?? 'all'}`, 90_000, validDashboardStats,
-    () => rpcDashboardStats(siteId, siteNames))
-}
-
-// ── N4-style server-computed Daily Stock ────────────────────────────────────
-export interface DailyStockItem { vin: string; model: string; color: string; grouping: string | null }
-export interface DailyStockData {
-  day: string
-  opening: number; in_n: number; out_n: number; stock_n: number
-  undated: number; out_no_date: number
-  in_list: DailyStockItem[]; out_list: DailyStockItem[]; stock_list: DailyStockItem[]
-  stock_matrix: { model: string; color: string; n: number }[]
-}
-const validDailyStock = (v: unknown): DailyStockData | null => {
-  const d = v as DailyStockData
-  if (!d || typeof d !== 'object' || Array.isArray(d)
-      || !Array.isArray(d.in_list) || !Array.isArray(d.out_list)
-      || !Array.isArray(d.stock_list) || !Array.isArray(d.stock_matrix)) return null
-  return d
-}
-let dailyStockMissingUntil = 0
-async function rpcDailyStock(siteId: string | null, siteNames: string[], day: string): Promise<DailyStockData | null> {
-  if (Date.now() < dailyStockMissingUntil) return null
-  const { data, error } = await supabase.rpc('daily_stock', { p_site_id: siteId, p_names: siteNames, p_day: day })
-  if (error) {
-    if ((error as { code?: string }).code === 'PGRST202') { dailyStockMissingUntil = Date.now() + 5 * 60_000; return null }
-    console.error('[db] fetchDailyStock', error)
-    return null
-  }
-  return validDailyStock(data)
-}
-export async function fetchDailyStock(siteId: string | null, siteNames: string[], day: string): Promise<DailyStockData | null> {
-  if (!isConfigured()) return null
-  return sharedSnapshot(`snap_daily_${siteId ?? 'all'}_${day}`, 90_000, validDailyStock,
-    () => rpcDailyStock(siteId, siteNames, day))
-}
-
-// ── N4-style server-side search/sort window for the Unit List ───────────────
-/** Fetch a bounded, server-filtered/sorted window of tracking rows. Used when
- *  this device's local set is INCOMPLETE (still backfilling): the list on
- *  screen must not depend on how much has synced. The query is a broad
- *  server-side reduction — the page re-applies its exact client-side filters
- *  on the returned window, so results are precise. null = query failed. */
-export async function fetchTrackingPage(opts: {
-  siteId: string | null
-  q?: string
-  group?: string
-  colFilters?: Record<string, string> // plain cell columns only (derived cols excluded by caller)
-  sortKey?: string                    // 'No' = updated_at; cell key otherwise
-  sortDir?: 1 | -1
-  limit?: number
-}): Promise<{ rows: TrackRow[]; total: number } | null> {
-  if (!isConfigured()) return null
-  try {
-    const limit = opts.limit ?? 2000
-    // sanitize: PostgREST or() splits on , and ) — strip them from user text
-    const clean = (v: string) => v.replace(/[,()]/g, ' ').trim()
-    let qy: any = supabase.from('tracking_rows')
-      .select(trackingColsKnownMissing() ? 'vin, cells, updated_at, site' : 'vin, cells, updated_at, site, deleted_at', { count: 'exact' })
-    if (!trackingColsKnownMissing()) qy = qy.is('deleted_at', null)
-    if (opts.siteId) qy = qy.or(`site.eq.${opts.siteId},site.is.null`)
-    const term = clean(opts.q ?? '')
-    if (term) {
-      // broad match across the columns the local search covers (keys containing
-      // , or ( ) can't ride in an or() expression — the client re-filter catches them)
-      qy = qy.or([
-        `vin.ilike.*${term}*`,
-        `cells->>Vin.ilike.*${term}*`,
-        `cells->>Model name.ilike.*${term}*`,
-        `cells->>Model.ilike.*${term}*`,
-        `cells->>company.ilike.*${term}*`,
-        `cells->>Location yard.ilike.*${term}*`,
-        `cells->>storage Yard.ilike.*${term}*`,
-      ].join(','))
-    }
-    const grp = clean(opts.group ?? '')
-    if (grp) qy = qy.ilike('cells->>Grouping  Number', `%${grp}%`)
-    for (const [key, val] of Object.entries(opts.colFilters ?? {})) {
-      if (!val || val === 'ALL') continue
-      qy = qy.eq(`cells->>${key}`, val)
-    }
-    if (opts.sortKey === 'No' || !opts.sortKey) qy = qy.order('updated_at', { ascending: (opts.sortDir ?? -1) === 1 })
-    else qy = qy.order(`cells->>${opts.sortKey}`, { ascending: (opts.sortDir ?? 1) === 1 })
-    qy = qy.order('vin', { ascending: true }).range(0, limit - 1)
-    const { data, error, count } = await qy
-    if (error) { console.error('[db] fetchTrackingPage', error); return null }
-    const rows = ((data ?? []) as TrackRowRow[]).map(toTrackRow).filter((r) => !r.deletedAt)
-    return { rows, total: count ?? rows.length }
-  } catch (e) {
-    console.error('[db] fetchTrackingPage', e)
-    return null
-  }
-}
-
-/** Exact number of tracking rows in the cloud (null = query failed). Used to
- *  verify a device holds the complete set before trusting its local view. */
-export async function countTrackingRows(): Promise<number | null> {
-  if (!isConfigured()) return null
-  // LIVE rows only: tombstones stay in the table but are never shown, so this
-  // is the number a device's own row count must match exactly (mirror mode).
-  let res: any = trackingDelAtMissing
-    ? await supabase.from('tracking_rows').select('vin', { count: 'exact', head: true })
-    : await supabase.from('tracking_rows').select('vin', { count: 'exact', head: true }).is('deleted_at', null)
-  if (res.error && isMissingColumn(res.error)) {
-    trackingDelAtMissing = true
-    res = await supabase.from('tracking_rows').select('vin', { count: 'exact', head: true })
-  }
-  const { count, error } = res as { count: number | null; error: unknown }
-  if (error || count == null) { console.error('[db] countTrackingRows', error); return null }
-  return count
-}
-
-/** Lightweight index of EVERY tracking row (vin + updated_at + deleted_at
- *  only, ~40 bytes each) — the reconciliation pass diffs it against local
- *  state so all devices converge on the cloud 100%. null = fetch failed
- *  (offline / error): the caller must not draw any conclusion from it. */
-export async function fetchTrackingIndex(): Promise<{ vin: string; updatedAt: number; deletedAt: number | null }[] | null> {
-  if (!isConfigured()) return null
-  // PostgREST caps every response at 1,000 rows. Asking for a bigger page and
-  // treating a short page as "the end" stopped after ONE page, so the index
-  // listed only the first 1,000 VINs — and reconcile deleted everything else
-  // as "not in the cloud" (16,585 rows collapsed to 571).
-  const PAGE = 1000
-  // keyset (vin > last) instead of range/OFFSET: the index walk covers every row
-  // in the table, and its last pages were paying to skip 15,000 index entries
-  const run = (after: string, cols: string) =>
-    supabase.from('tracking_rows').select(cols).order('vin').gt('vin', after).limit(PAGE)
-  const out: { vin: string; updatedAt: number; deletedAt: number | null }[] = []
-  try {
-    // expected size, so a truncated walk can be detected instead of trusted
-    const { count, error: cErr } = await supabase.from('tracking_rows').select('vin', { count: 'exact', head: true })
-    if (cErr || count == null) { console.error('[db] fetchTrackingIndex count', cErr); return null }
-    let after = ''
-    for (;;) {
-      let res: any = trackingDelAtMissing
-        ? await withRetry<{ error: unknown; data: unknown }>(() => run(after, 'vin, updated_at'))
-        : await withRetry<{ error: unknown; data: unknown }>(() => run(after, 'vin, updated_at, deleted_at'))
-            .catch(async (e) => {
-              // deleted_at may not be migrated — remember + retry without it
-              if (isMissingColumn(e)) { trackingDelAtMissing = true; return withRetry<{ error: unknown; data: unknown }>(() => run(after, 'vin, updated_at')) }
-              throw e
-            })
-      const batch = (res.data ?? []) as { vin: string; updated_at: string | null; deleted_at?: string | null }[]
-      for (const r of batch) out.push({
-        vin: r.vin,
-        updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : 0,
-        deletedAt: r.deleted_at ? new Date(r.deleted_at).getTime() : null,
-      })
+    const out: TrackRow[] = []
+    for (let from = 0; ; from += PAGE) {
+      const batch = await page(from)
+      for (const r of batch) out.push(toTrackRow(r))
       if (batch.length < PAGE) break
-      after = batch[batch.length - 1].vin
-    }
-    // a walk that came back short of the counted total is NOT the cloud's
-    // full list — returning it would make reconcile delete the difference
-    if (out.length < count) {
-      console.error(`[db] fetchTrackingIndex truncated: ${out.length}/${count} — ignoring`)
-      return null
     }
     return out
-  } catch (e) {
-    console.error('[db] fetchTrackingIndex', e)
-    return null
   }
-}
-
-/** Full rows for a specific VIN set (reconciliation backfill), chunked. */
-export async function fetchTrackingRowsByVins(vins: string[]): Promise<TrackRow[]> {
-  if (!isConfigured() || !vins.length) return []
-  const CHUNK = 300
-  const out: TrackRow[] = []
-  for (let i = 0; i < vins.length; i += CHUNK) {
-    const chunk = vins.slice(i, i + CHUNK)
-    try {
-      const { data } = await withRetry<{ error: unknown; data: unknown }>(() =>
-        supabase.from('tracking_rows').select('*').in('vin', chunk))
-      for (const r of (data ?? []) as TrackRowRow[]) out.push(toTrackRow(r))
-    } catch (e) { console.error('[db] fetchTrackingRowsByVins chunk', i / CHUNK, e) }
-  }
-  return out
+  const pages = Math.max(1, Math.ceil(count / PAGE))
+  const all = await Promise.all(Array.from({ length: pages }, (_, i) => page(i * PAGE)))
+  return all.flat().map(toTrackRow)
 }
 
 /**
@@ -1122,11 +676,8 @@ export async function fetchTrackingRowsForSite(locationYard: string): Promise<Tr
   for (let from = 0; ; from += PAGE) {
     const run = (cols: string) =>
       supabase.from('tracking_rows').select(cols).eq('cells->>Location yard', locationYard).order('vin').range(from, from + PAGE - 1)
-    let res: any = trackingDelAtMissing ? { error: 'skip' } : await run('vin, cells, updated_at, site, history, deleted_at')
-    if (res.error) {
-      if (res.error !== 'skip' && isMissingColumn(res.error)) trackingDelAtMissing = true
-      res = await run('vin, cells, updated_at, site, history')
-    }
+    let res: any = await run('vin, cells, updated_at, site, history, deleted_at')
+    if (res.error) res = await run('vin, cells, updated_at, site, history')
     if (res.error) res = await run('vin, cells, updated_at, site')
     if (res.error) res = await run('vin, cells, updated_at')
     if (res.error) { console.error('[db] fetchTrackingRowsForSite', res.error); break }
@@ -1139,14 +690,9 @@ export async function fetchTrackingRowsForSite(locationYard: string): Promise<Tr
 }
 
 /** บันทึก/อัปเดตรายการรถ (batch ทีละ 500 แถว) */
-/** Returns true only when EVERY chunk was written — the caller uses that to
- *  decide whether it may advance lastSync (a silently-failed push must keep
- *  those local edits marked "newer than lastSync" so they are rescued, not
- *  deleted, by the next mirror pass). */
-export async function upsertTrackingRows(rows: TrackRow[]): Promise<boolean> {
-  if (!isConfigured() || !rows.length) return true
+export async function upsertTrackingRows(rows: TrackRow[]): Promise<void> {
+  if (!isConfigured() || !rows.length) return
   const CHUNK = 500
-  let ok = true
   for (let i = 0; i < rows.length; i += CHUNK) {
     const slice = rows.slice(i, i + CHUNK)
     // full payload; `deleted_at` is always written (null on a live row) so any
@@ -1167,14 +713,12 @@ export async function upsertTrackingRows(rows: TrackRow[]): Promise<boolean> {
       (r: TrackRow) => { const { deleted_at, history, site, ...rest } = full(r); return rest }, // no site
     ]
     let error: any = null
-    for (const build of trackingDelAtMissing ? variants.slice(1) : variants) {
+    for (const build of variants) {
       ;({ error } = await supabase.from('tracking_rows').upsert(slice.map(build), { onConflict: 'vin' }))
       if (!error) break
-      if (build === variants[0] && isMissingColumn(error)) trackingDelAtMissing = true
     }
-    if (error) { console.error('[db] upsertTrackingRows chunk', i, error); ok = false }
+    if (error) console.error('[db] upsertTrackingRows chunk', i, error)
   }
-  return ok
 }
 
 /** ลบรถออกจาก Unit List — soft-delete (tombstone): เขียน `deleted_at` แทนการลบแถวจริง
@@ -1186,16 +730,10 @@ export async function deleteTrackingRows(vins: string[]): Promise<void> {
   const CHUNK = 500
   for (let i = 0; i < vins.length; i += CHUNK) {
     const slice = vins.slice(i, i + CHUNK)
-    // mark deleted WITHOUT wiping `cells`: blanking the payload made every
-    // delete unrecoverable, so a wrong delete could never be undone. The
-    // tombstone alone hides the row everywhere; the data stays for recovery.
-    const { error } = trackingDelAtMissing
-      ? { error: 'skip' as unknown }
-      : await supabase.from('tracking_rows')
-          .upsert(slice.map((vin) => ({ vin, deleted_at: nowIso, updated_at: nowIso })), { onConflict: 'vin' })
+    const { error } = await supabase.from('tracking_rows')
+      .upsert(slice.map((vin) => ({ vin, deleted_at: nowIso, updated_at: nowIso, cells: {} })), { onConflict: 'vin' })
     if (error) {
       // `deleted_at` column not migrated yet → fall back to the old hard delete
-      if (error !== 'skip' && isMissingColumn(error)) trackingDelAtMissing = true
       const { error: dErr } = await supabase.from('tracking_rows').delete().in('vin', slice)
       if (dErr) console.error('[db] deleteTrackingRows', dErr)
     }
@@ -1204,7 +742,7 @@ export async function deleteTrackingRows(vins: string[]): Promise<void> {
 
 /** ล้าง tombstone เก่าทิ้งถาวร (แถวที่ถูก soft-delete นานเกิน `olderThanMs`) เพื่อไม่ให้ตารางบวม */
 export async function purgeTrackingTombstones(olderThanMs: number): Promise<void> {
-  if (!isConfigured() || trackingDelAtMissing) return
+  if (!isConfigured()) return
   const cutoff = new Date(Date.now() - olderThanMs).toISOString()
   const { error } = await supabase.from('tracking_rows').delete().not('deleted_at', 'is', null).lt('deleted_at', cutoff)
   if (error && error.code !== '42703') console.error('[db] purgeTrackingTombstones', error) // ignore "column doesn't exist"

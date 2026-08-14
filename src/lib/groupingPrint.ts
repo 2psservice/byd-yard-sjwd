@@ -49,38 +49,20 @@ tr.grp-alt td { background: #fff3d6; }
 .note { text-align: center; font-size: 9px; margin-top: 4px; }
 `
 /**
- * Find-car sheet (ใบหารถ): typeset 1:1 against the approved "Plan PM" printout —
- * every value below is measured straight out of that PDF (A4 portrait,
- * 595.2 × 841.7 pt): orange title bar #E87033 35.8pt tall / 19.3pt bold text,
- * yellow header row 43pt tall / 10.6pt bold, data rows 31.3pt tall / 14.2pt
- * "Aptos Narrow" with the No column at 17.6pt semibold, the Location column
- * filled #D9D9D9, and 1pt black rules throughout. The title + header rows live
- * in <thead> so they repeat on every page, same as the Excel original's print
- * titles.
+ * Find-car sheet: only 7 columns on a PORTRAIT page, so it is typeset 1:1 against
+ * the approved printout — title 18.24pt / body 14.24pt, measured straight out of
+ * that PDF (A4 portrait, 595.32 × 841.92 pt). The shared 9px/14px above is sized
+ * for the 11-column LANDSCAPE dealer sheet; reused here it filled barely half the
+ * page and was unreadable at arm's length, which is no good for a driver walking
+ * the yard with the sheet in hand. Overrides come last so they win on specificity.
  */
-const PLAN_CSS = `
-@page { size: A4 portrait; margin: 5mm 6mm 6mm 5mm; }
-* { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-body { margin: 0; color: #000; font-family: 'Aptos Narrow','Aptos','Arial Narrow','Sarabun','Noto Sans Thai',Tahoma,'Leelawadee UI',sans-serif; }
-table { width: 100%; border-collapse: collapse; }
-/* auto layout + nowrap: every column sizes itself so nothing ever breaks onto
-   a second line (Model incl.) — the หมายเหตุ column is the flexible one that
-   absorbs whatever width is left, so the rest keep the Plan PM proportions */
-th, td { border: 1pt solid #000; vertical-align: middle; white-space: nowrap; }
-th.bar { background: #E87033; font-size: 19.3pt; font-weight: 700; height: 35.8pt; padding: 2pt 4pt; text-align: center; white-space: normal; }
-th.h { background: #ffff00; font-size: 10.6pt; font-weight: 700; height: 43pt; padding: 2pt 3pt; text-align: center; }
-td { font-size: 14.2pt; height: 31.3pt; padding: 2pt 6pt; text-align: center; }
-td.no { font-size: 17.6pt; font-weight: 600; }
-td.loc { background: #D9D9D9; }
-td.rem { white-space: normal; min-width: 80pt; }
+const CSS_PORTRAIT = CSS.replace('A4 landscape', 'A4 portrait') + `
+body, th, td { font-family: 'Aptos Narrow','Aptos','Arial Narrow','Sarabun','Noto Sans Thai',Tahoma,sans-serif; }
+.title { font-size: 18.24pt; margin: 0 0 10px; }
+th, td { font-size: 14.24pt; padding: 2px 6px; }
+td.vin { font-family: 'Aptos Narrow','Aptos','Arial Narrow','Consolas',monospace; font-size: 14.24pt; letter-spacing: 0; }
+.note { font-size: 14.24pt; }
 `
-
-/** thead shared by both ใบหารถ variants — orange title bar + yellow header. */
-const planHead = (title: string, headers: string[]): string =>
-  `<thead>
-    <tr><th class="bar" colspan="${headers.length}">${esc(title)}</th></tr>
-    <tr>${headers.map((h) => `<th class="h">${esc(h)}</th>`).join('')}</tr>
-  </thead>`
 
 const htmlDoc = (title: string, body: string, css: string): string =>
   `<!doctype html><html lang="th"><head><meta charset="utf-8"><title>${esc(title)}</title><style>${css}</style></head><body>${body}</body></html>`
@@ -148,25 +130,22 @@ export function buildFindCarHtml(rows: GroupPrintRow[], meta: GroupPrintMeta): s
   // unprefixed for sorting and for the landscape dealer sheet
   const locOf = (l: string) => (l && meta.locPrefix ? `${meta.locPrefix}-${l}` : l)
   const body = sorted.map((r, i) => `<tr>
-    <td class="no">${i + 1}</td>
-    <td>${esc(r.vin)}</td>
-    <td>${esc(r.model)}</td>
-    <td>${esc(r.color)}</td>
-    <td class="loc">${esc(locOf(r.yardLocation) || '—')}</td>
-    <td>${esc(r.laneLoad)}</td>
-    <td class="rem">${esc(r.remark)}</td>
+    <td class="c">${i + 1}</td>
+    <td class="vin">${esc(r.vin)}</td>
+    <td class="c">${esc(r.model)}</td>
+    <td class="c">${esc(r.color)}</td>
+    <td class="c"><b>${esc(locOf(r.yardLocation) || '—')}</b></td>
+    <td class="c">${esc(r.laneLoad)}</td>
+    <td>${esc(r.remark)}</td>
   </tr>`).join('')
 
-  // column proportions measured off the Plan PM sheet (No 7.8% · Vin 25% …)
   const table = `<table>
-    <colgroup>
-      <col style="width:7.8%"><col style="width:27%"><col style="width:10.7%"><col style="width:10.1%">
-      <col style="width:15.7%"><col style="width:10.7%"><col style="width:18%">
-    </colgroup>
-    ${planHead(titleLine(meta), ['No', 'Vin', 'Model', 'Color', 'Location', 'Lane load', 'หมายเหตุ'])}
+    <thead><tr>
+      <th>No</th><th>Vin</th><th>Model</th><th>Color</th><th>Location</th><th>Lane load</th><th>หมายเหตุ</th>
+    </tr></thead>
     <tbody>${body}</tbody>
   </table>`
-  return htmlDoc(`หารถ ${titleLine(meta)}`, table, PLAN_CSS)
+  return htmlDoc(`หารถ ${titleLine(meta)}`, `<div class="title">${titleLine(meta)}</div>${table}`, CSS_PORTRAIT)
 }
 
 // ── "ใบหารถ" (car-finding list) — arbitrary VIN set, no grouping/lane ────────
@@ -183,29 +162,27 @@ export interface FindListRow {
 const findListTitle = (count: number, date: string): string =>
   `ใบหารถ ${count} คัน${date ? ` · ${date}` : ''}`
 
-function findListTableHtml(rows: FindListRow[], title: string): string {
+function findListTableHtml(rows: FindListRow[]): string {
   const sorted = [...rows].sort((a, b) => byYardLocation(a.location, b.location))
   const body = sorted.map((r, i) => `<tr>
-    <td class="no">${i + 1}</td>
-    <td>${esc(r.vin)}</td>
-    <td>${esc(r.model)}</td>
-    <td>${esc(r.color)}</td>
-    <td class="loc">${esc(r.location || '—')}</td>
-    <td class="rem">${esc(r.remark)}</td>
+    <td class="c">${i + 1}</td>
+    <td class="vin">${esc(r.vin)}</td>
+    <td class="c">${esc(r.model)}</td>
+    <td class="c">${esc(r.color)}</td>
+    <td class="c"><b>${esc(r.location || '—')}</b></td>
+    <td>${esc(r.remark)}</td>
   </tr>`).join('')
   return `<table>
-    <colgroup>
-      <col style="width:7.8%"><col style="width:27.4%"><col style="width:12%"><col style="width:11%">
-      <col style="width:16.8%"><col style="width:25%">
-    </colgroup>
-    ${planHead(title, ['No', 'Vin', 'Model', 'Color', 'Location', 'หมายเหตุ'])}
+    <thead><tr>
+      <th>No</th><th>Vin</th><th>Model</th><th>Color</th><th>Location</th><th>หมายเหตุ</th>
+    </tr></thead>
     <tbody>${body}</tbody>
   </table>`
 }
 
 export function buildFindListHtml(rows: FindListRow[], date: string): string {
   const title = findListTitle(rows.length, date)
-  return htmlDoc(title, findListTableHtml(rows, title), PLAN_CSS)
+  return htmlDoc(title, `<div class="title">${esc(title)}</div>${findListTableHtml(rows)}`, CSS_PORTRAIT)
 }
 
 export const printFindList = (rows: FindListRow[], date: string): void => {
@@ -220,41 +197,35 @@ export async function exportFindListXlsx(rows: FindListRow[], date: string): Pro
   wb.creator = 'SJWD Yard Control'
   const ws = wb.addWorksheet('ใบหารถ', { views: [{ state: 'frozen', ySplit: 2 }] })
 
-  // same look as the printed sheet (measured off the approved Plan PM file):
-  // orange title bar, yellow header, tall rows, big narrow type, grey Location
   const headers = ['No', 'Vin', 'Model', 'Color', 'Location', 'หมายเหตุ']
-  const widths = [7, 23, 11, 10, 15, 24]
-  ws.columns = widths.map((w) => ({ width: w, style: { font: { name: 'Aptos Narrow', size: 14 } } }))
+  const widths = [6, 22, 14, 12, 14, 24]
+  ws.columns = widths.map((w) => ({ width: w, style: { font: { name: 'Tahoma', size: 10 } } }))
+
+  // title row (merged across all columns)
+  const titleRow = ws.addRow([findListTitle(rows.length, date)])
+  ws.mergeCells(1, 1, 1, headers.length)
+  titleRow.height = 22
+  titleRow.getCell(1).font = { name: 'Tahoma', size: 12, bold: true }
+  titleRow.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' }
 
   const thin = { style: 'thin', color: { argb: 'FF000000' } }
   const border = { top: thin, left: thin, bottom: thin, right: thin }
-
-  const titleRow = ws.addRow([findListTitle(rows.length, date)])
-  ws.mergeCells(1, 1, 1, headers.length)
-  titleRow.height = 36
-  titleRow.getCell(1).font = { name: 'Aptos', size: 19, bold: true }
-  titleRow.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE87033' } }
-  titleRow.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' }
-  titleRow.eachCell({ includeEmpty: true }, (c: any) => { c.border = border })
-
   const hr = ws.addRow(headers)
-  hr.height = 43
+  hr.height = 18
   hr.eachCell((c: any) => {
-    c.font = { name: 'Aptos', size: 10.5, bold: true }
+    c.font = { name: 'Tahoma', size: 10, bold: true }
     c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF00' } } // เหลืองเหมือนไฟล์ต้นฉบับ
-    c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }
+    c.alignment = { horizontal: 'center', vertical: 'middle' }
     c.border = border
   })
 
   const sorted = [...rows].sort((a, b) => byYardLocation(a.location, b.location))
   sorted.forEach((r, i) => {
     const row = ws.addRow([i + 1, r.vin, r.model, r.color, r.location || '—', r.remark])
-    row.height = 31.5
-    row.eachCell({ includeEmpty: true }, (c: any, col: number) => {
+    row.height = 16
+    row.eachCell((c: any, col: number) => {
       c.border = border
-      c.alignment = { horizontal: 'center', vertical: 'middle' }
-      if (col === 1) c.font = { name: 'Aptos', size: 17.5, bold: true }
-      if (col === 5) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9D9D9' } }
+      c.alignment = { horizontal: col === 6 ? 'left' : 'center', vertical: 'middle' }
     })
   })
 
@@ -359,28 +330,24 @@ export async function exportFindCarXlsx(rows: GroupPrintRow[], meta: GroupPrintM
   wb.creator = 'SJWD Yard Control'
   const ws = wb.addWorksheet('ใบหารถ', { views: [{ state: 'frozen', ySplit: 2 }] })
 
-  // same look as the printed sheet (measured off the approved Plan PM file)
   const headers = ['No', 'Vin', 'Model', 'Color', 'Location', 'Lane load', 'หมายเหตุ']
-  const widths = [7, 23, 11, 10, 14, 11, 20]
-  ws.columns = widths.map((w) => ({ width: w, style: { font: { name: 'Aptos Narrow', size: 14 } } }))
-
-  const thin = { style: 'thin', color: { argb: 'FF000000' } }
-  const border = { top: thin, left: thin, bottom: thin, right: thin }
+  const widths = [6, 22, 14, 12, 14, 11, 24]
+  ws.columns = widths.map((w) => ({ width: w, style: { font: { name: 'Tahoma', size: 10 } } }))
 
   const titleRow = ws.addRow([`หารถ ${titleLine(meta)}`])
   ws.mergeCells(1, 1, 1, headers.length)
-  titleRow.height = 36
-  titleRow.getCell(1).font = { name: 'Aptos', size: 19, bold: true }
-  titleRow.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE87033' } }
+  titleRow.height = 22
+  titleRow.getCell(1).font = { name: 'Tahoma', size: 12, bold: true }
   titleRow.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' }
-  titleRow.eachCell({ includeEmpty: true }, (c: any) => { c.border = border })
 
+  const thin = { style: 'thin', color: { argb: 'FF000000' } }
+  const border = { top: thin, left: thin, bottom: thin, right: thin }
   const hr = ws.addRow(headers)
-  hr.height = 43
+  hr.height = 18
   hr.eachCell((c: any) => {
-    c.font = { name: 'Aptos', size: 10.5, bold: true }
+    c.font = { name: 'Tahoma', size: 10, bold: true }
     c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF00' } }
-    c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }
+    c.alignment = { horizontal: 'center', vertical: 'middle' }
     c.border = border
   })
 
@@ -388,12 +355,11 @@ export async function exportFindCarXlsx(rows: GroupPrintRow[], meta: GroupPrintM
   const locOf = (l: string) => (l && meta.locPrefix ? `${meta.locPrefix}-${l}` : l)
   sorted.forEach((r, i) => {
     const row = ws.addRow([i + 1, r.vin, r.model, r.color, locOf(r.yardLocation) || '—', r.laneLoad, r.remark])
-    row.height = 31.5
+    row.height = 16
     row.eachCell({ includeEmpty: true }, (c: any, col: number) => {
       c.border = border
-      c.alignment = { horizontal: 'center', vertical: 'middle' }
-      if (col === 1) c.font = { name: 'Aptos', size: 17.5, bold: true }
-      if (col === 5) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9D9D9' } }
+      c.alignment = { horizontal: col === 7 ? 'left' : 'center', vertical: 'middle' }
+      if (col === 5 || col === 6) c.font = { name: 'Tahoma', size: 10, bold: true }
     })
   })
 

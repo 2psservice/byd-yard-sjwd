@@ -10,7 +10,6 @@ import { idbBulkPut, idbClear, idbDelete, idbGetAllRows, idbPut } from '../lib/i
 import * as db from '../lib/db'
 import { supabase } from '../lib/supabase'
 import { onSync, sendSync } from '../lib/syncBus'
-import { isOnlineOnly } from '../lib/onlineMode'
 import { useYard } from './useYard'
 import { siteForRow, siteIdForLocation, coInspectionAccepts } from '../lib/siteScope'
 import { CAR_STATUS_ORDER, deriveCarStatus, isGateOutStamp } from '../lib/carStatus'
@@ -46,23 +45,7 @@ interface TrackingState {
   lastSync: number // epoch ms of the last successful cloud sync (0 = never → full pull)
 
   loadFromIdb: () => Promise<void>
-  /** fetch just the ACTIVE site's rows (server-filtered, ~2 MB not the whole
-   *  table) and merge them in ahead of the generic sync — called whenever the
-   *  operator picks/switches a yard, so ITS numbers are accurate first instead
-   *  of waiting on a full multi-site sync that has no idea which yard matters
-   *  right now. */
-  loadSiteFirst: () => Promise<void>
-  /** merge rows fetched from the cloud (server-paged Unit List window) into the
-   *  local store — ADDITIVE, newer-wins, mirror-safe (they came from the cloud) */
-  mergeServerRows: (rows: TrackRow[]) => void
   syncCloud: () => Promise<void>
-  /** full per-VIN diff against the cloud index — converges this device 100% */
-  reconcileCloud: () => Promise<void>
-  /** verify local row count matches the cloud's, reconciling until it does */
-  ensureComplete: () => Promise<void>
-  /** cloud's exact row total (null = unknown) — powers the sync-status badge */
-  cloudTotal: number | null
-  refreshCloudTotal: () => Promise<void>
   subscribeRealtime: () => void
   unsubscribeRealtime: () => void
   importFile: (file: File) => Promise<ParseResult>
@@ -156,56 +139,9 @@ export const useTracking = create<TrackingState>()(
       importing: false,
       lastImport: null,
       lastSync: 0,
-      cloudTotal: null,
 
       loadFromIdb: async () => {
         if (get().loaded) return
-
-        // ── ONLINE 100%: this device holds nothing of its own ───────────────
-        // Start from an empty table, wipe whatever an older build cached, and
-        // fill the screen from the cloud only. Nothing on this device can make
-        // its numbers differ from anyone else's.
-        if (isOnlineOnly() && db.isConfigured()) {
-          set({ rows: {}, lastSync: 0 })
-          idbClear().catch(() => {})
-          // The pull STREAMS: syncCloud paints each page the moment it lands and
-          // flips `loaded` on the first one, so the app opens in about the time
-          // of one request instead of waiting for all ~17 pages. (The old
-          // "active yard first" query filtered on cells->>'Location yard',
-          // which no index covers — it scanned the whole table before the real
-          // load had even started.)
-          // …and never hold the logo screen longer than 3s: past that the app
-          // opens and fills in behind the sync badge ("กำลังเติม N%"), which
-          // beats staring at a splash on a slow yard link.
-          const reveal = setTimeout(() => set({ loaded: true }), 3000)
-          await get().syncCloud().catch(() => {})
-          clearTimeout(reveal)
-          set({ loaded: true }) // release the loader even if the network failed
-          get().ensureComplete().catch(() => {})
-          // ── NEVER a silent zero ────────────────────────────────────────────
-          // In online mode this device just WIPED its cache and bet everything
-          // on the pull. If the server buckled (an exhausted instance times out
-          // exactly when 17k rows are requested), the screen showed 0 with no
-          // explanation and no second attempt. Verify against the cloud's
-          // count, tell the operator, and keep retrying with backoff.
-          const retryEmpty = async (attempt: number): Promise<void> => {
-            if (!isOnlineOnly() || Object.keys(get().rows).length > 0) return
-            const cloudCount = await db.countTrackingRows().catch(() => null)
-            if (cloudCount === 0) return // cloud truly empty — 0 is the answer
-            if (attempt === 0)
-              useYard.getState().toast('err', 'โหลดข้อมูลจากคลาวด์ไม่สำเร็จ (เซิร์ฟเวอร์ไม่ตอบ) — กำลังลองใหม่อัตโนมัติ')
-            await get().syncCloud().catch(() => {})
-            if (Object.keys(get().rows).length > 0) {
-              useYard.getState().toast('ok', 'เชื่อมต่อคลาวด์สำเร็จ — ข้อมูลกลับมาแล้ว')
-              return
-            }
-            if (attempt < 6) setTimeout(() => { retryEmpty(attempt + 1).catch(() => {}) }, 8000 * (attempt + 1))
-            else useYard.getState().toast('err', 'เซิร์ฟเวอร์ไม่ตอบสนองต่อเนื่อง — แนะนำปิดโหมดออนไลน์ 100% ชั่วคราว (ตั้งค่า → โหมดข้อมูล)')
-          }
-          setTimeout(() => { retryEmpty(0).catch(() => {}) }, 4000)
-          return
-        }
-
         let rows: Record<string, TrackRow> = {}
         try {
           const all = await idbGetAllRows()
@@ -233,77 +169,22 @@ export const useTracking = create<TrackingState>()(
           // fresh device (e.g. a new phone): pull the ACTIVE yard first — a
           // server-side "Location yard" filter (~2 MB, not the full 11 MB) — so the
           // current site fills in fast, before the full background sync
-          await get().loadSiteFirst().catch(() => {})
-        }
-        // reconcile every yard in the background (incremental after the first
-        // run), then verify the device actually holds the cloud's full set —
-        // a first load that came up short used to stay short forever
-        get().syncCloud().then(() => get().ensureComplete()).catch(() => {})
-      },
-
-      mergeServerRows: (fetched) => {
-        if (!fetched.length) return
-        const put: TrackRow[] = []
-        set((s) => {
-          const rows = { ...s.rows }
-          for (const r of fetched) {
-            if (!hasVin(r) || r.deletedAt) continue
-            const cur = rows[r.vin]
-            if (cur && (cur.updatedAt ?? 0) >= (r.updatedAt ?? 0)) continue
-            if (!r.history?.length && cur?.history?.length) r.history = cur.history
-            rows[r.vin] = r
-            put.push(r)
+          const y = useYard.getState()
+          const siteName = y.sites.find((s) => s.id === y.currentSite)?.name
+          if (siteName) {
+            try {
+              const siteRows = await db.fetchTrackingRowsForSite(siteName)
+              if (siteRows.length) {
+                const rec: Record<string, TrackRow> = {}
+                for (const r of siteRows) if (hasVin(r)) rec[r.vin] = r
+                set({ rows: rec })
+                idbBulkPut(siteRows.filter(hasVin)).catch(() => {})
+              }
+            } catch { /* fall through to the full sync below */ }
           }
-          return put.length ? { rows } : s
-        })
-        if (put.length) idbBulkPut(put).catch(() => {})
-      },
-
-      loadSiteFirst: async () => {
-        if (!db.isConfigured()) return
-        const y = useYard.getState()
-        const siteName = y.sites.find((s) => s.id === y.currentSite)?.name
-        if (!siteName) return
-        try {
-          const siteRows = await db.fetchTrackingRowsForSite(siteName)
-          if (!siteRows.length) return
-          set((s) => {
-            const rows = { ...s.rows }
-            for (const r of siteRows) {
-              if (!hasVin(r) || r.deletedAt) continue
-              const cur = rows[r.vin]
-              // never clobber an edit this device made that the cloud hasn't
-              // seen yet (same last-write-wins rule syncCloud uses)
-              if (!cur || (r.updatedAt ?? 0) >= (cur.updatedAt ?? 0)) rows[r.vin] = r
-            }
-            return { rows }
-          })
-          idbBulkPut(siteRows.filter((r) => hasVin(r) && !r.deletedAt)).catch(() => {})
-        } catch { /* the generic background sync catches this up regardless */ }
-      },
-
-      refreshCloudTotal: async () => {
-        const n = await db.countTrackingRows()
-        if (n !== null) set({ cloudTotal: n })
-      },
-
-      // ── convergence check: does this device hold every cloud row? ──────────
-      // Compares the cloud's exact row count with the local one and runs the
-      // per-VIN reconcile until they agree (max 3 tries). This is what makes 20
-      // devices opening at once all land on the same number instead of each
-      // freezing at whatever its first load happened to fetch.
-      ensureComplete: async () => {
-        if (!db.isConfigured()) return
-        for (let attempt = 0; attempt < 3; attempt++) {
-          const cloudCount = await db.countTrackingRows()
-          if (cloudCount == null) return // can't verify → decide nothing
-          const localCount = Object.keys(get().rows).length
-          if (localCount === cloudCount) return // exact mirror of the cloud
-          console.warn(`[tracking] out of sync: local ${localCount} vs cloud ${cloudCount} — reconciling (try ${attempt + 1})`)
-          await get().reconcileCloud()
-          if (Object.keys(get().rows).length === cloudCount) return
-          await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)))
         }
+        // reconcile every yard in the background (incremental after the first run)
+        get().syncCloud()
       },
 
       // Two-way merge between this device (IndexedDB) and Supabase, keyed by VIN
@@ -323,19 +204,7 @@ export const useTracking = create<TrackingState>()(
         const since = incremental ? lastSync - 120_000 : undefined
 
         let cloud: TrackRow[] = []
-        let complete = false
-        // On a device that starts empty (every load in online-100% mode) paint
-        // each page as it arrives instead of holding the screen until the last
-        // one: the yard is usable after the first ~1,000 rows and the rest fills
-        // in behind. The merge below still runs on the COMPLETE set.
-        const stream = hasLocal ? undefined : (batch: TrackRow[]) => {
-          set((s) => {
-            const rows = { ...s.rows }
-            for (const r of batch) if (hasVin(r) && !r.deletedAt) rows[r.vin] = r
-            return { rows, loaded: true }
-          })
-        }
-        try { const res = await db.fetchTrackingRows(since, stream); cloud = res.rows; complete = res.complete } catch { return }
+        try { cloud = await db.fetchTrackingRows(since) } catch { return }
         const cloudByVin = new Map(cloud.map((r) => [r.vin, r]))
 
         // cloud → local: apply tombstones (remove) and pull rows missing locally
@@ -360,14 +229,9 @@ export const useTracking = create<TrackingState>()(
         for (const lr of Object.values(local)) if (!hasVin(lr) && !drop.includes(lr.vin)) { delete merged[lr.vin]; drop.push(lr.vin) }
         if (phantom.length) db.deleteTrackingRows(phantom).catch(() => {})
 
-        // local → cloud: ADD-ONLY. A row is removed from this device ONLY when
-        // the cloud says so explicitly (a tombstone — deletedAt set, handled in
-        // the pull loop above). A row the cloud's answer simply doesn't list is
-        // NEVER inferred as deleted — it is re-uploaded instead. Every real
-        // delete in this app writes a tombstone (deleteTrackingRows soft-
-        // deletes), so this loses nothing on purpose; inferring deletion from
-        // an incomplete/short answer is exactly what once wiped ~15,600 real
-        // rows from every device that ran it.
+        // local → cloud: on a full run, anything the cloud lacks or is older on;
+        // incrementally, just local edits since last sync (covers offline changes).
+        // Never re-push a VIN the cloud has tombstoned — that was the resurrection bug.
         const push: TrackRow[] = []
         for (const lr of Object.values(local)) {
           if (!hasVin(lr)) continue // never re-push phantom rows
@@ -375,11 +239,7 @@ export const useTracking = create<TrackingState>()(
           if (cr?.deletedAt) continue
           if (incremental) {
             if ((lr.updatedAt ?? 0) > lastSync) push.push(lr)
-          } else if (lastSync > 0) {
-            if ((lr.updatedAt ?? 0) > lastSync) push.push(lr) // own un-pushed edits → keep + upload
-            else if (!cr) push.push(lr) // cloud lacks it and it isn't tombstoned → upload, never drop
           } else {
-            // first-ever sync: seed the cloud from this device
             if (!cr || (lr.updatedAt ?? 0) > (cr.updatedAt ?? 0)) push.push(lr)
           }
         }
@@ -387,63 +247,10 @@ export const useTracking = create<TrackingState>()(
         if (pull.length || drop.length) { set({ rows: merged }) }
         if (pull.length) idbBulkPut(pull).catch(() => {})
         if (drop.length) idbDelete(drop).catch(() => {})
-        // await the push: if it FAILED, lastSync must stay put so these edits
-        // keep counting as "newer than lastSync" and the next mirror pass
-        // rescues them instead of deleting rows the cloud never received
-        const pushOk = push.length ? await db.upsertTrackingRows(push).catch(() => false) : true
-        // a PARTIAL pull must not advance lastSync either: doing so switched the
-        // next run to incremental and the missing rows were never fetched again —
-        // that is how a device stayed stuck at 213 of 1,980 rows forever
-        if (complete && pushOk) set({ lastSync: startedAt })
-        else if (!complete) console.error('[tracking] partial sync — lastSync not advanced, will pull fully again')
-        else console.error('[tracking] push failed — lastSync not advanced so local edits stay protected')
+        if (push.length) db.upsertTrackingRows(push).catch(() => {})
+        set({ lastSync: startedAt })
         // occasionally clear tombstones older than 30 days so the table stays lean
         if (!incremental) db.purgeTrackingTombstones(30 * 24 * 3600_000).catch(() => {})
-      },
-
-      // ── full per-VIN reconciliation against the cloud ──────────────────────
-      // Incremental syncs drift: a device that misses a tombstone window (or a
-      // realtime event) can sit on a stale copy of a row indefinitely. This
-      // pass diffs a LIGHT index of every cloud row (vin + updated_at +
-      // deleted_at, ~40 bytes each) against local state:
-      //  - cloud newer / missing locally → backfill those rows
-      //  - the cloud explicitly tombstoned it → drop (the only kind of delete)
-      //  - anything else the index doesn't list → ADD-ONLY: push it up. Never
-      //    guess a row is gone just because one index walk didn't include it —
-      //    that inference is what once wiped ~15,600 real rows in one pass.
-      reconcileCloud: async () => {
-        if (!db.isConfigured()) return
-        const idx = await db.fetchTrackingIndex()
-        if (idx === null) return // fetch failed — decide nothing from it
-        const local = get().rows
-        const byVin = new Map(idx.map((r) => [r.vin, r]))
-        const pullVins: string[] = []
-        for (const r of idx) {
-          if (r.deletedAt) continue
-          const lr = local[r.vin]
-          if (!lr || r.updatedAt > (lr.updatedAt ?? 0)) pullVins.push(r.vin)
-        }
-        const drop: string[] = []
-        const rescue: TrackRow[] = []
-        for (const lr of Object.values(local)) {
-          const cr = byVin.get(lr.vin)
-          if (cr && !cr.deletedAt) continue
-          if (cr?.deletedAt) { drop.push(lr.vin); continue } // deliberate delete (tombstone)
-          if (hasVin(lr)) rescue.push(lr) // not on the cloud's index → upload, never assume deleted
-        }
-        const pulled = pullVins.length ? await db.fetchTrackingRowsByVins(pullVins) : []
-        if (!pulled.length && !drop.length && !rescue.length) return
-        set((s) => {
-          const rows = { ...s.rows }
-          for (const vin of drop) delete rows[vin]
-          for (const r of pulled) if (hasVin(r) && !r.deletedAt) rows[r.vin] = r
-          return { rows }
-        })
-        if (pulled.length) idbBulkPut(pulled.filter((r) => hasVin(r) && !r.deletedAt)).catch(() => {})
-        if (drop.length) idbDelete(drop).catch(() => {})
-        if (rescue.length) db.upsertTrackingRows(rescue).catch(() => {})
-        if (drop.length || pulled.length || rescue.length)
-          console.info(`[tracking] reconcile: +${pulled.length} · -${drop.length} (tombstoned) · pushed ${rescue.length}`)
       },
 
       // Live updates: any device that changes a car's status / cells broadcasts
@@ -456,7 +263,42 @@ export const useTracking = create<TrackingState>()(
           .on(
             'postgres_changes',
             { event: '*', schema: 'public', table: 'tracking_rows' },
-            handleTrackingRealtime,
+            (payload) => {
+              if (payload.eventType === 'DELETE') {
+                const vin = (payload.old as { vin?: string })?.vin
+                if (!vin) return
+                set((s) => { if (!s.rows[vin]) return s; const rows = { ...s.rows }; delete rows[vin]; return { rows } })
+                idbDelete([vin]).catch(() => {})
+                return
+              }
+              const r = payload.new as { vin?: string; cells?: Record<string, string> | null; updated_at?: string | null; site?: string | null; deleted_at?: string | null; history?: TrackRow['history'] | null }
+              if (!r?.vin) return
+              // soft-delete arrives here as an UPDATE with deleted_at set → drop locally
+              if (r.deleted_at) {
+                const vin = r.vin
+                set((s) => { if (!s.rows[vin]) return s; const rows = { ...s.rows }; delete rows[vin]; return { rows } })
+                idbDelete([vin]).catch(() => {})
+                return
+              }
+              if (!(r.cells?.['Vin'] ?? '').trim()) return // ignore phantom blank-Vin inserts
+              const incoming: TrackRow = {
+                vin: r.vin,
+                cells: r.cells ?? {},
+                updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : Date.now(),
+                site: r.site ?? undefined,
+                history: r.history ?? undefined,
+              }
+              set((s) => {
+                const cur = s.rows[incoming.vin]
+                if (cur && (cur.updatedAt ?? 0) >= (incoming.updatedAt ?? 0)) return s // stale / self-echo
+                // payload without history (column omitted / truncated) must NOT wipe
+                // the local audit trail — a later updateCell on this device would then
+                // upsert history:null to the cloud, destroying it everywhere.
+                if (!incoming.history?.length && cur?.history?.length) incoming.history = cur.history
+                idbPut(incoming).catch(() => {})
+                return { rows: { ...s.rows, [incoming.vin]: incoming } }
+              })
+            },
           )
           // self-healing subscription — mirror of the units channel: reconnect
           // after a silent websocket death and run an incremental syncCloud to
@@ -470,12 +312,7 @@ export const useTracking = create<TrackingState>()(
             }
             if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
               trackingHadDrop = true
-              if (trackingChannel) {
-                // defer: removing the channel INSIDE its own status callback
-                // recurses in supabase-js when the socket closes instantly
-                const ch = trackingChannel; trackingChannel = null
-                setTimeout(() => { supabase.removeChannel(ch).catch(() => {}) }, 0)
-              }
+              if (trackingChannel) { supabase.removeChannel(trackingChannel); trackingChannel = null }
               setTimeout(() => {
                 if (!trackingChannel && useYard.getState().loggedInUserId) get().subscribeRealtime()
               }, 4000)
@@ -608,31 +445,20 @@ export const useTracking = create<TrackingState>()(
           }
           const existing = rows[r.vin]
           if (existing) {
-            // ── field-first rule: a car the OPS SCAN gated out recently carries a
-            // live 'Gate Out Time' epoch. The uploaded file was exported BEFORE
-            // that scan, so its blank stamp must not clear the gate-out or roll
-            // the status back — "ข้อมูลต้องยึดตามหน้างาน". After 72h the file
-            // becomes authoritative again (covers real transfers between yards,
-            // which take days — the reason the clear rule exists at all).
-            const goEpoch = Number(existing.cells['Gate Out Time'] || 0)
-            const liveGateOut = goEpoch > 0 && now - goEpoch < 72 * 3600_000
             const cells = { ...existing.cells }
             let didChange = false
             for (const [k, v] of Object.entries(r.cells)) {
               if (k === 'Car Status') continue // don't blindly copy the file's status
-              if (liveGateOut && (k === GATE_OUT_TS || k === 'Gate Out Time')) continue
               if (v != null && v !== '' && cells[k] !== v) { cells[k] = v; didChange = true }
             }
             // "Gate Out time stamp" is AUTHORITATIVE in the master sheet, so it must be
             // able to CLEAR. The non-empty-only overlay above can never erase a stale
             // stamp, which would pin a transferred-in car to Gate-out forever.
-            if (!liveGateOut && GATE_OUT_TS in r.cells) {
+            if (GATE_OUT_TS in r.cells) {
               const incoming = (r.cells[GATE_OUT_TS] ?? '').trim()
               if ((cells[GATE_OUT_TS] ?? '') !== incoming) { cells[GATE_OUT_TS] = incoming; didChange = true }
             }
-            // a live gate-out also keeps its status cell exactly as the field
-            // left it (Pre Gate-out / Preload / Gate-out) — no promote/demote
-            if (!liveGateOut && promote(cells)) didChange = true
+            if (promote(cells)) didChange = true
             // a car that moved yards carries a NEW "Location yard" → re-tag it to that
             // site (the old `existing.site ?? …` pinned it to the yard it came from).
             const site = siteIdForLocation(cells, sites) ?? existing.site ?? siteForRow(cells, sites, currentSite)
@@ -887,13 +713,7 @@ export const useTracking = create<TrackingState>()(
       name: 'sjwd-tracking',
       // only the (small) column + filter config is persisted to localStorage; rows live in IndexedDB
       storage: quotaSafeStorage(),
-      // UI config only. In online-100% mode lastSync is NOT kept either: the
-      // device starts empty on every load, so the next run must be a full pull.
-      partialize: (s) => ({
-        columns: s.columns, filterCols: s.filterCols, defaultSeeded: s.defaultSeeded,
-        viewDefaultVersion: s.viewDefaultVersion, lastImport: s.lastImport,
-        lastSync: isOnlineOnly() ? 0 : s.lastSync,
-      }),
+      partialize: (s) => ({ columns: s.columns, filterCols: s.filterCols, defaultSeeded: s.defaultSeeded, viewDefaultVersion: s.viewDefaultVersion, lastImport: s.lastImport, lastSync: s.lastSync }),
       merge: (persisted, current) => {
         const p = persisted as Partial<TrackingState> | undefined
         return {
@@ -911,105 +731,6 @@ export const useTracking = create<TrackingState>()(
 // admin published a new shared default → adopt it live on every other open
 // client (version-checked inside seedViewDefault, so it only pulls when newer).
 onSync('viewdefault', () => { useTracking.getState().seedViewDefault().catch((e) => console.error('[viewdefault] sync pull', e)) })
-
-// ── realtime event handling (exported for tests) ─────────────────────────────
-// Any tracking_rows change can move the In Yard number → PUSH the shared
-// counts to this screen right away (debounced ~1.5s) instead of waiting for
-// the 30s poll. Every device receives the same event within about a second,
-// so 20 screens land on the same number together.
-let countsTimer: ReturnType<typeof setTimeout> | null = null
-function scheduleCountsRefresh() {
-  if (countsTimer) clearTimeout(countsTimer)
-  // 3s debounce: during a bulk import thousands of realtime events stream in —
-  // the refresh (which now includes the heavier dashboard_stats scan) must
-  // coalesce them instead of hammering the shared database once per burst
-  countsTimer = setTimeout(() => {
-    countsTimer = null
-    if (document.visibilityState === 'hidden') return // background tab — wake catch-up covers it
-    useYard.getState().refreshCloudInYard().catch(() => {})
-    useYard.getState().refreshCloudStats().catch(() => {})
-    useTracking.getState().refreshCloudTotal().catch(() => {})
-  }, 3000)
-}
-// Truncated INSERT/UPDATE with no VIN at all → we know SOMETHING changed but
-// not what: run an incremental syncCloud (cheap — only rows newer than
-// lastSync) to pull the gap instead of dropping the event.
-let gapTimer: ReturnType<typeof setTimeout> | null = null
-function scheduleGapSync() {
-  if (gapTimer) clearTimeout(gapTimer)
-  gapTimer = setTimeout(() => {
-    gapTimer = null
-    useTracking.getState().syncCloud().catch(() => {})
-  }, 2000)
-}
-
-// During a bulk import thousands of row events stream in within seconds; each
-// one used to be its own setState, and every subscribed screen (Unit List
-// search index, Dashboard, ops queues) recomputed per event — that serial
-// recompute is what made the whole app crawl. Buffer the incoming rows and
-// apply them as ONE store update per window; mergeServerRows keeps the exact
-// same newer-wins + history-preserving semantics as the old inline apply.
-let rtBuf: TrackRow[] = []
-let rtTimer: ReturnType<typeof setTimeout> | null = null
-function queueRealtimeRow(r: TrackRow) {
-  rtBuf.push(r)
-  if (rtTimer) return
-  rtTimer = setTimeout(() => {
-    rtTimer = null
-    const batch = rtBuf; rtBuf = []
-    useTracking.getState().mergeServerRows(batch)
-  }, 600)
-}
-
-/** Apply one tracking_rows realtime event. Extracted so sims can feed
- *  payloads directly — including the TRUNCATED ones Supabase delivers when a
- *  row's body exceeds the broadcast size cap (65 cells + a long history do).
- *  Those used to be silently ignored (`if (!r?.vin) return`), which meant an
- *  edit on one device never reached the other screens until the 10-min
- *  reconcile — a big part of "บางเครื่องไม่อัพเดทข้อมูลจาก cloud". */
-export function handleTrackingRealtime(payload: { eventType: string; old?: unknown; new?: unknown }): void {
-  const { setState: set, getState: get } = useTracking
-  scheduleCountsRefresh() // every change may move In Yard — converge all screens
-  if (payload.eventType === 'DELETE') {
-    const vin = (payload.old as { vin?: string })?.vin
-    if (!vin) {
-      // key-only DELETE truncated away even the vin — an incremental pull
-      // can't see removals, so verify the count and reconcile if it moved
-      get().ensureComplete().catch(() => {})
-      return
-    }
-    set((s) => { if (!s.rows[vin]) return s; const rows = { ...s.rows }; delete rows[vin]; return { rows } })
-    idbDelete([vin]).catch(() => {})
-    return
-  }
-  const r = payload.new as { vin?: string; cells?: Record<string, string> | null; updated_at?: string | null; site?: string | null; deleted_at?: string | null; history?: TrackRow['history'] | null } | undefined
-  if (!r?.vin) { scheduleGapSync(); return } // truncated body, row unknown → pull the gap
-  // soft-delete arrives here as an UPDATE with deleted_at set → drop locally
-  if (r.deleted_at) {
-    const vin = r.vin
-    set((s) => { if (!s.rows[vin]) return s; const rows = { ...s.rows }; delete rows[vin]; return { rows } })
-    idbDelete([vin]).catch(() => {})
-    return
-  }
-  if (r.cells == null) {
-    // vin known but the payload body was dropped → fetch that one row exactly
-    const vin = r.vin
-    db.fetchTrackingRowsByVins([vin]).then((rows) => {
-      const fresh = rows.find((x) => x.vin === vin)
-      if (!fresh || fresh.deletedAt || !(fresh.cells?.['Vin'] ?? '').trim()) return
-      queueRealtimeRow(fresh)
-    }).catch(() => scheduleGapSync())
-    return
-  }
-  if (!(r.cells?.['Vin'] ?? '').trim()) return // ignore phantom blank-Vin inserts
-  queueRealtimeRow({
-    vin: r.vin,
-    cells: r.cells ?? {},
-    updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : Date.now(),
-    site: r.site ?? undefined,
-    history: r.history ?? undefined,
-  })
-}
 
 // memoized array of rows to avoid new-reference selector loops
 export function useTrackingRows(): TrackRow[] {

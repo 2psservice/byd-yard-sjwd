@@ -13,7 +13,6 @@ import { useTrackingRows } from '../store/useTracking'
 import { rowInSite } from '../lib/siteScope'
 import { appendMasterSheets } from '../lib/masterSheets'
 import { dateKey, todayKey, addDays, fmtDateTh, gateInDateKey, gateOutDateKey } from '../lib/dayKey'
-import { deriveCarStatus } from '../lib/carStatus'
 import * as db from '../lib/db'
 import type { TrackRow } from '../lib/excelTracking'
 
@@ -31,26 +30,6 @@ export function DailyStockReport() {
   const allRows = useTrackingRows()
 
   const [day, setDay] = useState(todayKey())
-  // ── N4-style: the whole day's ledger computed on the SERVER ────────────────
-  // daily_stock (supabase-daily-stock.sql) reconstructs ยกมา/เข้า/ออก/คงเหลือ
-  // from the cloud's rows — every device asking about the same day gets the
-  // same answer, no matter how much it has synced. Falls back to the local
-  // computation below when offline / the function isn't installed.
-  const [serverDaily, setServerDaily] = useState<db.DailyStockData | null>(null)
-  useEffect(() => {
-    let stale = false
-    setServerDaily(null)
-    const site = sites.find((x) => x.id === currentSite)
-    if (!site) return
-    const normName = (v?: string) => (v ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
-    const names = [site.name, site.code].filter(Boolean).map((v) => normName(v as string))
-    const pull = () => db.fetchDailyStock(site.id, names, day)
-      .then((d) => { if (!stale && d && d.day === day) setServerDaily(d) })
-      .catch(() => {})
-    pull()
-    const iv = setInterval(pull, 60_000)
-    return () => { stale = true; clearInterval(iv) }
-  }, [currentSite, sites, day])
   const [caps, setCaps] = useState<Record<string, number>>({})
   const [capDraft, setCapDraft] = useState<string | null>(null)
   const [openList, setOpenList] = useState<'in' | 'out' | 'stock' | null>(null)
@@ -94,48 +73,15 @@ export function DailyStockReport() {
   )
 
   const data = useMemo(() => {
-    if (serverDaily) {
-      // server lists arrive pre-aggregated; wrap them in minimal TrackRow-shaped
-      // objects so modelOf/colorOf/groupOf and the render below work unchanged
-      const wrap = (x: db.DailyStockItem): TrackRow => ({
-        vin: x.vin, updatedAt: 0, history: [],
-        cells: { Vin: x.vin, 'Model name': x.model, Color: x.color, 'Grouping  Number': x.grouping ?? '' },
-      })
-      const models = new Map<string, Map<string, number>>()
-      const colorTotals = new Map<string, number>()
-      for (const m of serverDaily.stock_matrix) {
-        if (!models.has(m.model)) models.set(m.model, new Map())
-        models.get(m.model)!.set(m.color, (models.get(m.model)!.get(m.color) ?? 0) + m.n)
-        colorTotals.set(m.color, (colorTotals.get(m.color) ?? 0) + m.n)
-      }
-      const colors = [...colorTotals.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k)
-      const byModel = [...models.entries()]
-        .map(([model, byColor]) => ({ model, byColor, total: [...byColor.values()].reduce((n, v) => n + v, 0) }))
-        .sort((a, b) => b.total - a.total)
-      return {
-        inRows: serverDaily.in_list.map(wrap), outRows: serverDaily.out_list.map(wrap),
-        stockRows: serverDaily.stock_list.map(wrap),
-        opening: serverDaily.opening, colors, byModel, colorTotals,
-        undated: serverDaily.undated, outNoDate: serverDaily.out_no_date,
-      }
-    }
     const prev = addDays(day, -1)
     const inRows: TrackRow[] = []
     const outRows: TrackRow[] = []
     const stock: TrackRow[] = []
     let opening = 0
     let undated = 0
-    let outNoDate = 0
     for (const r of rows) {
-      // status is the same source of truth the dashboard reads — the date
-      // ledger below must not count a car the dashboard says is not in the yard
-      const cs = deriveCarStatus(r.cells)
-      if (cs === 'Pre Gate-in') { undated++; continue } // not physically here yet
       const gi = gateInDateKey(r)
       const go = gateOutDateKey(r)
-      // departed but no parsable date (e.g. an admin set Car Status = Gate-out
-      // by hand) — can't place it on a day, so keep it out of every term
-      if (cs === 'Gate-out' && !go) { outNoDate++; continue }
       if (!gi && !go) { undated++; continue }        // never gated in — not in the yard yet
       if (gi === day) inRows.push(r)
       if (go === day) outRows.push(r)
@@ -160,9 +106,9 @@ export function DailyStockReport() {
       [...list].sort((a, b) => modelOf(a).localeCompare(modelOf(b)) || a.vin.localeCompare(b.vin))
     return {
       inRows: sortRows(inRows), outRows: sortRows(outRows), stockRows: sortRows(stock),
-      opening, colors, byModel, colorTotals, undated, outNoDate,
+      opening, colors, byModel, colorTotals, undated,
     }
-  }, [rows, day, serverDaily])
+  }, [rows, day])
 
   const stockN = data.stockRows.length
   const balance = cap - stockN
@@ -254,9 +200,7 @@ export function DailyStockReport() {
       <div className="px-4 py-3 border-b hairline flex items-center gap-2 flex-wrap">
         <CalendarDays size={16} style={{ color: 'var(--brand)' }} />
         <span className="font-semibold text-[13.5px]">รายงานประจำวัน</span>
-        <span className="text-[12px]" style={{ color: 'var(--muted)' }}>
-          Local Production Stock · {siteName}{serverDaily ? ' · ☁ เลขจากเซิร์ฟเวอร์' : ''}
-        </span>
+        <span className="text-[12px]" style={{ color: 'var(--muted)' }}>Local Production Stock · {siteName}</span>
 
         <div className="ml-auto flex items-center gap-1.5">
           <button className="btn px-2 py-1.5" title="วันก่อนหน้า" onClick={() => setDay(addDays(day, -1))}>
@@ -284,7 +228,7 @@ export function DailyStockReport() {
 
         {/* ── stock summary — the Local Production Stock block ── */}
         <div className="overflow-x-auto mb-4">
-          <table className="w-full tbl-vlines" style={{ fontSize: 12.5, borderCollapse: 'collapse' }}>
+          <table className="w-full" style={{ fontSize: 12.5, borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: 'var(--app-bg)' }}>
                 <th className="text-left px-3 py-2 font-bold whitespace-nowrap">Yard</th>
@@ -353,7 +297,7 @@ export function DailyStockReport() {
               <div className="px-3.5 py-4 text-[12.5px]" style={{ color: 'var(--faint)' }}>— ไม่มีรายการในวันนี้ —</div>
             ) : (
               <div className="max-h-[46vh] overflow-y-auto">
-                <table className="w-full tbl-vlines" style={{ fontSize: 12, borderCollapse: 'collapse' }}>
+                <table className="w-full" style={{ fontSize: 12, borderCollapse: 'collapse' }}>
                   <thead>
                     <tr style={{ background: 'var(--app-bg)' }}>
                       <th className="text-left px-3 py-1.5 font-bold">VIN</th>
@@ -388,7 +332,7 @@ export function DailyStockReport() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full tbl-vlines" style={{ fontSize: 12, borderCollapse: 'collapse' }}>
+            <table className="w-full" style={{ fontSize: 12, borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ background: 'var(--app-bg)' }}>
                   <th className="text-left px-3 py-1.5 font-bold whitespace-nowrap" style={{ color: 'var(--muted)' }}>Model</th>
@@ -427,8 +371,7 @@ export function DailyStockReport() {
 
         {data.undated > 0 && (
           <div className="text-[11.5px] mt-3" style={{ color: 'var(--muted)' }}>
-            หมายเหตุ · มีรถ {data.undated.toLocaleString()} คันที่ยังไม่เข้าลาน/ไม่มีวันที่ Gate-in (เช่น สถานะ Pre Gate-in) จึงไม่ถูกนับในยอดคงเหลือ
-            {data.outNoDate > 0 && <> · รถออกจากลานแล้วแต่ไม่มีวันที่ Gate-out {data.outNoDate.toLocaleString()} คัน (ไม่ถูกนับเช่นกัน)</>}
+            หมายเหตุ · มีรถ {data.undated.toLocaleString()} คันที่ยังไม่มีวันที่ Gate-in (เช่น สถานะ Pre Gate-in) จึงไม่ถูกนับในยอดคงเหลือ
           </div>
         )}
       </div>

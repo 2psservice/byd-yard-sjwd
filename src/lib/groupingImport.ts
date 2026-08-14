@@ -62,38 +62,6 @@ export function yardLocCode(u: { block?: string; slot?: number } | undefined | n
   return `${blockCode(u.block)}${String(u.slot).padStart(2, '0')}`
 }
 
-/** LAST KNOWN lane code from a tracking row's Location history ("N2705" →
- *  "N27") — the reprint fallback for cars that no longer hold a slot (already
- *  slid out to the loading lane / gated out), so the grouping sheet keeps
- *  showing where each car was instead of "ไม่พบ". */
-export function lastHistoryLoc(r: { history?: { field: string; from: string; to: string }[] } | undefined | null): string {
-  const hist = r?.history
-  if (!hist) return ''
-  for (let i = hist.length - 1; i >= 0; i--) {
-    const e = hist[i]
-    if (e.field !== 'Location') continue
-    const v = (e.to || e.from || '').trim().toUpperCase()
-    const m = v.match(/^([A-Z]+)(\d{2})(\d{2})$/) // full code "N2705" → lane "N27"
-    if (m) return `${m[1]}${m[2]}`
-    if (v) return v
-  }
-  return ''
-}
-
-/** Same walk, but keeps the FULL code ("N2705", row digits included) — for the
- *  Unit List Location column, which shows the exact cell, not just the lane. */
-export function lastHistoryLocFull(r: { history?: { field: string; from: string; to: string }[] } | undefined | null): string {
-  const hist = r?.history
-  if (!hist) return ''
-  for (let i = hist.length - 1; i >= 0; i--) {
-    const e = hist[i]
-    if (e.field !== 'Location') continue
-    const v = (e.to || e.from || '').trim().toUpperCase()
-    if (v) return v
-  }
-  return ''
-}
-
 /** Full yard location: block name + 2-digit column (ช่อง) + 2-digit order —
  *  e.g. "T1201" = block T, column 12, 1st car down that column. Matches how
  *  the yard extends its lane codes (T12 → T1201, T1202, …). Empty when
