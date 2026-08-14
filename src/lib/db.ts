@@ -837,12 +837,47 @@ export async function fetchTrackingRows(
   return { rows, complete }
 }
 
+// ── shared snapshot: เครื่องเดียวคำนวณ ทุกเครื่องใช้ผลร่วมกัน ────────────────
+/** ยอด/สรุปที่ได้จากการสแกนตารางใหญ่ (in_yard_count / dashboard_stats /
+ *  daily_stock) เคยถูกเรียกแยกจากทุกเครื่องทุกนาที — 20 เครื่อง = สแกน 16,000
+ *  แถว ~40 ครั้ง/นาที จน CPU ฐานข้อมูลเต็มแม้อัปเกรดเครื่องแล้ว. ตอนนี้ผลถูก
+ *  แชร์ผ่าน app_config: เครื่องแรกที่พบว่า snapshot หมดอายุเป็นคนคำนวณและ
+ *  publish, เครื่องที่เหลืออ่านแถวเดียว (แทบไม่มีต้นทุน). jitter + อ่านซ้ำกัน
+ *  หลายเครื่องแย่งกันคำนวณตอนตื่นพร้อมกัน. อายุวัดจาก updated_at ฝั่ง
+ *  เซิร์ฟเวอร์ — ยอมรับ timestamp ล้ำอนาคตได้ถึง 10 นาที (นาฬิกาเครื่อง
+ *  publisher เพี้ยน) แต่ไม่ยอมรับของเก่าเกิน ttl. */
+async function sharedSnapshot<T>(
+  id: string, ttlMs: number,
+  validate: (v: unknown) => T | null,
+  compute: () => Promise<T | null>,
+): Promise<T | null> {
+  const read = async (): Promise<T | null> => {
+    const { data, error } = await supabase.from('app_config').select('value,updated_at').eq('id', id).maybeSingle()
+    if (error || !data) return null
+    const age = Date.now() - Date.parse(data.updated_at ?? '')
+    if (Number.isNaN(age) || age >= ttlMs || age < -10 * 60_000) return null
+    return validate(data.value)
+  }
+  const cached = await read()
+  if (cached !== null) return cached
+  await new Promise((r) => setTimeout(r, 300 + Math.random() * 2200))
+  const again = await read()
+  if (again !== null) return again
+  const fresh = await compute()
+  if (fresh !== null) {
+    const { error } = await supabase.from('app_config')
+      .upsert({ id, value: fresh, updated_at: new Date().toISOString() }, { onConflict: 'id' })
+    if (error && (error as { code?: string }).code !== '42P01') console.error('[db] sharedSnapshot publish', id, error)
+  }
+  return fresh
+}
+
 /** ยอด In Yard นับบนคลาวด์ (supabase-inyard-count.sql) — ทุกเครื่องได้เลขเดียว
  *  กัน. null = ออฟไลน์ / ฟังก์ชันยังไม่ได้ติดตั้ง → ผู้เรียก fallback เป็นเลขที่นับ
  *  ในเครื่องตามเดิม. */
 let inYardRpcMissingUntil = 0
-export async function fetchInYardCount(siteId: string | null, siteNames: string[]): Promise<number | null> {
-  if (!isConfigured() || Date.now() < inYardRpcMissingUntil) return null
+async function rpcInYardCount(siteId: string | null, siteNames: string[]): Promise<number | null> {
+  if (Date.now() < inYardRpcMissingUntil) return null
   const { data, error } = await supabase.rpc('in_yard_count', { p_site_id: siteId, p_names: siteNames })
   if (error) {
     // PGRST202 = function not installed yet. Back off for a while but keep
@@ -853,6 +888,12 @@ export async function fetchInYardCount(siteId: string | null, siteNames: string[
     return null
   }
   return typeof data === 'number' ? data : null
+}
+export async function fetchInYardCount(siteId: string | null, siteNames: string[]): Promise<number | null> {
+  if (!isConfigured()) return null
+  return sharedSnapshot(`snap_inyard_${siteId ?? 'all'}`, 60_000,
+    (v) => (typeof v === 'number' ? v : null),
+    () => rpcInYardCount(siteId, siteNames))
 }
 
 // ── N4-style server-computed dashboard ──────────────────────────────────────
@@ -867,22 +908,31 @@ export interface DashboardStats {
 /** ตัวเลขสรุปหน้า Dashboard ทั้งหน้า คำนวณบนเซิร์ฟเวอร์ (supabase-dashboard-stats.sql)
  *  — ทุกจอถามฟังก์ชันเดียวกันจึงได้เลขชุดเดียวกันเสมอ. null = ออฟไลน์ / ฟังก์ชัน
  *  ยังไม่ติดตั้ง → ผู้เรียก fallback เป็นการคำนวณจากข้อมูลในเครื่องตามเดิม. */
+// validate the shape — adopting a malformed answer (e.g. an empty array from
+// a proxy/timeout page, or a corrupt shared snapshot) crashed the Dashboard
+// on .map of undefined
+const validDashboardStats = (v: unknown): DashboardStats | null => {
+  const d = v as DashboardStats
+  if (!d || typeof d !== 'object' || Array.isArray(d) || !d.cards
+      || !Array.isArray(d.status_breakdown) || !Array.isArray(d.model_mix)
+      || !Array.isArray(d.pivot_final) || !Array.isArray(d.pivot_vos)) return null
+  return d
+}
 let dashStatsMissingUntil = 0
-export async function fetchDashboardStats(siteId: string | null, siteNames: string[]): Promise<DashboardStats | null> {
-  if (!isConfigured() || Date.now() < dashStatsMissingUntil) return null
+async function rpcDashboardStats(siteId: string | null, siteNames: string[]): Promise<DashboardStats | null> {
+  if (Date.now() < dashStatsMissingUntil) return null
   const { data, error } = await supabase.rpc('dashboard_stats', { p_site_id: siteId, p_names: siteNames })
   if (error) {
     if ((error as { code?: string }).code === 'PGRST202') { dashStatsMissingUntil = Date.now() + 5 * 60_000; return null }
     console.error('[db] fetchDashboardStats', error)
     return null
   }
-  // validate the shape — adopting a malformed answer (e.g. an empty array from
-  // a proxy/timeout page) crashed the Dashboard on .map of undefined
-  const d = data as DashboardStats
-  if (!d || typeof d !== 'object' || Array.isArray(d) || !d.cards
-      || !Array.isArray(d.status_breakdown) || !Array.isArray(d.model_mix)
-      || !Array.isArray(d.pivot_final) || !Array.isArray(d.pivot_vos)) return null
-  return d
+  return validDashboardStats(data)
+}
+export async function fetchDashboardStats(siteId: string | null, siteNames: string[]): Promise<DashboardStats | null> {
+  if (!isConfigured()) return null
+  return sharedSnapshot(`snap_dash_${siteId ?? 'all'}`, 90_000, validDashboardStats,
+    () => rpcDashboardStats(siteId, siteNames))
 }
 
 // ── N4-style server-computed Daily Stock ────────────────────────────────────
@@ -894,20 +944,28 @@ export interface DailyStockData {
   in_list: DailyStockItem[]; out_list: DailyStockItem[]; stock_list: DailyStockItem[]
   stock_matrix: { model: string; color: string; n: number }[]
 }
+const validDailyStock = (v: unknown): DailyStockData | null => {
+  const d = v as DailyStockData
+  if (!d || typeof d !== 'object' || Array.isArray(d)
+      || !Array.isArray(d.in_list) || !Array.isArray(d.out_list)
+      || !Array.isArray(d.stock_list) || !Array.isArray(d.stock_matrix)) return null
+  return d
+}
 let dailyStockMissingUntil = 0
-export async function fetchDailyStock(siteId: string | null, siteNames: string[], day: string): Promise<DailyStockData | null> {
-  if (!isConfigured() || Date.now() < dailyStockMissingUntil) return null
+async function rpcDailyStock(siteId: string | null, siteNames: string[], day: string): Promise<DailyStockData | null> {
+  if (Date.now() < dailyStockMissingUntil) return null
   const { data, error } = await supabase.rpc('daily_stock', { p_site_id: siteId, p_names: siteNames, p_day: day })
   if (error) {
     if ((error as { code?: string }).code === 'PGRST202') { dailyStockMissingUntil = Date.now() + 5 * 60_000; return null }
     console.error('[db] fetchDailyStock', error)
     return null
   }
-  const d = data as DailyStockData
-  if (!d || typeof d !== 'object' || Array.isArray(d)
-      || !Array.isArray(d.in_list) || !Array.isArray(d.out_list)
-      || !Array.isArray(d.stock_list) || !Array.isArray(d.stock_matrix)) return null
-  return d
+  return validDailyStock(data)
+}
+export async function fetchDailyStock(siteId: string | null, siteNames: string[], day: string): Promise<DailyStockData | null> {
+  if (!isConfigured()) return null
+  return sharedSnapshot(`snap_daily_${siteId ?? 'all'}_${day}`, 90_000, validDailyStock,
+    () => rpcDailyStock(siteId, siteNames, day))
 }
 
 // ── N4-style server-side search/sort window for the Unit List ───────────────
