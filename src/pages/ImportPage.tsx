@@ -226,7 +226,7 @@ export function ImportPage() {
   )
 
   // upload progress for the co-inspection cloud push (done/total records)
-  const [coProg, setCoProg] = useState<{ done: number; total: number } | null>(null)
+  const [coProg, setCoProg] = useState<{ done: number; total: number; phase: string } | null>(null)
   const confirmCo = async () => {
     if (!coParsed || coSaving) return
     setCoSaving(true)
@@ -238,7 +238,7 @@ export function ImportPage() {
       const defectsForSite = coParsed.defects.filter((d) => okVins.has(d.vin) || rowInSite(existing[d.vin], currentSite, sites))
       // AWAIT the cloud write — importDefects can push 10k+ damage rows; blocking here
       // (with the overlay below) stops the user reloading before it finishes
-      const def = await importDefects(defectsForSite, existing, (done, total) => setCoProg({ done, total }))
+      const def = await importDefects(defectsForSite, existing, (done, total, phase) => setCoProg({ done, total, phase }))
       toast(
         'ok',
         `Co Inspection · เติม ${updated.toLocaleString()} คัน${added ? ` · ใหม่ ${added.toLocaleString()}` : ''}` +
@@ -484,7 +484,7 @@ export function ImportPage() {
                     <div className="mt-3">
                       <div className="flex items-center justify-between text-[12px] mb-1">
                         <b style={{ color: '#0891b2' }}>
-                          อัปโหลดแล้ว {coProg.done.toLocaleString()} / {coProg.total.toLocaleString()} รายการ
+                          {coProg.phase} · {coProg.done.toLocaleString()} / {coProg.total.toLocaleString()} รายการ
                         </b>
                         <b className="tabular" style={{ color: '#0891b2' }}>{Math.round((coProg.done / coProg.total) * 100)}%</b>
                       </div>
