@@ -36,7 +36,34 @@ const updateSW = registerSW({
   onNeedRefresh() { showUpdateBanner() },
 })
 
+// The actual "run the new build" step, shared by the banner's button AND the
+// idle/hidden safety net below — a device stuck on an old bundle keeps
+// running whatever sync logic shipped that day forever, no matter how many
+// fixes land afterward, until SOMETHING reloads it.
+let applying = false
+function applyUpdate() {
+  if (applying) return
+  applying = true
+  let done = false
+  const reload = () => { if (done) return; done = true; window.location.reload() }
+  // whichever happens first: the new worker taking over, or 1.5s
+  navigator.serviceWorker?.addEventListener('controllerchange', reload, { once: true })
+  setTimeout(reload, 1500)
+  try {
+    swRegistration?.waiting?.postMessage({ type: 'SKIP_WAITING' })
+    void Promise.resolve(updateSW(true)).catch(() => reload())
+  } catch { reload() }
+}
+
 function showUpdateBanner() {
+  // a yard tablet left open for days on a stale build never gets any of the
+  // sync/reconcile fixes shipped after it booted — that alone can be why one
+  // screen's In Yard number never matches the others no matter what the
+  // backend does. "ไว้ก่อน" only hides the banner; it does not cancel this —
+  // the update applies on its own the next moment nothing is being typed
+  // (tab hidden, or 5 min idle), so no device is stuck on old code forever.
+  scheduleAutoApply()
+
   if (document.getElementById('sw-update-banner')) return
   const bar = document.createElement('div')
   bar.id = 'sw-update-banner'
@@ -51,25 +78,36 @@ function showUpdateBanner() {
   // no "waiting" worker left to message and no controllerchange left to fire,
   // and the button sat on "กำลังอัปเดต…" forever. Reloading is all that is
   // actually needed to run the new build.
-  btn.onclick = () => {
-    btn.textContent = 'กำลังอัปเดต…'
-    btn.disabled = true
-    let done = false
-    const reload = () => { if (done) return; done = true; window.location.reload() }
-    // whichever happens first: the new worker taking over, or 1.5s
-    navigator.serviceWorker?.addEventListener('controllerchange', reload, { once: true })
-    setTimeout(reload, 1500)
-    try {
-      swRegistration?.waiting?.postMessage({ type: 'SKIP_WAITING' })
-      void Promise.resolve(updateSW(true)).catch(() => reload())
-    } catch { reload() }
-  }
+  btn.onclick = () => { btn.textContent = 'กำลังอัปเดต…'; btn.disabled = true; applyUpdate() }
   const later = document.createElement('button')
   later.textContent = 'ไว้ก่อน'
   later.style.cssText = 'padding:8px 12px;border:none;border-radius:10px;background:rgba(255,255,255,.14);color:#fff;font-size:13px;cursor:pointer'
   later.onclick = () => bar.remove()
   bar.append(btn, later)
   document.body.appendChild(bar)
+}
+
+let autoApplyArmed = false
+function scheduleAutoApply() {
+  if (autoApplyArmed) return
+  autoApplyArmed = true
+  const IDLE_MS = 5 * 60_000
+  let idleTimer: ReturnType<typeof setTimeout>
+  const cleanup = () => {
+    document.removeEventListener('visibilitychange', onHidden)
+    for (const ev of ['pointerdown', 'keydown', 'touchstart']) document.removeEventListener(ev, bump)
+    clearTimeout(idleTimer)
+  }
+  const fire = () => { cleanup(); applyUpdate() }
+  // safest moment: the tab isn't being looked at right now (screen locked,
+  // operator switched apps) — nothing on screen can be interrupted
+  const onHidden = () => { if (document.visibilityState === 'hidden') fire() }
+  // fallback for a screen that never goes hidden (a wall-mounted tablet with
+  // the display always on): apply once nobody has touched it for a while
+  const bump = () => { clearTimeout(idleTimer); idleTimer = setTimeout(fire, IDLE_MS) }
+  bump()
+  document.addEventListener('visibilitychange', onHidden)
+  for (const ev of ['pointerdown', 'keydown', 'touchstart']) document.addEventListener(ev, bump, { passive: true })
 }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
