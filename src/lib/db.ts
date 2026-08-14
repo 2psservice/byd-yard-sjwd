@@ -476,12 +476,16 @@ export async function deleteDamage(id: string): Promise<void> {
   if (error) console.error('[db] deleteDamage', id, error)
 }
 
-export async function deleteDamages(ids: string[]): Promise<void> {
+export async function deleteDamages(ids: string[], onProgress?: (done: number) => void): Promise<void> {
   if (!isConfigured() || !ids.length) return
-  const CHUNK = 200
+  // 500-id chunks (PK IN-list deletes handle this fine) — the old 200 made a
+  // big replace-import take 2.5× the round-trips on an already-loaded server
+  const CHUNK = 500
   for (let i = 0; i < ids.length; i += CHUNK) {
-    const { error } = await supabase.from('damages').delete().in('id', ids.slice(i, i + CHUNK))
+    const slice = ids.slice(i, i + CHUNK)
+    const { error } = await supabase.from('damages').delete().in('id', slice)
     if (error) console.error('[db] deleteDamages chunk', i, error)
+    onProgress?.(Math.min(i + CHUNK, ids.length))
   }
 }
 

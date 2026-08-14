@@ -353,7 +353,7 @@ interface YardState {
   subscribeRealtime: () => void
   unsubscribeRealtime: () => void
   // --- co-inspection defects ---
-  importDefects: (defects: DefectRow[], trackingRows: Record<string, TrackRow>, onProgress?: (done: number, total: number) => void) => Promise<{ units: number; damages: number }>
+  importDefects: (defects: DefectRow[], trackingRows: Record<string, TrackRow>, onProgress?: (done: number, total: number, phase: string) => void) => Promise<{ units: number; damages: number }>
 }
 
 /** Next free block id — single letters A–Z, then B1, B2… */
@@ -1693,14 +1693,20 @@ export const useYard = create<YardState>()(
         // can keep a "saving…" state up and the user won't reload mid-upload (that
         // was silently truncating the 16k-row damage push → units synced, damages lost)
         try {
-          // progress: one running total across both pushes so the import screen
-          // can show "อัปโหลดแล้ว X / Y (Z%)" while the user waits
-          const total = changedUnits.length + dmgItems.length
-          onProgress?.(0, total)
-          if (removedIds.length) await db.deleteDamages(removedIds)
-          await db.upsertUnits(changedUnits, (n) => onProgress?.(n, total)) // FK parents first
-          await db.upsertDamages(dmgItems, (n) => onProgress?.(changedUnits.length + n, total))
-          onProgress?.(total, total)
+          // progress: ONE running total across every cloud operation — including
+          // the replace-semantics DELETE of old file-defects, which can be tens
+          // of thousands of rows and used to run invisibly BEFORE the counter
+          // started (the screen sat at "0 / N · 0%" for minutes while the
+          // server was actually working flat out)
+          const total = removedIds.length + changedUnits.length + dmgItems.length
+          onProgress?.(0, total, removedIds.length ? 'ลบ defect ชุดเก่าที่ถูกแทนที่' : 'อัปโหลดข้อมูลรถ')
+          if (removedIds.length)
+            await db.deleteDamages(removedIds, (n) => onProgress?.(n, total, 'ลบ defect ชุดเก่าที่ถูกแทนที่'))
+          const base1 = removedIds.length
+          await db.upsertUnits(changedUnits, (n) => onProgress?.(base1 + n, total, 'อัปโหลดข้อมูลรถ')) // FK parents first
+          const base2 = base1 + changedUnits.length
+          await db.upsertDamages(dmgItems, (n) => onProgress?.(base2 + n, total, 'อัปโหลด defect ใหม่'))
+          onProgress?.(total, total, 'เสร็จสิ้น')
         } catch (e) { console.error('[db] importDefects', e) }
         return { units: newUnits, damages: dmgCount }
       },
