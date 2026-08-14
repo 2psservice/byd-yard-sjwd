@@ -234,8 +234,20 @@ export default function App() {
       const heals: { vin: string; block: string; row: number; slot: number }[] = []
       for (const vin in us) {
         const u = us[vin]
-        if (!u.block || !u.row || !u.slot) continue
         if (u.site && u.site !== site) continue
+        const positioned = !!(u.block && u.row && u.slot)
+        // ── restore, not just heal: a car whose SLOT WAS WIPED (unit stuck at
+        // EXPECTED with no block/row/slot — the 13-14/8 units incidents left
+        // ~150 such cars) still carries its field-scan history on the tracking
+        // row. The old rule skipped every un-positioned car, so they sat in
+        // "ไม่แสดงบนผัง" forever with their true lane on record. Place them
+        // back from history — but only cars the sheet still counts as in the
+        // yard, and never a unit deliberately marked DEPARTED.
+        if (!positioned) {
+          if (u.status === 'DEPARTED') continue
+          const r0 = rows[vin]
+          if (!r0 || deriveCarStatus(r0.cells) === 'Gate-out') continue
+        }
         const hist = [...(rows[vin]?.history ?? [])].reverse()
         const isScan = (e: { field: string; src?: string; by?: string }) =>
           e.field === 'Location' && (e.src === 'scan' || !(e.by ?? '').includes('·'))
@@ -243,7 +255,7 @@ export default function App() {
         const m = last ? /^([A-Z]+)(\d{2})(\d{2})$/.exec((last.to ?? '').trim()) : null
         if (!m) continue
         const tag = m[1], slot = parseInt(m[2]), wantRow = parseInt(m[3])
-        if (laneOf(u.block, u.slot) === laneOf(tag, slot)) continue // row shifts = compaction
+        if (positioned && laneOf(u.block!, u.slot!) === laneOf(tag, slot)) continue // row shifts = compaction
         const blk = blocks.find(b => blockKeyOfTag(blockTag(b)) === blockKeyOfTag(tag))
         if (blocks.length && !blk) continue // history names a block this yard doesn't draw
         const depth = blk?.rows ?? 8
@@ -256,7 +268,7 @@ export default function App() {
         else for (let i = 1; i <= depth; i++) if (!used.has(i)) { row = i; break }
         if (!row) continue // lane full — leave it for a human
         used.add(row)
-        occ.get(laneOf(u.block, u.slot))?.delete(u.row) // old cell frees up
+        if (positioned) occ.get(laneOf(u.block!, u.slot!))?.delete(u.row!) // old cell frees up
         heals.push({ vin, block: tag, row, slot })
       }
       if (heals.length) {
