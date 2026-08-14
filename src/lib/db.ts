@@ -379,6 +379,15 @@ function isMissingColumn(e: unknown): boolean {
   const s = JSON.stringify(e ?? '')
   return s.includes('PGRST204') || s.includes('42703') || s.includes('schema cache') || s.includes('does not exist')
 }
+
+// tracking_rows' optional columns (deleted_at / history / site) may not be
+// migrated in a given deployment. Learn that from the FIRST missing-column
+// error and stop issuing the failing variant — the fallback chains used to
+// retry the full column list on EVERY call, so a database without the columns
+// errored on a steady rhythm (the Supabase dashboard showed ~99% of Postgres
+// requests failing: the 30s count poll + rpc alone ≈ thousands of errors/hr).
+let trackingDelAtMissing = false
+export function trackingColsKnownMissing(): boolean { return trackingDelAtMissing }
 /** Drop the optional (maybe-unmigrated) damage columns so a write still succeeds. */
 function stripOptionalDamageCols<T extends object>(row: T): T {
   const { remark, area_th, item_th, ...rest } = row as Record<string, unknown>
@@ -752,8 +761,11 @@ export async function fetchTrackingRows(
       return q.range(from, from + PAGE - 1)
     }
     for (let attempt = 0; attempt < 3; attempt++) {
-      let res: any = await run('vin, cells, updated_at, site, history, deleted_at')
-      if (res.error) res = await run('vin, cells, updated_at, site, history') // `deleted_at` column not migrated yet
+      let res: any = trackingDelAtMissing ? { error: 'skip' } : await run('vin, cells, updated_at, site, history, deleted_at')
+      if (res.error) {
+        if (res.error !== 'skip' && isMissingColumn(res.error)) trackingDelAtMissing = true
+        res = await run('vin, cells, updated_at, site, history') // `deleted_at` column not migrated yet
+      }
       if (res.error) res = await run('vin, cells, updated_at, site') // `history` column not migrated yet
       if (res.error) res = await run('vin, cells, updated_at') // `site` column not migrated yet
       if (!res.error) {
@@ -828,9 +840,13 @@ export async function countTrackingRows(): Promise<number | null> {
   if (!isConfigured()) return null
   // LIVE rows only: tombstones stay in the table but are never shown, so this
   // is the number a device's own row count must match exactly (mirror mode).
-  let res: any = await supabase.from('tracking_rows').select('vin', { count: 'exact', head: true }).is('deleted_at', null)
-  if (res.error && isMissingColumn(res.error))
+  let res: any = trackingDelAtMissing
+    ? await supabase.from('tracking_rows').select('vin', { count: 'exact', head: true })
+    : await supabase.from('tracking_rows').select('vin', { count: 'exact', head: true }).is('deleted_at', null)
+  if (res.error && isMissingColumn(res.error)) {
+    trackingDelAtMissing = true
     res = await supabase.from('tracking_rows').select('vin', { count: 'exact', head: true })
+  }
   const { count, error } = res as { count: number | null; error: unknown }
   if (error || count == null) { console.error('[db] countTrackingRows', error); return null }
   return count
@@ -858,12 +874,14 @@ export async function fetchTrackingIndex(): Promise<{ vin: string; updatedAt: nu
     if (cErr || count == null) { console.error('[db] fetchTrackingIndex count', cErr); return null }
     let after = ''
     for (;;) {
-      let res: any = await withRetry<{ error: unknown; data: unknown }>(() => run(after, 'vin, updated_at, deleted_at'))
-        .catch(async (e) => {
-          // deleted_at may not be migrated — retry without it before giving up
-          if (isMissingColumn(e)) return withRetry<{ error: unknown; data: unknown }>(() => run(after, 'vin, updated_at'))
-          throw e
-        })
+      let res: any = trackingDelAtMissing
+        ? await withRetry<{ error: unknown; data: unknown }>(() => run(after, 'vin, updated_at'))
+        : await withRetry<{ error: unknown; data: unknown }>(() => run(after, 'vin, updated_at, deleted_at'))
+            .catch(async (e) => {
+              // deleted_at may not be migrated — remember + retry without it
+              if (isMissingColumn(e)) { trackingDelAtMissing = true; return withRetry<{ error: unknown; data: unknown }>(() => run(after, 'vin, updated_at')) }
+              throw e
+            })
       const batch = (res.data ?? []) as { vin: string; updated_at: string | null; deleted_at?: string | null }[]
       for (const r of batch) out.push({
         vin: r.vin,
@@ -913,8 +931,11 @@ export async function fetchTrackingRowsForSite(locationYard: string): Promise<Tr
   for (let from = 0; ; from += PAGE) {
     const run = (cols: string) =>
       supabase.from('tracking_rows').select(cols).eq('cells->>Location yard', locationYard).order('vin').range(from, from + PAGE - 1)
-    let res: any = await run('vin, cells, updated_at, site, history, deleted_at')
-    if (res.error) res = await run('vin, cells, updated_at, site, history')
+    let res: any = trackingDelAtMissing ? { error: 'skip' } : await run('vin, cells, updated_at, site, history, deleted_at')
+    if (res.error) {
+      if (res.error !== 'skip' && isMissingColumn(res.error)) trackingDelAtMissing = true
+      res = await run('vin, cells, updated_at, site, history')
+    }
     if (res.error) res = await run('vin, cells, updated_at, site')
     if (res.error) res = await run('vin, cells, updated_at')
     if (res.error) { console.error('[db] fetchTrackingRowsForSite', res.error); break }
@@ -955,9 +976,10 @@ export async function upsertTrackingRows(rows: TrackRow[]): Promise<boolean> {
       (r: TrackRow) => { const { deleted_at, history, site, ...rest } = full(r); return rest }, // no site
     ]
     let error: any = null
-    for (const build of variants) {
+    for (const build of trackingDelAtMissing ? variants.slice(1) : variants) {
       ;({ error } = await supabase.from('tracking_rows').upsert(slice.map(build), { onConflict: 'vin' }))
       if (!error) break
+      if (build === variants[0] && isMissingColumn(error)) trackingDelAtMissing = true
     }
     if (error) { console.error('[db] upsertTrackingRows chunk', i, error); ok = false }
   }
@@ -976,10 +998,13 @@ export async function deleteTrackingRows(vins: string[]): Promise<void> {
     // mark deleted WITHOUT wiping `cells`: blanking the payload made every
     // delete unrecoverable, so a wrong delete could never be undone. The
     // tombstone alone hides the row everywhere; the data stays for recovery.
-    const { error } = await supabase.from('tracking_rows')
-      .upsert(slice.map((vin) => ({ vin, deleted_at: nowIso, updated_at: nowIso })), { onConflict: 'vin' })
+    const { error } = trackingDelAtMissing
+      ? { error: 'skip' as unknown }
+      : await supabase.from('tracking_rows')
+          .upsert(slice.map((vin) => ({ vin, deleted_at: nowIso, updated_at: nowIso })), { onConflict: 'vin' })
     if (error) {
       // `deleted_at` column not migrated yet → fall back to the old hard delete
+      if (error !== 'skip' && isMissingColumn(error)) trackingDelAtMissing = true
       const { error: dErr } = await supabase.from('tracking_rows').delete().in('vin', slice)
       if (dErr) console.error('[db] deleteTrackingRows', dErr)
     }
@@ -988,7 +1013,7 @@ export async function deleteTrackingRows(vins: string[]): Promise<void> {
 
 /** ล้าง tombstone เก่าทิ้งถาวร (แถวที่ถูก soft-delete นานเกิน `olderThanMs`) เพื่อไม่ให้ตารางบวม */
 export async function purgeTrackingTombstones(olderThanMs: number): Promise<void> {
-  if (!isConfigured()) return
+  if (!isConfigured() || trackingDelAtMissing) return
   const cutoff = new Date(Date.now() - olderThanMs).toISOString()
   const { error } = await supabase.from('tracking_rows').delete().not('deleted_at', 'is', null).lt('deleted_at', cutoff)
   if (error && error.code !== '42703') console.error('[db] purgeTrackingTombstones', error) // ignore "column doesn't exist"
