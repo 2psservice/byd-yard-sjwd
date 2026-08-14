@@ -160,7 +160,9 @@ export default function App() {
   }, [loggedInUserId])
 
   // load real tracking data from IndexedDB on startup
-  useEffect(() => { loadFromIdb() }, [loadFromIdb])
+  // tracking rows AND the yard-plan units both boot from IndexedDB — the plan
+  // paints its cars from the local cache before any network answer
+  useEffect(() => { loadFromIdb(); useYard.getState().loadUnitsFromIdb() }, [loadFromIdb])
 
   // ── a gated-out car must not keep holding a parking slot ──────────────────
   // Cars leave through several paths (ops-scan + 09:30 flush, Co-Inspection
