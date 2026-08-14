@@ -201,14 +201,19 @@ export default function App() {
         if (fixes.length) useYard.getState().importUnits(fixes)
       }
 
-      // ── "ใช้ข้อมูลแก้ไขล่าสุด": position must agree with the newest edit ──
-      // Every lane-CHANGING write now logs a Location history line, so a
-      // positioned car whose lane contradicts its LATEST history entry is
-      // leftover damage from a pre-guard stale-device clobber (a car moved to
-      // N2705 showing N0701). Heal it: move the car back to the lane the last
-      // recorded edit names — its exact คันที่ when free, else the first free
-      // row. Same-lane row differences are normal compaction and stay.
-      // Scoped to the ACTIVE yard (updateLocations re-tags site to it).
+      // ── "ใช้ตำแหน่งจากหน้างานล่าสุด": the FIELD SCAN is ground truth ──
+      // Every lane-CHANGING write logs a Location history line, but the writers
+      // differ in authority: a driver parking a car / a re-location scan is the
+      // person physically standing at the lane — while an Update-Location FILE
+      // (often exported hours earlier) and auto-park are educated guesses. The
+      // old rule ("newest edit of any kind wins") let a stale file import drag
+      // a car back to where the sheet thought it was, undoing the scan.
+      // New rule: the LATEST SCAN entry names the lane; other writers only
+      // count when the car has never been scanned. Legacy scan entries predate
+      // the src tag — every non-scan writer stamps ' · ' into `by`
+      // (' · นำเข้าไฟล์', ' · จัดจอดอัตโนมัติ', 'ระบบ · …'), so a plain-name
+      // entry is a scan. Same-lane row differences are normal compaction and
+      // stay. Scoped to the ACTIVE yard (updateLocations re-tags site to it).
       const y = useYard.getState()
       const us = y.units
       const site = y.currentSite
@@ -229,7 +234,10 @@ export default function App() {
         const u = us[vin]
         if (!u.block || !u.row || !u.slot) continue
         if (u.site && u.site !== site) continue
-        const last = [...(rows[vin]?.history ?? [])].reverse().find(e => e.field === 'Location')
+        const hist = [...(rows[vin]?.history ?? [])].reverse()
+        const isScan = (e: { field: string; src?: string; by?: string }) =>
+          e.field === 'Location' && (e.src === 'scan' || !(e.by ?? '').includes('·'))
+        const last = hist.find(isScan) ?? hist.find(e => e.field === 'Location')
         const m = last ? /^([A-Z]+)(\d{2})(\d{2})$/.exec((last.to ?? '').trim()) : null
         if (!m) continue
         const tag = m[1], slot = parseInt(m[2]), wantRow = parseInt(m[3])
@@ -254,7 +262,7 @@ export default function App() {
         const ah = useTracking.getState().appendHistory
         for (const h of heals) {
           ah(h.vin, {
-            at: Date.now(), by: 'ระบบ · ใช้ตำแหน่งที่แก้ไขล่าสุด', field: 'Location',
+            at: Date.now(), by: 'ระบบ · ใช้ตำแหน่งจากหน้างานล่าสุด', field: 'Location',
             from: yardLocFull(us[h.vin]), to: yardLocFull({ block: h.block, slot: h.slot, row: h.row }),
           })
         }

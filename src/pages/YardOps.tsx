@@ -2139,7 +2139,7 @@ function DriverView() {
     // the parking assignment IS a position edit — log it like any relocation,
     // so no screen can ever hold a position that no history line explains
     useTracking.getState().appendHistory(unit.vin, {
-      at: Date.now(), by: driverName, field: 'Location',
+      at: Date.now(), by: driverName, field: 'Location', src: 'scan',
       from, to: yardLocFull({ block: slot.block, slot: slot.slot, row: slot.row }),
     })
     toast('ok', `${unit.vin.slice(-6)} → ${blockCode(slot.block)}${slot.slot}.${slot.row}`)
@@ -2195,7 +2195,7 @@ function DriverView() {
         const from = unit.block && unit.row && unit.slot ? yardLocFull(unit) : ''
         assign(unit.vin, proc.slot, driverName, planMode); confirmParked(unit.vin)
         useTracking.getState().appendHistory(unit.vin, {
-          at: Date.now(), by: driverName, field: 'Location',
+          at: Date.now(), by: driverName, field: 'Location', src: 'scan',
           from, to: yardLocFull({ block: proc.slot.block, slot: proc.slot.slot, row: proc.slot.row }),
         })
       }
@@ -3740,7 +3740,7 @@ function RelocationView() {
         if (up.vin === r!.vin) continue
         const cu = siteUnits.find(x => x.vin === up.vin)
         appendHistory(up.vin, {
-          at: Date.now(), by: currentUser, field: 'Location',
+          at: Date.now(), by: currentUser, field: 'Location', src: 'scan',
           from: cu ? yardLocFull(cu) : '',
           to: codeOf(L.blockId, L.slot, up.row),
         })
@@ -3759,7 +3759,7 @@ function RelocationView() {
       .catch(() => buildAndApply(incumbents)) // cloud unreachable — behave as before
     const code = codeOf(L.blockId, L.slot, pos)
     appendHistory(r.vin, {
-      at: Date.now(), by: currentUser, field: 'Location',
+      at: Date.now(), by: currentUser, field: 'Location', src: 'scan',
       from: u?.block && u.row && u.slot ? yardLocFull(u) : '',
       to: code,
     })
@@ -3785,7 +3785,7 @@ function RelocationView() {
     // log the move under the Location column: from → to, who, when — the same
     // trail this screen and the admin's Event tab show
     appendHistory(row.vin, {
-      at: Date.now(), by: currentUser, field: 'Location',
+      at: Date.now(), by: currentUser, field: 'Location', src: 'scan',
       from: placed ? yardLocFull(unit) : '',
       to: codeOf(blockId, slotNo, nextRow),
     })

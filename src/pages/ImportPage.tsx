@@ -157,19 +157,35 @@ export function ImportPage() {
 
   const confirmLoc = () => {
     if (!locPlan || !locPlan.placements.length) return
+    // ── หน้างานชนะ: a car whose latest Location entry came from a FIELD SCAN
+    // (driver parking / re-location) keeps the scanned lane — the file was
+    // exported earlier and is the less certain source. Legacy scan entries
+    // predate the src tag; every non-scan writer stamps ' · ' into `by`, so a
+    // plain-name entry is a scan. (Same rule the position-heal sweep enforces
+    // — filtering here just avoids the visible move-then-move-back churn.)
+    const trRows = useTracking.getState().rows
+    const scanHeld = (vin: string): boolean => {
+      const hist = trRows[vin]?.history
+      if (!hist) return false
+      const last = [...hist].reverse().find((e) => e.field === 'Location')
+      return !!last && ((last as { src?: string }).src === 'scan' || !(last.by ?? '').includes('·'))
+    }
+    const apply = locPlan.placements.filter((p) => !scanHeld(p.vin))
+    const held = locPlan.placements.length - apply.length
     // every placement that MOVES a car leaves a Location history line — a
     // silent position rewrite made screens contradict each other (the unit
     // said one spot, ประวัติการย้าย another, and nobody could tell why)
     const by = `${useYard.getState().currentUser} · นำเข้าไฟล์`
     const appendHistory = useTracking.getState().appendHistory
     const now = Date.now()
-    for (const p of locPlan.placements) {
+    for (const p of apply) {
       const from = yardLocFull(yardUnits[p.vin])
       const to = yardLocFull({ block: p.block, slot: p.slot, row: p.row })
       if (from !== to) appendHistory(p.vin, { at: now, by, field: 'Location', from, to })
     }
-    const n = updateLocations(locPlan.placements)
+    const n = updateLocations(apply)
     toast('ok', `Update Location · จัดตำแหน่ง ${n.toLocaleString()} คัน` +
+      (held ? ` · ยึดตำแหน่งสแกนหน้างาน ${held.toLocaleString()}` : '') +
       (locPlan.rowFull.length ? ` · ช่องเต็ม ข้าม ${locPlan.rowFull.length}` : '') +
       (locPlan.badLane.length ? ` · Lane อ่านไม่ได้ ${locPlan.badLane.length}` : ''))
     setLocParsed(null); setLocFileName('')

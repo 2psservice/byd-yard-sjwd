@@ -16,6 +16,10 @@ export interface RowEvent {
   field: string  // column label (falls back to the raw key)
   from: string   // '' when the cell was previously empty
   to: string
+  /** 'scan' = recorded by a FIELD station (driver parking / re-location scan)
+   *  — the position-heal treats these as ground truth over file imports and
+   *  auto-park. Absent on older entries and on non-scan writers. */
+  src?: 'scan'
 }
 
 export interface TrackRow {
