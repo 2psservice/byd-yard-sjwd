@@ -289,7 +289,7 @@ export default function App() {
       useTracking.getState().ensureComplete().catch(() => {})
       useYard.getState().loadFromSupabase().catch(() => {})
       useYard.getState().ensureUnitsComplete().catch(() => {})
-      refreshCounts() // hidden tabs skip the periodic poll — catch up on wake
+      refreshCounts() // hidden tabs skip the count refresh — catch up on wake
     }
     let hiddenAt = 0
     const onVis = () => {
@@ -299,43 +299,30 @@ export default function App() {
     }
     document.addEventListener('visibilitychange', onVis)
     window.addEventListener('online', catchUp)
-    // full per-VIN reconcile: once shortly after boot (after the incremental
-    // sync settles), then hourly — this is what makes every device converge on
-    // the same yard count even after missed tombstones/events (1,978 vs 2,318)
-    // verify completeness shortly after boot (the first sync has settled by
-    // then) and every 10 min — a device that fetched a partial set backfills
-    // instead of sitting on it, so all screens converge on the same number
+    // verify completeness once shortly after boot (the first sync has settled
+    // by then) — a device whose first pull came up short backfills the rest
+    // instead of sitting on it. No periodic re-poll after this: catchUp()
+    // above re-runs it whenever the tab wakes from ≥60s hidden or the network
+    // returns, and realtime pushes cover everything in between — same as the
+    // pre-mirror design (boot + catch-up + realtime, no background timer).
     const boot = setTimeout(() => useTracking.getState().ensureComplete().catch(() => {}), 12_000)
-    const iv = setInterval(() => useTracking.getState().ensureComplete().catch(() => {}), 600_000)
-    // same convergence check for the yard-plan/units table — a tablet that
-    // boots once, hits a partial page fetch, and stays open all shift never
-    // got a second chance before this (see ensureUnitsComplete). Staggered
-    // 15s so it doesn't compete with the tracking check above for bandwidth.
+    // same convergence check for the yard-plan/units table — staggered 15s so
+    // it doesn't compete with the tracking check above for bandwidth.
     const bootUnits = setTimeout(() => useYard.getState().ensureUnitsComplete().catch(() => {}), 15_000)
-    const ivUnits = setInterval(() => useYard.getState().ensureUnitsComplete().catch(() => {}), 600_000)
-    // the shared cloud numbers every screen shows: the In Yard count (one
-    // number for every device) + the row total behind the sync-status badge.
-    // 30s keeps all screens within half a minute of each other.
+    // the shared cloud numbers every screen shows (In Yard count, dashboard
+    // stats): pulled once now, then only on realtime push + catch-up — no
+    // blind timer polling a database that already has enough real traffic.
     const refreshCounts = () => {
-      // a tab nobody is looking at must not keep the server busy — 20 devices
-      // with background tabs were polling the (nano-sized) database forever;
-      // catchUp() refreshes the moment the tab becomes visible again
       if (document.visibilityState === 'hidden') return
       useYard.getState().refreshCloudInYard().catch(() => {})
       useYard.getState().refreshCloudStats().catch(() => {})
       useTracking.getState().refreshCloudTotal().catch(() => {})
     }
     refreshCounts()
-    // 60s: the periodic poll is only a SAFETY NET — the real freshness comes
-    // from the realtime push (every edit anywhere triggers a refresh within
-    // seconds), so a slower heartbeat costs nothing visible but halves the
-    // steady load on the shared database
-    const ivCounts = setInterval(refreshCounts, 60_000)
     return () => {
       document.removeEventListener('visibilitychange', onVis)
       window.removeEventListener('online', catchUp)
-      clearTimeout(boot); clearInterval(iv); clearInterval(ivCounts)
-      clearTimeout(bootUnits); clearInterval(ivUnits)
+      clearTimeout(boot); clearTimeout(bootUnits)
     }
   }, [loggedInUserId])
 
