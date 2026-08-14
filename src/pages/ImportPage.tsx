@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import {
-  UploadCloud, FileSpreadsheet, CheckCircle2, Table2,
+  UploadCloud, FileSpreadsheet, CheckCircle2, Table2, Trash2,
   Loader2, Database, MapPin, Car, CalendarDays, Hourglass, ClipboardCheck, AlertTriangle,
 } from 'lucide-react'
-import { useYard } from '../store/useYard'
+import { useYard, useMe } from '../store/useYard'
 import { useTracking } from '../store/useTracking'
 import { useOps } from '../store/useOps'
 import { parseTrackingWorkbook, parseImportWorkbook, type ParseResult } from '../lib/excelTracking'
@@ -33,17 +33,39 @@ function dateSortVal(s: string): number {
 }
 
 export function ImportPage() {
-  const { toast, importDefects, updateLocations } = useYard()
+  const { toast, importDefects, updateLocations, clearAll } = useYard()
   const blocksBySite = useYard((s) => s.blocksBySite)
   const sites = useYard((s) => s.sites)
   const currentSite = useYard((s) => s.currentSite)
   const laneDepth = useYard((s) => s.laneDepth)
   const curSiteName = sites.find((s) => s.id === currentSite)?.name ?? '—'
   const yardUnits = useYard((s) => s.units)
-  const { commitImport, commitCoInspection, lastImport, loadFromIdb } = useTracking()
+  const { commitImport, commitCoInspection, deleteRows, lastImport, loadFromIdb } = useTracking()
   const existing = useTracking((s) => s.rows)
   const rowCount = Object.keys(existing).length
-  const { createGateInQueue } = useOps()
+  // distinct vehicles across BOTH stores (gated-in cars live in tracking + yard units)
+  const vehicleCount = useMemo(
+    () => new Set([...Object.keys(existing), ...Object.keys(yardUnits)]).size,
+    [existing, yardUnits],
+  )
+  const { createGateInQueue, clearQueues } = useOps()
+  // deliberately the specific "admin" LOGIN (username), not any admin-role
+  // account — a destructive per-yard wipe is not something every admin should
+  // be able to reach, only the one account this yard's operator actually is
+  const me = useMe()
+  const isRootAdmin = me?.username === 'admin'
+
+  // wipe THIS YARD's data only (the old version deleted every yard's rows,
+  // units and queues in the whole cloud from one site's button)
+  const clearEverything = () => {
+    const siteVins = Object.values(existing)
+      .filter((r) => rowInSite(r, currentSite, sites))
+      .map((r) => r.vin)
+    deleteRows(siteVins) // tombstone soft-delete → propagates, no resurrection
+    clearAll()           // this yard's units + trailers (+ local trips)
+    clearQueues()        // this yard's work queues
+    toast('info', `ล้างข้อมูลของยาร์ด ${curSiteName} แล้ว (${siteVins.length.toLocaleString()} คัน)`)
+  }
 
   // load existing rows from IndexedDB so duplicate VINs are detected & skipped
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
@@ -577,6 +599,22 @@ export function ImportPage() {
               </div>
             )}
           </div>
+
+          {isRootAdmin && vehicleCount > 0 && (
+            <div className="panel p-5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="font-semibold text-[14px]">ล้างข้อมูลรายการรถ (เฉพาะยาร์ดนี้)</div>
+                  <div className="text-[12px] mt-0.5" style={{ color: 'var(--muted)' }}>ลบรถของยาร์ด {curSiteName} ออกจากระบบ — ยาร์ดอื่นไม่ถูกลบ</div>
+                </div>
+                <button className="btn btn-danger" onClick={() => {
+                  if (!window.confirm(`ยืนยันลบข้อมูลรถของยาร์ด "${curSiteName}" ?\n(ข้อมูลยาร์ดอื่นจะไม่ถูกลบ)`)) return
+                  if (window.prompt('การลบย้อนกลับไม่ได้ — พิมพ์คำว่า ลบ เพื่อยืนยัน') !== 'ลบ') { toast('err', 'ยกเลิก — ข้อความยืนยันไม่ตรง'); return }
+                  clearEverything()
+                }}><Trash2 size={15} /></button>
+              </div>
+            </div>
+          )}
 
         </div>
       </div>
