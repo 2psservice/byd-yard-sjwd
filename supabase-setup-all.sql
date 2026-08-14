@@ -59,6 +59,29 @@ exception when lock_not_available or deadlock_detected then
   raise notice 'app_config: ตารางถูกใช้งานอยู่ — กด Run ซ้ำอีกครั้ง';
 end $$;
 
+-- 2b) ops_queues: คิวงานหน้าลาน (Gate-in / PM / PDI / Wash) sync ข้ามเครื่อง ──
+-- ไม่มีตารางนี้ = คิวที่สร้างตอน import ค้างอยู่แค่เครื่องแอดมิน — มือถือสแกน
+-- จะไม่เห็นคิวเลย ("ในแอดมินขึ้น Pre Gate-in แต่ใน ops scan ไม่มีคิวงาน")
+do $$ begin
+  execute 'create table if not exists public.ops_queues (
+    id         text primary key,
+    site_id    text,
+    name       text not null,
+    created_at timestamptz default now(),
+    created_by text,
+    items      jsonb not null default ''[]'',
+    updated_at timestamptz default now()
+  )';
+  execute 'alter table public.ops_queues add column if not exists type text';
+  execute 'alter table public.ops_queues add column if not exists kind text';
+  execute 'alter table public.ops_queues enable row level security';
+  execute 'drop policy if exists "allow all ops_queues" on public.ops_queues';
+  execute 'create policy "allow all ops_queues" on public.ops_queues
+    for all to anon, authenticated using (true) with check (true)';
+exception when lock_not_available or deadlock_detected then
+  raise notice 'ops_queues: ตารางถูกใช้งานอยู่ — กด Run ซ้ำอีกครั้ง';
+end $$;
+
 -- 3) เปิด Realtime ให้ตารางหลัก (แก้ 1 เครื่อง เห็นพร้อมกันทุกเครื่อง) ────────
 do $$ begin
   alter publication supabase_realtime add table public.tracking_rows;
@@ -210,6 +233,8 @@ from (values
   ('7. Realtime: damages / sites / app_users',
     (select count(*) from pg_publication_tables where pubname='supabase_realtime' and schemaname='public' and tablename in ('damages','sites','app_users')) = 3),
   ('8. ฟังก์ชัน in_yard_count (ยอดกลางเลขเดียวทุกจอ)',
-    exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname='public' and p.proname='in_yard_count'))
+    exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname='public' and p.proname='in_yard_count')),
+  ('9. ตาราง ops_queues + type/kind (คิวงานถึงมือถือสแกนทุกเครื่อง)',
+    (select count(*) from information_schema.columns where table_schema='public' and table_name='ops_queues' and column_name in ('id','type','kind')) = 3)
 ) t(item, ok)
 order by item;

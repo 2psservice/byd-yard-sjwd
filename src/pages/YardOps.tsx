@@ -1325,12 +1325,36 @@ function WalkView() {
   // Pre Gate-in queues "(M-D-N)" — process queues (PDI / PM / Wash) live under the
   // PDI role, not here. Completed queues stay listed so the station can still read
   // its own progress ("17/17 · เหลือ 0"), same as the Driver's delivery-run cards.
-  const gateInQueues = useMemo(() =>
+  const baseGateInQueues = useMemo(() =>
     // completed queues drop off the live Ops-Scan list (they've filed under their day)
     queues.filter(q => isPreGateInQueue(q.name) && !isQueueComplete(q)),
     [queues],
   )
-  const selectedQueue = selectedQueueId ? queues.find(q => q.id === selectedQueueId) ?? null : null
+  // ── safety net: Pre Gate-in cars whose work queue never reached this device ──
+  // The admin's status (tracking row → Pre Gate-in) and the work queue travel
+  // through DIFFERENT sync paths: rows through tracking_rows, queues through the
+  // ops_queues cloud table. When the queue doesn't arrive (table missing /
+  // import ran without a Gate-in date / queue tagged to another yard), the
+  // station used to show NOTHING for a car the admin clearly lists as waiting —
+  // "ในแอดมินขึ้น Pre Gate-in แต่ใน ops scan ไม่มีคิวงาน". Collect every
+  // site-scoped Pre Gate-in row that is in NO queue into a virtual card:
+  // scanning works exactly the same, and once gated-in the row leaves
+  // Pre Gate-in and drops off this list by itself.
+  const gateInQueues = useMemo(() => {
+    const queued = new Set<string>()
+    for (const q of queues) for (const i of q.items) queued.add(i.vin)
+    const uncovered = trackingRows.filter(r => !queued.has(r.vin) && deriveCarStatus(r.cells) === 'Pre Gate-in')
+    if (!uncovered.length) return baseGateInQueues
+    const virtual: WorkQueue = {
+      id: '__pregatein_noqueue',
+      name: '(รอ Gate-in · ยังไม่มีคิวงาน)',
+      createdAt: 0,
+      items: uncovered.map((r): QueueItem => ({ vin: r.vin, addedAt: 0, done: false })),
+    }
+    return [...baseGateInQueues, virtual]
+  }, [baseGateInQueues, queues, trackingRows])
+  // resolve from gateInQueues (not the raw store) so the virtual card opens too
+  const selectedQueue = selectedQueueId ? gateInQueues.find(q => q.id === selectedQueueId) ?? null : null
   // NG ⟺ the gate-in walk-around recorded damage on this car (what the operator
   // pressed OK / NG on) — not the imported "Status" column.
   const ngVins = useMemo(() => {
