@@ -1,62 +1,116 @@
 -- ══════════════════════════════════════════════════════════════════════════
 -- SJWD Yard Control — ตั้งค่า Supabase ครบชุดในไฟล์เดียว (รันซ้ำได้ ปลอดภัย)
--- รันครั้งเดียว: Supabase Dashboard → SQL Editor → วางทั้งไฟล์ → Run
+-- รัน: Supabase Dashboard → SQL Editor → วางทั้งไฟล์ → Run
 --
--- ทำไมต้องรัน: Dashboard แสดง Postgres error ~99% แบบสม่ำเสมอทั้งชั่วโมง —
--- ต้นเหตุคือคอลัมน์/ฟังก์ชันที่แอปเรียกใช้ยังไม่ถูกสร้าง (ไฟล์ SQL ย่อย ๆ
--- ก่อนหน้านี้ยังไม่ได้รัน) ทุก query ที่อ้างถึงจึง error ก่อนแล้วค่อย fallback
--- ไฟล์นี้รวมทุกอย่างที่แอปต้องการไว้ที่เดียว
+-- ⚠ ทนต่อ deadlock: ระหว่างที่อุปกรณ์หน้างานยังใช้ระบบอยู่ ตารางถูก query
+-- ตลอดเวลา การแก้โครงสร้างต้องรอคิวล็อก — เวอร์ชันนี้แต่ละขั้นตอน "ล้มได้
+-- อิสระ" (ขั้นที่ล็อกไม่ได้จะถูกข้าม ขั้นอื่นสำเร็จตามปกติ) ดูผลจากตาราง
+-- สรุปท้ายไฟล์: ถ้ามีรายการ ✗ ให้กด Run ซ้ำจนขึ้น ✓ ครบทุกแถว
+-- (ปกติ 1–2 รอบก็ครบ — ช่วงเงียบ ๆ เช่นพักเที่ยงจะผ่านรอบเดียว)
 -- ══════════════════════════════════════════════════════════════════════════
+
+-- อย่ารอคิวล็อกนานจน deadlock: 8 วินาทีไม่ได้ → ข้ามขั้นนั้น แล้วค่อย Run ซ้ำ
+set lock_timeout = '8s';
 
 -- 1) tracking_rows: คอลัมน์เสริมที่แอปใช้ ────────────────────────────────────
 -- deleted_at = tombstone การลบ (ลบเครื่องเดียว หายทุกเครื่อง ไม่คืนชีพ)
-alter table public.tracking_rows add column if not exists deleted_at timestamptz;
-create index if not exists tracking_rows_deleted_at_idx
-  on public.tracking_rows (deleted_at) where deleted_at is not null;
--- history = log การแก้ไขต่อ VIN (แท็บ Event)
-alter table public.tracking_rows add column if not exists history jsonb;
--- site = ป้ายลานของแถว (แยกยอดต่อลาน)
-alter table public.tracking_rows add column if not exists site text;
+do $$ begin
+  execute 'alter table public.tracking_rows add column if not exists deleted_at timestamptz';
+exception when lock_not_available or deadlock_detected then
+  raise notice 'tracking_rows.deleted_at: ตารางถูกใช้งานอยู่ — กด Run ซ้ำอีกครั้ง';
+end $$;
 
--- 2) app_config: ค่ากลางที่แชร์ทุกเครื่อง (default view, remark, ยอด In Yard กลาง) ─
-create table if not exists public.app_config (
-  id         text primary key,
-  value      jsonb not null,
-  updated_at timestamptz default now()
-);
-alter table public.app_config enable row level security;
-drop policy if exists "allow all app_config" on public.app_config;
-create policy "allow all app_config" on public.app_config
-  for all to anon, authenticated using (true) with check (true);
+-- history = log การแก้ไขต่อ VIN (แท็บ Event)
+do $$ begin
+  execute 'alter table public.tracking_rows add column if not exists history jsonb';
+exception when lock_not_available or deadlock_detected then
+  raise notice 'tracking_rows.history: ตารางถูกใช้งานอยู่ — กด Run ซ้ำอีกครั้ง';
+end $$;
+
+-- site = ป้ายลานของแถว (แยกยอดต่อลาน)
+do $$ begin
+  execute 'alter table public.tracking_rows add column if not exists site text';
+exception when lock_not_available or deadlock_detected then
+  raise notice 'tracking_rows.site: ตารางถูกใช้งานอยู่ — กด Run ซ้ำอีกครั้ง';
+end $$;
+
+-- ดัชนีช่วยกรอง/ล้าง tombstone (ตารางหมื่นกว่าแถว สร้างไม่ถึงวินาที)
+do $$ begin
+  if exists (select 1 from information_schema.columns
+             where table_schema = 'public' and table_name = 'tracking_rows' and column_name = 'deleted_at') then
+    execute 'create index if not exists tracking_rows_deleted_at_idx on public.tracking_rows (deleted_at) where deleted_at is not null';
+  end if;
+exception when lock_not_available or deadlock_detected then
+  raise notice 'index deleted_at: ตารางถูกใช้งานอยู่ — กด Run ซ้ำอีกครั้ง';
+end $$;
+
+-- 2) app_config: ค่ากลางที่แชร์ทุกเครื่อง (default view, remark, ยอด In Yard กลาง)
+do $$ begin
+  execute 'create table if not exists public.app_config (
+    id         text primary key,
+    value      jsonb not null,
+    updated_at timestamptz default now()
+  )';
+  execute 'alter table public.app_config enable row level security';
+  execute 'drop policy if exists "allow all app_config" on public.app_config';
+  execute 'create policy "allow all app_config" on public.app_config
+    for all to anon, authenticated using (true) with check (true)';
+exception when lock_not_available or deadlock_detected then
+  raise notice 'app_config: ตารางถูกใช้งานอยู่ — กด Run ซ้ำอีกครั้ง';
+end $$;
 
 -- 3) เปิด Realtime ให้ตารางหลัก (แก้ 1 เครื่อง เห็นพร้อมกันทุกเครื่อง) ────────
--- ครอบ exception ไว้: ถ้าเคย add แล้วจะข้ามเฉย ๆ รันซ้ำได้
 do $$ begin
   alter publication supabase_realtime add table public.tracking_rows;
-exception when duplicate_object then null; end $$;
+exception
+  when duplicate_object then null;
+  when lock_not_available or deadlock_detected then
+    raise notice 'realtime tracking_rows: ตารางถูกใช้งานอยู่ — กด Run ซ้ำอีกครั้ง';
+end $$;
 do $$ begin
   alter publication supabase_realtime add table public.units;
-exception when duplicate_object then null; end $$;
+exception
+  when duplicate_object then null;
+  when lock_not_available or deadlock_detected then
+    raise notice 'realtime units: ตารางถูกใช้งานอยู่ — กด Run ซ้ำอีกครั้ง';
+end $$;
 do $$ begin
   alter publication supabase_realtime add table public.damages;
-exception when duplicate_object then null; end $$;
+exception
+  when duplicate_object then null;
+  when lock_not_available or deadlock_detected then
+    raise notice 'realtime damages: ตารางถูกใช้งานอยู่ — กด Run ซ้ำอีกครั้ง';
+end $$;
 do $$ begin
   alter publication supabase_realtime add table public.sites;
-exception when duplicate_object then null; end $$;
+exception
+  when duplicate_object then null;
+  when lock_not_available or deadlock_detected then
+    raise notice 'realtime sites: ตารางถูกใช้งานอยู่ — กด Run ซ้ำอีกครั้ง';
+end $$;
 do $$ begin
   alter publication supabase_realtime add table public.app_users;
-exception when duplicate_object then null; end $$;
+exception
+  when duplicate_object then null;
+  when lock_not_available or deadlock_detected then
+    raise notice 'realtime app_users: ตารางถูกใช้งานอยู่ — กด Run ซ้ำอีกครั้ง';
+end $$;
 
 -- 4) ฟังก์ชันนับยอด In Yard บนคลาวด์ (เลขเดียวกันทุกเครื่อง) ─────────────────
--- ══════════════════════════════════════════════════════════════════════════
--- ยอด "In Yard" นับบนคลาวด์ที่เดียว — ทุกเครื่องแสดงเลขเดียวกันเสมอ
--- รันไฟล์นี้ครั้งเดียวใน Supabase Dashboard → SQL Editor → Run
---
--- ตรรกะเป็น port ของ deriveCarStatus (src/lib/carStatus.ts) เฉพาะส่วนที่ตัดสินว่า
--- "รถอยู่ในลานหรือไม่" — In Yard = ไม่ใช่ Pre Gate-in / Pre Gate-out / Preload /
--- Gate-out (Total loss นับว่าอยู่ในลาน: รถ write-off แต่ยังจอดอยู่จริง)
--- ══════════════════════════════════════════════════════════════════════════
-
+-- ตรรกะเป็น port ของ deriveCarStatus (src/lib/carStatus.ts) เฉพาะส่วนที่ตัดสิน
+-- ว่า "รถอยู่ในลานหรือไม่" — In Yard = ไม่ใช่ Pre Gate-in / Pre Gate-out /
+-- Preload / Gate-out (Total loss นับว่าอยู่ในลาน: รถ write-off แต่ยังจอดอยู่จริง)
+-- สร้างได้ก็ต่อเมื่อคอลัมน์จากข้อ 1 มีแล้ว (Postgres ตรวจ body ตอน create) —
+-- ถ้ายังไม่มีจะข้ามพร้อมแจ้งเตือน กด Run ซ้ำหลังข้อ 1 ผ่านแล้วจะติดตั้งให้เอง
+do $setup$ begin
+  if not exists (select 1 from information_schema.columns
+                 where table_schema = 'public' and table_name = 'tracking_rows' and column_name = 'deleted_at')
+     or not exists (select 1 from information_schema.columns
+                 where table_schema = 'public' and table_name = 'tracking_rows' and column_name = 'site') then
+    raise notice 'in_yard_count: ต้องได้คอลัมน์จากข้อ 1 ก่อน — กด Run ซ้ำอีกครั้ง';
+    return;
+  end if;
+  execute $fn$
 create or replace function public.in_yard_count(p_site_id text default null, p_names text[] default null)
 returns integer
 language sql
@@ -131,6 +185,31 @@ derived as (
   ) f
 )
 select count(*)::int from derived where in_yard
-$$;
+$$
+  $fn$;
+  execute 'grant execute on function public.in_yard_count(text, text[]) to anon, authenticated';
+exception when others then
+  raise notice 'in_yard_count: % — กด Run ซ้ำอีกครั้ง', sqlerrm;
+end $setup$;
 
-grant execute on function public.in_yard_count(text, text[]) to anon, authenticated;
+-- ── สรุปผล: ทุกแถวต้องขึ้น ✓ — ถ้ามี ✗ ให้กด Run ซ้ำอีกครั้ง ─────────────────
+select item, case when ok then '✓ พร้อมใช้งาน' else '✗ ยังไม่สำเร็จ — กด Run ซ้ำ' end as status
+from (values
+  ('1. คอลัมน์ tracking_rows.deleted_at (ลบแล้วหายทุกเครื่อง)',
+    exists (select 1 from information_schema.columns where table_schema='public' and table_name='tracking_rows' and column_name='deleted_at')),
+  ('2. คอลัมน์ tracking_rows.history (ประวัติการแก้ไข)',
+    exists (select 1 from information_schema.columns where table_schema='public' and table_name='tracking_rows' and column_name='history')),
+  ('3. คอลัมน์ tracking_rows.site (แยกยอดต่อลาน)',
+    exists (select 1 from information_schema.columns where table_schema='public' and table_name='tracking_rows' and column_name='site')),
+  ('4. ตาราง app_config (ค่ากลางแชร์ทุกเครื่อง)',
+    exists (select 1 from information_schema.tables where table_schema='public' and table_name='app_config')),
+  ('5. Realtime: tracking_rows (แก้ 1 เครื่องเห็นทุกเครื่อง)',
+    exists (select 1 from pg_publication_tables where pubname='supabase_realtime' and schemaname='public' and tablename='tracking_rows')),
+  ('6. Realtime: units (ผังลานอัปเดตทุกเครื่อง)',
+    exists (select 1 from pg_publication_tables where pubname='supabase_realtime' and schemaname='public' and tablename='units')),
+  ('7. Realtime: damages / sites / app_users',
+    (select count(*) from pg_publication_tables where pubname='supabase_realtime' and schemaname='public' and tablename in ('damages','sites','app_users')) = 3),
+  ('8. ฟังก์ชัน in_yard_count (ยอดกลางเลขเดียวทุกจอ)',
+    exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname='public' and p.proname='in_yard_count'))
+) t(item, ok)
+order by item;
