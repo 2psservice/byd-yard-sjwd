@@ -807,13 +807,15 @@ export async function fetchTrackingRows(
 /** ยอด In Yard นับบนคลาวด์ (supabase-inyard-count.sql) — ทุกเครื่องได้เลขเดียว
  *  กัน. null = ออฟไลน์ / ฟังก์ชันยังไม่ได้ติดตั้ง → ผู้เรียก fallback เป็นเลขที่นับ
  *  ในเครื่องตามเดิม. */
-let inYardRpcMissing = false
+let inYardRpcMissingUntil = 0
 export async function fetchInYardCount(siteId: string | null, siteNames: string[]): Promise<number | null> {
-  if (!isConfigured() || inYardRpcMissing) return null
+  if (!isConfigured() || Date.now() < inYardRpcMissingUntil) return null
   const { data, error } = await supabase.rpc('in_yard_count', { p_site_id: siteId, p_names: siteNames })
   if (error) {
-    // PGRST202 = function not installed yet — remember and stop asking
-    if ((error as { code?: string }).code === 'PGRST202') { inYardRpcMissing = true; return null }
+    // PGRST202 = function not installed yet. Back off for a while but keep
+    // retrying — the old permanent flag meant that installing the SQL later
+    // did nothing until every device happened to fully reload.
+    if ((error as { code?: string }).code === 'PGRST202') { inYardRpcMissingUntil = Date.now() + 5 * 60_000; return null }
     console.error('[db] fetchInYardCount', error)
     return null
   }

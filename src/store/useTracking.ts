@@ -423,42 +423,7 @@ export const useTracking = create<TrackingState>()(
           .on(
             'postgres_changes',
             { event: '*', schema: 'public', table: 'tracking_rows' },
-            (payload) => {
-              if (payload.eventType === 'DELETE') {
-                const vin = (payload.old as { vin?: string })?.vin
-                if (!vin) return
-                set((s) => { if (!s.rows[vin]) return s; const rows = { ...s.rows }; delete rows[vin]; return { rows } })
-                idbDelete([vin]).catch(() => {})
-                return
-              }
-              const r = payload.new as { vin?: string; cells?: Record<string, string> | null; updated_at?: string | null; site?: string | null; deleted_at?: string | null; history?: TrackRow['history'] | null }
-              if (!r?.vin) return
-              // soft-delete arrives here as an UPDATE with deleted_at set → drop locally
-              if (r.deleted_at) {
-                const vin = r.vin
-                set((s) => { if (!s.rows[vin]) return s; const rows = { ...s.rows }; delete rows[vin]; return { rows } })
-                idbDelete([vin]).catch(() => {})
-                return
-              }
-              if (!(r.cells?.['Vin'] ?? '').trim()) return // ignore phantom blank-Vin inserts
-              const incoming: TrackRow = {
-                vin: r.vin,
-                cells: r.cells ?? {},
-                updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : Date.now(),
-                site: r.site ?? undefined,
-                history: r.history ?? undefined,
-              }
-              set((s) => {
-                const cur = s.rows[incoming.vin]
-                if (cur && (cur.updatedAt ?? 0) >= (incoming.updatedAt ?? 0)) return s // stale / self-echo
-                // payload without history (column omitted / truncated) must NOT wipe
-                // the local audit trail — a later updateCell on this device would then
-                // upsert history:null to the cloud, destroying it everywhere.
-                if (!incoming.history?.length && cur?.history?.length) incoming.history = cur.history
-                idbPut(incoming).catch(() => {})
-                return { rows: { ...s.rows, [incoming.vin]: incoming } }
-              })
-            },
+            handleTrackingRealtime,
           )
           // self-healing subscription — mirror of the units channel: reconnect
           // after a silent websocket death and run an incremental syncCloud to
@@ -902,6 +867,98 @@ export const useTracking = create<TrackingState>()(
 // admin published a new shared default → adopt it live on every other open
 // client (version-checked inside seedViewDefault, so it only pulls when newer).
 onSync('viewdefault', () => { useTracking.getState().seedViewDefault().catch((e) => console.error('[viewdefault] sync pull', e)) })
+
+// ── realtime event handling (exported for tests) ─────────────────────────────
+// Any tracking_rows change can move the In Yard number → PUSH the shared
+// counts to this screen right away (debounced ~1.5s) instead of waiting for
+// the 30s poll. Every device receives the same event within about a second,
+// so 20 screens land on the same number together.
+let countsTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleCountsRefresh() {
+  if (countsTimer) clearTimeout(countsTimer)
+  countsTimer = setTimeout(() => {
+    countsTimer = null
+    useYard.getState().refreshCloudInYard().catch(() => {})
+    useTracking.getState().refreshCloudTotal().catch(() => {})
+  }, 1500)
+}
+// Truncated INSERT/UPDATE with no VIN at all → we know SOMETHING changed but
+// not what: run an incremental syncCloud (cheap — only rows newer than
+// lastSync) to pull the gap instead of dropping the event.
+let gapTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleGapSync() {
+  if (gapTimer) clearTimeout(gapTimer)
+  gapTimer = setTimeout(() => {
+    gapTimer = null
+    useTracking.getState().syncCloud().catch(() => {})
+  }, 2000)
+}
+
+/** Apply one tracking_rows realtime event. Extracted so sims can feed
+ *  payloads directly — including the TRUNCATED ones Supabase delivers when a
+ *  row's body exceeds the broadcast size cap (65 cells + a long history do).
+ *  Those used to be silently ignored (`if (!r?.vin) return`), which meant an
+ *  edit on one device never reached the other screens until the 10-min
+ *  reconcile — a big part of "บางเครื่องไม่อัพเดทข้อมูลจาก cloud". */
+export function handleTrackingRealtime(payload: { eventType: string; old?: unknown; new?: unknown }): void {
+  const { setState: set, getState: get } = useTracking
+  scheduleCountsRefresh() // every change may move In Yard — converge all screens
+  if (payload.eventType === 'DELETE') {
+    const vin = (payload.old as { vin?: string })?.vin
+    if (!vin) {
+      // key-only DELETE truncated away even the vin — an incremental pull
+      // can't see removals, so verify the count and reconcile if it moved
+      get().ensureComplete().catch(() => {})
+      return
+    }
+    set((s) => { if (!s.rows[vin]) return s; const rows = { ...s.rows }; delete rows[vin]; return { rows } })
+    idbDelete([vin]).catch(() => {})
+    return
+  }
+  const r = payload.new as { vin?: string; cells?: Record<string, string> | null; updated_at?: string | null; site?: string | null; deleted_at?: string | null; history?: TrackRow['history'] | null } | undefined
+  if (!r?.vin) { scheduleGapSync(); return } // truncated body, row unknown → pull the gap
+  // soft-delete arrives here as an UPDATE with deleted_at set → drop locally
+  if (r.deleted_at) {
+    const vin = r.vin
+    set((s) => { if (!s.rows[vin]) return s; const rows = { ...s.rows }; delete rows[vin]; return { rows } })
+    idbDelete([vin]).catch(() => {})
+    return
+  }
+  if (r.cells == null) {
+    // vin known but the payload body was dropped → fetch that one row exactly
+    const vin = r.vin
+    db.fetchTrackingRowsByVins([vin]).then((rows) => {
+      const fresh = rows.find((x) => x.vin === vin)
+      if (!fresh || fresh.deletedAt || !(fresh.cells?.['Vin'] ?? '').trim()) return
+      set((s) => {
+        const cur = s.rows[vin]
+        if (cur && (cur.updatedAt ?? 0) >= (fresh.updatedAt ?? 0)) return s
+        if (!fresh.history?.length && cur?.history?.length) fresh.history = cur.history
+        idbPut(fresh).catch(() => {})
+        return { rows: { ...s.rows, [vin]: fresh } }
+      })
+    }).catch(() => scheduleGapSync())
+    return
+  }
+  if (!(r.cells?.['Vin'] ?? '').trim()) return // ignore phantom blank-Vin inserts
+  const incoming: TrackRow = {
+    vin: r.vin,
+    cells: r.cells ?? {},
+    updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : Date.now(),
+    site: r.site ?? undefined,
+    history: r.history ?? undefined,
+  }
+  set((s) => {
+    const cur = s.rows[incoming.vin]
+    if (cur && (cur.updatedAt ?? 0) >= (incoming.updatedAt ?? 0)) return s // stale / self-echo
+    // payload without history (column omitted / truncated) must NOT wipe
+    // the local audit trail — a later updateCell on this device would then
+    // upsert history:null to the cloud, destroying it everywhere.
+    if (!incoming.history?.length && cur?.history?.length) incoming.history = cur.history
+    idbPut(incoming).catch(() => {})
+    return { rows: { ...s.rows, [incoming.vin]: incoming } }
+  })
+}
 
 // memoized array of rows to avoid new-reference selector loops
 export function useTrackingRows(): TrackRow[] {
