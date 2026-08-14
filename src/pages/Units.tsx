@@ -24,6 +24,7 @@ import { resolvePart, resolveDefect, MASTER_PARTS, MASTER_DEFECTS } from '../lib
 import { cx, PhotoLightbox } from '../components/ui'
 import { useQueues, queueTypeOf } from '../store/useOps'
 import { useUnitsView } from '../store/useUnitsView'
+import * as db from '../lib/db'
 import { buildWorkRows, buildEventLog, readingsHist as libReadingsHist, histOf, fmtHistAt, filledDates, PDI_DATE_KEYS, PM_DATE_KEYS } from '../lib/carHistory'
 
 const DMG_SRC: Record<string, string> = { walkaround: 'Walk-around', pdi: 'PDI', mechanic: 'ช่าง', update: 'Update', yardDefect: 'Defect-Yard', factoryDefect: 'Defect-Factory', whaleDefect: 'Defect-Whale', manual: 'เพิ่มเอง' }
@@ -181,11 +182,25 @@ export function Units() {
   const currentSite = useYard((s) => s.currentSite)
   const sites = useYard((s) => s.sites)
   const allRows = useTrackingRows()
-  // per-yard separation: the whole Unit List only ever shows the active site
-  const rows = useMemo(
-    () => (currentSite ? allRows.filter((r) => rowInSite(r, currentSite, sites)) : allRows),
-    [allRows, currentSite, sites],
-  )
+  const storeRows = useTracking((s) => s.rows)
+  // server-side filtered window (see the fetch effect below) — state lives up
+  // here because the rows memo depends on it
+  const [serverWin, setServerWin] = useState<{ vins: string[]; total: number } | null>(null)
+  // per-yard separation: the whole Unit List only ever shows the active site.
+  // With a server window active, the window's vins (already server-filtered +
+  // merged into the store) are the row source instead of whatever this device
+  // happens to hold — resolved THROUGH the store so live edits render.
+  const rows = useMemo(() => {
+    if (serverWin) {
+      const out: TrackRow[] = []
+      for (const vin of serverWin.vins) {
+        const r = storeRows[vin]
+        if (r && rowInSite(r, currentSite, sites)) out.push(r)
+      }
+      return out
+    }
+    return currentSite ? allRows.filter((r) => rowInSite(r, currentSite, sites)) : allRows
+  }, [serverWin, storeRows, allRows, currentSite, sites])
   const visCols = useVisibleColumns()
   const { lastImport, loadFromIdb } = useTracking()
   // computed yard-location code (prefix-block+ช่อง+ลำดับ, e.g. "N-R1402"), for the Location column.
@@ -226,6 +241,42 @@ export function Units() {
 
   const [sel, setSel] = useState<Set<string>>(new Set())
   const [colMgr, setColMgr] = useState(false)
+
+  // ── N4-style server window: a device that hasn't finished syncing must not
+  // show a shorter list than everyone else. While local < cloud, the list is
+  // fed from a server-side filtered/sorted window (≤2,000 rows + exact total):
+  // the server does the heavy reduction, the exact client filters below then
+  // run on that window, and fetched rows merge into the local store (additive,
+  // newer-wins) so editing/selection work identically. Fully-synced devices
+  // (the normal case) never enter this path — zero change to their behavior.
+  const cloudTotal = useTracking((s) => s.cloudTotal)
+  const localRowCount = useTracking((s) => Object.keys(s.rows).length)
+  const mergeServerRows = useTracking((s) => s.mergeServerRows)
+  const serverEligible = db.isConfigured() && cloudTotal !== null && localRowCount < cloudTotal
+    && !unitPreset && !unitVinFilter // drill-down presets are local-only views
+  const colFiltersKey = JSON.stringify(colFilters)
+  useEffect(() => {
+    if (!serverEligible) { setServerWin(null); return }
+    let stale = false
+    const t = setTimeout(() => {
+      const plain: Record<string, string> = {}
+      for (const key of activeFilterCols) {
+        const val = colFilters[key]
+        if (!val || val === 'ALL' || key === 'Car Status' || key === LOCATION_KEY) continue
+        plain[key] = val
+      }
+      db.fetchTrackingPage({
+        siteId: currentSite, q, group: fGroup, colFilters: plain,
+        sortKey, sortDir, limit: 2000,
+      }).then((res: { rows: TrackRow[]; total: number } | null) => {
+        if (stale || !res) return
+        mergeServerRows(res.rows)
+        setServerWin({ vins: res.rows.map((r: TrackRow) => r.vin), total: res.total })
+      }).catch(() => {})
+    }, 400)
+    return () => { stale = true; clearTimeout(t) }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverEligible, q, fGroup, colFiltersKey, sortKey, sortDir, currentSite, activeFilterCols.join('|')])
 
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
   useEffect(() => { if (import.meta.env.DEV) (window as any).__tracking = useTracking }, [])
@@ -401,6 +452,16 @@ export function Units() {
         </div>
       )}
 
+      {/* server-window banner: this device is still backfilling, so the list is
+          fed from a server-side filtered window — same list on every screen */}
+      {serverWin && (
+        <div className="flex items-center gap-2 px-3 py-1.5 mb-2 rounded-lg text-[12px] font-semibold"
+          style={{ color: '#1d4ed8', background: 'rgba(37,99,235,0.08)', border: '1px solid rgba(37,99,235,0.18)' }}
+          title="เครื่องนี้ยังซิงค์ไม่ครบ — รายการถูกค้นหา/เรียงบนเซิร์ฟเวอร์โดยตรง จึงเห็นรายการเดียวกับทุกเครื่อง">
+          ☁ ค้นหา/เรียงบนเซิร์ฟเวอร์ · แสดง {Math.min(serverWin.vins.length, serverWin.total).toLocaleString()} จาก {serverWin.total.toLocaleString()} รายการ
+          {serverWin.total > serverWin.vins.length && <span style={{ fontWeight: 500, color: 'var(--muted)' }}>· พิมพ์ค้นหา/กรองเพื่อระบุรายการให้แคบลง</span>}
+        </div>
+      )}
       {/* body */}
       <div className="flex gap-2 flex-1 min-h-0">
         {rows.length === 0 ? (

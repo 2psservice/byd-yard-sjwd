@@ -31,6 +31,26 @@ export function DailyStockReport() {
   const allRows = useTrackingRows()
 
   const [day, setDay] = useState(todayKey())
+  // ── N4-style: the whole day's ledger computed on the SERVER ────────────────
+  // daily_stock (supabase-daily-stock.sql) reconstructs ยกมา/เข้า/ออก/คงเหลือ
+  // from the cloud's rows — every device asking about the same day gets the
+  // same answer, no matter how much it has synced. Falls back to the local
+  // computation below when offline / the function isn't installed.
+  const [serverDaily, setServerDaily] = useState<db.DailyStockData | null>(null)
+  useEffect(() => {
+    let stale = false
+    setServerDaily(null)
+    const site = sites.find((x) => x.id === currentSite)
+    if (!site) return
+    const normName = (v?: string) => (v ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
+    const names = [site.name, site.code].filter(Boolean).map((v) => normName(v as string))
+    const pull = () => db.fetchDailyStock(site.id, names, day)
+      .then((d) => { if (!stale && d && d.day === day) setServerDaily(d) })
+      .catch(() => {})
+    pull()
+    const iv = setInterval(pull, 60_000)
+    return () => { stale = true; clearInterval(iv) }
+  }, [currentSite, sites, day])
   const [caps, setCaps] = useState<Record<string, number>>({})
   const [capDraft, setCapDraft] = useState<string | null>(null)
   const [openList, setOpenList] = useState<'in' | 'out' | 'stock' | null>(null)
@@ -74,6 +94,31 @@ export function DailyStockReport() {
   )
 
   const data = useMemo(() => {
+    if (serverDaily) {
+      // server lists arrive pre-aggregated; wrap them in minimal TrackRow-shaped
+      // objects so modelOf/colorOf/groupOf and the render below work unchanged
+      const wrap = (x: db.DailyStockItem): TrackRow => ({
+        vin: x.vin, updatedAt: 0, history: [],
+        cells: { Vin: x.vin, 'Model name': x.model, Color: x.color, 'Grouping  Number': x.grouping ?? '' },
+      })
+      const models = new Map<string, Map<string, number>>()
+      const colorTotals = new Map<string, number>()
+      for (const m of serverDaily.stock_matrix) {
+        if (!models.has(m.model)) models.set(m.model, new Map())
+        models.get(m.model)!.set(m.color, (models.get(m.model)!.get(m.color) ?? 0) + m.n)
+        colorTotals.set(m.color, (colorTotals.get(m.color) ?? 0) + m.n)
+      }
+      const colors = [...colorTotals.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k)
+      const byModel = [...models.entries()]
+        .map(([model, byColor]) => ({ model, byColor, total: [...byColor.values()].reduce((n, v) => n + v, 0) }))
+        .sort((a, b) => b.total - a.total)
+      return {
+        inRows: serverDaily.in_list.map(wrap), outRows: serverDaily.out_list.map(wrap),
+        stockRows: serverDaily.stock_list.map(wrap),
+        opening: serverDaily.opening, colors, byModel, colorTotals,
+        undated: serverDaily.undated, outNoDate: serverDaily.out_no_date,
+      }
+    }
     const prev = addDays(day, -1)
     const inRows: TrackRow[] = []
     const outRows: TrackRow[] = []
@@ -117,7 +162,7 @@ export function DailyStockReport() {
       inRows: sortRows(inRows), outRows: sortRows(outRows), stockRows: sortRows(stock),
       opening, colors, byModel, colorTotals, undated, outNoDate,
     }
-  }, [rows, day])
+  }, [rows, day, serverDaily])
 
   const stockN = data.stockRows.length
   const balance = cap - stockN
@@ -209,7 +254,9 @@ export function DailyStockReport() {
       <div className="px-4 py-3 border-b hairline flex items-center gap-2 flex-wrap">
         <CalendarDays size={16} style={{ color: 'var(--brand)' }} />
         <span className="font-semibold text-[13.5px]">รายงานประจำวัน</span>
-        <span className="text-[12px]" style={{ color: 'var(--muted)' }}>Local Production Stock · {siteName}</span>
+        <span className="text-[12px]" style={{ color: 'var(--muted)' }}>
+          Local Production Stock · {siteName}{serverDaily ? ' · ☁ เลขจากเซิร์ฟเวอร์' : ''}
+        </span>
 
         <div className="ml-auto flex items-center gap-1.5">
           <button className="btn px-2 py-1.5" title="วันก่อนหน้า" onClick={() => setDay(addDays(day, -1))}>

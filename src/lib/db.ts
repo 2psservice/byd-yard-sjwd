@@ -858,6 +858,84 @@ export async function fetchDashboardStats(siteId: string | null, siteNames: stri
   return (data && typeof data === 'object') ? data as DashboardStats : null
 }
 
+// ── N4-style server-computed Daily Stock ────────────────────────────────────
+export interface DailyStockItem { vin: string; model: string; color: string; grouping: string | null }
+export interface DailyStockData {
+  day: string
+  opening: number; in_n: number; out_n: number; stock_n: number
+  undated: number; out_no_date: number
+  in_list: DailyStockItem[]; out_list: DailyStockItem[]; stock_list: DailyStockItem[]
+  stock_matrix: { model: string; color: string; n: number }[]
+}
+let dailyStockMissingUntil = 0
+export async function fetchDailyStock(siteId: string | null, siteNames: string[], day: string): Promise<DailyStockData | null> {
+  if (!isConfigured() || Date.now() < dailyStockMissingUntil) return null
+  const { data, error } = await supabase.rpc('daily_stock', { p_site_id: siteId, p_names: siteNames, p_day: day })
+  if (error) {
+    if ((error as { code?: string }).code === 'PGRST202') { dailyStockMissingUntil = Date.now() + 5 * 60_000; return null }
+    console.error('[db] fetchDailyStock', error)
+    return null
+  }
+  return (data && typeof data === 'object') ? data as DailyStockData : null
+}
+
+// ── N4-style server-side search/sort window for the Unit List ───────────────
+/** Fetch a bounded, server-filtered/sorted window of tracking rows. Used when
+ *  this device's local set is INCOMPLETE (still backfilling): the list on
+ *  screen must not depend on how much has synced. The query is a broad
+ *  server-side reduction — the page re-applies its exact client-side filters
+ *  on the returned window, so results are precise. null = query failed. */
+export async function fetchTrackingPage(opts: {
+  siteId: string | null
+  q?: string
+  group?: string
+  colFilters?: Record<string, string> // plain cell columns only (derived cols excluded by caller)
+  sortKey?: string                    // 'No' = updated_at; cell key otherwise
+  sortDir?: 1 | -1
+  limit?: number
+}): Promise<{ rows: TrackRow[]; total: number } | null> {
+  if (!isConfigured()) return null
+  try {
+    const limit = opts.limit ?? 2000
+    // sanitize: PostgREST or() splits on , and ) — strip them from user text
+    const clean = (v: string) => v.replace(/[,()]/g, ' ').trim()
+    let qy: any = supabase.from('tracking_rows')
+      .select(trackingColsKnownMissing() ? 'vin, cells, updated_at, site' : 'vin, cells, updated_at, site, deleted_at', { count: 'exact' })
+    if (!trackingColsKnownMissing()) qy = qy.is('deleted_at', null)
+    if (opts.siteId) qy = qy.or(`site.eq.${opts.siteId},site.is.null`)
+    const term = clean(opts.q ?? '')
+    if (term) {
+      // broad match across the columns the local search covers (keys containing
+      // , or ( ) can't ride in an or() expression — the client re-filter catches them)
+      qy = qy.or([
+        `vin.ilike.*${term}*`,
+        `cells->>Vin.ilike.*${term}*`,
+        `cells->>Model name.ilike.*${term}*`,
+        `cells->>Model.ilike.*${term}*`,
+        `cells->>company.ilike.*${term}*`,
+        `cells->>Location yard.ilike.*${term}*`,
+        `cells->>storage Yard.ilike.*${term}*`,
+      ].join(','))
+    }
+    const grp = clean(opts.group ?? '')
+    if (grp) qy = qy.ilike('cells->>Grouping  Number', `%${grp}%`)
+    for (const [key, val] of Object.entries(opts.colFilters ?? {})) {
+      if (!val || val === 'ALL') continue
+      qy = qy.eq(`cells->>${key}`, val)
+    }
+    if (opts.sortKey === 'No' || !opts.sortKey) qy = qy.order('updated_at', { ascending: (opts.sortDir ?? -1) === 1 })
+    else qy = qy.order(`cells->>${opts.sortKey}`, { ascending: (opts.sortDir ?? 1) === 1 })
+    qy = qy.order('vin', { ascending: true }).range(0, limit - 1)
+    const { data, error, count } = await qy
+    if (error) { console.error('[db] fetchTrackingPage', error); return null }
+    const rows = ((data ?? []) as TrackRowRow[]).map(toTrackRow).filter((r) => !r.deletedAt)
+    return { rows, total: count ?? rows.length }
+  } catch (e) {
+    console.error('[db] fetchTrackingPage', e)
+    return null
+  }
+}
+
 /** Exact number of tracking rows in the cloud (null = query failed). Used to
  *  verify a device holds the complete set before trusting its local view. */
 export async function countTrackingRows(): Promise<number | null> {
