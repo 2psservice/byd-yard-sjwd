@@ -247,6 +247,24 @@ const isGatedInStatus = (s?: string) => {
  *  left and stays movable. */
 const hasGoneOut = (c?: Record<string, string>) => !!c && deriveCarStatus(c) === 'Gate-out'
 
+// A scanned VIN the tracking sheet says is gated in, but whose `units` row
+// hasn't landed on this device yet, used to "hurry" the WHOLE site's units —
+// every car, every damage — on a station that only needs ONE row. On a slow
+// yard connection (or a car whose status made it fall outside the in-yard
+// fetch filter, e.g. mid-transition) that full re-fetch could take a long
+// time or never resolve the one car being waited on, leaving "กำลังโหลด
+// ข้อมูลรถ…" stuck. A direct per-VIN lookup answers in one small request
+// regardless of yard size or the car's exact status.
+async function fetchUnitFallback(vin: string): Promise<boolean> {
+  if (!isConfigured()) return false
+  try {
+    const [u] = await fetchUnitsByVins([vin])
+    if (!u) return false
+    useYard.setState((s) => (s.units[u.vin] ? s : { units: { ...s.units, [u.vin]: u } }))
+    return true
+  } catch (e) { console.error('[db] fetchUnitFallback', e); return false }
+}
+
 /** Resolve a typed VIN for unit-based roles (Driver / PDI / Mechanic).
  *  Prefers a yard unit (exact → unique suffix); falls back to a tracking row
  *  to tell "not gated-in yet" apart from "unknown VIN". */
@@ -2128,7 +2146,7 @@ function DriverView() {
     if (res.type === 'ambiguous') { toast('err', `พบ ${res.count} คัน — พิมพ์ให้ยาวขึ้น`); return }
     if (res.type === 'none') { toast('err', wrongSite(v) ?? `ไม่พบ VIN: ${v}`); return }
     if (res.type === 'notGated') { blockGate(res.vin, res.model); return }
-    if (res.type === 'okPending') { toast('ok', 'กำลังโหลดข้อมูลรถ…'); loadFromSupabase() } // unit not synced yet
+    if (res.type === 'okPending') { toast('ok', 'กำลังโหลดข้อมูลรถ…'); fetchUnitFallback(res.vin) } // unit not synced yet
     setVin(res.vin)
   }
   const doAssign = (slot: { block: string; row: number; slot: number }) => {
@@ -2792,6 +2810,24 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
   }, [selectedQueue, units, trackingRows])
 
   const unit = vin ? units.find(u => u.vin === vin) ?? null : null
+  // a scanned car whose unit row hasn't landed yet: keep trying the light,
+  // one-VIN fetch on its own — no need to wait for the operator to notice the
+  // spinner and tap "ลองใหม่" themselves, and no need to hurry the entire
+  // site's units for one car
+  useEffect(() => {
+    if (!vin || unit) return
+    let cancelled = false
+    let tries = 0
+    const attempt = () => {
+      if (cancelled) return
+      tries++
+      fetchUnitFallback(vin).then((found) => {
+        if (!found && !cancelled && tries < 4) setTimeout(attempt, 1500 * tries)
+      })
+    }
+    attempt()
+    return () => { cancelled = true }
+  }, [vin, unit])
   // the station task this car is currently in (PDI / FINAL PM / Wash …)
   const activeProc = useMemo(() => (unit ? activeProcess(unit.vin, queues) : null), [unit, queues])
   const procStage = activeProc ? stageOf(activeProc.item) : null
@@ -2804,7 +2840,7 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
     if (res.type === 'ambiguous') { toast('err', `พบ ${res.count} คัน — พิมพ์ให้ยาวขึ้น`); return }
     if (res.type === 'none') { toast('err', wrongSite(v) ?? `ไม่พบ VIN: ${v}`); return }
     if (res.type === 'notGated') { blockGate(res.vin, res.model); return }
-    if (res.type === 'okPending') loadFromSupabase() // unit not synced yet — hurry the fetch
+    if (res.type === 'okPending') fetchUnitFallback(res.vin) // unit not synced yet — hurry just this one car
     setVin(res.vin); setJustOk(false)
   }
   // called by FinalCheckPanel after it records the inspection (OK / NG)
@@ -2908,7 +2944,7 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
             <RefreshCw size={16} className="animate-spin" />
             <span className="text-[13px] font-semibold">กำลังโหลดข้อมูลรถ {vin.slice(-6)}…</span>
           </div>
-          <button onClick={() => loadFromSupabase()} className="btn btn-ghost mt-3 text-[12px] py-1.5 px-3">
+          <button onClick={() => fetchUnitFallback(vin)} className="btn btn-ghost mt-3 text-[12px] py-1.5 px-3">
             โหลดช้า? กดลองใหม่
           </button>
         </div>
@@ -3067,7 +3103,7 @@ function MechanicView() {
     if (res.type === 'ambiguous') { toast('err', `พบ ${res.count} คัน — พิมพ์ให้ยาวขึ้น`); return }
     if (res.type === 'none') { toast('err', wrongSite(v) ?? `ไม่พบ VIN: ${v}`); return }
     if (res.type === 'notGated') { blockGate(res.vin, res.model); return }
-    if (res.type === 'okPending') { toast('ok', 'กำลังโหลดข้อมูลรถ…'); loadFromSupabase() } // unit not synced yet
+    if (res.type === 'okPending') { toast('ok', 'กำลังโหลดข้อมูลรถ…'); fetchUnitFallback(res.vin) } // unit not synced yet
     setVin(res.vin); setShowForm(false)
   }
   const doRelease = (id: string) => {
