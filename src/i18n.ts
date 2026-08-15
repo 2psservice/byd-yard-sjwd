@@ -11,6 +11,7 @@ const D: Dict = {
   import: { th: 'นำเข้าข้อมูล', en: 'Import' },
   trailers: { th: 'หางเทรลเลอร์', en: 'Trailers' },
   report: { th: 'รายงาน', en: 'Report' },
+  report2ps: { th: 'Report 2PS', en: 'Report 2PS' },
   gatein: { th: 'Gate In/Out', en: 'Gate In/Out' },
   driver: { th: 'พนักงานขับรถ', en: 'Driver' },
   yard: { th: 'แผนผังลาน', en: 'Yard Plan' },
