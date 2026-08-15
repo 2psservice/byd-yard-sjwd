@@ -1346,15 +1346,33 @@ function WalkView() {
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
   useEffect(() => { setDmgResult(null) }, [trackingVin]) // reset the check per scanned car
 
+  // safety net: a Pre Gate-in car this station doesn't cover with any queue —
+  // same fix as the admin Gate In/Out board's virtual card (PR #263). A device
+  // that deletes its data and re-uploads a fresh file can end up with NEW Pre
+  // Gate-in rows and no matching queue for them (the old queue for a prior
+  // batch stays visible), so this station's own "เหลือ" undercounted against
+  // the Dashboard's sitewide Pre Gate-in tally — collect every uncovered row
+  // into one virtual entry so the two numbers can never disagree.
+  const uncoveredPreGateIn = useMemo(() => {
+    const queuedVins = new Set<string>()
+    for (const q of queues) if (isPreGateInQueue(q.name)) for (const i of q.items) queuedVins.add(i.vin)
+    return trackingRows.filter(r => !queuedVins.has(r.vin) && deriveCarStatus(r.cells) === 'Pre Gate-in')
+  }, [queues, trackingRows])
   // Pre Gate-in queues "(M-D-N)" — process queues (PDI / PM / Wash) live under the
   // PDI role, not here. Completed queues stay listed so the station can still read
   // its own progress ("17/17 · เหลือ 0"), same as the Driver's delivery-run cards.
-  const gateInQueues = useMemo(() =>
+  const gateInQueues = useMemo(() => {
     // completed queues drop off the live Ops-Scan list (they've filed under their day)
-    queues.filter(q => isPreGateInQueue(q.name) && !isQueueComplete(q)),
-    [queues],
-  )
-  const selectedQueue = selectedQueueId ? queues.find(q => q.id === selectedQueueId) ?? null : null
+    const real = queues.filter(q => isPreGateInQueue(q.name) && !isQueueComplete(q))
+    if (!uncoveredPreGateIn.length) return real
+    const virtual: WorkQueue = {
+      id: '__uncovered_pregatein', name: '(รอ Gate-in · ยังไม่มีคิวงาน)', createdAt: 0,
+      items: uncoveredPreGateIn.map(r => ({ vin: r.vin, addedAt: 0, done: false })),
+    }
+    return [...real, virtual]
+  }, [queues, uncoveredPreGateIn])
+  // gateInQueues (not queues) — the selected card may be the virtual uncovered one
+  const selectedQueue = selectedQueueId ? gateInQueues.find(q => q.id === selectedQueueId) ?? null : null
   // NG ⟺ the gate-in walk-around recorded damage on this car (what the operator
   // pressed OK / NG on) — not the imported "Status" column.
   const ngVins = useMemo(() => {
@@ -4683,9 +4701,12 @@ export function YardOps() {
 
   // pending-work count per station menu — the iOS-style red badge on each tile
   const queues = useSiteQueues()
+  const trackingRows = useSiteRows()
   const menuBadges = useMemo(() => {
     const n: Partial<Record<RoleKey, number>> = {}
     const add = (k: RoleKey, v: number) => { if (v > 0) n[k] = (n[k] ?? 0) + v }
+    const queuedPreGateInVins = new Set<string>()
+    for (const q of queues) if (isPreGateInQueue(q.name)) for (const i of q.items) queuedPreGateInVins.add(i.vin)
     for (const q of queues) {
       if (isQueueComplete(q)) continue
       if (isSequenceQueue(q)) {
@@ -4707,8 +4728,13 @@ export function YardOps() {
       // the driver moves cars in (queued) and back out (checked)
       add('driver', q.items.filter(i => !i.done && (stageOf(i) === 'queued' || stageOf(i) === 'checked')).length)
     }
+    // same safety net as the Gate-in station's own list (and the admin Gate
+    // In/Out board): a Pre Gate-in row with no queue at all must still count,
+    // or this badge undercounts against both the in-station list and the
+    // Dashboard's sitewide Pre Gate-in tally
+    add('walk', trackingRows.filter(r => !queuedPreGateInVins.has(r.vin) && deriveCarStatus(r.cells) === 'Pre Gate-in').length)
     return n
-  }, [queues])
+  }, [queues, trackingRows])
 
   const activeRole = ROLES.find(r => r.key === role)
 
