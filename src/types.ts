@@ -61,7 +61,7 @@ export type DamageCategoryRepair = 'Re Dent' | 'Re paint' | 'Part'
 export type DamageIncharge = 'SJWD' | 'BYD'
 export type DamageStatusRepair = 'Waiting Repair' | 'Accept' | 'Acc byd' | 'OK Accept' | 'OK Repaired' | 'Repaired'
 /** Which step recorded the damage (undefined = legacy gate-in walk-around). */
-export type DamageSource = 'walkaround' | 'pdi' | 'mechanic' | 'update' | 'yardDefect' | 'factoryDefect' | 'whaleDefect' | 'manual'
+export type DamageSource = 'walkaround' | 'pdi' | 'mechanic' | 'update' | 'walkcheck' | 'yardDefect' | 'factoryDefect' | 'whaleDefect' | 'manual'
 
 export interface Damage {
   id: string
