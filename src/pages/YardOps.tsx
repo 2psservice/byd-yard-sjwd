@@ -58,7 +58,7 @@ async function copyVin(vin: string, toast: (k: 'ok' | 'err', m: string) => void)
 }
 import { fmtSerialToDate } from '../lib/trackingColumns'
 import { matchModel } from '../lib/sampleData'
-import type { Damage, DamageInput, Unit } from '../types'
+import type { Damage, DamageInput, DamageSource, Unit } from '../types'
 import type { TrackRow } from '../lib/excelTracking'
 import { SeqQueuePicker } from '../components/SeqQueueList'
 
@@ -212,7 +212,7 @@ function DefectStatusSelect({ d, onChange }: { d: Damage; onChange: (s: string) 
   )
 }
 
-type RoleKey = 'walk' | 'driver' | 'pdi' | 'pm' | 'fc' | 'mechanic' | 'gateout' | 'relocation' | 'check' | 'updatedmg'
+type RoleKey = 'walk' | 'driver' | 'pdi' | 'pm' | 'fc' | 'mechanic' | 'gateout' | 'relocation' | 'check' | 'updatedmg' | 'walkcheck'
 const ROLES: { key: RoleKey; th: string; en: string; icon: React.ReactNode; color: string; desc: string }[] = [
   { key: 'walk',      th: 'Gate-in',         en: 'Gate-in',         icon: <ScanLine size={28} />,      color: 'var(--brand)',   desc: 'ตรวจรับรถเข้าลาน' },
   { key: 'gateout',  th: 'Gate-out',        en: 'Gate-out',        icon: <LogOut size={28} />,        color: '#64748b',        desc: 'บันทึกรถออกจากลาน' },
@@ -221,6 +221,7 @@ const ROLES: { key: RoleKey; th: string; en: string; icon: React.ReactNode; colo
   { key: 'pdi',      th: 'PDI',             en: 'PDI',             icon: <ShieldCheck size={28} />,   color: '#7c3aed',        desc: 'ตรวจสอบคุณภาพ OK / NG' },
   { key: 'pm',       th: 'PM',              en: 'PM',              icon: <ShieldCheck size={28} />,   color: '#2563eb',        desc: 'ตรวจสอบคุณภาพ OK / NG' },
   { key: 'fc',       th: 'FINAL CHECK',     en: 'FINAL CHECK',     icon: <ShieldCheck size={28} />,   color: '#059669',        desc: 'ตรวจสอบคุณภาพ OK / NG' },
+  { key: 'walkcheck',th: 'Walk Around Check', en: 'Walk Around Check', icon: <Hand size={28} />,      color: '#0d9488',        desc: 'สแกน / เพิ่ม Defect ระหว่างเดินตรวจ' },
   { key: 'updatedmg',th: 'Update Damage',   en: 'Update Damage',   icon: <AlertTriangle size={28} />, color: '#dc2626',        desc: 'บันทึก / แก้ไขความเสียหาย' },
   { key: 'check',    th: 'Check',           en: 'Check',           icon: <ClipboardList size={28} />, color: '#0891b2',        desc: 'ตรวจสอบข้อมูลรถ' },
   { key: 'mechanic', th: 'ช่าง',             en: 'Mechanic',        icon: <Wrench size={28} />,        color: '#c2680b',        desc: 'คิวงานซ่อม / งานพิเศษ · แก้ไข NG' },
@@ -1075,6 +1076,9 @@ function DefectCard({ d, right }: { d: Damage; right?: React.ReactNode }) {
             {right && <div className="shrink-0">{right}</div>}
           </div>
           <div className="flex items-center gap-x-3 gap-y-1 flex-wrap text-[11px]" style={{ color: 'var(--text)' }}>
+            <span className="badge font-bold" style={{ fontSize: 10, background: 'rgba(37,99,235,0.1)', color: '#2563eb' }}>
+              {stationLabel(d)}
+            </span>
             <span className="flex items-center gap-1"><User size={11} /> {d.by || '—'}</span>
             <span className="flex items-center gap-1"><Clock size={11} /> {fmtDateTime(d.at).date} {fmtDateTime(d.at).time}</span>
             {(() => {
@@ -1100,6 +1104,7 @@ function DefectCard({ d, right }: { d: Damage; right?: React.ReactNode }) {
 // legacy fallback when a damage predates the `station` field (derived from `source`)
 const SOURCE_STATION_LABEL: Partial<Record<string, string>> = {
   walkaround: 'Gate-in', pdi: 'PDI', mechanic: 'ช่าง (Mechanic)', update: 'Update Damage',
+  walkcheck: 'Walk Around Check',
   yardDefect: 'Co-Inspection (Yard)', factoryDefect: 'Co-Inspection (Factory)', whaleDefect: 'Co-Inspection (Whale)',
   manual: 'เพิ่มเอง (Manual)',
 }
@@ -4126,7 +4131,8 @@ function RelocationView() {
 
 // ── Check view ────────────────────────────────────────────────────────────────
 // ── Update Damage ─────────────────────────────────────────────────────────────
-function UpdateDamageView() {
+function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', source = 'update', recentKey = 'damage' }:
+  { accent?: string; stationName?: string; source?: DamageSource; recentKey?: string } = {}) {
   const units = useSiteUnits()
   const trackingRows = useSiteRows()
   const wrongSite = useWrongSiteHint()
@@ -4165,7 +4171,7 @@ function UpdateDamageView() {
     const gated = (fu && fu.status !== 'EXPECTED') || (fr && isGatedInStatus(fr.cells['Car Status']))
     if (!gated) { blockGate(found, fu?.modelName ?? fr?.cells['Model name'] ?? fr?.cells['Model'] ?? ''); return }
     setVin(found); setShowAdd(false)
-    recordRecent('damage:search', found)
+    recordRecent(`${recentKey}:search`, found)
   }
 
   const fmt = (ts: number) => {
@@ -4175,22 +4181,22 @@ function UpdateDamageView() {
 
   return (
     <div className="space-y-4">
-      <VinInput onScan={onScan} accent="#dc2626" />
+      <VinInput onScan={onScan} accent={accent} />
       {gateModal}
-      {!vin && <RecentPanel station="damage" accent="#dc2626" onPick={onScan} />}
+      {!vin && <RecentPanel station={recentKey} accent={accent} onPick={onScan} />}
 
       {(unit || trackRow) && vin && (
         <div className="panel overflow-hidden fade-up">
           {/* header */}
-          <div className="px-4 py-3 border-b hairline flex items-center gap-2" style={{ background: 'rgba(220,38,38,0.05)' }}>
-            <AlertTriangle size={15} style={{ color: '#dc2626' }} />
+          <div className="px-4 py-3 border-b hairline flex items-center gap-2" style={{ background: accent + '0d' }}>
+            <AlertTriangle size={15} style={{ color: accent }} />
             <div className="flex-1 min-w-0">
               <div className="vin text-[13px] font-bold truncate">{vin}</div>
               <div className="text-[11px]" style={{ color: 'var(--muted)' }}>
                 {unit?.modelName ?? trackRow?.cells['Model name'] ?? '—'}
               </div>
             </div>
-            <span className="badge font-bold" style={{ background: damages.length > 0 ? 'rgba(220,38,38,0.1)' : 'rgba(22,163,74,0.1)', color: damages.length > 0 ? '#dc2626' : '#16a34a' }}>
+            <span className="badge font-bold" style={{ background: damages.length > 0 ? accent + '1a' : 'rgba(22,163,74,0.1)', color: damages.length > 0 ? accent : '#16a34a' }}>
               {damages.length > 0 ? `${damages.length} damage` : 'OK'}
             </span>
           </div>
@@ -4222,7 +4228,7 @@ function UpdateDamageView() {
 
           {/* add new damage form — same dropdowns / photos / remark as Gate-in */}
           {showAdd ? (
-            <div className="border-t hairline p-3" style={{ background: 'rgba(220,38,38,0.03)' }}>
+            <div className="border-t hairline p-3" style={{ background: accent + '08' }}>
               <DamageForm
                 key={vin ?? 'none'}
                 onSaveAll={dmgs => {
@@ -4234,8 +4240,8 @@ function UpdateDamageView() {
                     loadFromSupabase()
                     return
                   }
-                  dmgs.forEach(d => addDamage(unit.vin, { ...d, source: 'update', station: 'Update Damage' }))
-                  recordRecent('damage:save', unit.vin, dmgs.length > 1 ? `บันทึก Defect ${dmgs.length} รายการ` : 'บันทึก Defect 1 รายการ')
+                  dmgs.forEach(d => addDamage(unit.vin, { ...d, source, station: stationName }))
+                  recordRecent(`${recentKey}:save`, unit.vin, dmgs.length > 1 ? `บันทึก Defect ${dmgs.length} รายการ` : 'บันทึก Defect 1 รายการ')
                   setShowAdd(false)
                   toast('ok', dmgs.length > 1 ? `บันทึก Defect ${dmgs.length} รายการ` : 'บันทึก Defect แล้ว')
                 }}
@@ -4246,7 +4252,7 @@ function UpdateDamageView() {
             <div className="px-4 py-3 border-t hairline">
               <button onClick={() => setShowAdd(true)}
                 className="w-full py-2.5 rounded-xl text-[13px] font-bold transition active:scale-95 flex items-center justify-center gap-2"
-                style={{ background: 'rgba(220,38,38,0.08)', color: '#dc2626', border: '1px dashed rgba(220,38,38,0.3)' }}>
+                style={{ background: accent + '14', color: accent, border: `1px dashed ${accent}4d` }}>
                 <Plus size={15} /> เพิ่มความเสียหาย
               </button>
             </div>
@@ -4762,6 +4768,7 @@ export function YardOps() {
       {role === 'walk'       && <WalkView />}
       {role === 'gateout'    && <GateOutView />}
       {role === 'updatedmg'  && <UpdateDamageView />}
+      {role === 'walkcheck'  && <UpdateDamageView accent="#0d9488" stationName="Walk Around Check" source="walkcheck" recentKey="walkcheck" />}
       {role === 'driver'     && <DriverView />}
       {role === 'relocation' && <RelocationView />}
       {role === 'pdi'        && <PdiView types={['PDI']} accent="#7c3aed" title="PDI" />}
