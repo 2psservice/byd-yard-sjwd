@@ -5,7 +5,7 @@ import { PageHead, cx } from '../components/ui'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { useActiveQueues, queueProgress, isSequenceQueue, isQueueComplete } from '../store/useOps'
 import type { WorkQueue } from '../store/useOps'
-import { isGateOutStamp } from '../lib/carStatus'
+import { isGateOutStamp, deriveCarStatus } from '../lib/carStatus'
 import { rowInSite } from '../lib/siteScope'
 import { MONTH_ABBR, parseLooseDate, dateKey, todayKey, fmtDateTh, gateInDateKey, gateOutDateKey } from '../lib/dayKey'
 import { SeqQueuePicker } from '../components/SeqQueueList'
@@ -271,16 +271,43 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
     () => all.filter((q) => q.name.trim().startsWith('(') && (!q.site || q.site === currentSite) && queueOnDate(q, filterDate)),
     [all, currentSite, filterDate],
   )
-  if (queues.length === 0) return null
+  // ── safety net: a Pre Gate-in car this board doesn't cover with any queue ──
+  // "(yard · date · N)" queues are built once at import time; a device that
+  // deletes its data and re-uploads a fresh file can end up with NEW Pre
+  // Gate-in rows and no matching queue for them (the old queue for a prior
+  // batch stays visible — done and dated — while the office sees nothing for
+  // the cars the Unit List now counts as waiting). Same fix as the Ops-Scan
+  // Gate-in station's virtual card (PR #238): collect every site Pre Gate-in
+  // row not listed in ANY "(" queue (live or historical, not just today's) into
+  // one virtual entry, so this board can never show fewer waiting cars than
+  // the Unit List does. Live-board only — a past date is asking "what happened
+  // that day", not "what's uncovered right now".
+  const isToday = filterDate == null || filterDate === todayKey()
+  const uncovered = useMemo(() => {
+    if (!isToday) return [] as TrackRow[]
+    const queuedVins = new Set<string>()
+    for (const q of all) {
+      if (!q.name.trim().startsWith('(') || (q.site && q.site !== currentSite)) continue
+      for (const i of q.items) queuedVins.add(i.vin)
+    }
+    return rows.filter((r) => rowInSite(r, currentSite, useYard.getState().sites)
+      && !queuedVins.has(r.vin) && deriveCarStatus(r.cells) === 'Pre Gate-in')
+  }, [all, rows, currentSite, isToday])
+  if (queues.length === 0 && uncovered.length === 0) return null
+  const virtual: WorkQueue | null = uncovered.length ? {
+    id: '__uncovered_pregatein', name: '(รอ Gate-in · ยังไม่มีคิวงาน)', createdAt: 0,
+    items: uncovered.map((r) => ({ vin: r.vin, addedAt: 0, done: false })),
+  } : null
+  const renderQueues = virtual ? [...queues, virtual] : queues
   return (
     <div className="panel overflow-hidden">
       <div className="px-4 py-2.5 border-b hairline flex items-center gap-2">
         <ClipboardList size={14} style={{ color: 'var(--brand)' }} />
         <span className="text-[13px] font-bold">คิวงาน Pre Gate-in</span>
-        <span className="badge ml-auto" style={{ background: 'rgba(37,99,235,0.1)', color: 'var(--brand)' }}>{queues.length} คิว</span>
+        <span className="badge ml-auto" style={{ background: 'rgba(37,99,235,0.1)', color: 'var(--brand)' }}>{renderQueues.length} คิว</span>
       </div>
       <div className="divide-y">
-        {queues.map((q) => {
+        {renderQueues.map((q) => {
           const { done, total } = queueProgress(q)
           const pending = q.items.filter((i) => !i.done)
           const open = openId === q.id
