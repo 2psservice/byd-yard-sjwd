@@ -680,8 +680,16 @@ function reconcileGateOuts() {
       }
       // reverse direction: the row is back to Pre Gate-in but this item still
       // reads done from before — un-tick and drop the stale scan record so the
-      // card doesn't claim a Gate-in that hasn't happened this cycle
-      if (isPreGateIn && stillWaiting.has(i.vin) && i.done && !i.gatedOut) {
+      // card doesn't claim a Gate-in that hasn't happened this cycle.
+      // EVERY device runs this reconciler off its OWN local rows copy, which
+      // can briefly lag behind another device's just-written gate-in (this
+      // device's realtime update for the row hasn't landed yet even though
+      // the queue item was already marked done moments ago elsewhere). Only
+      // trust "still Pre Gate-in" enough to un-tick when the row's own last
+      // edit genuinely postdates the done mark — i.e. it was re-imported
+      // AFTER, not merely a stale copy racing behind — or the count flaps
+      // between two devices each reverting the other's correct write.
+      if (isPreGateIn && stillWaiting.has(i.vin) && i.done && !i.gatedOut && (rows[i.vin]?.updatedAt ?? 0) > (i.doneAt ?? 0)) {
         changed = true
         return { ...i, done: false, doneAt: undefined, doneBy: undefined, stamped: undefined }
       }
