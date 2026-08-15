@@ -1321,6 +1321,7 @@ function WalkView() {
   const wrongSite = useWrongSiteHint()
   const { loadFromIdb, updateCell } = useTracking()
   const { toggleDone } = useOps()
+  const { blockWith, modal: gateModal } = useNotGatedIn()
   const queues = useSiteQueues()
   const sites = useYard(s => s.sites)
   const currentSite = useYard(s => s.currentSite)
@@ -1409,11 +1410,36 @@ function WalkView() {
     return [...byVin.values()].sort((a, b) => b.time - a.time).slice(0, 8)
   }, [trackingRows, units])
 
+  // A locally-cached unit can still read `status: 'EXPECTED'` after another
+  // device already gated the car in (the `units` store only refreshes via the
+  // cloud, unlike tracking rows which sync instantly through IndexedDB) — that
+  // staleness let this station show the Gate-in confirm button for a car
+  // that's already in the yard, so a second gate-in got recorded on top of the
+  // first. The tracking sheet is the fast-syncing source of truth: if it says
+  // this VIN already gated in and hasn't gone out since, refuse the scan here
+  // instead of trusting the stale local unit, and self-heal the cache.
+  const blockIfAlreadyGated = (u: Unit): boolean => {
+    if (u.status !== 'EXPECTED') return false
+    const row = trackingRows.find(r => r.vin === u.vin)
+    if (!row || !isGatedInStatus(row.cells['Car Status']) || hasGoneOut(row.cells)) return false
+    fetchUnitFallback(u.vin) // correct the stale local cache in the background
+    const gitCell = row.cells['Gate In Time']
+    const at = gitCell ? new Date(parseInt(gitCell)) : null
+    blockWith(u.vin, u.modelName, 'รถคันนี้ Gate-in แล้ว', (
+      <>
+        {at && <>เข้าลาน {at.toLocaleString('th-TH', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' })}<br /></>}
+        {row.cells['Gate In Inspector'] && <>โดย {row.cells['Gate In Inspector']}<br /></>}
+        ไม่สามารถ Gate-in ซ้ำได้ — รถต้อง <b style={{ color: 'var(--brand)' }}>Gate-out</b> ก่อน จึงจะ Gate-in ใหม่ได้
+      </>
+    ))
+    return true
+  }
+
   const onScan = (v: string) => {
     setTrackingVin(null)
     // 1. exact yard unit
     let u = units.find(x => x.vin === v)
-    if (u) { setVin(u.vin); setShowDmg(false); return }
+    if (u) { if (blockIfAlreadyGated(u)) return; setVin(u.vin); setShowDmg(false); return }
     setVin(null)
     // 2. exact tracking row
     const et = trackingRows.find(r => r.vin === v)
@@ -1421,7 +1447,7 @@ function WalkView() {
     // 3. suffix match (≤ 8 chars) — yard units first, then tracking
     if (v.length <= 8) {
       const unitHits = units.filter(x => x.vin.toUpperCase().endsWith(v))
-      if (unitHits.length === 1) { setVin(unitHits[0].vin); setShowDmg(false); return }
+      if (unitHits.length === 1) { if (blockIfAlreadyGated(unitHits[0])) return; setVin(unitHits[0].vin); setShowDmg(false); return }
       if (unitHits.length > 1) { toast('err', `พบ ${unitHits.length} คัน ที่ลงท้าย ${v} — กรอกให้ยาวขึ้น`); return }
       const trackHits = trackingRows.filter(r => r.vin.endsWith(v))
       if (trackHits.length === 1) { setTrackingVin(trackHits[0].vin); return }
@@ -1528,6 +1554,7 @@ function WalkView() {
       )}
 
       <VinInput onScan={onScan} accent="var(--brand)" />
+      {gateModal}
 
       {/* ── Pre Gate-in work queues — same card shape as the Driver's delivery runs:
              name · done/total · เหลือ N, expand to see every VIN and its OK / NG / รอ ── */}
