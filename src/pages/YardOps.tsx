@@ -4131,8 +4131,8 @@ function RelocationView() {
 
 // ── Check view ────────────────────────────────────────────────────────────────
 // ── Update Damage ─────────────────────────────────────────────────────────────
-function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', source = 'update', recentKey = 'damage' }:
-  { accent?: string; stationName?: string; source?: DamageSource; recentKey?: string } = {}) {
+function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', source = 'update', recentKey = 'damage', richCard = false }:
+  { accent?: string; stationName?: string; source?: DamageSource; recentKey?: string; richCard?: boolean } = {}) {
   const units = useSiteUnits()
   const trackingRows = useSiteRows()
   const wrongSite = useWrongSiteHint()
@@ -4185,7 +4185,63 @@ function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', s
       {gateModal}
       {!vin && <RecentPanel station={recentKey} accent={accent} onPick={onScan} />}
 
-      {(unit || trackRow) && vin && (
+      {/* full car card (top-view + VIN/Model/Color/ผู้ตรวจ/เวลา) — same card
+          Gate-in shows, once the unit has synced. Falls through to the compact
+          panel below when only the tracking row has landed so far. */}
+      {richCard && unit && vin ? (
+        <div className="space-y-3 fade-up">
+          <UnitCard unit={unit} accent={accent} />
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[13px] font-semibold flex items-center gap-1.5">
+                <AlertTriangle size={14} style={{ color: accent }} />
+                Damage {damages.length > 0 && <span className="badge" style={{ color: accent, background: accent + '14' }}>{damages.length}</span>}
+              </span>
+              <button onClick={() => setShowAdd(v => !v)}
+                className="btn btn-ghost text-[12px] py-1 px-2.5" style={{ color: accent }}>
+                <Plus size={13} /> add damage
+              </button>
+            </div>
+            {showAdd && (
+              <div className="mb-2">
+                <DamageForm
+                  key={vin}
+                  onSaveAll={dmgs => {
+                    dmgs.forEach(d => addDamage(unit.vin, { ...d, source, station: stationName }))
+                    recordRecent(`${recentKey}:save`, unit.vin, dmgs.length > 1 ? `บันทึก Defect ${dmgs.length} รายการ` : 'บันทึก Defect 1 รายการ')
+                    setShowAdd(false)
+                    toast('ok', dmgs.length > 1 ? `บันทึก Defect ${dmgs.length} รายการ` : 'บันทึก Defect แล้ว')
+                  }}
+                  onCancel={() => setShowAdd(false)}
+                />
+              </div>
+            )}
+            {damages.length > 0 && (
+              <div className="space-y-2">
+                {openDefectsFirst(damages).map(d => (
+                  <DefectCard key={d.id} d={d} right={
+                    <div className="flex items-center gap-1.5">
+                      <DefectStatusSelect d={d} onChange={s => updateRepairStatus(vin, d.id, s)} />
+                      {isAdmin ? (
+                        <button onClick={() => { if (confirm('ลบรายการนี้?')) removeDamage(vin, d.id) }}
+                          className="btn p-1" style={{ color: '#dc2626' }}>
+                          <Trash2 size={13} />
+                        </button>
+                      ) : (
+                        <button onClick={() => toast('err', 'ต้องเป็นแอดมินเท่านั้นถึงจะลบได้')}
+                          title="ต้องเป็นแอดมินเท่านั้นถึงจะลบได้"
+                          className="btn p-1" style={{ color: 'var(--faint)', cursor: 'not-allowed' }}>
+                          <Trash2 size={13} />
+                        </button>
+                      )}
+                    </div>
+                  } />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (unit || trackRow) && vin && (
         <div className="panel overflow-hidden fade-up">
           {/* header */}
           <div className="px-4 py-3 border-b hairline flex items-center gap-2" style={{ background: accent + '0d' }}>
@@ -4768,7 +4824,7 @@ export function YardOps() {
       {role === 'walk'       && <WalkView />}
       {role === 'gateout'    && <GateOutView />}
       {role === 'updatedmg'  && <UpdateDamageView />}
-      {role === 'walkcheck'  && <UpdateDamageView accent="#0d9488" stationName="Walk Around Check" source="walkcheck" recentKey="walkcheck" />}
+      {role === 'walkcheck'  && <UpdateDamageView accent="#0d9488" stationName="Walk Around Check" source="walkcheck" recentKey="walkcheck" richCard />}
       {role === 'driver'     && <DriverView />}
       {role === 'relocation' && <RelocationView />}
       {role === 'pdi'        && <PdiView types={['PDI']} accent="#7c3aed" title="PDI" />}
