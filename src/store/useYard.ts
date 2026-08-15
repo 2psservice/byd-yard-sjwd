@@ -5,7 +5,7 @@ import type {
   AppUser, Block, Damage, DamageInput, GpsPoint, Lang, ParkingPolicy, Site, SlotCandidate, Trailer, Trip, Unit, UserRole, VehicleModel, View,
 } from '../types'
 import { BLOCKS, DEFAULT_POLICIES, MODELS, generateSample, matchModel, paintHex } from '../lib/sampleData'
-import { autoAssign } from '../lib/parkingEngine'
+import { autoAssign, nextFreeSlotInBlock } from '../lib/parkingEngine'
 import { haversineM, makeDemoTrip, mulberry32, slotToLatLng } from '../lib/geo'
 import { IN_YARD_STATUSES } from '../lib/carStatus'
 import { blockKeyOfTag } from '../lib/format'
@@ -342,6 +342,10 @@ function nextBlockId(blocks: Block[]): string {
 const siteKey = (site: string | null) => site ?? '_global'
 const curBlocks = (s: { blocksBySite: Record<string, Block[]>; currentSite: string | null }): Block[] =>
   s.blocksBySite[siteKey(s.currentSite)] ?? []
+
+/** Universal Gate-in staging block — every model auto-parks here first, then
+ *  moves to its real slot later via Re-location. */
+const WCL_STAGING_BLOCK = 'WCL'
 
 // ── yard-plan layout → cloud (debounced: updateBlock fires per drag-frame) ──
 let blockSyncTimer: ReturnType<typeof setTimeout> | null = null
@@ -764,7 +768,23 @@ export const useYard = create<YardState>()(
         set((s) => {
           const u = s.units[vin]
           if (!u) return s
-          const updated: Unit = { ...u, status: u.status === 'EXPECTED' ? 'GATE_IN' : u.status, gateInAt: u.gateInAt ?? Date.now(), gateInBy: s.currentUser, inspected: true, site: s.currentSite ?? u.site }
+          const now = Date.now()
+          // a fresh gate-in auto-parks straight into the universal WCL staging
+          // block — Car Status reads "In Yard" immediately, no separate
+          // "Gate-in" stage and no Driver hand-off; the real final slot comes
+          // later via Re-location. Falls back to the old GATE_IN stage (blank
+          // location) only if WCL isn't configured for this site or is full.
+          // occupancy must be scoped to THIS site — s.units mixes every site's
+          // cars, and another yard's WCL block (same name) would otherwise
+          // look occupied by cars that were never anywhere near this one
+          const siteUnits = Object.values(s.units).filter((x) => !x.site || x.site === s.currentSite)
+          const slot = u.status === 'EXPECTED' ? nextFreeSlotInBlock(WCL_STAGING_BLOCK, curBlocks(s), siteUnits) : null
+          const updated: Unit = {
+            ...u,
+            status: slot ? 'PARKED' : (u.status === 'EXPECTED' ? 'GATE_IN' : u.status),
+            ...(slot ? { block: slot.block, row: slot.row, slot: slot.slot, parkedAt: now } : {}),
+            gateInAt: u.gateInAt ?? now, gateInBy: s.currentUser, inspected: true, site: s.currentSite ?? u.site,
+          }
           db.upsertUnit(updated).catch((e) => console.error('[db] gateIn', e))
           return { units: { ...s.units, [vin]: updated } }
         }),

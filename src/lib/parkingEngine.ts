@@ -172,6 +172,28 @@ export function autoAssign(
   return candidates(unit, blocks, policies, units, groupModelsInRow, laneDepth)[0] ?? null
 }
 
+/** First free slot in ONE SPECIFIC block by name — ignores per-model policy
+ *  (allowedBlocks / exclusiveRow / groupModelsInRow) entirely, unlike
+ *  `candidates`. Used for the universal Gate-in staging block ("WCL"), which
+ *  accepts every model on its way to a real slot via Re-location, so a
+ *  model's normal parking policy must not gate whether it can land there.
+ *  Column-major fill (lane 1 top-to-bottom, then lane 2…), same order as
+ *  `candidates`. Returns null if the block doesn't exist or is full. */
+export function nextFreeSlotInBlock(
+  blockName: string, blocks: Block[], units: Unit[],
+): { block: string; row: number; slot: number } | null {
+  const b = blocks.find((x) => blockTag(x) === blockName)
+  if (!b) return null
+  const occ = buildOccupancy(units)
+  const bk = blockKeyOfTag(blockName)
+  for (let slot = 1; slot <= b.cols; slot++) {
+    for (let row = 1; row <= b.rows; row++) {
+      if (!occ.get(`${bk}#${row}`)?.filled.has(slot)) return { block: blockTag(b), row, slot }
+    }
+  }
+  return null
+}
+
 /** Distinct (block,row) options for the Semi-plan picker, best first, with free count. */
 export function rowOptions(
   unit: Unit,
