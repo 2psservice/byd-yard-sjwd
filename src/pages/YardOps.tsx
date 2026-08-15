@@ -2788,6 +2788,17 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
   // A just-created queue with no cars yet IS shown (it used to vanish, so an
   // operator who had just created it thought the queue never arrived).
   const procQueues = useMemo(() => queues.filter(q => !isPreGateInQueue(q.name) && !isQueueComplete(q) && !isStationWorkComplete(q)), [queues])
+  // scan should resolve against the queue(s) already on screen first — a
+  // handful of VINs, not the whole site's units/tracking rows — so it's
+  // instant for the common case (the car being worked is in this station's
+  // own queue); falls back to a full search only when the scan misses here
+  const queueVins = useMemo(() => {
+    const s = new Set<string>()
+    for (const q of procQueues) for (const it of q.items) if (!it.done) s.add(it.vin)
+    return s
+  }, [procQueues])
+  const queueUnits = useMemo(() => units.filter(u => queueVins.has(u.vin)), [units, queueVins])
+  const queueRows = useMemo(() => trackingRows.filter(r => queueVins.has(r.vin)), [trackingRows, queueVins])
   const selectedQueue = selectedQueueId ? queues.find(q => q.id === selectedQueueId) ?? null : null
   const queueCars = useMemo(() => {
     if (!selectedQueue) return []
@@ -2836,7 +2847,9 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
   const otherDmgs = unit ? unit.damages.filter(d => d.source && d.source !== 'walkaround') : [] // PDI / ช่าง
 
   const onScan = (v: string) => {
-    const res = resolveForUnit(v, units, trackingRows)
+    // fast path: match against this station's own queue(s) first
+    let res = resolveForUnit(v, queueUnits, queueRows)
+    if (res.type === 'none') res = resolveForUnit(v, units, trackingRows) // not in a queue here — full site search
     if (res.type === 'ambiguous') { toast('err', `พบ ${res.count} คัน — พิมพ์ให้ยาวขึ้น`); return }
     if (res.type === 'none') { toast('err', wrongSite(v) ?? `ไม่พบ VIN: ${v}`); return }
     if (res.type === 'notGated') { blockGate(res.vin, res.model); return }
@@ -3097,9 +3110,20 @@ function MechanicView() {
     }),
     [allQueues],
   )
+  // scan should resolve against this station's own assigned queue(s) first —
+  // a handful of VINs, not the whole site — falling back to a full search
+  // only when the scan misses here
+  const repairQueueVins = useMemo(() => {
+    const s = new Set<string>()
+    for (const q of repairQueues) for (const it of q.items) if (!it.done) s.add(it.vin)
+    return s
+  }, [repairQueues])
+  const repairQueueUnits = useMemo(() => units.filter(u => repairQueueVins.has(u.vin)), [units, repairQueueVins])
+  const repairQueueRows = useMemo(() => trackingRows.filter(r => repairQueueVins.has(r.vin)), [trackingRows, repairQueueVins])
 
   const onScan = (v: string) => {
-    const res = resolveForUnit(v, units, trackingRows)
+    let res = resolveForUnit(v, repairQueueUnits, repairQueueRows)
+    if (res.type === 'none') res = resolveForUnit(v, units, trackingRows) // not in a queue here — full site search
     if (res.type === 'ambiguous') { toast('err', `พบ ${res.count} คัน — พิมพ์ให้ยาวขึ้น`); return }
     if (res.type === 'none') { toast('err', wrongSite(v) ?? `ไม่พบ VIN: ${v}`); return }
     if (res.type === 'notGated') { blockGate(res.vin, res.model); return }
