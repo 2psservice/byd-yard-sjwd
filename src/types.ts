@@ -20,6 +20,7 @@ export type View =
   | 'import'
   | 'trailers' // legacy id — kept so a device with a persisted 'trailers' view still lands on Report
   | 'report'
+  | 'report2ps'
   | 'gatein'
   | 'driver'
   | 'yard'

@@ -17,6 +17,7 @@ import { isPhone } from './lib/device'
 import { Dashboard } from './pages/Dashboard'
 import { ImportPage } from './pages/ImportPage'
 import { Report } from './pages/Report'
+import { Report2ps } from './pages/Report2ps'
 import { GateIn } from './pages/GateIn'
 import { Driver } from './pages/Driver'
 import { YardPlan } from './pages/YardPlan'
@@ -349,6 +350,7 @@ export default function App() {
     import: <ImportPage />,
     trailers: <Report />, // legacy view id — devices with a saved 'trailers' view land here
     report: <Report />,
+    report2ps: <Report2ps />,
     gatein: <GateIn />,
     driver: <Driver />,
     yard: <YardPlan />,

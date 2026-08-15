@@ -90,10 +90,16 @@ export function buildWorkRows(row: TrackRow, unit: Unit | undefined, columns: Co
 export interface CarEvent { at: number; by: string; station?: string; text: string; accent?: string }
 
 const DAMAGE_STATION_FALLBACK: Record<string, string> = {
-  walkaround: 'Gate-in', pdi: 'PDI', mechanic: 'ช่าง (Mechanic)', update: 'Update Damage',
+  walkaround: 'Gate-in', pdi: 'PDI', mechanic: 'ช่าง (Mechanic)', update: 'Update Damage', walkcheck: 'Walk Around Check',
   yardDefect: 'Co-Inspection (Yard)', factoryDefect: 'Co-Inspection (Factory)', whaleDefect: 'Co-Inspection (Whale)',
   manual: 'เพิ่มเอง (Manual)',
 }
+/** Which station recorded a damage — the stamped `station` name, else a
+ *  fallback derived from the legacy `source` tag (predates the `station`
+ *  field). Shared by the event log above and any report that lists defects
+ *  per station (e.g. Report 2PS). */
+export const stationLabelOf = (d: Pick<Damage, 'station' | 'source'>) =>
+  d.station || DAMAGE_STATION_FALLBACK[d.source ?? ''] || 'Gate-in'
 
 /** Unified event log — cell edits + damage records + queue station steps,
  *  newest first. `areaLabel` maps a damage area to its display name (zoneLabel). */
@@ -108,7 +114,7 @@ export function buildEventLog(
     log.push({ at: h.at, by: h.by, text: `แก้ไข ${h.field}: ${h.from || '(ว่าง)'} → ${h.to}` })
   }
   for (const d of damages) {
-    const station = d.station || DAMAGE_STATION_FALLBACK[d.source ?? ''] || 'Gate-in'
+    const station = stationLabelOf(d)
     log.push({
       at: d.at, by: d.by, station,
       text: `บันทึก Defect ${areaLabel(d.area)} · ${d.item ?? d.type}${d.severity === 'major' ? ' (Heavy NG)' : ''}`,
