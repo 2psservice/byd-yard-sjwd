@@ -1492,7 +1492,10 @@ function WalkView() {
     if (!trackRow) return
     const now = new Date()
     const d = `${now.getDate().toString().padStart(2, '0')}/${(now.getMonth() + 1).toString().padStart(2, '0')}/${now.getFullYear()}`
-    updateCell(trackRow.vin, 'Car Status', 'Gate-in')
+    // straight to "In Yard" — no separate "Gate-in" stage anymore; gateIn()
+    // (called below) auto-parks the unit at the WCL staging block, so the
+    // car really is in the yard the moment this scan completes
+    updateCell(trackRow.vin, 'Car Status', 'In Yard')
     updateCell(trackRow.vin, 'Gate In (Rayong yard)', d)
     updateCell(trackRow.vin, 'Gate In Inspector', currentUser)
     updateCell(trackRow.vin, 'Gate In Time', String(now.getTime()))
