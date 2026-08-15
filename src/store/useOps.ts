@@ -625,11 +625,18 @@ function reconcileGateOuts() {
   const rows = useTracking.getState().rows
   const gone = new Set<string>()
   const gatedIn = new Set<string>() // no longer Pre Gate-in → has entered the yard
+  // VINs whose CURRENT row is still Pre Gate-in (blank status counts too) — the
+  // other half of the gate-in sync. A queue item marked done from a PRIOR cycle
+  // (e.g. the yard's data was cleared and the same VINs re-imported, landing
+  // back at Pre Gate-in for a fresh arrival) must un-tick, or the board reads
+  // "309/309 เสร็จ" while most of the batch hasn't actually gated in this time.
+  const stillWaiting = new Set<string>()
   const group = new Map<string, string>() // vin → delivery group ('' = none)
   for (const vin in rows) {
     const cs = (rows[vin].cells['Car Status'] || '').trim()
     if (isGoneStatus(cs)) gone.add(vin)
     else if (cs && cs.toLowerCase() !== 'pre gate-in') gatedIn.add(vin)
+    else stillWaiting.add(vin)
     group.set(vin, groupOf(rows[vin].cells))
   }
   const queues = useOps.getState().queues
@@ -670,6 +677,13 @@ function reconcileGateOuts() {
       if (isPreGateIn && gatedIn.has(i.vin) && !i.done) {
         changed = true
         return { ...i, done: true, doneAt: i.doneAt ?? Date.now() }
+      }
+      // reverse direction: the row is back to Pre Gate-in but this item still
+      // reads done from before — un-tick and drop the stale scan record so the
+      // card doesn't claim a Gate-in that hasn't happened this cycle
+      if (isPreGateIn && stillWaiting.has(i.vin) && i.done && !i.gatedOut) {
+        changed = true
+        return { ...i, done: false, doneAt: undefined, doneBy: undefined, stamped: undefined }
       }
       if (ladder && !i.done && !i.manualUndoneAt) {
         const r = rows[i.vin]
