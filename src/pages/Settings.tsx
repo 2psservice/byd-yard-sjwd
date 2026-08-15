@@ -410,6 +410,50 @@ function UserManager() {
   )
 }
 
+/** One-off cleanup: cars still carrying the old "Gate-in" Car Status (from
+ *  before gate-in started auto-parking straight to "In Yard" + WCL) can be
+ *  brought in line here. Self-hides once none are left for this site. */
+function GateInMigrationTool() {
+  const currentSite = useYard((s) => s.currentSite)
+  const toast = useYard((s) => s.toast)
+  const parkUnpositionedAtWcl = useYard((s) => s.parkUnpositionedAtWcl)
+  const rows = useTrackingRows()
+  const [busy, setBusy] = useState(false)
+
+  const staleVins = useMemo(
+    () => rows
+      .filter((r) => (!currentSite || !r.site || r.site === currentSite) && (r.cells['Car Status'] || '').trim() === 'Gate-in')
+      .map((r) => r.vin),
+    [rows, currentSite],
+  )
+
+  if (!staleVins.length) return null
+
+  const run = () => {
+    if (!window.confirm(`เปลี่ยนสถานะรถ ${staleVins.length} คัน จาก "Gate-in" เป็น "In Yard" และจองตำแหน่ง WCL ให้คันที่ยังไม่มีตำแหน่ง — ดำเนินการต่อ?`)) return
+    setBusy(true)
+    useTracking.getState().bulkUpdate(staleVins, 'Car Status', 'In Yard')
+    const parked = parkUnpositionedAtWcl(staleVins)
+    setBusy(false)
+    toast('ok', `เปลี่ยนสถานะแล้ว ${staleVins.length} คัน (จองตำแหน่ง WCL ${parked} คัน)`)
+  }
+
+  return (
+    <div className="panel p-4 mb-4" style={{ borderLeft: '4px solid #f59e0b' }}>
+      <div className="flex items-center gap-2 mb-1">
+        <AlertCircle size={16} style={{ color: '#f59e0b' }} />
+        <span className="font-bold text-[14px]">พบรถสถานะ &quot;Gate-in&quot; ค้างอยู่ {staleVins.length} คัน</span>
+      </div>
+      <div className="text-[12.5px] mb-3" style={{ color: 'var(--muted)' }}>
+        ระบบเปลี่ยนมาใช้สถานะ &quot;In Yard&quot; ทันทีตอน gate-in แล้ว (ไม่มี &quot;Gate-in&quot; ค้างอีกต่อไป) — รถกลุ่มนี้ยังค้างสถานะเดิมจากก่อนหน้านี้ กดปุ่มด้านล่างเพื่อปรับให้ตรงกัน
+      </div>
+      <button className="btn btn-primary" disabled={busy} onClick={run}>
+        เปลี่ยนสถานะเป็น In Yard ทั้งหมด ({staleVins.length} คัน)
+      </button>
+    </div>
+  )
+}
+
 export function Settings() {
   const {
     sites, currentSite, addSite, updateSite, removeSite, setCurrentSite, toast,
@@ -452,6 +496,9 @@ export function Settings() {
         title={<span className="flex items-center gap-2"><SettingsIcon size={20} style={{ color: 'var(--brand)' }} /> ตั้งค่า</span>}
         sub="จัดการ Site งาน และการตั้งค่าระบบ"
       />
+
+      {/* ── legacy "Gate-in" status cleanup ── */}
+      <GateInMigrationTool />
 
       {/* ── User permissions ── */}
       <UserManager />
