@@ -206,7 +206,12 @@ export async function fetchUnitsByVins(vins: string[]): Promise<Unit[]> {
 /** โหลดรถทุกคัน (+ ความเสียหาย) จาก Supabase; กรองตาม site หากระบุ.
  *  Paginated — PostgREST caps a single request at 1,000 rows, so a >1,000-unit
  *  yard silently lost the tail (units past the cap never loaded → their damages
- *  "vanished" after refresh even though they were safely in the cloud). */
+ *  "vanished" after refresh even though they were safely in the cloud).
+ *  Throws (after a couple of retries) instead of returning a partial/empty
+ *  list on error — a swallowed page used to silently drop up to 500 cars
+ *  while the caller still treated the load as "complete", so two devices
+ *  hitting a transient blip on different pages ended up showing different
+ *  yard counts forever. The caller must retry the whole fetch on throw. */
 export async function fetchAllUnits(
   siteId?: string | null,
   /** called with each page THE MOMENT it lands — lets the yard plan paint cars
@@ -216,28 +221,36 @@ export async function fetchAllUnits(
 ): Promise<Unit[]> {
   if (!isConfigured()) return []
   const PAGE = 500
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
   // in-yard only: the units table keeps every car that EVER passed through
   // (20k+ DEPARTED history rows) while the plan needs the ~2k still on site —
   // pulling the history multiplied the load ~10× for cars no screen paints.
   // Departed cars' data stays safely in the cloud; per-VIN lookups still find
   // them (fetchUnitsByVins has no status filter).
-  let head = supabase.from('units').select('vin', { count: 'exact', head: true }).neq('status', 'DEPARTED')
-  if (siteId) head = (head as any).eq('site_id', siteId)
-  const { count, error: cErr } = await head
-  if (cErr) { console.error('[db] fetchAllUnits count', cErr); return [] }
-  const total = count ?? 0
+  let total = 0
+  for (let attempt = 0; ; attempt++) {
+    let head = supabase.from('units').select('vin', { count: 'exact', head: true }).neq('status', 'DEPARTED')
+    if (siteId) head = (head as any).eq('site_id', siteId)
+    const { count, error: cErr } = await head
+    if (!cErr) { total = count ?? 0; break }
+    if (attempt >= 2) { console.error('[db] fetchAllUnits count', cErr); throw cErr }
+    await sleep(400 * (attempt + 1))
+  }
   if (!total) return []
-  const pages = await Promise.all(
-    Array.from({ length: Math.ceil(total / PAGE) }, async (_, p) => {
-      let q = supabase.from('units').select('*, damages(*)').neq('status', 'DEPARTED')
-      if (siteId) q = (q as any).eq('site_id', siteId)
-      const { data, error } = await (q as any).order('vin').range(p * PAGE, p * PAGE + PAGE - 1)
-      if (error) { console.error('[db] fetchAllUnits page', p, error); return [] as Unit[] }
-      const units = ((data ?? []) as DbUnitWithDamages[]).map(rowToUnit)
-      if (units.length) onPage?.(units)
-      return units
-    }),
-  )
+  const fetchPage = async (p: number, attempt = 0): Promise<Unit[]> => {
+    let q = supabase.from('units').select('*, damages(*)').neq('status', 'DEPARTED')
+    if (siteId) q = (q as any).eq('site_id', siteId)
+    const { data, error } = await (q as any).order('vin').range(p * PAGE, p * PAGE + PAGE - 1)
+    if (error) {
+      if (attempt < 2) { await sleep(400 * (attempt + 1)); return fetchPage(p, attempt + 1) }
+      console.error('[db] fetchAllUnits page', p, error)
+      throw error
+    }
+    const units = ((data ?? []) as DbUnitWithDamages[]).map(rowToUnit)
+    if (units.length) onPage?.(units)
+    return units
+  }
+  const pages = await Promise.all(Array.from({ length: Math.ceil(total / PAGE) }, (_, p) => fetchPage(p)))
   return pages.flat()
 }
 

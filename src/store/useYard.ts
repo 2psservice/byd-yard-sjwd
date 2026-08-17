@@ -1308,7 +1308,15 @@ export const useYard = create<YardState>()(
             return { units: merged, trailers: trailers.length ? trailers : s.trailers }
           })
         }
-        } finally { set({ unitsCloudDone: true }) }
+        set({ unitsCloudDone: true })
+        } catch (e) {
+          // a partial/failed fetch must NOT flip unitsCloudDone — that would
+          // show the "ไม่แสดงบนผัง" count as final while this device is
+          // actually still missing a chunk of cars (the cross-device count
+          // mismatch this used to cause). Keep the loading chip up and retry.
+          console.error('[db] loadFromSupabase units', e)
+          setTimeout(() => { if (get().currentSite === siteId) get().loadFromSupabase() }, 3000)
+        }
       },
 
       // Live yard-plan updates: assign / park / gate-in on any device broadcasts
