@@ -3300,7 +3300,7 @@ function GateOutView() {
   // a scanned car that belongs to a DIFFERENT grouping — the popup that stops a
   // driver from dispatching a car with the wrong group
   const [wrongGroup, setWrongGroup] = useState<{ vin: string; group: string } | null>(null)
-  const [done, setDone] = useState<{ vin: string; label: string } | null>(null)
+  const [done, setDone] = useState<{ vin: string; label: string } | { group: number } | null>(null)
 
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
 
@@ -3427,15 +3427,28 @@ function GateOutView() {
           style={{ background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(3px)' }}
           onClick={() => setDone(null)}>
           <div className="panel p-6 w-full max-w-xs text-center fade-up" onClick={e => e.stopPropagation()}>
-            <div className="w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3"
-              style={{ background: 'rgba(100,116,139,0.15)' }}>
-              <LogOut size={28} style={{ color: '#64748b' }} />
-            </div>
-            <div className="text-[20px] font-extrabold mb-1" style={{ color: '#475569' }}>{done.label} สำเร็จ!</div>
-            <div className="vin text-[14px] font-bold mb-5" style={{ color: 'var(--muted)' }}>{done.vin}</div>
+            {'group' in done ? (
+              <>
+                <div className="w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3"
+                  style={{ background: 'rgba(22,163,74,0.15)' }}>
+                  <CheckCircle2 size={28} style={{ color: '#16a34a' }} />
+                </div>
+                <div className="text-[20px] font-extrabold mb-1" style={{ color: '#16a34a' }}>ยืนยัน Gate-out ครบกลุ่มแล้ว!</div>
+                <div className="text-[14px] font-bold mb-5" style={{ color: 'var(--muted)' }}>{done.group} คัน</div>
+              </>
+            ) : (
+              <>
+                <div className="w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3"
+                  style={{ background: 'rgba(100,116,139,0.15)' }}>
+                  <LogOut size={28} style={{ color: '#64748b' }} />
+                </div>
+                <div className="text-[20px] font-extrabold mb-1" style={{ color: '#475569' }}>{done.label} สำเร็จ!</div>
+                <div className="vin text-[14px] font-bold mb-5" style={{ color: 'var(--muted)' }}>{done.vin}</div>
+              </>
+            )}
             <button onClick={() => setDone(null)}
               className="w-full py-3 rounded-2xl text-[15px] font-bold text-white active:scale-95 transition-all"
-              style={{ background: '#64748b' }}>ตกลง</button>
+              style={{ background: 'group' in done ? '#16a34a' : '#64748b' }}>ตกลง</button>
           </div>
         </div>
       )}
@@ -3545,6 +3558,21 @@ function GateOutView() {
                 </div>
               ))}
             </div>
+            {dnCars.length > 0 && dnGone === dnCars.length && (
+              // last-mile safety checkpoint: every car in the Note is confirmed
+              // individually above, but the group itself isn't "done" until the
+              // operator deliberately presses this — a quiet screen full of green
+              // checks is easy to walk away from believing the DN dispatched when
+              // it hasn't; this makes the final confirmation an explicit action.
+              <div className="px-4 py-3 border-t hairline">
+                <button
+                  onClick={() => { setDone({ group: dnCars.length }); setDn(null) }}
+                  className="w-full py-3 rounded-2xl text-[15px] font-bold text-white flex items-center justify-center gap-2 transition-all active:scale-95"
+                  style={{ background: '#16a34a' }}>
+                  <CheckCircle2 size={18} /> ยืนยัน Gate-out ครบกลุ่ม {dnCars.length} คัน
+                </button>
+              </div>
+            )}
             <div className="px-4 py-2.5 border-t hairline text-[10.5px] text-center leading-snug" style={{ color: 'var(--muted)', borderColor: 'var(--line)' }}>
               เดินไปสแกน VIN ที่ตัวรถทีละคัน · รถนอก group นี้จะถูกเตือนทันที · รถจะออกจริงตอน 09:30
             </div>
