@@ -111,6 +111,29 @@ export function PhotoLightbox({ photos, index, onClose }: { photos: string[]; in
 
   useEffect(() => { setZoom(1); setPan({ x: 0, y: 0 }) }, [i])
 
+  // lock background scroll while the viewer is open — on iOS Safari, a swipe
+  // that starts on this full-screen overlay can still bleed through and
+  // rubber-band/scroll the PAGE behind it (a long-standing WebKit quirk that
+  // touch-action: none on the overlay's own elements doesn't fully close),
+  // shifting the page under the user's finger mid-gesture. That shift is a
+  // plausible cause of the viewer reading as closing itself on iPhone.
+  useEffect(() => {
+    const prevOverflow = document.body.style.overflow
+    const prevPos = document.body.style.position
+    const scrollY = window.scrollY
+    document.body.style.overflow = 'hidden'
+    document.body.style.position = 'fixed'
+    document.body.style.top = `-${scrollY}px`
+    document.body.style.width = '100%'
+    return () => {
+      document.body.style.overflow = prevOverflow
+      document.body.style.position = prevPos
+      document.body.style.top = ''
+      document.body.style.width = ''
+      window.scrollTo(0, scrollY)
+    }
+  }, [])
+
   const clamp = (z: number) => Math.max(1, Math.min(4, z))
   const setZoomClamped = (z: number) => { const nz = clamp(z); setZoom(nz); if (nz === 1) setPan({ x: 0, y: 0 }) }
   const zoomIn = () => setZoomClamped(zoom + 0.5)
