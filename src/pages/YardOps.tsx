@@ -266,6 +266,31 @@ async function fetchUnitFallback(vin: string): Promise<boolean> {
   } catch (e) { console.error('[db] fetchUnitFallback', e); return false }
 }
 
+// A saved defect always carries ≥1 photo (the add-Defect form requires one
+// before Save is even enabled) — a damage with NEITHER `photo` NOR `photos`
+// on screen is proof this unit's local copy is the IndexedDB boot-cache stub
+// (photos are stripped before persisting there to keep it small; see
+// useYard's IDB write-through) that hasn't yet been replaced by the real
+// cloud fetch. Devices whose cloud pull is still in flight showed defect
+// cards with no photo at all until something else happened to reload them.
+const hasPhotolessDamage = (u: Unit) => u.damages.some((d) => !d.photo && !d.photos?.length)
+const vinsHealingPhotos = new Set<string>()
+/** Force-refresh one VIN from the cloud even though a local copy already
+ *  exists — fetchUnitFallback() above deliberately no-ops in that case, which
+ *  is right for "missing entirely" but wrong for "present but a photo-less
+ *  stub". Skips a car whose local copy still has an unsynced pending defect
+ *  (useYard.pendingDamages) so this doesn't race and clobber it. */
+async function fetchUnitPhotoHeal(vin: string): Promise<void> {
+  if (!isConfigured() || vinsHealingPhotos.has(vin)) return
+  if (Object.values(useYard.getState().pendingDamages).some((p) => p.vin === vin)) return
+  vinsHealingPhotos.add(vin)
+  try {
+    const [u] = await fetchUnitsByVins([vin])
+    if (u) useYard.setState((s) => ({ units: { ...s.units, [u.vin]: u } }))
+  } catch (e) { console.error('[db] fetchUnitPhotoHeal', e) }
+  finally { vinsHealingPhotos.delete(vin) }
+}
+
 /** Resolve a typed VIN for unit-based roles (Driver / PDI / Mechanic).
  *  Prefers a yard unit (exact → unique suffix); falls back to a tracking row
  *  to tell "not gated-in yet" apart from "unknown VIN". */
@@ -4168,6 +4193,14 @@ function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', s
   const unit = vin ? units.find(u => u.vin === vin) ?? null : null
   const trackRow = vin ? trackingRows.find(r => r.vin === vin) ?? null : null
   const damages = unit?.damages ?? []
+
+  // this scanned car's local copy has a defect with no photo at all — that's
+  // an IndexedDB boot-cache stub racing a cloud fetch that hasn't landed yet,
+  // not a real defect (every saved one has ≥1 photo). Self-heal it directly
+  // instead of waiting on the site-wide load to eventually catch up.
+  useEffect(() => {
+    if (unit && hasPhotolessDamage(unit)) fetchUnitPhotoHeal(unit.vin)
+  }, [unit])
 
   const onScan = (v: string) => {
     let found: string | null = null
