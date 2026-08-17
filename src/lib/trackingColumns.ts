@@ -27,9 +27,10 @@ export const GROUP_LABEL: Record<ColGroup, { th: string; en: string }> = {
   pm: { th: 'PM / อุปกรณ์', en: 'PM / Accessories' },
 }
 
-// car lifecycle status (Pre Gate-in → Gate-in → In Yard → PDI → Ready → Gate-out)
+// car lifecycle status (Pre Gate-in → In Yard → PDI → Ready → Gate-out)
 // + Total loss: a written-off vehicle (insurance total loss) — a terminal state
-export const CAR_STATUS_VALUES = ['Pre Gate-in', 'Gate-in', 'In Yard', 'Moving', 'PDI', 'Ready', 'Preload', 'Pre Gate-out', 'Gate-out', 'Total loss'] as const
+// "Gate-in" retired as a distinct stage — see carStatus.ts's deriveCarStatus
+export const CAR_STATUS_VALUES = ['Pre Gate-in', 'In Yard', 'Moving', 'PDI', 'Ready', 'Preload', 'Pre Gate-out', 'Gate-out', 'Total loss'] as const
 
 // columns shown by default (a focused TOS-style working set)
 const DEFAULT_VISIBLE = new Set([
