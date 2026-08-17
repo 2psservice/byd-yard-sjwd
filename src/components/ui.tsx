@@ -158,7 +158,12 @@ export function PhotoLightbox({ photos, index, onClose }: { photos: string[]; in
     // viewport shifts under a `fixed` overlay, or an edge-swipe reads as a
     // back-navigation, either of which reads as the viewer "เด้งออก" (bouncing
     // closed) while the operator is still trying to look at the photo.
-    <div className="fixed inset-0 z-[300] flex flex-col items-center justify-center select-none"
+    // app-safe: the header/footer below are position:absolute against THIS
+    // fixed container, so padding here shifts their top-4/bottom-6 anchor —
+    // without it, an iPhone's notch/Dynamic Island status bar (time, signal,
+    // battery) sat right on top of the control row, squashing the download
+    // button underneath it until it was barely visible or tappable.
+    <div className="fixed inset-0 z-[300] flex flex-col items-center justify-center select-none app-safe"
       style={{ background: 'rgba(8,15,28,0.94)', touchAction: 'none' }} onClick={onClose}>
       <div className="absolute top-4 left-4 right-4 flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
         {photos.length > 1 && (
@@ -168,7 +173,10 @@ export function PhotoLightbox({ photos, index, onClose }: { photos: string[]; in
           <button onClick={zoomOut} disabled={zoom <= 1} className="w-9 h-9 rounded-full flex items-center justify-center disabled:opacity-40" style={iconBtn} title="ซูมออก"><ZoomOut size={17} /></button>
           <span className="text-[12px] font-bold w-11 text-center tabular" style={{ color: '#fff' }}>{Math.round(zoom * 100)}%</span>
           <button onClick={zoomIn} disabled={zoom >= 4} className="w-9 h-9 rounded-full flex items-center justify-center disabled:opacity-40" style={iconBtn} title="ซูมเข้า"><ZoomIn size={17} /></button>
-          <button onClick={download} className="w-9 h-9 rounded-full flex items-center justify-center" style={iconBtn} title="ดาวน์โหลด"><Download size={16} /></button>
+          {/* larger + a distinct red fill — it used to blend into the row of
+              identical translucent icon buttons and was easy to miss/mistap */}
+          <button onClick={download} className="w-11 h-11 rounded-full flex items-center justify-center"
+            style={{ background: 'var(--st-damage)', color: '#fff' }} title="ดาวน์โหลด"><Download size={19} /></button>
           <button onClick={onClose} className="w-9 h-9 rounded-full flex items-center justify-center" style={iconBtn} title="ปิด"><X size={18} /></button>
         </div>
       </div>
