@@ -5,7 +5,7 @@ import { PageHead, cx } from '../components/ui'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { useActiveQueues, queueProgress, isSequenceQueue, isQueueComplete } from '../store/useOps'
 import type { WorkQueue } from '../store/useOps'
-import { isGateOutStamp, deriveCarStatus } from '../lib/carStatus'
+import { deriveCarStatus, CAR_STATUS_META } from '../lib/carStatus'
 import { rowInSite } from '../lib/siteScope'
 import { MONTH_ABBR, parseLooseDate, dateKey, todayKey, fmtDateTh, gateInDateKey, gateOutDateKey } from '../lib/dayKey'
 import { SeqQueuePicker } from '../components/SeqQueueList'
@@ -25,6 +25,12 @@ interface Group {
   lastUpdated: number
 }
 
+// "Gate-in" is retired as its own status — a car counts as gated-in the moment
+// it's no longer Pre Gate-in, whether it's since progressed to In Yard/Moving/
+// PDI/Ready/Preload/Pre Gate-out or already left. Reading the raw Car Status
+// cell for the literal string "Gate-in" (the old approach) undercounted every
+// lot whose cars had moved past that stage — this partitions every row into
+// exactly one of the three buckets via the derived status instead.
 function buildGroups(rows: TrackRow[]): Group[] {
   const map = new Map<string, TrackRow[]>()
   for (const r of rows) {
@@ -37,20 +43,26 @@ function buildGroups(rows: TrackRow[]): Group[] {
       key,
       rows,
       total: rows.length,
-      preGateIn: rows.filter((r) => !r.cells['Car Status'] || r.cells['Car Status'] === 'Pre Gate-in').length,
-      gateIn:    rows.filter((r) => r.cells['Car Status'] === 'Gate-in').length,
-      gateOut:   rows.filter((r) => r.cells['Car Status'] === 'Gate-out').length,
+      preGateIn: rows.filter((r) => deriveCarStatus(r.cells) === 'Pre Gate-in').length,
+      gateIn:    rows.filter((r) => { const s = deriveCarStatus(r.cells); return s !== 'Pre Gate-in' && s !== 'Gate-out' }).length,
+      gateOut:   rows.filter((r) => deriveCarStatus(r.cells) === 'Gate-out').length,
       lastUpdated: Math.max(...rows.map((r) => r.updatedAt ?? 0)),
     }))
     .sort((a, b) => b.lastUpdated - a.lastUpdated)
 }
 
-const S_STYLE: Record<string, { bg: string; c: string }> = {
-  'Pre Gate-in': { bg: '#fef9c3', c: '#854d0e' },
-  'Gate-in':     { bg: '#dbeafe', c: '#1e40af' },
-  'Gate-out':    { bg: '#dcfce7', c: '#166534' },
+// shares the app-wide status colours (carStatus.ts) instead of a separate
+// palette here, so a car reads the same colour on this board as everywhere else
+const ss = (s: string): { bg: string; c: string } => {
+  const m = CAR_STATUS_META[s]
+  return m ? { bg: m.bg, c: m.color } : { bg: '#fef9c3', c: '#854d0e' }
 }
-const ss = (s: string) => S_STYLE[s] ?? S_STYLE['Pre Gate-in']
+/** 3-bucket ordering for this board's lists: arrived (still on-site, any stage)
+ *  first, departed second, not-yet-arrived last. */
+const statusOrd = (c: Record<string, string>): number => {
+  const s = deriveCarStatus(c)
+  return s === 'Pre Gate-in' ? 2 : s === 'Gate-out' ? 1 : 0
+}
 
 /** The day a work queue belongs to — parsed from its name (the batch's own date),
  *  falling back to when it was created:
@@ -101,7 +113,7 @@ function GroupCard({ group, mode, dateFilter }: { group: Group; mode: 'in' | 'ou
   const pending = mode === 'in' ? group.preGateIn : group.gateIn
 
   const visibleRows = mode === 'out'
-    ? group.rows.filter((r) => r.cells['Car Status'] === 'Gate-in' || r.cells['Car Status'] === 'Gate-out')
+    ? group.rows.filter((r) => deriveCarStatus(r.cells) !== 'Pre Gate-in')
     : group.rows
 
   // ── history mode: compact card — just the day's count + VIN list, no live progress bar ──
@@ -111,8 +123,7 @@ function GroupCard({ group, mode, dateFilter }: { group: Group; mode: 'in' | 'ou
     // show the WHOLE lot (every VIN that must gate in), not just that day's —
     // gated-in first → still-pending → gated-out; that day's rows are dot-marked.
     const todayVins = new Set(rows.map((r) => r.vin))
-    const stOrd = (r: TrackRow) => { const s = r.cells['Car Status'] ?? 'Pre Gate-in'; return s === 'Gate-in' ? 0 : s === 'Pre Gate-in' ? 1 : 2 }
-    const listRows = (mode === 'in' ? group.rows : visibleRows).slice().sort((a, b) => stOrd(a) - stOrd(b))
+    const listRows = (mode === 'in' ? group.rows : visibleRows).slice().sort((a, b) => statusOrd(a.cells) - statusOrd(b.cells))
     return (
       <div className="panel overflow-hidden">
         <button className="w-full p-4 text-left" onClick={() => setOpen((o) => !o)}>
@@ -136,7 +147,7 @@ function GroupCard({ group, mode, dateFilter }: { group: Group; mode: 'in' | 'ou
         {open && (
           <div className="border-t hairline max-h-[360px] overflow-y-auto">
             {listRows.map((r) => {
-              const status = r.cells['Car Status'] || 'Pre Gate-in'
+              const status = deriveCarStatus(r.cells)
               const { bg, c } = ss(status)
               const dateVal = mode === 'in' ? (r.cells['Gate In (Rayong yard)'] || '') : (r.cells['Gate Out time stamp'] || '')
               const today = todayVins.has(r.vin)
@@ -211,12 +222,9 @@ function GroupCard({ group, mode, dateFilter }: { group: Group; mode: 'in' | 'ou
         <div className="border-t hairline max-h-[300px] overflow-y-auto">
           {visibleRows
             .slice()
-            .sort((a, b) => {
-              const ord: Record<string, number> = { 'Gate-in': 0, 'Gate-out': 1, 'Pre Gate-in': 2 }
-              return (ord[a.cells['Car Status'] ?? 'Pre Gate-in'] ?? 2) - (ord[b.cells['Car Status'] ?? 'Pre Gate-in'] ?? 2)
-            })
+            .sort((a, b) => statusOrd(a.cells) - statusOrd(b.cells))
             .map((r) => {
-              const status = r.cells['Car Status'] || 'Pre Gate-in'
+              const status = deriveCarStatus(r.cells)
               const { bg, c } = ss(status)
               const dateVal = mode === 'in'
                 ? (r.cells['Gate In (Rayong yard)'] || '')

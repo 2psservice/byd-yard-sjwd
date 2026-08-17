@@ -317,8 +317,11 @@ interface YardState {
   /** Auto-park every listed VIN into the WCL staging block that doesn't
    *  already have a real block/row/slot — leaves already-positioned units
    *  untouched. Used to backfill legacy "Gate-in" cars onto the same WCL
-   *  placement a fresh gate-in now gets. Returns how many were placed. */
-  parkUnpositionedAtWcl: (vins: string[]) => number
+   *  placement a fresh gate-in now gets. Returns how many were placed.
+   *  @param siteId park against THIS site's WCL block/occupancy instead of
+   *  the currently-selected site — the caller must pre-group vins by site,
+   *  since a car can only be positioned using its own yard's block layout. */
+  parkUnpositionedAtWcl: (vins: string[], siteId?: string) => number
   setPolicy: (model: string, patch: Partial<ParkingPolicy>) => void
   loadPolicies: () => Promise<void>
   // --- yard layout editor ---
@@ -823,12 +826,13 @@ export const useYard = create<YardState>()(
           return { units: { ...s.units, [vin]: updated } }
         }),
 
-      parkUnpositionedAtWcl: (vins) => {
+      parkUnpositionedAtWcl: (vins, siteId) => {
         const s = get()
-        const blocks = curBlocks(s)
+        const site = siteId ?? s.currentSite
+        const blocks = curBlocks({ blocksBySite: s.blocksBySite, currentSite: site })
         // simulated occupancy grows as each car is placed, so two cars in the
         // same batch land on DIFFERENT WCL slots instead of both claiming slot 1
-        let occ = Object.values(s.units).filter((x) => !x.site || x.site === s.currentSite)
+        let occ = Object.values(s.units).filter((x) => !x.site || x.site === site)
         const now = Date.now()
         const changed: Unit[] = []
         for (const vin of vins) {

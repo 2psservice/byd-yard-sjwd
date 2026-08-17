@@ -19,7 +19,7 @@ const VIN_RE = /^[A-HJ-NPR-Z0-9]{17}$/i
 
 // readable status for yard-unit-only VINs (mirrors tracking "Car Status" wording)
 const UNIT_STATUS_LABEL: Record<string, string> = {
-  EXPECTED: 'Pre Gate-in', GATE_IN: 'Gate-in', ASSIGNED: 'Moving',
+  EXPECTED: 'Pre Gate-in', GATE_IN: 'In Yard', ASSIGNED: 'Moving',
   PARKED: 'Parked', LOADED: 'Loaded', DEPARTED: 'Gate-out',
 }
 
@@ -412,40 +412,52 @@ function UserManager() {
 
 /** One-off cleanup: cars still carrying the old "Gate-in" Car Status (from
  *  before gate-in started auto-parking straight to "In Yard" + WCL) can be
- *  brought in line here. Self-hides once none are left for this site. */
+ *  brought in line here — across EVERY site in one click, not just the one
+ *  currently selected ("Gate-in" is retired system-wide, not per-yard).
+ *  Self-hides once none are left anywhere. */
 function GateInMigrationTool() {
-  const currentSite = useYard((s) => s.currentSite)
   const toast = useYard((s) => s.toast)
   const parkUnpositionedAtWcl = useYard((s) => s.parkUnpositionedAtWcl)
   const rows = useTrackingRows()
   const [busy, setBusy] = useState(false)
 
-  const staleVins = useMemo(
-    () => rows
-      .filter((r) => (!currentSite || !r.site || r.site === currentSite) && (r.cells['Car Status'] || '').trim() === 'Gate-in')
-      .map((r) => r.vin),
-    [rows, currentSite],
-  )
+  // grouped by site — a car can only be positioned into ITS OWN yard's WCL
+  // block/occupancy, never another site's, so each group parks separately
+  const bySite = useMemo(() => {
+    const m = new Map<string, string[]>()
+    for (const r of rows) {
+      if ((r.cells['Car Status'] || '').trim() !== 'Gate-in') continue
+      const key = r.site ?? ''
+      const arr = m.get(key) ?? []
+      arr.push(r.vin); m.set(key, arr)
+    }
+    return m
+  }, [rows])
+  const staleVins = useMemo(() => [...bySite.values()].flat(), [bySite])
 
   if (!staleVins.length) return null
 
   const run = () => {
-    if (!window.confirm(`เปลี่ยนสถานะรถ ${staleVins.length} คัน จาก "Gate-in" เป็น "In Yard" และจองตำแหน่ง WCL ให้คันที่ยังไม่มีตำแหน่ง — ดำเนินการต่อ?`)) return
+    if (!window.confirm(`เปลี่ยนสถานะรถ ${staleVins.length} คัน (ทุกไซต์) จาก "Gate-in" เป็น "In Yard" และจองตำแหน่ง WCL ให้คันที่ยังไม่มีตำแหน่ง — ดำเนินการต่อ?`)) return
     setBusy(true)
     useTracking.getState().bulkUpdate(staleVins, 'Car Status', 'In Yard')
-    const parked = parkUnpositionedAtWcl(staleVins)
+    let parked = 0
+    for (const [siteId, vins] of bySite) {
+      if (!siteId) continue // no site tag at all — status fixed above, but no yard to safely auto-position it into
+      parked += parkUnpositionedAtWcl(vins, siteId)
+    }
     setBusy(false)
-    toast('ok', `เปลี่ยนสถานะแล้ว ${staleVins.length} คัน (จองตำแหน่ง WCL ${parked} คัน)`)
+    toast('ok', `เปลี่ยนสถานะแล้ว ${staleVins.length} คัน ทุกไซต์ (จองตำแหน่ง WCL ${parked} คัน)`)
   }
 
   return (
     <div className="panel p-4 mb-4" style={{ borderLeft: '4px solid #f59e0b' }}>
       <div className="flex items-center gap-2 mb-1">
         <AlertCircle size={16} style={{ color: '#f59e0b' }} />
-        <span className="font-bold text-[14px]">พบรถสถานะ &quot;Gate-in&quot; ค้างอยู่ {staleVins.length} คัน</span>
+        <span className="font-bold text-[14px]">พบรถสถานะ &quot;Gate-in&quot; ค้างอยู่ {staleVins.length} คัน ทุกไซต์</span>
       </div>
       <div className="text-[12.5px] mb-3" style={{ color: 'var(--muted)' }}>
-        ระบบเปลี่ยนมาใช้สถานะ &quot;In Yard&quot; ทันทีตอน gate-in แล้ว (ไม่มี &quot;Gate-in&quot; ค้างอีกต่อไป) — รถกลุ่มนี้ยังค้างสถานะเดิมจากก่อนหน้านี้ กดปุ่มด้านล่างเพื่อปรับให้ตรงกัน
+        ระบบเปลี่ยนมาใช้สถานะ &quot;In Yard&quot; ทันทีตอน gate-in แล้ว (ไม่มี &quot;Gate-in&quot; ค้างอีกต่อไป) — รถกลุ่มนี้ยังค้างสถานะเดิมจากก่อนหน้านี้ กดปุ่มด้านล่างเพื่อปรับให้ตรงกันทั้งระบบในคลิกเดียว แต่ละไซต์จะได้ตำแหน่ง WCL ของไซต์ตัวเองเท่านั้น
       </div>
       <button className="btn btn-primary" disabled={busy} onClick={run}>
         เปลี่ยนสถานะเป็น In Yard ทั้งหมด ({staleVins.length} คัน)

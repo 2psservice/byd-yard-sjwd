@@ -1,11 +1,16 @@
 /**
  * Car Status lifecycle — shared by the Units grid and the Dashboard so both read
  * the same status off an imported tracking row.
- *   Pre Gate-in → Gate-in → In Yard → (Moving / PDI) → Ready → Gate-out
+ *   Pre Gate-in → In Yard → (Moving / PDI) → Ready → Gate-out
+ *
+ * "Gate-in" retired as a distinct stage — gate-in now parks a car straight
+ * into "In Yard" (+ WCL), so there is no separate in-between status anymore.
+ * deriveCarStatus() below still aliases any row that still carries the old
+ * literal value to "In Yard", so legacy/un-migrated data reads correctly
+ * everywhere without needing every row rewritten first.
  */
 export const CAR_STATUS_META: Record<string, { color: string; bg: string }> = {
   'Pre Gate-in':  { color: '#5b4a00', bg: '#facc15' }, // เหลือง
-  'Gate-in':      { color: '#fff',    bg: '#0ea5e9' }, // ฟ้า
   'In Yard':      { color: '#fff',    bg: '#15803d' }, // เขียวเข้ม
   'Moving':       { color: '#fff',    bg: '#2563eb' }, // น้ำเงิน
   'PDI':          { color: '#fff',    bg: '#f97316' }, // ส้ม
@@ -16,11 +21,11 @@ export const CAR_STATUS_META: Record<string, { color: string; bg: string }> = {
   'Total loss':   { color: '#fff',    bg: '#991b1b' }, // แดงเข้ม — รถ write-off (total loss)
 }
 
-export const CAR_STATUS_ORDER = ['Pre Gate-in', 'Gate-in', 'In Yard', 'Moving', 'PDI', 'Ready', 'Preload', 'Pre Gate-out', 'Gate-out', 'Total loss'] as const
+export const CAR_STATUS_ORDER = ['Pre Gate-in', 'In Yard', 'Moving', 'PDI', 'Ready', 'Preload', 'Pre Gate-out', 'Gate-out', 'Total loss'] as const
 /** statuses that count as physically in the yard.
  *  Total loss = a written-off car that is STILL physically parked in the yard
  *  (not sellable, but present) → counts as in-yard, never treated as gated-out. */
-export const IN_YARD_STATUSES = new Set(['Gate-in', 'In Yard', 'Moving', 'PDI', 'Ready', 'Total loss'])
+export const IN_YARD_STATUSES = new Set(['In Yard', 'Moving', 'PDI', 'Ready', 'Total loss'])
 /** statuses that count as parked in a block */
 export const PARKED_STATUSES = new Set(['In Yard', 'PDI', 'Ready', 'Total loss'])
 
@@ -131,6 +136,10 @@ export function deriveCarStatus(c: Record<string, string>): string {
   // Pre Gate-out: ops-scan gate-out parks the car in preload until the daily 09:30
   // flush, when it becomes a real Gate-out (unless it was confirmed Preload first).
   if (explicit === 'Pre Gate-out') return pastGateOutFlush(c) ? 'Gate-out' : 'Pre Gate-out'
+  // "Gate-in" is retired — alias any row still carrying the old literal value
+  // (pre-migration data, a stale import) to "In Yard" so it reads correctly
+  // everywhere without needing every row rewritten first.
+  if (explicit === 'Gate-in') return 'In Yard'
   if (explicit && isStationWorkStatus(explicit)) return 'In Yard'
   if (explicit) return explicit
   // gate-out signal — the Tracking Status sheet uses "Gate Out time stamp",
@@ -142,7 +151,7 @@ export function deriveCarStatus(c: Record<string, string>): string {
   const storage = (c['storage Yard'] || '').trim()
   const loc = c['Location yard'] || ''
   if (storage || /yard/i.test(loc)) return 'In Yard'
-  return 'Gate-in'
+  return 'In Yard' // was 'Gate-in' — the stage is retired, this fallback reads as In Yard too
 }
 
 /** true if the row should count as "damaged / needs review" */
