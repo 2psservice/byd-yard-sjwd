@@ -4340,6 +4340,49 @@ function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', s
   )
 }
 
+// ── CheckView's own layout helpers — hoisted to module scope ────────────────
+// These used to be declared INSIDE CheckView's render body. A component
+// defined inside another component's render is a NEW function identity every
+// render, so React treats it as a different element TYPE each time and
+// unmounts + remounts the whole subtree under it — including any DefectCard
+// with an open PhotoLightbox. CheckView calls the un-selectored `useYard()`
+// (subscribes to the ENTIRE store), so literally ANY store change anywhere
+// in the app — an unrelated toast, a background sync, anything — re-rendered
+// it and silently closed a photo the operator was just looking at, with zero
+// interaction from them ("คลิ๊กที่รูปเพื่อดูรูป รูปแสดงขึ้นมา สักพักแล้ว
+// รูปปิดไปเอง ... ไม่ได้แตะอะไรเลย").
+function CheckSec({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div className="px-4 py-2 text-[10.5px] font-bold uppercase tracking-wider"
+        style={{ background: 'var(--chip)', color: 'var(--muted)' }}>{title}</div>
+      {children}
+    </div>
+  )
+}
+function CheckRow({ label, value, accent }: { label: string; value: string; accent?: string }) {
+  return (
+    <div className="flex items-center px-4 py-2.5 gap-3 border-b hairline">
+      <span className="text-[11.5px] shrink-0" style={{ color: 'var(--muted)', width: 96 }}>{label}</span>
+      <span className="text-[12.5px] font-semibold flex-1 text-right" style={accent ? { color: accent } : {}}>{value}</span>
+    </div>
+  )
+}
+// one line in a station's driver/inspector timeline
+function CheckHistLine({ icon, label, who, time, color }: { icon: React.ReactNode; label: string; who: string; time?: number; color: string }) {
+  const timeLabel = time != null
+    ? (() => { const d = new Date(time); return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}` })()
+    : null
+  return (
+    <div className="flex items-center gap-2 text-[11.5px]">
+      <span style={{ color }} className="shrink-0 flex">{icon}</span>
+      <span className="shrink-0" style={{ color: 'var(--muted)', width: 82 }}>{label}</span>
+      <span className="font-semibold flex-1 truncate">{who}</span>
+      {timeLabel && <span className="text-[10.5px] shrink-0" style={{ color: 'var(--faint)' }}>{timeLabel}</span>}
+    </div>
+  )
+}
+
 function CheckView() {
   const trackingRows = useSiteRows()
   const units = useSiteUnits()
@@ -4408,30 +4451,6 @@ function CheckView() {
     const d = new Date(ts)
     return `${d.getDate().toString().padStart(2,'0')}/${(d.getMonth()+1).toString().padStart(2,'0')} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`
   }
-
-  // Section helper
-  const Sec = ({ title, children }: { title: string; children: React.ReactNode }) => (
-    <div>
-      <div className="px-4 py-2 text-[10.5px] font-bold uppercase tracking-wider"
-        style={{ background: 'var(--chip)', color: 'var(--muted)' }}>{title}</div>
-      {children}
-    </div>
-  )
-  const Row = ({ label, value, accent }: { label: string; value: string; accent?: string }) => (
-    <div className="flex items-center px-4 py-2.5 gap-3 border-b hairline">
-      <span className="text-[11.5px] shrink-0" style={{ color: 'var(--muted)', width: 96 }}>{label}</span>
-      <span className="text-[12.5px] font-semibold flex-1 text-right" style={accent ? { color: accent } : {}}>{value}</span>
-    </div>
-  )
-  // one line in a station's driver/inspector timeline
-  const HistLine = ({ icon, label, who, time, color }: { icon: React.ReactNode; label: string; who: string; time?: number; color: string }) => (
-    <div className="flex items-center gap-2 text-[11.5px]">
-      <span style={{ color }} className="shrink-0 flex">{icon}</span>
-      <span className="shrink-0" style={{ color: 'var(--muted)', width: 82 }}>{label}</span>
-      <span className="font-semibold flex-1 truncate">{who}</span>
-      {time != null && <span className="text-[10.5px] shrink-0" style={{ color: 'var(--faint)' }}>{fmt(time)}</span>}
-    </div>
-  )
 
   return (
     <div className="space-y-4">
@@ -4585,21 +4604,21 @@ function CheckView() {
           </div>
 
           {/* ── Identity ── */}
-          <Sec title="ข้อมูลรถ">
-            <Row label="Model"       value={model} />
-            {row?.cells['company']   && <Row label="Company"  value={row.cells['company']} />}
-            {(unit?.color || row?.cells['Color']) && <Row label="Color" value={unit?.color ?? row?.cells['Color'] ?? '—'} />}
-            {row?.cells['Lot transfer'] && <Row label="Lot" value={row.cells['Lot transfer']} />}
-            {row?.cells['moving date']  && <Row label="Moving Date" value={row.cells['moving date']} />}
+          <CheckSec title="ข้อมูลรถ">
+            <CheckRow label="Model"       value={model} />
+            {row?.cells['company']   && <CheckRow label="Company"  value={row.cells['company']} />}
+            {(unit?.color || row?.cells['Color']) && <CheckRow label="Color" value={unit?.color ?? row?.cells['Color'] ?? '—'} />}
+            {row?.cells['Lot transfer'] && <CheckRow label="Lot" value={row.cells['Lot transfer']} />}
+            {row?.cells['moving date']  && <CheckRow label="Moving Date" value={row.cells['moving date']} />}
             {/* always shown — the gate uses this screen to CHECK whether the car
                 has an allocation yet, so an empty date must read "—", not vanish */}
-            {row && <Row label="Allocation Date" value={row.cells['Allocation Date']?.trim() || '—'} />}
-            {row?.cells['Grouping  Number'] && <Row label="Group No." value={row.cells['Grouping  Number']} />}
-          </Sec>
+            {row && <CheckRow label="Allocation Date" value={row.cells['Allocation Date']?.trim() || '—'} />}
+            {row?.cells['Grouping  Number'] && <CheckRow label="Group No." value={row.cells['Grouping  Number']} />}
+          </CheckSec>
 
           {/* ── Route ── */}
           {(row?.cells['From'] || row?.cells['To']) && (
-            <Sec title="เส้นทาง">
+            <CheckSec title="เส้นทาง">
               <div className="flex items-center gap-2 mx-4 my-2.5 rounded-2xl px-3.5 py-2.5"
                 style={{ background: 'rgba(37,99,235,0.07)', border: '1px solid rgba(37,99,235,0.14)' }}>
                 <MapPin size={13} style={{ color: '#2563eb', flexShrink: 0 }} />
@@ -4607,16 +4626,16 @@ function CheckView() {
                 <ArrowRight size={13} style={{ color: 'var(--muted)', flexShrink: 0 }} />
                 <span className="text-[12.5px] font-bold flex-1 truncate" style={{ color: '#1d4ed8' }}>{row?.cells['To'] ?? '—'}</span>
               </div>
-            </Sec>
+            </CheckSec>
           )}
 
           {/* ── Gate-in / Location ── */}
-          <Sec title="Gate-in / ตำแหน่ง">
-            {row?.cells['Gate In (Rayong yard)'] && <Row label="Gate In Date" value={row.cells['Gate In (Rayong yard)']} />}
-            {row?.cells['Gate In Inspector']      && <Row label="ผู้ตรวจรับ"  value={row.cells['Gate In Inspector']} />}
-            {row?.cells['Gate Out time stamp']     && <Row label="Gate Out"    value={row.cells['Gate Out time stamp']} />}
+          <CheckSec title="Gate-in / ตำแหน่ง">
+            {row?.cells['Gate In (Rayong yard)'] && <CheckRow label="Gate In Date" value={row.cells['Gate In (Rayong yard)']} />}
+            {row?.cells['Gate In Inspector']      && <CheckRow label="ผู้ตรวจรับ"  value={row.cells['Gate In Inspector']} />}
+            {row?.cells['Gate Out time stamp']     && <CheckRow label="Gate Out"    value={row.cells['Gate Out time stamp']} />}
             {(unit?.block || row?.cells['Location yard'] || row?.cells['storage Yard']) && (
-              <Row label="Location" value={yardLocFull(unit) || row?.cells['Location yard'] || row?.cells['storage Yard'] || '—'} />
+              <CheckRow label="Location" value={yardLocFull(unit) || row?.cells['Location yard'] || row?.cells['storage Yard'] || '—'} />
             )}
             {unit?.lastPos && (
               <div className="flex items-center px-4 py-2.5 gap-3 border-b hairline">
@@ -4627,14 +4646,14 @@ function CheckView() {
                 </div>
               </div>
             )}
-          </Sec>
+          </CheckSec>
 
           {/* ── Status / Damage ── */}
-          <Sec title="สถานะ / ความเสียหาย">
-            {row?.cells['Final Status'] && <Row label="Final Status" value={row.cells['Final Status']} />}
-            {row?.cells['Status']       && <Row label="Status (Excel)" value={row.cells['Status']} />}
-            {row?.cells['PIC (PDI)']    && <Row label="PIC (PDI)" value={row.cells['PIC (PDI)']} />}
-            <Row label="Damage" value={damaged ? 'NG — มี Defect' : 'OK — ปกติ'} accent={damaged ? '#dc2626' : '#16a34a'} />
+          <CheckSec title="สถานะ / ความเสียหาย">
+            {row?.cells['Final Status'] && <CheckRow label="Final Status" value={row.cells['Final Status']} />}
+            {row?.cells['Status']       && <CheckRow label="Status (Excel)" value={row.cells['Status']} />}
+            {row?.cells['PIC (PDI)']    && <CheckRow label="PIC (PDI)" value={row.cells['PIC (PDI)']} />}
+            <CheckRow label="Damage" value={damaged ? 'NG — มี Defect' : 'OK — ปกติ'} accent={damaged ? '#dc2626' : '#16a34a'} />
             {/* same DefectCard as Gate-in: bilingual labels, photo strip with
                 full-screen lightbox, and a read-only repair-status badge */}
             {unit && unit.damages.length > 0 && (
@@ -4649,11 +4668,11 @@ function CheckView() {
                 ))}
               </div>
             )}
-          </Sec>
+          </CheckSec>
 
           {/* ── Station work + driver history (per station) ── */}
           {vinQueues.length > 0 && (
-            <Sec title="งานสถานี · ประวัติคนขับ">
+            <CheckSec title="งานสถานี · ประวัติคนขับ">
               {vinQueues.map(({ q, item }) => item && (
                 <div key={q.id} className="px-4 py-3 border-b hairline">
                   <div className="flex items-center gap-2 mb-1.5">
@@ -4668,9 +4687,9 @@ function CheckView() {
                     </span>
                   </div>
                   <div className="space-y-1">
-                    {item.deliveredBy && <HistLine icon={<Car size={13} />} label="ส่งเข้าสถานี" who={item.deliveredBy} time={item.deliveredAt} color="var(--st-yard)" />}
-                    {item.checkedBy && <HistLine icon={<ShieldCheck size={13} />} label={`ตรวจ · ${item.result ?? ''}`} who={item.checkedBy} time={item.checkedAt} color="#7c3aed" />}
-                    {item.returnedBy && <HistLine icon={<Car size={13} />} label="นำกลับไปจอด" who={item.returnedBy} time={item.returnedAt} color="var(--st-yard)" />}
+                    {item.deliveredBy && <CheckHistLine icon={<Car size={13} />} label="ส่งเข้าสถานี" who={item.deliveredBy} time={item.deliveredAt} color="var(--st-yard)" />}
+                    {item.checkedBy && <CheckHistLine icon={<ShieldCheck size={13} />} label={`ตรวจ · ${item.result ?? ''}`} who={item.checkedBy} time={item.checkedAt} color="#7c3aed" />}
+                    {item.returnedBy && <CheckHistLine icon={<Car size={13} />} label="นำกลับไปจอด" who={item.returnedBy} time={item.returnedAt} color="var(--st-yard)" />}
                     {!item.deliveredBy && !item.checkedBy && !item.returnedBy && (
                       <div className="text-[11.5px]" style={{ color: 'var(--muted)' }}>
                         {item.done ? <>✓ เสร็จแล้ว{item.doneBy ? ` · ${item.doneBy}` : ''}</> : '⏳ ยังไม่เริ่ม'}
@@ -4679,12 +4698,12 @@ function CheckView() {
                   </div>
                 </div>
               ))}
-            </Sec>
+            </CheckSec>
           )}
 
           {/* ── Driver Trips ── */}
           {vinTrips.length > 0 && (
-            <Sec title={`ประวัติการขับ (${vinTrips.length} ครั้ง)`}>
+            <CheckSec title={`ประวัติการขับ (${vinTrips.length} ครั้ง)`}>
               {vinTrips.slice(0, 5).map((trip, i) => (
                 <div key={trip.id} className="flex items-start gap-3 px-4 py-2.5 border-b hairline">
                   <div className="w-5 h-5 rounded-full flex items-center justify-center shrink-0 text-[10px] font-bold text-white mt-0.5"
@@ -4706,7 +4725,7 @@ function CheckView() {
                   </div>
                 </div>
               ))}
-            </Sec>
+            </CheckSec>
           )}
 
         </div>
