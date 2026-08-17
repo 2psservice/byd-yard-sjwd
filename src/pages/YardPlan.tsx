@@ -384,25 +384,36 @@ export function YardPlan() {
                 <MapPin size={13} /> {siteName}
               </span>
             )}
-            {totals.cap > 0 && (
-              <span className="badge tabular" title="รถที่จอดในผัง / ความจุรวมทุกบล็อก" style={{ color: '#15803d', background: 'rgba(22,163,74,0.1)', fontSize: 13, padding: '3px 10px' }}>
-                Total {totals.filled.toLocaleString()} / {totals.cap.toLocaleString()} · {totals.pct}%
-              </span>
-            )}
-            {/* while the cloud units are still landing, the unplaced math is a
-                transient countdown (216 → 90 → 0) that reads as "ต้องรอโหลด" —
-                show a quiet loading chip instead, and reveal the REAL number
-                once, complete, when the fetch finishes */}
+            {/* while the cloud units are still landing, BOTH this and the
+                "ไม่แสดงบนผัง" badge below are a transient, shifting count
+                (2,173 → 2,175 → …) that reads as wrong / disagreeing with
+                other "in yard" numbers on screen — show one quiet loading
+                chip instead, and reveal the real, final numbers together
+                once the fetch finishes. This is "จอดแล้ว" (cars placed into
+                a slot on THIS drawn plan) — a different, smaller number than
+                "In Yard" elsewhere in the app on purpose: a car freshly
+                gated-in but not yet WCL-parked, or one whose block/slot
+                doesn't match any block this plan draws, is in the yard but
+                not counted here (see "ไม่แสดงบนผัง" for those). */}
             {!unitsCloudDone ? (
               <span className="badge tabular" style={{ color: 'var(--muted)', background: 'var(--chip)', fontSize: 13, padding: '3px 10px' }}>
                 <span className="animate-pulse">กำลังโหลดรถ…</span>
               </span>
-            ) : (inYardStats.unplaced + inYardStats.offMap) > 0 && (
-              <button onClick={() => setShowUnplaced(true)}
-                title={`In Yard ${inYardStats.inYard.toLocaleString()} คัน — บนผัง ${totals.filled.toLocaleString()} · ไม่แสดงบนผัง ${(inYardStats.unplaced + inYardStats.offMap).toLocaleString()} (บล็อกไม่ตรงผัง ${inYardStats.offMap.toLocaleString()} · ยังไม่จัดช่อง ${inYardStats.unplaced.toLocaleString()}) · คลิกเพื่อดู/คัดลอกรายการ VIN`}
-                className="badge tabular" style={{ color: '#a16207', background: 'rgba(234,179,8,0.16)', fontSize: 13, padding: '3px 10px', cursor: 'pointer' }}>
-                ไม่แสดงบนผัง {(inYardStats.unplaced + inYardStats.offMap).toLocaleString()} ›
-              </button>
+            ) : (
+              <>
+                {totals.cap > 0 && (
+                  <span className="badge tabular" title="จำนวนรถที่จอดอยู่ในช่องบนผังนี้ / ความจุรวมทุกบล็อก (ไม่ใช่ยอดรถ In Yard ทั้งหมด — รถที่ยังไม่มีตำแหน่งในผังจะไม่นับที่นี่ ดูได้ที่ 'ไม่แสดงบนผัง')" style={{ color: '#15803d', background: 'rgba(22,163,74,0.1)', fontSize: 13, padding: '3px 10px' }}>
+                    จอดแล้ว {totals.filled.toLocaleString()} / {totals.cap.toLocaleString()} · {totals.pct}%
+                  </span>
+                )}
+                {(inYardStats.unplaced + inYardStats.offMap) > 0 && (
+                  <button onClick={() => setShowUnplaced(true)}
+                    title={`In Yard ${inYardStats.inYard.toLocaleString()} คัน — บนผัง ${totals.filled.toLocaleString()} · ไม่แสดงบนผัง ${(inYardStats.unplaced + inYardStats.offMap).toLocaleString()} (บล็อกไม่ตรงผัง ${inYardStats.offMap.toLocaleString()} · ยังไม่จัดช่อง ${inYardStats.unplaced.toLocaleString()}) · คลิกเพื่อดู/คัดลอกรายการ VIN`}
+                    className="badge tabular" style={{ color: '#a16207', background: 'rgba(234,179,8,0.16)', fontSize: 13, padding: '3px 10px', cursor: 'pointer' }}>
+                    ไม่แสดงบนผัง {(inYardStats.unplaced + inYardStats.offMap).toLocaleString()} ›
+                  </button>
+                )}
+              </>
             )}
           </span>
         }
