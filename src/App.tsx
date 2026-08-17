@@ -11,7 +11,6 @@ import { useOps } from './store/useOps'
 import { startSyncBus, stopSyncBus } from './lib/syncBus'
 import { deriveCarStatus } from './lib/carStatus'
 import { matchModel } from './lib/sampleData'
-import { blockTag, blockKeyOfTag } from './lib/format'
 import { isPhone } from './lib/device'
 import { Dashboard } from './pages/Dashboard'
 import { ImportPage } from './pages/ImportPage'
@@ -202,81 +201,6 @@ export default function App() {
         }
         if (fixes.length) useYard.getState().importUnits(fixes)
       }
-
-      // ── "ใช้ตำแหน่งจากหน้างานล่าสุด": the FIELD SCAN is ground truth ──
-      // Every lane-CHANGING write logs a Location history line, but the writers
-      // differ in authority: a driver parking a car / a re-location scan is the
-      // person physically standing at the lane — while an Update-Location FILE
-      // (often exported hours earlier) and auto-park are educated guesses. The
-      // old rule ("newest edit of any kind wins") let a stale file import drag
-      // a car back to where the sheet thought it was, undoing the scan.
-      // New rule: the LATEST SCAN entry names the lane; other writers only
-      // count when the car has never been scanned. Legacy scan entries predate
-      // the src tag — every non-scan writer stamps ' · ' into `by`
-      // (' · นำเข้าไฟล์', ' · จัดจอดอัตโนมัติ', 'ระบบ · …'), so a plain-name
-      // entry is a scan. Same-lane row differences are normal compaction and
-      // stay. Scoped to the ACTIVE yard (updateLocations re-tags site to it).
-      const y = useYard.getState()
-      const us = y.units
-      const site = y.currentSite
-      if (!site) return
-      const blocks = y.blocksBySite[site] ?? y.blocksBySite['_global'] ?? []
-      const occ = new Map<string, Set<number>>() // "blockKey|slot" → used rows
-      const laneOf = (tag: string, slot: number) => `${blockKeyOfTag(tag)}|${slot}`
-      for (const vin in us) {
-        const u = us[vin]
-        if (!u.block || !u.row || !u.slot) continue
-        if (u.site && u.site !== site) continue
-        const k = laneOf(u.block, u.slot)
-        if (!occ.has(k)) occ.set(k, new Set())
-        occ.get(k)!.add(u.row)
-      }
-      const heals: { vin: string; block: string; row: number; slot: number }[] = []
-      for (const vin in us) {
-        const u = us[vin]
-        if (u.site && u.site !== site) continue
-        const positioned = !!(u.block && u.row && u.slot)
-        // ── restore, not just heal: a car whose SLOT WAS WIPED (unit stuck at
-        // EXPECTED with no block/row/slot — the 13-14/8 units incidents left
-        // ~150 such cars) still carries its field-scan history on the tracking
-        // row. The old rule skipped every un-positioned car, so they sat in
-        // "ไม่แสดงบนผัง" forever with their true lane on record. Place them
-        // back from history — but only cars the sheet still counts as in the
-        // yard, and never a unit deliberately marked DEPARTED.
-        if (!positioned) {
-          if (u.status === 'DEPARTED') continue
-          const r0 = rows[vin]
-          if (!r0 || deriveCarStatus(r0.cells) === 'Gate-out') continue
-        }
-        const hist = [...(rows[vin]?.history ?? [])].reverse()
-        const isScan = (e: { field: string; src?: string; by?: string }) =>
-          e.field === 'Location' && (e.src === 'scan' || !(e.by ?? '').includes('·'))
-        const last = hist.find(isScan) ?? hist.find(e => e.field === 'Location')
-        const m = last ? /^([A-Z]+)(\d{2})(\d{2})$/.exec((last.to ?? '').trim()) : null
-        if (!m) continue
-        const tag = m[1], slot = parseInt(m[2]), wantRow = parseInt(m[3])
-        if (positioned && laneOf(u.block!, u.slot!) === laneOf(tag, slot)) continue // row shifts = compaction
-        const blk = blocks.find(b => blockKeyOfTag(blockTag(b)) === blockKeyOfTag(tag))
-        if (blocks.length && !blk) continue // history names a block this yard doesn't draw
-        const depth = blk?.rows ?? 8
-        if (slot < 1 || (blk && slot > blk.cols)) continue
-        const k = laneOf(tag, slot)
-        if (!occ.has(k)) occ.set(k, new Set())
-        const used = occ.get(k)!
-        let row = 0
-        if (wantRow >= 1 && wantRow <= depth && !used.has(wantRow)) row = wantRow
-        else for (let i = 1; i <= depth; i++) if (!used.has(i)) { row = i; break }
-        if (!row) continue // lane full — leave it for a human
-        used.add(row)
-        if (positioned) occ.get(laneOf(u.block!, u.slot!))?.delete(u.row!) // old cell frees up
-        heals.push({ vin, block: tag, row, slot })
-      }
-      // heal the position but DON'T log an audit line for it — this is the
-      // system quietly re-syncing to the car's own last field scan, not a new
-      // move. Ops requested this explicitly: "ประวัติการย้าย" / "บันทึกโดย"
-      // must only ever show a real ops-scan entry, so staff can always tell
-      // WHO actually last recorded a car's position, never "ระบบ".
-      if (heals.length) y.updateLocations(heals)
     }
     const t = setTimeout(sweep, 9000) // let the boot loads settle first
     const iv = setInterval(sweep, 60_000)
