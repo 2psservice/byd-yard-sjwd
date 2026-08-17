@@ -7,7 +7,7 @@ import {
 import { useYard, useUnits, useBlocks } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { yardLocFull } from '../lib/groupingImport'
-import { isConfigured } from '../lib/db'
+import { isConfigured, fetchUnitsByVins } from '../lib/db'
 import { deriveCarStatus, IN_YARD_STATUSES, CAR_STATUS_META } from '../lib/carStatus'
 import { rowInSite } from '../lib/siteScope'
 import { blockTag, blockKeyOfTag } from '../lib/format'
@@ -797,6 +797,30 @@ function FindCarPanel({ units, siteName, onClose }: { units: Unit[]; siteName: s
 
   const { found, notFound, asked } = useMemo(() => matchVins(text, scoped), [text, scoped])
   const findRows = useMemo(() => toFindListRows(found, (vin) => unitByVin.get(vin), siteName), [found, unitByVin, siteName])
+
+  // "บางเครื่องหารถเจอแต่ไม่พบตำแหน่ง อีกเครื่องพบ" — the tracking sheet
+  // (matchVins' source) syncs instantly via IndexedDB on every device, but a
+  // car's yard POSITION lives only in the cloud-fetched `units` store, which
+  // can lag behind on any given device. Hurry just the VINs actually being
+  // searched here — a small, targeted fetch, not a full site-wide reload —
+  // so every device converges on the same location instead of some reading
+  // "ไม่พบตำแหน่ง" purely because their local cache hasn't caught up yet.
+  useEffect(() => {
+    if (!isConfigured()) return
+    const missing = found.filter((r) => { const u = unitByVin.get(r.vin); return !u || !u.block || !u.slot }).map((r) => r.vin)
+    if (!missing.length) return
+    let cancelled = false
+    fetchUnitsByVins(missing).then((fetched) => {
+      if (cancelled || !fetched.length) return
+      useYard.setState((s) => {
+        const units = { ...s.units }
+        for (const u of fetched) units[u.vin] = u
+        return { units }
+      })
+    }).catch((e) => console.error('[findcar] fetchUnitsByVins', e))
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [found])
 
   const today = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' })
   const doPdf = () => { if (findRows.length) printFindList(findRows, today) }
