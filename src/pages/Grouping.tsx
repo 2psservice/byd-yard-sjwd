@@ -57,7 +57,7 @@ export function Grouping() {
   const [rows, setRows] = useState<GroupPrintRow[] | null>(null)
   const [meta, setMeta] = useState<GroupPrintMeta | null>(null)
   const [seqName, setSeqName] = useState('') // queue name = the uploaded sheet title
-  const [stats, setStats] = useState<{ found: number; notFound: number; placed: number; assigned: number } | null>(null)
+  const [stats, setStats] = useState<{ found: number; notFound: number; placed: number; assigned: number; cleared: number } | null>(null)
   const [shortRead, setShortRead] = useState<
     { got: number; want: number; noGrouping: number; sheet: string; others: { sheet: string; vins: number }[] } | null>(null)
   const [busy, setBusy] = useState(false)
@@ -116,6 +116,26 @@ export function Grouping() {
       let assigned = 0
       for (const [g, vins] of byGroup) { bulkUpdate(vins, 'Grouping  Number', g); assigned += vins.length }
 
+      // this file is the LATEST truth for every group it lists — a car this site
+      // currently has tagged into one of those groups, but that the file no
+      // longer lists there (dropped from the run / group cancelled / re-grouped
+      // onto another DN), must lose the stale tag too. Left alone it would keep
+      // showing in a group it already left, with a dealer destination that's no
+      // longer real either — and no queue would ever drop it on its own.
+      const clearVins: string[] = []
+      for (const [g, nowIn] of byGroup) {
+        const keep = new Set(nowIn)
+        for (const r of trackingRows) {
+          if (r.site !== currentSite) continue
+          if ((r.cells['Grouping  Number'] ?? '').trim() !== g) continue
+          if (!keep.has(r.vin)) clearVins.push(r.vin)
+        }
+      }
+      if (clearVins.length) {
+        bulkUpdate(clearVins, 'Grouping  Number', '')
+        bulkUpdate(clearVins, 'Dealer Location', '')
+      }
+
       // the Excel's Delivery Location is the LATEST dealer for these cars —
       // stamp it onto the tracking rows so Unit List, IR, DN and ใบหารถ all
       // read this file's value from now on ('Dealer Location' is the cell
@@ -140,7 +160,7 @@ export function Grouping() {
       // queue name = the sheet title, else a constructed one
       setSeqName(res.title.trim() || `${m.siteLabel} - Grouping to Dealer ( ${m.totalUnits} Units / ${m.groupCount} Group) Date ${m.date}`)
       setRows(printRows)
-      setStats({ found, notFound, placed, assigned })
+      setStats({ found, notFound, placed, assigned, cleared: clearVins.length })
       // the sheet's own title states how many units it carries — if fewer rows
       // were read, say so loudly instead of quietly building a short queue
       const short = res.titleUnits > 0 && printRows.length < res.titleUnits
@@ -149,7 +169,8 @@ export function Grouping() {
             sheet: res.sheetName, others: res.sheetVinCounts.filter((x) => x.sheet !== res.sheetName && x.vins > 0) }
         : null)
       if (short) toast('err', `อ่านได้ ${printRows.length} คัน แต่หัวไฟล์ระบุ ${res.titleUnits} คัน — ดูรายละเอียดด้านล่าง`)
-      else toast('ok', `นำเข้า ${printRows.length} คัน · ${order.length} group · ใส่เลข grouping ${assigned} คัน`)
+      else toast('ok', `นำเข้า ${printRows.length} คัน · ${order.length} group · ใส่เลข grouping ${assigned} คัน`
+        + (clearVins.length ? ` · ล้างเลข grouping เดิม ${clearVins.length} คัน (หลุดจากกลุ่มในไฟล์นี้)` : ''))
     } catch (err) {
       console.error('[grouping] import', err)
       toast('err', (err as Error)?.message ?? 'อ่านไฟล์ไม่สำเร็จ')
@@ -432,6 +453,12 @@ export function Grouping() {
           <span className="badge" style={{ background: 'rgba(22,163,74,0.1)', color: '#16a34a' }}><CheckCircle2 size={12} /> ใส่เลข grouping {stats.assigned} คัน</span>
           <span className="badge" style={{ background: 'rgba(37,99,235,0.08)', color: 'var(--brand)' }}><MapPin size={12} /> มีตำแหน่งในลาน {stats.placed} คัน</span>
           {stats.notFound > 0 && <span className="badge" style={{ background: 'rgba(217,119,6,0.1)', color: '#d97706' }}><AlertTriangle size={12} /> ไม่พบในระบบ {stats.notFound} คัน</span>}
+          {stats.cleared > 0 && (
+            <span className="badge" style={{ background: 'rgba(220,38,38,0.08)', color: '#dc2626' }}
+              title="คันที่เคยอยู่ในกลุ่มเหล่านี้ แต่ไฟล์ล่าสุดไม่มีชื่อแล้ว — ล้างเลข grouping + dealer location ให้อัตโนมัติ">
+              <X size={12} /> ล้าง grouping เดิม {stats.cleared} คัน (หลุดจากกลุ่ม)
+            </span>
+          )}
         </div>
       )}
 
