@@ -12,7 +12,6 @@ import { startSyncBus, stopSyncBus } from './lib/syncBus'
 import { deriveCarStatus } from './lib/carStatus'
 import { matchModel } from './lib/sampleData'
 import { blockTag, blockKeyOfTag } from './lib/format'
-import { yardLocFull } from './lib/groupingImport'
 import { isPhone } from './lib/device'
 import { Dashboard } from './pages/Dashboard'
 import { ImportPage } from './pages/ImportPage'
@@ -272,16 +271,12 @@ export default function App() {
         if (positioned) occ.get(laneOf(u.block!, u.slot!))?.delete(u.row!) // old cell frees up
         heals.push({ vin, block: tag, row, slot })
       }
-      if (heals.length) {
-        y.updateLocations(heals)
-        const ah = useTracking.getState().appendHistory
-        for (const h of heals) {
-          ah(h.vin, {
-            at: Date.now(), by: 'ระบบ · ใช้ตำแหน่งจากหน้างานล่าสุด', field: 'Location',
-            from: yardLocFull(us[h.vin]), to: yardLocFull({ block: h.block, slot: h.slot, row: h.row }),
-          })
-        }
-      }
+      // heal the position but DON'T log an audit line for it — this is the
+      // system quietly re-syncing to the car's own last field scan, not a new
+      // move. Ops requested this explicitly: "ประวัติการย้าย" / "บันทึกโดย"
+      // must only ever show a real ops-scan entry, so staff can always tell
+      // WHO actually last recorded a car's position, never "ระบบ".
+      if (heals.length) y.updateLocations(heals)
     }
     const t = setTimeout(sweep, 9000) // let the boot loads settle first
     const iv = setInterval(sweep, 60_000)
