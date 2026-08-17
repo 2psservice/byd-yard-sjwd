@@ -325,7 +325,7 @@ export function Dashboard() {
 
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3 mb-4">
         <Stat label={t('inYard')} value={<Num n={s.inYard} />} accent="var(--brand)" icon={<Car size={17} />}
-          sub={`${t('total')} ${s.total}`} image="/side.png" imageVariant="side"
+          image="/side.png" imageVariant="side"
           onClick={kpiClick(t('inYard'), 'var(--brand)', u => ['GATE_IN','ASSIGNED','PARKED'].includes(u.status), 'inYard')} />
         <Stat label={t('expected')} value={<Num n={s.expected} />} accent="var(--st-pending)" icon={<Hourglass size={17} />}
           sub={lang === 'th' ? 'ยังไม่เข้าลาน' : 'not arrived'} image="/car-top.png" imageVariant="top"
