@@ -43,6 +43,10 @@ interface TrackingState {
   importing: boolean
   lastImport: { inYard: number; total: number; gatedOut: number; at: number } | null
   lastSync: number // epoch ms of the last successful cloud sync (0 = never → full pull)
+  /** true only while the tracking-rows Realtime channel is actually
+   *  SUBSCRIBED — see useYard's unitsRealtimeConnected for why this matters
+   *  (the header's "Connected" pill used to be a hardcoded label). */
+  realtimeConnected: boolean
 
   loadFromIdb: () => Promise<void>
   syncCloud: () => Promise<void>
@@ -139,6 +143,7 @@ export const useTracking = create<TrackingState>()(
       importing: false,
       lastImport: null,
       lastSync: 0,
+      realtimeConnected: false,
 
       loadFromIdb: async () => {
         if (get().loaded) return
@@ -305,12 +310,14 @@ export const useTracking = create<TrackingState>()(
           // catch up on rows changed while the socket was down
           .subscribe((status) => {
             if (status === 'SUBSCRIBED') {
+              set({ realtimeConnected: true })
               if (!trackingHadDrop) return
               trackingHadDrop = false
               get().syncCloud().catch(() => {})
               return
             }
             if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+              set({ realtimeConnected: false })
               trackingHadDrop = true
               if (trackingChannel) { supabase.removeChannel(trackingChannel); trackingChannel = null }
               setTimeout(() => {
@@ -322,6 +329,7 @@ export const useTracking = create<TrackingState>()(
 
       unsubscribeRealtime: () => {
         if (trackingChannel) { supabase.removeChannel(trackingChannel); trackingChannel = null }
+        set({ realtimeConnected: false })
       },
 
       importFile: async (file) => {

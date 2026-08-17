@@ -20,6 +20,7 @@ import { BlockPopup } from '../components/BlockPopup'
 import { ViewLegend } from '../components/ViewLegend'
 import { PageHead } from '../components/ui'
 import { usePlanBg, renderPlanFile, pdfPageCount, detectBlocks } from '../lib/planBg'
+import { useYardCapacityMap } from '../lib/yardCapacity'
 import { buildModelPalette, resolveSlotColor, YARD_VIEW_OPTIONS, type YardViewMode } from '../lib/yardView'
 import type { Block, Unit } from '../types'
 
@@ -128,6 +129,11 @@ export function YardPlan() {
   const { autoParkAll, addBlock, updateBlock, removeBlock, toast } = useYard()
   const t = makeT(lang)
   const siteName = sites.find((x) => x.id === currentSite)?.name
+  // the yard's REAL parking capacity (admin-set in Report → รายงานประจำวัน),
+  // not the sum of every drawn block's rows×cols — that grid total (41,640
+  // for this yard) is a planning figure, not how many cars actually fit
+  const yardCapMap = useYardCapacityMap()
+  const yardCap = currentSite ? yardCapMap[currentSite] ?? 0 : 0
 
   const [edit, setEdit] = useState(false)
   const [selId, setSelId] = useState<string | null>(null)
@@ -384,37 +390,41 @@ export function YardPlan() {
                 <MapPin size={13} /> {siteName}
               </span>
             )}
-            {/* while the cloud units are still landing, BOTH this and the
-                "ไม่แสดงบนผัง" badge below are a transient, shifting count
-                (2,173 → 2,175 → …) that reads as wrong / disagreeing with
-                other "in yard" numbers on screen — show one quiet loading
-                chip instead, and reveal the real, final numbers together
-                once the fetch finishes. This is "จอดแล้ว" (cars placed into
-                a slot on THIS drawn plan) — a different, smaller number than
-                "In Yard" elsewhere in the app on purpose: a car freshly
-                gated-in but not yet WCL-parked, or one whose block/slot
-                doesn't match any block this plan draws, is in the yard but
-                not counted here (see "ไม่แสดงบนผัง" for those). */}
-            {!unitsCloudDone ? (
-              <span className="badge tabular" style={{ color: 'var(--muted)', background: 'var(--chip)', fontSize: 13, padding: '3px 10px' }}>
-                <span className="animate-pulse">กำลังโหลดรถ…</span>
-              </span>
-            ) : (
-              <>
-                {totals.cap > 0 && (
-                  <span className="badge tabular" title="จำนวนรถที่จอดอยู่ในช่องบนผังนี้ / ความจุรวมทุกบล็อก (ไม่ใช่ยอดรถ In Yard ทั้งหมด — รถที่ยังไม่มีตำแหน่งในผังจะไม่นับที่นี่ ดูได้ที่ 'ไม่แสดงบนผัง')" style={{ color: '#15803d', background: 'rgba(22,163,74,0.1)', fontSize: 13, padding: '3px 10px' }}>
-                    จอดแล้ว {totals.filled.toLocaleString()} / {totals.cap.toLocaleString()} · {totals.pct}%
-                  </span>
-                )}
-                {(inYardStats.unplaced + inYardStats.offMap) > 0 && (
-                  <button onClick={() => setShowUnplaced(true)}
-                    title={`In Yard ${inYardStats.inYard.toLocaleString()} คัน — บนผัง ${totals.filled.toLocaleString()} · ไม่แสดงบนผัง ${(inYardStats.unplaced + inYardStats.offMap).toLocaleString()} (บล็อกไม่ตรงผัง ${inYardStats.offMap.toLocaleString()} · ยังไม่จัดช่อง ${inYardStats.unplaced.toLocaleString()}) · คลิกเพื่อดู/คัดลอกรายการ VIN`}
-                    className="badge tabular" style={{ color: '#a16207', background: 'rgba(234,179,8,0.16)', fontSize: 13, padding: '3px 10px', cursor: 'pointer' }}>
-                    ไม่แสดงบนผัง {(inYardStats.unplaced + inYardStats.offMap).toLocaleString()} ›
-                  </button>
-                )}
-              </>
-            )}
+            {/* while the cloud units are still landing this is a transient,
+                shifting count that reads as disagreeing with the other "In
+                Yard" numbers on screen (Dashboard / header pill) — show one
+                quiet loading chip instead, and reveal the real, final number
+                once the fetch finishes. ONE merged badge, not two: "In Yard"
+                here now matches Dashboard/the header pill exactly (same
+                tracking-row formula) — /{yardCap} is the yard's REAL
+                capacity (Report → Max Cap.), not the drawn blocks' grid total
+                — and "ยังไม่มีตำแหน่ง" folds in every car that isn't sitting
+                on a tile this plan draws, whatever the reason. */}
+            {(() => {
+              const unplacedTotal = inYardStats.unplaced + inYardStats.offMap
+              if (!unitsCloudDone) return (
+                <span className="badge tabular" style={{ color: 'var(--muted)', background: 'var(--chip)', fontSize: 13, padding: '3px 10px' }}>
+                  <span className="animate-pulse">กำลังโหลดรถ…</span>
+                </span>
+              )
+              const title = `In Yard ${inYardStats.inYard.toLocaleString()} คัน${yardCap ? ` / ความจุยาร์ด ${yardCap.toLocaleString()}` : ' (ยังไม่ได้กรอกความจุยาร์ด — ตั้งค่าที่ Report → รายงานประจำวัน)'} — บนผัง ${totals.filled.toLocaleString()} · ยังไม่มีตำแหน่ง ${unplacedTotal.toLocaleString()} (บล็อกไม่ตรงผัง ${inYardStats.offMap.toLocaleString()} · ยังไม่จัดช่อง ${inYardStats.unplaced.toLocaleString()})${unplacedTotal ? ' · คลิกเพื่อดู/คัดลอกรายการ VIN' : ''}`
+              const body = (
+                <>
+                  In Yard {inYardStats.inYard.toLocaleString()}{yardCap ? ` / ${yardCap.toLocaleString()}` : ''}
+                  {unplacedTotal > 0 && <> · ยังไม่มีตำแหน่ง {unplacedTotal.toLocaleString()} ›</>}
+                </>
+              )
+              return unplacedTotal > 0 ? (
+                <button onClick={() => setShowUnplaced(true)} title={title}
+                  className="badge tabular" style={{ color: '#a16207', background: 'rgba(234,179,8,0.16)', fontSize: 13, padding: '3px 10px', cursor: 'pointer' }}>
+                  {body}
+                </button>
+              ) : (
+                <span className="badge tabular" title={title} style={{ color: '#15803d', background: 'rgba(22,163,74,0.1)', fontSize: 13, padding: '3px 10px' }}>
+                  {body}
+                </span>
+              )
+            })()}
           </span>
         }
         sub={edit ? 'โหมดแก้ไขผัง · ลากเพื่อย้าย · ลากมุมขวาล่างเพื่อปรับขนาด · Alt+คลิก เปิดหน้าต่างช่องจอด' : 'คลิกบล็อกเพื่อเปิดหน้าต่างดูช่องจอด (เปิดได้หลายอัน)'}

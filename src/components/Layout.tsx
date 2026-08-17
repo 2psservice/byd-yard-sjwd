@@ -5,7 +5,7 @@ import {
 import { createPortal } from 'react-dom'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useYard } from '../store/useYard'
-import { useTrackingRows } from '../store/useTracking'
+import { useTrackingRows, useTracking } from '../store/useTracking'
 import { deriveCarStatus, IN_YARD_STATUSES } from '../lib/carStatus'
 import { rowInSite } from '../lib/siteScope'
 import { makeT } from '../i18n'
@@ -115,9 +115,15 @@ function UserMenu({ onGoSettings }: { onGoSettings: () => void }) {
 }
 
 export function Layout({ children }: { children: ReactNode }) {
-  const { lang, view, setView, planMode, setPlanMode, setLang, currentUser, sites, currentSite, openSiteModal } = useYard()
+  const { lang, view, setView, planMode, setPlanMode, setLang, currentUser, sites, currentSite, openSiteModal, unitsRealtimeConnected } = useYard()
   const siteName = sites.find((s) => s.id === currentSite)?.name ?? null
   const trackingRows = useTrackingRows()
+  const trackingRealtimeConnected = useTracking((s) => s.realtimeConnected)
+  // an honest signal, not a decoration — this used to be a hardcoded "●
+  // Connected" label with no relation to the actual websocket, so a device
+  // whose socket silently died (flaky yard wifi) kept showing "Connected"
+  // forever while its data quietly drifted out of sync with other devices.
+  const realtimeConnected = unitsRealtimeConnected && trackingRealtimeConnected
   const t = makeT(lang)
   const [mobileNav, setMobileNav] = useState(false)
   const [palette, setPalette] = useState(false)
@@ -220,8 +226,10 @@ export function Layout({ children }: { children: ReactNode }) {
               <ChevronDown size={13} style={{ opacity: 0.6 }} className="shrink-0" />
             </button>
             {/* the footer carries the same indicator, so this one goes first */}
-            <div className="hidden xl:flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1 rounded-md" style={{ color: 'var(--st-yard)', background: '#e7f6ec' }}>
-              <span className="live">●</span> Connected
+            <div className="hidden xl:flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1 rounded-md"
+              style={realtimeConnected ? { color: 'var(--st-yard)', background: '#e7f6ec' } : { color: '#a16207', background: 'rgba(234,179,8,0.14)' }}
+              title={realtimeConnected ? undefined : 'การเชื่อมต่อสด (Realtime) ขาดหาย — ข้อมูลอาจไม่อัปเดตทันที กำลังลองเชื่อมต่อใหม่'}>
+              <span className={realtimeConnected ? 'live' : 'animate-pulse'}>●</span> {realtimeConnected ? 'Connected' : 'กำลังเชื่อมต่อ…'}
             </div>
             <div className="hidden lg:flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1 rounded-md" style={{ color: 'var(--muted)', background: 'var(--chip)' }}>
               <Plug size={12} /> {inYard.toLocaleString()} In Yard
@@ -252,7 +260,10 @@ export function Layout({ children }: { children: ReactNode }) {
 
         {/* bottom status bar (TOS chrome) */}
         <footer className="flex items-center gap-4 px-4 h-7 border-t hairline shrink-0 text-[11.5px]" style={{ background: 'var(--glass)', backdropFilter: 'blur(22px) saturate(180%)', WebkitBackdropFilter: 'blur(22px) saturate(180%)', color: 'var(--muted)' }}>
-          <span className="flex items-center gap-1.5" style={{ color: 'var(--st-yard)' }}><span className="live">●</span> Connected</span>
+          <span className="flex items-center gap-1.5" style={{ color: realtimeConnected ? 'var(--st-yard)' : '#a16207' }}
+            title={realtimeConnected ? undefined : 'การเชื่อมต่อสด (Realtime) ขาดหาย — ข้อมูลอาจไม่อัปเดตทันที กำลังลองเชื่อมต่อใหม่'}>
+            <span className={realtimeConnected ? 'live' : 'animate-pulse'}>●</span> {realtimeConnected ? 'Connected' : 'กำลังเชื่อมต่อ…'}
+          </span>
           <span>SJWD Yard Control</span>
           <span className="hidden sm:flex items-center gap-1" style={{ color: siteName ? 'var(--brand)' : 'var(--faint)' }}>
             <MapPin size={11} /> {siteName ?? 'ยังไม่เลือก Site'}

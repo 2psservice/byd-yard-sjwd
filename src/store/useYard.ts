@@ -339,6 +339,13 @@ interface YardState {
   /** true once the cloud's units for the active site have fully landed —
    *  the Yard Plan shows its "ไม่แสดงบนผัง" number only when it's FINAL */
   unitsCloudDone: boolean
+  /** true only while the units Realtime channel is actually SUBSCRIBED — the
+   *  header's "Connected" pill used to be a hardcoded label with no relation
+   *  to the real websocket, so a device whose socket silently died (flaky
+   *  yard wifi) kept showing "Connected" forever with no cue to refresh,
+   *  while its yard-plan positions quietly drifted out of sync with other
+   *  devices. */
+  unitsRealtimeConnected: boolean
   subscribeRealtime: () => void
   unsubscribeRealtime: () => void
   // --- co-inspection defects ---
@@ -1281,6 +1288,7 @@ export const useYard = create<YardState>()(
         }),
 
       unitsCloudDone: false,
+      unitsRealtimeConnected: false,
 
       // ── boot cache: the yard plan's cars, straight from IndexedDB ─────────
       // Fills only VINs the store doesn't hold yet (an in-memory copy — a
@@ -1511,6 +1519,7 @@ export const useYard = create<YardState>()(
           // relocation missed while the socket was down
           .subscribe((status) => {
             if (status === 'SUBSCRIBED') {
+              set({ unitsRealtimeConnected: true })
               if (!unitsHadDrop) return
               unitsHadDrop = false
               const sid = get().currentSite
@@ -1526,6 +1535,7 @@ export const useYard = create<YardState>()(
               return
             }
             if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+              set({ unitsRealtimeConnected: false })
               unitsHadDrop = true
               if (unitsChannel) { supabase.removeChannel(unitsChannel); unitsChannel = null }
               setTimeout(() => {
@@ -1539,6 +1549,7 @@ export const useYard = create<YardState>()(
       unsubscribeRealtime: () => {
         if (unitsChannel) { supabase.removeChannel(unitsChannel); unitsChannel = null; unitTs.clear() }
         if (damageRefetchTimer) { clearTimeout(damageRefetchTimer); damageRefetchTimer = null } // don't refetch after logout/site switch
+        set({ unitsRealtimeConnected: false })
       },
 
       // Defect-Yard / Defect-Factory rows → Damage records on each VIN's unit.
