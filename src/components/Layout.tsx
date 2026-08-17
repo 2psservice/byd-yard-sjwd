@@ -4,8 +4,10 @@ import {
 } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { useYard, useUnits } from '../store/useYard'
+import { useYard } from '../store/useYard'
 import { useTrackingRows } from '../store/useTracking'
+import { deriveCarStatus, IN_YARD_STATUSES } from '../lib/carStatus'
+import { rowInSite } from '../lib/siteScope'
 import { makeT } from '../i18n'
 import type { View } from '../types'
 import { Segmented, cx } from './ui'
@@ -115,14 +117,18 @@ function UserMenu({ onGoSettings }: { onGoSettings: () => void }) {
 export function Layout({ children }: { children: ReactNode }) {
   const { lang, view, setView, planMode, setPlanMode, setLang, currentUser, sites, currentSite, openSiteModal } = useYard()
   const siteName = sites.find((s) => s.id === currentSite)?.name ?? null
-  const units = useUnits()
+  const trackingRows = useTrackingRows()
   const t = makeT(lang)
   const [mobileNav, setMobileNav] = useState(false)
   const [palette, setPalette] = useState(false)
   const [railHover, setRailHover] = useState(false)
   const RAIL = 64
   const FULL = 244
-  const inYard = units.filter((u) => (!currentSite || u.site === currentSite) && ['GATE_IN', 'ASSIGNED', 'PARKED'].includes(u.status)).length
+  // the tracking sheet (Car Status) is ground truth for "in yard" everywhere
+  // in the app — Dashboard's KPI computes it this exact same way. This used
+  // to read the `units` store instead (a different, slower-syncing dataset),
+  // which disagreed with Dashboard's number and confused staff.
+  const inYard = trackingRows.filter((r) => rowInSite(r, currentSite, sites) && IN_YARD_STATUSES.has(deriveCarStatus(r.cells))).length
   const today = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
 
   useEffect(() => {
