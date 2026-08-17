@@ -90,6 +90,14 @@ export function byYardLocation(a: string, b: string): number {
   return la < lb ? -1 : la > lb ? 1 : na - nb
 }
 
+/** Tracking-row cell that snapshots a car's last known yard slot (yardLocCode
+ *  format, e.g. "N25") the moment it gate-outs. markDeparted / markDepartedMany
+ *  clear the LIVE unit's block/row/slot immediately — the yard needs the slot
+ *  free for the next car — so any Grouping / find-car sheet built after that
+ *  would otherwise show "ไม่พบ" for a car that has simply already left. This
+ *  cell is the fallback that keeps a reprinted sheet showing where it stood. */
+export const LAST_LOCATION_KEY = 'Last Yard Location'
+
 const norm = (s: unknown) => String(s ?? '').trim().toLowerCase().replace(/[\s._\-#]/g, '')
 // real VINs never contain I, O or Q (ISO 3779) — rejects placeholder codes
 const isVin = (s: string) => /^[A-Z0-9]{11,20}$/.test(s) && !/[IOQ]/.test(s)

@@ -4,7 +4,7 @@ import { useYard, useUnits } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { useOps, type WorkQueue } from '../store/useOps'
 import { PageHead } from '../components/ui'
-import { parseGroupingWorkbook, siteGroupingConfig, yardLocCode } from '../lib/groupingImport'
+import { parseGroupingWorkbook, siteGroupingConfig, yardLocCode, LAST_LOCATION_KEY } from '../lib/groupingImport'
 import { printGrouping, printFindCar, exportGroupingXlsx, exportFindCarXlsx, type GroupPrintRow, type GroupPrintMeta } from '../lib/groupingPrint'
 import { printIr, printDn, printIrPaper } from '../lib/dnir'
 import type { TrackRow } from '../lib/excelTracking'
@@ -94,7 +94,10 @@ export function Grouping() {
         const u = unitByVin.get(r.vin)
         const inSystem = trackVins.has(r.vin) || !!u
         inSystem ? found++ : notFound++
-        const loc = yardLocCode(u)
+        // a car that already gate-out'd before this import has no live block/slot
+        // (markDeparted cleared it) — fall back to the last-known snapshot so it
+        // still shows a location instead of "ไม่พบ"
+        const loc = yardLocCode(u) || String(rowByVin.get(r.vin)?.cells[LAST_LOCATION_KEY] ?? '')
         if (loc) placed++
         return {
           no: i + 1, vin: r.vin, modelName: r.modelName, model: r.model, color: r.color,
@@ -204,7 +207,9 @@ export function Grouping() {
         color: String(r?.cells['Color'] ?? ''),
         deliveryLocation: i.dest || String(r?.cells['Dealer Location'] ?? ''),
         grouping: i.group ?? '', groupUnit: count.get(i.group ?? '') ?? 0,
-        yardLocation: yardLocCode(unitByVin.get(i.vin)) || '',
+        // reprinting a run days later can outlive the car's stay in the yard —
+        // the live unit is gone by then, so fall back to its last-known slot
+        yardLocation: yardLocCode(unitByVin.get(i.vin)) || String(r?.cells[LAST_LOCATION_KEY] ?? ''),
         laneLoad: i.laneLoad ?? '', receiveDate: '', remark: '',
       }
     })
@@ -740,7 +745,9 @@ function SeqQueueManager({ viewingId, dayFilter, onView }: {
                             {i.group && <span>· {i.group}</span>}
                           </div>
                         </div>
-                        <div className="tabular text-[12px] font-bold shrink-0">{yardLocCode(unitByVin.get(i.vin)) || '—'}</div>
+                        <div className="tabular text-[12px] font-bold shrink-0">
+                          {yardLocCode(unitByVin.get(i.vin)) || r?.cells[LAST_LOCATION_KEY] || '—'}
+                        </div>
                         {gone
                           ? <span className="badge shrink-0" style={{ background: 'rgba(22,163,74,0.12)', color: '#16a34a', fontSize: 10.5 }}>ออกแล้ว</span>
                           : editId === q.id ? (

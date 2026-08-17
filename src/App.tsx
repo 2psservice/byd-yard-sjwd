@@ -10,6 +10,7 @@ import { useTrackingRows, useTracking } from './store/useTracking'
 import { useOps } from './store/useOps'
 import { startSyncBus, stopSyncBus } from './lib/syncBus'
 import { deriveCarStatus } from './lib/carStatus'
+import { yardLocCode, LAST_LOCATION_KEY } from './lib/groupingImport'
 import { matchModel } from './lib/sampleData'
 import { isPhone } from './lib/device'
 import { Dashboard } from './pages/Dashboard'
@@ -182,7 +183,17 @@ export default function App() {
         const r = rows[vin]
         if (r && deriveCarStatus(r.cells) === 'Gate-out') gone.push(vin)
       }
-      if (gone.length) useYard.getState().markDepartedMany(gone)
+      if (gone.length) {
+        // snapshot each car's last slot before markDepartedMany clears it — this
+        // path (unlike the ops-scan gate-out) never ran doGateOut, so it never
+        // got its own snapshot; without this a reprinted Grouping / find-car
+        // sheet would show "ไม่พบ" for every car this sweep releases
+        for (const vin of gone) {
+          const loc = yardLocCode(units[vin])
+          if (loc) useTracking.getState().updateCell(vin, LAST_LOCATION_KEY, loc)
+        }
+        useYard.getState().markDepartedMany(gone)
+      }
 
       // ── model heal: the sheet's รุ่น is the truth — a unit created from an
       // older file keeps a stale class forever (a SEAL 5 painted "SEAL" on the

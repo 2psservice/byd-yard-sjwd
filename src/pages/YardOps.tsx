@@ -32,7 +32,7 @@ import StationSheet from '../components/StationSheet'
 import { MasterCombo } from '../components/MasterCombo'
 import { TirePressureField, TIRE_WHEELS, joinTirePressure } from '../components/MeasurementField'
 import { FINAL_CHECK_TABS } from '../lib/finalCheckList'
-import { yardLocCode, yardLocFull, blockCode, byYardLocation } from '../lib/groupingImport'
+import { yardLocCode, yardLocFull, blockCode, byYardLocation, LAST_LOCATION_KEY } from '../lib/groupingImport'
 import { parseLane } from '../lib/laneImport'
 import { LOCATION_KEY } from '../lib/trackingColumns'
 import { blockTag, blockKeyOfTag, resolveBlockByName } from '../lib/format'
@@ -3406,6 +3406,10 @@ function GateOutView() {
     updateCell(row.vin, 'Car Status', 'Pre Gate-out')
     updateCell(row.vin, 'Gate Out time stamp', ts)
     updateCell(row.vin, 'Gate Out Time', String(now.getTime())) // epoch → 09:30 flush calc
+    // snapshot the slot this car is leaving BEFORE markDeparted clears it — a
+    // reprinted Grouping / find-car sheet still needs to say where it stood
+    const lastLoc = yardLocCode(parked)
+    if (lastLoc) updateCell(row.vin, LAST_LOCATION_KEY, lastLoc)
     markDeparted(row.vin) // release the parking slot — the car left it for the preload lane
     // close the delivery-sequence item too, if this car belongs to one
     if (seqHit) confirmSeqGateOut(seqHit.queue.id, row.vin, currentUser)
