@@ -39,9 +39,12 @@ export default defineConfig({
         skipWaiting: false,
         clientsClaim: true,
         // precache the app shell (JS/CSS/HTML/fonts/images) → instant cold loads.
+        // ttf: the TH Sarabun faces the DN/IR print sheets embed — without them
+        // in the precache, printing on yard wifi raced a 480 KB network fetch
+        // and lost, falling back to a serif that clipped every table cell.
         // Skip the lazily-imported Excel engines (~1.4 MB) — they're admin
         // import/export features a field phone never runs; fetched on demand.
-        globPatterns: ['**/*.{js,css,html,png,svg,woff2}'],
+        globPatterns: ['**/*.{js,css,html,png,svg,woff2,ttf}'],
         // skip the Excel engines (admin-only, fetched on demand) and font
         // subsets no screen renders (Thai + Latin are the only scripts used)
         globIgnores: ['**/exceljs*', '**/xlsx-*', '**/*cyrillic*', '**/*greek*', '**/*vietnamese*'],

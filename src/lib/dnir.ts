@@ -228,10 +228,20 @@ function dnSheetHtml(rows: TrackRow[], seq0: number, grouping: string, trip: str
  * family name so an installed system font can never shadow it with different
  * metrics. The bold face is the DN reference's embedded subset (its exact
  * outlines) with a rebuilt cmap — it carries every glyph of the DN's static
- * bold labels. */
+ * bold labels.
+ * The /fonts/ URLs here are placeholders: printHtml() swaps them for data:
+ * URLs before the iframe ever parses this CSS (see fontData below), so the
+ * print never depends on a live network fetch. The bold face declares 700 and
+ * .dnb asks for 700 — an exact match when it loads, a REAL bold sans fallback
+ * (not Times) when it somehow doesn't. */
 const SARABUN_FACE = `
 @font-face { font-family:'THSarabunNew AMS'; src:url('/fonts/THSarabunNew.ttf') format('truetype'); font-weight:400; font-style:normal; }
-@font-face { font-family:'THSarabunNew AMS Bold'; src:url('/fonts/THSarabunNewBold.ttf') format('truetype'); font-weight:400; font-style:normal; }`
+@font-face { font-family:'THSarabunNew AMS Bold'; src:url('/fonts/THSarabunNewBold.ttf') format('truetype'); font-weight:700; font-style:normal; }`
+/* Fallback stack behind the AMS faces: Thai-capable SANS faces with widths in
+ * Sarabun's neighbourhood. The old rules named only the custom family, so any
+ * load failure fell through to the browser default — Times — whose wider
+ * letters re-wrapped "Destination" cells onto a third line and clipped it. */
+const SANS_FALLBACK = `'Sarabun','Noto Sans Thai','Leelawadee UI','Thonburi',Tahoma,sans-serif`
 
 const CSS = `${SARABUN_FACE}
 @page { size: A4 portrait; margin: 0; }
@@ -242,17 +252,17 @@ body { margin:0; font-family:'Sarabun','Noto Sans Thai',Tahoma,'Leelawadee UI',s
 .ir-sheet { position:relative; width:595.2pt; height:841.68pt; overflow:hidden; page-break-after:always; }
 .ir-sheet:last-child { page-break-after:auto; }
 .ir-bg { position:absolute; left:0; top:0; width:595.2pt; height:841.68pt; }
-.irf { position:absolute; line-height:1; white-space:nowrap; color:#000; font-family:'THSarabunNew AMS'; }
+.irf { position:absolute; line-height:1; white-space:nowrap; color:#000; font-family:'THSarabunNew AMS',${SANS_FALLBACK}; }
 
 /* ── Delivery Note — absolute layout at the AMS reference coordinates ── */
 .dn-sheet { position:relative; width:595.28pt; height:841.89pt; overflow:hidden; page-break-after:always; color:#000; }
 .dn-sheet:last-child { page-break-after:auto; }
 .dnr, .dnb { position:absolute; line-height:1; white-space:pre; }
-.dnr { font-family:'THSarabunNew AMS'; }
-.dnb { font-family:'THSarabunNew AMS Bold'; }
+.dnr { font-family:'THSarabunNew AMS',${SANS_FALLBACK}; }
+.dnb { font-family:'THSarabunNew AMS Bold',${SANS_FALLBACK}; font-weight:700; }
 .dnc { left:0; right:0; text-align:center; }
-.dnr-in { font-family:'THSarabunNew AMS'; }
-.dnk { position:absolute; text-align:center; font-size:12pt; line-height:${DN_LINE_H}pt; font-family:'THSarabunNew AMS'; white-space:pre-line; }
+.dnr-in { font-family:'THSarabunNew AMS',${SANS_FALLBACK}; font-weight:400; }
+.dnk { position:absolute; text-align:center; font-size:12pt; line-height:${DN_LINE_H}pt; font-family:'THSarabunNew AMS',${SANS_FALLBACK}; white-space:pre-line; }
 .dnl { position:absolute; background:#000; }
 .dnbox { position:absolute; border:1pt solid #000; }
 .dnbc { position:absolute; }
@@ -267,7 +277,7 @@ const CSS_IRP = `${SARABUN_FACE}
 * { box-sizing:border-box; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
 body { margin:0; }
 .irp-sheet { position:relative; width:612pt; height:792pt; overflow:hidden; page-break-after:always; color:#000;
-  font-family:'THSarabunNew AMS'; }
+  font-family:'THSarabunNew AMS',${SANS_FALLBACK}; }
 .irp-sheet:last-child { page-break-after:auto; }
 .irpf { position:absolute; line-height:1; white-space:nowrap; }
 `
@@ -308,31 +318,68 @@ export const buildDnHtml = (rows: TrackRow[]): string => {
 export const buildIrPaperHtml = (rows: TrackRow[], siteName?: string): string =>
   htmlDoc(`IR paper — ${rows.length} VIN`, rows.map((r) => irPaperSheetHtml(r, siteName)).join(''), CSS_IRP)
 
-/** Render HTML in a hidden iframe, wait for images, then open the print dialog. */
+/** The two TH Sarabun faces as data: URLs — fetched ONCE per session (served
+ *  from the PWA precache when available) and swapped into the print document's
+ *  CSS, so the print iframe itself never touches the network for a font. This
+ *  is what fixes the field reports of DNs printing in a serif fallback: the
+ *  iframe's own 480 KB fetch on yard wifi could lose the race with the print
+ *  dialog, and every width/wrap on the sheet came out wrong. */
+const FONT_URLS = ['/fonts/THSarabunNew.ttf', '/fonts/THSarabunNewBold.ttf'] as const
+let fontDataP: Promise<[string, string]> | null = null
+function fontData(): Promise<[string, string]> {
+  fontDataP ??= (Promise.all(FONT_URLS.map(async (u) => {
+    const res = await fetch(u)
+    if (!res.ok) throw new Error(`font ${u}: ${res.status}`)
+    const bytes = new Uint8Array(await res.arrayBuffer())
+    let bin = ''
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+    return `data:font/ttf;base64,${btoa(bin)}`
+  })) as Promise<[string, string]>)
+  // a failed fetch must not poison every later print — retry next time
+  fontDataP.catch(() => { fontDataP = null })
+  return fontDataP
+}
+
+/** Render HTML in a hidden iframe, wait for images + fonts, then print. */
 function printHtml(html: string): void {
-  const iframe = document.createElement('iframe')
-  iframe.setAttribute('aria-hidden', 'true')
-  iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden'
-  document.body.appendChild(iframe)
-  const idoc = iframe.contentWindow?.document
-  if (!idoc) { iframe.remove(); return }
-  idoc.open(); idoc.write(html); idoc.close()
-  let done = false
-  const fire = () => {
-    if (done) return; done = true
-    try { iframe.contentWindow?.focus(); iframe.contentWindow?.print() } catch { /* noop */ }
-    setTimeout(() => iframe.remove(), 1500)
-  }
-  // wait for images AND the embedded TH Sarabun New — printing before the font
-  // loads falls back to a system font with different widths, off the boxes
-  const imgs = Array.from(idoc.images || [])
-  let pending = imgs.length + 1
-  const one = () => { if (--pending <= 0) setTimeout(fire, 120) }
-  imgs.forEach((im) => { if (im.complete) one(); else { im.onload = one; im.onerror = one } })
-  const fonts = (idoc as Document & { fonts?: FontFaceSet }).fonts
-  if (fonts?.ready) fonts.ready.then(one, one)
-  else one()
-  setTimeout(fire, 3500) // fallback if an image or the font stalls
+  void (async () => {
+    let doc = html
+    try {
+      const [reg, bold] = await fontData()
+      doc = html
+        .replace(/\/fonts\/THSarabunNew\.ttf/g, () => reg)
+        .replace(/\/fonts\/THSarabunNewBold\.ttf/g, () => bold)
+    } catch { /* network down — keep the URL faces; the sans fallback chain still holds the layout */ }
+
+    const iframe = document.createElement('iframe')
+    iframe.setAttribute('aria-hidden', 'true')
+    iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden'
+    document.body.appendChild(iframe)
+    const idoc = iframe.contentWindow?.document
+    if (!idoc) { iframe.remove(); return }
+    idoc.open(); idoc.write(doc); idoc.close()
+    let done = false
+    const fire = () => {
+      if (done) return; done = true
+      try { iframe.contentWindow?.focus(); iframe.contentWindow?.print() } catch { /* noop */ }
+      setTimeout(() => iframe.remove(), 1500)
+    }
+    // wait for images AND the embedded TH Sarabun New — printing before the font
+    // loads falls back to a system font with different widths, off the boxes
+    const imgs = Array.from(idoc.images || [])
+    let pending = imgs.length + 1
+    const one = () => { if (--pending <= 0) setTimeout(fire, 120) }
+    imgs.forEach((im) => { if (im.complete) one(); else { im.onload = one; im.onerror = one } })
+    const fonts = (idoc as Document & { fonts?: FontFaceSet }).fonts
+    if (fonts?.ready) {
+      // kick both faces explicitly — fonts.ready alone can resolve before a
+      // face that nothing has rendered yet even starts loading
+      fonts.load(`12pt 'THSarabunNew AMS'`).catch(() => {})
+      fonts.load(`700 12pt 'THSarabunNew AMS Bold'`).catch(() => {})
+      fonts.ready.then(one, one)
+    } else one()
+    setTimeout(fire, 6000) // fallback if an image or the font stalls
+  })()
 }
 
 /** Print the Inspector Report (IR) — one A4 page per VIN. */
