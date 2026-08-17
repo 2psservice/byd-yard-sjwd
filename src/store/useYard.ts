@@ -291,6 +291,14 @@ interface YardState {
   gateIn: (vin: string) => void
   setInspected: (vin: string, v: boolean) => void
   addDamage: (vin: string, d: DamageInput) => void
+  /** Defects whose cloud write never landed (retries exhausted — dead network,
+   *  backgrounded mid-save). Kept until flushPendingDamages() confirms them, so
+   *  a full units re-pull (visibilitychange / online / next login) doesn't
+   *  silently overwrite the local-only defect and make it look "never saved". */
+  pendingDamages: Record<string, { vin: string; dmg: Damage }>
+  /** Retry every still-unconfirmed defect write. Safe to call anytime — a no-op
+   *  when the queue is empty or a flush is already in flight. */
+  flushPendingDamages: () => Promise<void>
   removeDamage: (vin: string, id: string) => void
   updateDamage: (vin: string, id: string, patch: Partial<import('../types').Damage>) => void
   updateRepairStatus: (vin: string, id: string, status: string) => void
@@ -365,6 +373,20 @@ function scheduleBlockSync(get: () => { currentSite: string | null; blocksBySite
       .then(() => sendSync('blocks', { siteId: sid })) // other clients refetch this yard's layout
       .catch((e) => console.error('[db] syncBlocks', e))
   }, 1200)
+}
+
+// ── pending-defect retry (self-rescheduling, backs off while offline) ──────
+let pendingDamagesTimer: ReturnType<typeof setTimeout> | null = null
+let pendingDamagesFlushing = false
+function scheduleFlushPendingDamages(get: () => { flushPendingDamages: () => Promise<void>; pendingDamages: Record<string, unknown> }, delay = 15_000) {
+  if (pendingDamagesTimer) clearTimeout(pendingDamagesTimer)
+  pendingDamagesTimer = setTimeout(() => {
+    pendingDamagesTimer = null
+    get().flushPendingDamages().finally(() => {
+      // still something left (offline / retry failed again) — keep trying
+      if (Object.keys(get().pendingDamages).length) scheduleFlushPendingDamages(get, Math.min(delay * 1.5, 60_000))
+    })
+  }, delay)
 }
 
 // zustand's persist middleware JSON.stringifies + writes the ENTIRE persisted
@@ -840,14 +862,49 @@ export const useYard = create<YardState>()(
           const dmg = { id: `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`, at: Date.now(), by: s.currentUser, ...d, photo: d.photo ?? d.photos?.[0] }
           // FK-safe: ensure the parent unit row is in the cloud before the damage.
           // Retries a few times on its own (weak yard wifi/cellular); if it still
-          // fails, tell the operator — a silent console.error is invisible on a phone
-          // and the record would only exist on this one device.
+          // fails, queue it for flushPendingDamages() to retry later instead of
+          // dropping it — otherwise the next full units re-pull (backgrounding
+          // the app to take a photo, reconnecting) silently overwrites this
+          // local-only defect and it looks like the save never happened.
           db.upsertUnit(u).then(() => db.insertDamage(vin, dmg)).catch((e) => {
             console.error('[db] addDamage', e)
-            get().toast('err', `บันทึก Defect ไว้ในเครื่องนี้ แต่ยังไม่ขึ้น cloud (เน็ตหลุด?) — ${vin.slice(-6)}`)
+            get().toast('err', `บันทึก Defect ไว้ในเครื่องนี้ แต่ยังไม่ขึ้น cloud (เน็ตหลุด?) — กำลังลองใหม่อัตโนมัติ — ${vin.slice(-6)}`)
+            set((s2) => ({ pendingDamages: { ...s2.pendingDamages, [dmg.id]: { vin, dmg } } }))
+            scheduleFlushPendingDamages(get)
           })
           return { units: { ...s.units, [vin]: { ...u, damages: [...u.damages, dmg] } } }
         }),
+
+      pendingDamages: {},
+      flushPendingDamages: async () => {
+        if (pendingDamagesFlushing) return
+        const pending = get().pendingDamages
+        const entries = Object.entries(pending)
+        if (!entries.length) return
+        pendingDamagesFlushing = true
+        try {
+          const done: string[] = []
+          for (const [id, { vin, dmg }] of entries) {
+            const u = get().units[vin]
+            if (!u) { done.push(id); continue } // car no longer local (departed/removed) — nothing to push
+            // already landed (e.g. a previous flush's write succeeded but the
+            // response was lost) — the cloud copy is authoritative either way
+            if (u.damages.every((x) => x.id !== id)) { done.push(id); continue }
+            try {
+              await db.upsertUnit(u)
+              await db.insertDamage(vin, dmg)
+              done.push(id)
+            } catch (e) { console.error('[db] flushPendingDamages', vin, e) }
+          }
+          if (done.length) {
+            set((s) => {
+              const next = { ...s.pendingDamages }
+              for (const id of done) delete next[id]
+              return { pendingDamages: next }
+            })
+          }
+        } finally { pendingDamagesFlushing = false }
+      },
 
       removeDamage: (vin, id) =>
         set((s) => {
@@ -1288,12 +1345,26 @@ export const useYard = create<YardState>()(
             if (local.length) db.replaceBlocks(siteId, local).catch((e) => console.error('[db] seedBlocks', e))
           }
         }).catch((e) => console.error('[db] fetchBlocks', e))
+        // a defect this device queued in pendingDamages hasn't reached the cloud
+        // yet — a plain per-vin overwrite below would silently erase it (looks
+        // like the save never happened). Re-attach it onto the incoming cloud
+        // row until flushPendingDamages() confirms it landed.
+        const pendingByVin = new Map<string, Damage[]>()
+        for (const p of Object.values(get().pendingDamages)) {
+          const arr = pendingByVin.get(p.vin) ?? []
+          arr.push(p.dmg)
+          pendingByVin.set(p.vin, arr)
+        }
+        const withPending = (u: Unit): Unit => {
+          const extra = pendingByVin.get(u.vin)?.filter((d) => !u.damages.some((x) => x.id === d.id))
+          return extra?.length ? { ...u, damages: [...u.damages, ...extra] } : u
+        }
         // stream: paint cars into the yard plan page by page — a cold device
         // used to stare at an empty plan until the LAST page of ~2,000 cars
         // (+ damages) had arrived; now they flow in with the layout
         const streamUnits = (batch: Unit[]) => set((s) => {
           const units = { ...s.units }
-          for (const u of batch) units[u.vin] = u
+          for (const u of batch) units[u.vin] = withPending(u)
           return { units }
         })
         const [cloud, trailers] = await Promise.all([
@@ -1304,7 +1375,7 @@ export const useYard = create<YardState>()(
         if (cloud.length || trailers.length) {
           set((s) => {
             const merged: Record<string, Unit> = { ...s.units }
-            for (const u of cloud) merged[u.vin] = u
+            for (const u of cloud) merged[u.vin] = withPending(u)
             return { units: merged, trailers: trailers.length ? trailers : s.trailers }
           })
         }
@@ -1667,6 +1738,10 @@ export const useYard = create<YardState>()(
         // most recent, each capped to its last 600 fixes (~10 min at 1 Hz).
         trips: s.trips.slice(-30).map((t) => (t.path.length > 600 ? { ...t, path: t.path.slice(-600) } : t)),
         sites: s.sites,
+        // survive a killed app / reload before the retry landed — otherwise a
+        // defect that failed to sync and then got the tab closed on it is lost
+        // for good instead of being retried on the next launch
+        pendingDamages: s.pendingDamages,
       }),
     },
   ),
