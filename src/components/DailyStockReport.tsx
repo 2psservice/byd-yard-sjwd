@@ -14,10 +14,8 @@ import { rowInSite } from '../lib/siteScope'
 import { appendMasterSheets } from '../lib/masterSheets'
 import { dateKey, todayKey, addDays, fmtDateTh, gateInDateKey, gateOutDateKey } from '../lib/dayKey'
 import * as db from '../lib/db'
+import { YARD_CAPACITY_CONFIG_ID as CAP_CONFIG_ID, YARD_CAPACITY_CACHE_KEY as CAP_CACHE_KEY } from '../lib/yardCapacity'
 import type { TrackRow } from '../lib/excelTracking'
-
-const CAP_CONFIG_ID = 'yardCapacity'   // app_config row: { [siteId]: maxCapacity }
-const CAP_CACHE_KEY = 'sjwd.yardCapacity'
 
 const modelOf = (r: TrackRow) => (r.cells['Model name'] || r.cells['Model'] || '—').trim() || '—'
 const colorOf = (r: TrackRow) => (r.cells['Color'] || '—').trim() || '—'
