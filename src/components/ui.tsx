@@ -151,8 +151,15 @@ export function PhotoLightbox({ photos, index, onClose }: { photos: string[]; in
 
   const iconBtn = { background: 'rgba(255,255,255,0.14)', color: '#fff' }
   return createPortal(
+    // touch-action: none on the whole viewer (and the image itself, below) —
+    // native pinch/double-tap page-zoom and edge-swipe-back were never
+    // disabled here, so on some mobile browsers a pinch gesture mid-zoom got
+    // hijacked by the OS/browser instead of our own zoom handlers: the visual
+    // viewport shifts under a `fixed` overlay, or an edge-swipe reads as a
+    // back-navigation, either of which reads as the viewer "เด้งออก" (bouncing
+    // closed) while the operator is still trying to look at the photo.
     <div className="fixed inset-0 z-[300] flex flex-col items-center justify-center select-none"
-      style={{ background: 'rgba(8,15,28,0.94)' }} onClick={onClose}>
+      style={{ background: 'rgba(8,15,28,0.94)', touchAction: 'none' }} onClick={onClose}>
       <div className="absolute top-4 left-4 right-4 flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
         {photos.length > 1 && (
           <span className="text-[13px] font-bold px-2.5 py-1 rounded-lg" style={{ color: '#fff', background: 'rgba(255,255,255,0.14)' }}>{i + 1} / {photos.length}</span>
@@ -166,12 +173,12 @@ export function PhotoLightbox({ photos, index, onClose }: { photos: string[]; in
         </div>
       </div>
 
-      <div className="w-full h-full flex items-center justify-center overflow-hidden" onWheel={onWheel} onClick={(e) => e.stopPropagation()}>
+      <div className="w-full h-full flex items-center justify-center overflow-hidden" style={{ touchAction: 'none' }} onWheel={onWheel} onClick={(e) => e.stopPropagation()}>
         <img src={photos[i]} alt="" draggable={false}
           onPointerDown={onImgDown} onPointerMove={onImgMove} onPointerUp={onImgUp} onPointerLeave={onImgUp}
           onDoubleClick={() => setZoomClamped(zoom > 1 ? 1 : 2)}
           className="max-w-[92vw] max-h-[80vh] rounded-xl object-contain"
-          style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, cursor: zoom > 1 ? 'grab' : 'zoom-in', transition: dragRef.current ? 'none' : 'transform 0.1s' }} />
+          style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, cursor: zoom > 1 ? 'grab' : 'zoom-in', transition: dragRef.current ? 'none' : 'transform 0.1s', touchAction: 'none' }} />
       </div>
 
       {photos.length > 1 && (
