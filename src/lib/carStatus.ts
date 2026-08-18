@@ -28,6 +28,11 @@ export const CAR_STATUS_ORDER = ['Pre Gate-in', 'In Yard', 'Moving', 'PDI', 'Rea
 export const IN_YARD_STATUSES = new Set(['In Yard', 'Moving', 'PDI', 'Ready', 'Total loss'])
 /** statuses that count as parked in a block */
 export const PARKED_STATUSES = new Set(['In Yard', 'PDI', 'Ready', 'Total loss'])
+/** The gate has released the car: it has left, OR it was scanned out and is
+ *  staged in preload waiting for the 09:30 flush. Ops work queues finish on the
+ *  SCAN, not on the flush — once the gate scans a car out there is no station
+ *  work left on it — so both statuses close a queue item. */
+export const RELEASED_STATUSES = new Set(['Pre Gate-out', 'Gate-out'])
 
 /**
  * Does a "Gate Out time stamp" cell mean the car ACTUALLY gated out?
@@ -152,6 +157,21 @@ export function deriveCarStatus(c: Record<string, string>): string {
   const loc = c['Location yard'] || ''
   if (storage || /yard/i.test(loc)) return 'In Yard'
   return 'In Yard' // was 'Gate-in' — the stage is retired, this fallback reads as In Yard too
+}
+
+/**
+ * Has the gate released this car? (see RELEASED_STATUSES)
+ *
+ * Reads the DERIVED status, so it also catches a car whose gate-out only ever
+ * reached the sheet as a "Gate Out time stamp" / "Gate Out Date" / a pickup plan
+ * whose date lapsed — an import-only gate-out that never wrote the Car Status
+ * cell. Ops queues used to test the raw cell for the literal "Gate-out", so
+ * those cars, and every car sitting at "Pre Gate-out", left their queue items
+ * un-ticked: the run could never reach 100%, never disappeared, and its cars
+ * kept counting as pending work on the station badge.
+ */
+export function hasLeftGate(c: Record<string, string>): boolean {
+  return RELEASED_STATUSES.has(deriveCarStatus(c))
 }
 
 /** true if the row should count as "damaged / needs review" */

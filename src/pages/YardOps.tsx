@@ -13,7 +13,7 @@ import {
 } from 'lucide-react'
 import { useYard, useUnits, useTrips, useBlocks } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
-import { isDamaged, deriveCarStatus, IN_YARD_STATUSES, CAR_STATUS_META } from '../lib/carStatus'
+import { isDamaged, deriveCarStatus, hasLeftGate, IN_YARD_STATUSES, CAR_STATUS_META } from '../lib/carStatus'
 import { useOps, useActiveQueues, activeProcess, stageOf, isSequenceQueue, seqStageOf, isQueueComplete, isStationWorkComplete, queueTypeOf, stampStationDate, stationProgress, drivingNow } from '../store/useOps'
 import type { WorkQueue, QueueItem, QueueType, QueueStage } from '../store/useOps'
 import { CarTopView } from '../components/CarTopView'
@@ -3324,7 +3324,7 @@ function GateOutView() {
       .map(r => {
         const u = units.find(x => x.vin === r.vin)
         const status = (r.cells['Car Status'] ?? '').trim()
-        const gone = status === 'Gate-out' || status === 'Pre Gate-out'
+        const gone = hasLeftGate(r.cells) // shared rule — also catches import-only gate-outs
         const inSeq = !!findSeqItem(r.vin, queues)
         // same rule as the single-VIN scan: only a car planned in an open
         // Grouping-to-Dealer queue, and actually gated in, may leave

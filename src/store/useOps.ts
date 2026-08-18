@@ -10,6 +10,7 @@ import * as db from '../lib/db'
 import { onSync, sendSync } from '../lib/syncBus'
 import { useYard } from './useYard'
 import { useTracking } from './useTracking' // one-way: tracking never imports ops
+import { hasLeftGate } from '../lib/carStatus'
 import { PM_KEYS } from '../lib/trackingColumns'
 import { quotaSafeStorage } from '../lib/persistStorage'
 
@@ -634,7 +635,7 @@ function reconcileGateOuts() {
   const group = new Map<string, string>() // vin → delivery group ('' = none)
   for (const vin in rows) {
     const cs = (rows[vin].cells['Car Status'] || '').trim()
-    if (isGoneStatus(cs)) gone.add(vin)
+    if (hasLeftGate(rows[vin].cells)) gone.add(vin)
     else if (cs && cs.toLowerCase() !== 'pre gate-in') gatedIn.add(vin)
     else stillWaiting.add(vin)
     group.set(vin, groupOf(rows[vin].cells))
@@ -784,11 +785,8 @@ export function useQueues(): WorkQueue[] {
   return useOps((s) => s.queues)
 }
 
-/** A car that has left the yard (gate-out) is no longer pending work. */
-function isGoneStatus(s?: string): boolean {
-  const v = (s ?? '').trim().toLowerCase()
-  return v === 'gate-out' || v === 'gate out'
-}
+// "this car's gate work is finished" lives in carStatus.ts (hasLeftGate) so the
+// reconciler, the queue cards and the station badges cannot drift apart again.
 
 /**
  * Queues with gated-out cars removed. A vehicle that has left the yard must
@@ -803,7 +801,7 @@ export function useActiveQueues(): WorkQueue[] {
   const rows = useTracking((s) => s.rows)
   return useMemo(() => {
     const gone = new Set<string>()
-    for (const vin in rows) if (isGoneStatus(rows[vin].cells['Car Status'])) gone.add(vin)
+    for (const vin in rows) if (hasLeftGate(rows[vin].cells)) gone.add(vin)
     if (!gone.size) return queues
     return queues.map((q) => {
       if (isSequenceQueue(q)) return q // sequence runs keep gated-out cars for progress
