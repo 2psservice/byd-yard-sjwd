@@ -4,7 +4,7 @@ import {
   Copy, X, Maximize2, Upload, Loader2, ImageOff, Grid3x3, ArrowLeftRight, ChevronDown,
   Search, Printer, Download,
 } from 'lucide-react'
-import { useYard, useUnits, useBlocks } from '../store/useYard'
+import { useYard, useUnits, useBlocks, WCL_STAGING_BLOCK } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { yardLocFull } from '../lib/groupingImport'
 import { isConfigured, fetchUnitsByVins } from '../lib/db'
@@ -269,16 +269,27 @@ export function YardPlan() {
     const unplacedRows: TrackRow[] = []                       // (1) no block at all
     const offMapRows: { row: TrackRow; block: string }[] = [] // (2) block tag not on the plan
     let inYard = 0
+    // cars standing in a REAL yard slot (blocks A–Z) vs. waiting in the WCL
+    // preload staging block — WCL is not a parking slot, so the headline count
+    // of "รถที่จอดในช่อง" must leave it out. Both are counted off the SAME
+    // in-yard rule the Dashboard uses, so the three reconcile exactly:
+    //   In Yard = ในช่องจอด + WCL + ยังไม่มีตำแหน่ง
+    let inSlot = 0
+    let staging = 0
     for (const r of trackingRows) {
       if (!rowInSite(r, currentSite, sites)) continue
       if (!IN_YARD_STATUSES.has(deriveCarStatus(r.cells))) continue
       inYard++
-      if (onMapVins.has(r.vin)) continue // shown on a tile
+      if (onMapVins.has(r.vin)) { // shown on a tile
+        if (blockOfVin.get(r.vin) === WCL_STAGING_BLOCK) staging++
+        else inSlot++
+        continue
+      }
       const blk = blockOfVin.get(r.vin)
       if (blk) offMapRows.push({ row: r, block: blk })
       else unplacedRows.push(r)
     }
-    return { inYard, unplaced: unplacedRows.length, unplacedRows, offMap: offMapRows.length, offMapRows }
+    return { inYard, inSlot, staging, unplaced: unplacedRows.length, unplacedRows, offMap: offMapRows.length, offMapRows }
   }, [trackingRows, occByBlock, blocks, currentSite, sites])
   const [showUnplaced, setShowUnplaced] = useState(false)
 
@@ -407,10 +418,20 @@ export function YardPlan() {
                   <span className="animate-pulse">กำลังโหลดรถ…</span>
                 </span>
               )
-              const title = `In Yard ${inYardStats.inYard.toLocaleString()} คัน${yardCap ? ` / ความจุยาร์ด ${yardCap.toLocaleString()}` : ' (ยังไม่ได้กรอกความจุยาร์ด — ตั้งค่าที่ Report → รายงานประจำวัน)'} — บนผัง ${totals.filled.toLocaleString()} · ยังไม่มีตำแหน่ง ${unplacedTotal.toLocaleString()} (บล็อกไม่ตรงผัง ${inYardStats.offMap.toLocaleString()} · ยังไม่จัดช่อง ${inYardStats.unplaced.toLocaleString()})${unplacedTotal ? ' · คลิกเพื่อดู/คัดลอกรายการ VIN' : ''}`
+              // The headline is the count that matches what the plan DRAWS in
+              // real slots: blocks A–Z only. WCL is the preload staging block —
+              // those cars are in the yard but not in a parking slot — so it is
+              // listed beside the total instead of folded into it.
+              const title = `รถที่จอดในช่องจริง (บล็อก A–Z) ${inYardStats.inSlot.toLocaleString()} คัน`
+                + `${yardCap ? ` / ความจุยาร์ด ${yardCap.toLocaleString()}` : ' (ยังไม่ได้กรอกความจุยาร์ด — ตั้งค่าที่ Report → รายงานประจำวัน)'}\n`
+                + `In Yard ทั้งหมด ${inYardStats.inYard.toLocaleString()} คัน (ตรงกับ Dashboard) = ในช่องจอด ${inYardStats.inSlot.toLocaleString()}`
+                + ` + WCL/preload ${inYardStats.staging.toLocaleString()} + ยังไม่มีตำแหน่ง ${unplacedTotal.toLocaleString()}`
+                + ` (บล็อกไม่ตรงผัง ${inYardStats.offMap.toLocaleString()} · ยังไม่จัดช่อง ${inYardStats.unplaced.toLocaleString()})`
+                + `${unplacedTotal ? '\nคลิกเพื่อดู/คัดลอกรายการ VIN ที่ยังไม่มีตำแหน่ง' : ''}`
               const body = (
                 <>
-                  In Yard {inYardStats.inYard.toLocaleString()}{yardCap ? ` / ${yardCap.toLocaleString()}` : ''}
+                  In Yard {inYardStats.inSlot.toLocaleString()}{yardCap ? ` / ${yardCap.toLocaleString()}` : ''}
+                  {inYardStats.staging > 0 && <> · WCL {inYardStats.staging.toLocaleString()}</>}
                   {unplacedTotal > 0 && <> · ยังไม่มีตำแหน่ง {unplacedTotal.toLocaleString()} ›</>}
                 </>
               )

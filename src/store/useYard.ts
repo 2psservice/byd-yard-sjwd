@@ -368,8 +368,10 @@ const curBlocks = (s: { blocksBySite: Record<string, Block[]>; currentSite: stri
   s.blocksBySite[siteKey(s.currentSite)] ?? []
 
 /** Universal Gate-in staging block — every model auto-parks here first, then
- *  moves to its real slot later via Re-location. */
-const WCL_STAGING_BLOCK = 'WCL'
+ *  moves to its real slot later via Re-location. A car sitting here is waiting
+ *  in preload, NOT parked in a real yard slot, so counts of "cars in a slot"
+ *  must exclude it (see the Yard Plan headline). */
+export const WCL_STAGING_BLOCK = 'WCL'
 
 // ── yard-plan layout → cloud (debounced: updateBlock fires per drag-frame) ──
 let blockSyncTimer: ReturnType<typeof setTimeout> | null = null
