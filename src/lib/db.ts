@@ -35,10 +35,14 @@ async function withRetry<T>(fn: () => PromiseLike<{ error: unknown } & T>, attem
  * Upsert many rows in parallel chunks, retrying failed chunks up to 2× — a big
  * defect import (16k+ rows) must not silently drop a chunk on a transient error.
  */
-async function bulkUpsert(table: string, rows: any[], chunkSize: number, onConflict: string, concurrency = 5, stripFallback?: (row: any) => any): Promise<void> {
+/** Rows written so far / rows in total — drives the import screen's % bar. */
+export type ChunkProgress = (done: number, total: number) => void
+
+async function bulkUpsert(table: string, rows: any[], chunkSize: number, onConflict: string, concurrency = 5, stripFallback?: (row: any) => any, onProgress?: ChunkProgress): Promise<void> {
   if (!rows.length) return
   const chunks: any[][] = []
   for (let i = 0; i < rows.length; i += chunkSize) chunks.push(rows.slice(i, i + chunkSize))
+  let written = 0
   const runChunk = async (c: any[], attempt = 0): Promise<void> => {
     const { error } = await supabase.from(table).upsert(c, { onConflict })
     if (error) {
@@ -50,6 +54,10 @@ async function bulkUpsert(table: string, rows: any[], chunkSize: number, onConfl
       if (attempt < 2) { await sleep(400 * (attempt + 1)); return runChunk(c, attempt + 1) }
       console.error(`[db] bulkUpsert ${table} gave up after retries`, error)
     }
+    // a chunk that exhausted its retries still counts as finished — the bar must
+    // reach the end, not stall at 94% on a partial failure the caller reports
+    written += c.length
+    onProgress?.(written, rows.length)
   }
   for (let i = 0; i < chunks.length; i += concurrency) {
     await Promise.all(chunks.slice(i, i + concurrency).map((c) => runChunk(c)))
@@ -266,9 +274,38 @@ export async function upsertUnit(u: Unit): Promise<void> {
 }
 
 /** บันทึกหรืออัปเดตรถหลายคันพร้อมกัน (batch) */
-export async function upsertUnits(units: Unit[]): Promise<void> {
+export async function upsertUnits(units: Unit[], onProgress?: ChunkProgress): Promise<void> {
   if (!isConfigured() || !units.length) return
-  await bulkUpsert('units', units.map(unitToRow), 200, 'vin')
+  await bulkUpsert('units', units.map(unitToRow), 200, 'vin', 5, undefined, onProgress)
+}
+
+/** Where a car physically stands, plus who/when put it there. Owned exclusively
+ *  by the yard-plan flows (driver, re-location, lane import, auto-park). */
+const PLACEMENT_COLS = ['block', 'row', 'slot', 'plan_mode', 'assigned_at', 'driver', 'driving_started_at', 'parked_at'] as const
+
+/**
+ * Upsert units WITHOUT touching where they stand in the yard.
+ *
+ * PostgREST builds its column list from the keys present in the payload, so a
+ * key that no row carries is left out of the ON CONFLICT DO UPDATE entirely —
+ * the stored value survives. Dropping the placement columns is therefore the
+ * difference between "update these cars" and "update these cars AND move them".
+ *
+ * The Co-Inspection import needs this: it only ever edits defects, but it ran
+ * through the ordinary upsert, which writes block/row/slot as NULL for any unit
+ * the local store could not supply a position for. Units load from the cloud
+ * page-by-page, and the import also invents a bare unit for a VIN it has never
+ * seen — so uploading a defect sheet mid-load quietly erased the yard-plan slot
+ * (N0502 → ไม่พบ) of every car it touched, on every device.
+ */
+export async function upsertUnitsKeepPlacement(units: Unit[], onProgress?: ChunkProgress): Promise<void> {
+  if (!isConfigured() || !units.length) return
+  const rows = units.map((u) => {
+    const r = unitToRow(u) as Record<string, unknown>
+    for (const c of PLACEMENT_COLS) delete r[c]
+    return r
+  })
+  await bulkUpsert('units', rows, 200, 'vin', 5, undefined, onProgress)
 }
 
 /** ลบรถ (cascade → ลบ damages + trips อัตโนมัติ) */
@@ -385,12 +422,13 @@ export async function deleteDamage(id: string): Promise<void> {
   if (error) console.error('[db] deleteDamage', id, error)
 }
 
-export async function deleteDamages(ids: string[]): Promise<void> {
+export async function deleteDamages(ids: string[], onProgress?: ChunkProgress): Promise<void> {
   if (!isConfigured() || !ids.length) return
   const CHUNK = 200
   for (let i = 0; i < ids.length; i += CHUNK) {
     const { error } = await supabase.from('damages').delete().in('id', ids.slice(i, i + CHUNK))
     if (error) console.error('[db] deleteDamages chunk', i, error)
+    onProgress?.(Math.min(i + CHUNK, ids.length), ids.length)
   }
 }
 
@@ -611,7 +649,7 @@ export async function clearOpsQueues(): Promise<void> {
 
 // ── bulk damage upsert (migration / resilience — onConflict id, FK-safe) ────
 
-export async function upsertDamages(items: { vin: string; d: Damage }[]): Promise<void> {
+export async function upsertDamages(items: { vin: string; d: Damage }[], onProgress?: ChunkProgress): Promise<void> {
   if (!isConfigured() || !items.length) return
   // parallel chunks + retry — 16k+ defect rows finish in a few seconds and no
   // chunk is silently dropped on a transient error (that stranded ~6k rows before).
@@ -620,7 +658,7 @@ export async function upsertDamages(items: { vin: string; d: Damage }[]): Promis
   // with NULL — heterogeneous chunks were randomly NULLing remark/area_th/item_th
   // on rows that happened to share a chunk with a row that had them.
   const rows = items.map(({ vin, d }) => ({ remark: null, area_th: null, item_th: null, ...damageToRow(vin, d) }))
-  await bulkUpsert('damages', rows, 500, 'id', 5, stripOptionalDamageCols)
+  await bulkUpsert('damages', rows, 500, 'id', 5, stripOptionalDamageCols, onProgress)
 }
 
 // ── tracking rows (master vehicle list — flexible JSONB columns) ────────────

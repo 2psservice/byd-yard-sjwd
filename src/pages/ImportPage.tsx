@@ -78,6 +78,9 @@ export function ImportPage() {
   const [coFileName, setCoFileName] = useState('')
   const [coBusy, setCoBusy] = useState(false)
   const [coSaving, setCoSaving] = useState(false)
+  // live % + phase label while the merge writes to cloud — a 10k-defect file
+  // takes long enough that a bare spinner reads as "stuck" and gets reloaded
+  const [coProg, setCoProg] = useState<{ pct: number; label: string } | null>(null)
   const [coDrag, setCoDrag] = useState(false)
   const coInputRef = useRef<HTMLInputElement>(null)
 
@@ -228,6 +231,7 @@ export function ImportPage() {
   const confirmCo = async () => {
     if (!coParsed || coSaving) return
     setCoSaving(true)
+    setCoProg({ pct: 0, label: 'กำลังรวมข้อมูลลงตารางหลัก…' })
     try {
       const { updated, added, skipped, gateOut, moved } = commitCoInspection(coParsed)
       // defects: only for VINs that belong to this yard (accepted from the file, or already here)
@@ -235,7 +239,7 @@ export function ImportPage() {
       const defectsForSite = coParsed.defects.filter((d) => okVins.has(d.vin) || rowInSite(existing[d.vin], currentSite, sites))
       // AWAIT the cloud write — importDefects can push 10k+ damage rows; blocking here
       // (with the overlay below) stops the user reloading before it finishes
-      const def = await importDefects(defectsForSite, existing)
+      const def = await importDefects(defectsForSite, existing, (pct, label) => setCoProg({ pct, label }))
       toast(
         'ok',
         `Co Inspection · เติม ${updated.toLocaleString()} คัน${added ? ` · ใหม่ ${added.toLocaleString()}` : ''}` +
@@ -247,7 +251,7 @@ export function ImportPage() {
       setCoParsed(null); setCoFileName('')
     } catch (e: any) {
       toast('err', e?.message || 'บันทึกไม่สำเร็จ')
-    } finally { setCoSaving(false) }
+    } finally { setCoSaving(false); setCoProg(null) }
   }
 
   // yard scoping: Pre Gate-in imports only the ACTIVE site's sheet — a Vin List
@@ -474,6 +478,18 @@ export function ImportPage() {
                           </div>
                         )
                       })}
+                    </div>
+                  )}
+                  {coSaving && coProg && (
+                    <div className="mt-3">
+                      <div className="flex items-center justify-between text-[12px] mb-1.5" style={{ color: '#0891b2' }}>
+                        <b className="flex items-center gap-1.5"><Loader2 size={13} className="animate-spin" /> {coProg.label}</b>
+                        <b className="tabular">{Math.round(coProg.pct)}%</b>
+                      </div>
+                      <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--chip)' }}>
+                        <div className="h-full rounded-full" style={{ width: `${Math.max(2, Math.round(coProg.pct))}%`, background: '#0891b2', transition: 'width .25s ease' }} />
+                      </div>
+                      <div className="text-[11px] mt-1" style={{ color: 'var(--muted)' }}>อย่าปิด / รีเฟรชหน้านี้จนกว่าจะครบ 100%</div>
                     </div>
                   )}
                   <div className="flex items-center justify-between gap-2 mt-3 flex-wrap">
