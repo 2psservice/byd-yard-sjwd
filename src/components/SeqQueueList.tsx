@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { ListChecks, ChevronLeft, Clock } from 'lucide-react'
 import { seqStageOf } from '../store/useOps'
+import { hasLeftGate } from '../lib/carStatus'
 import { yardLocCode, byYardLocation } from '../lib/groupingImport'
 import type { WorkQueue, QueueItem } from '../store/useOps'
 import type { Unit } from '../types'
@@ -29,12 +30,14 @@ export function SeqQueuePicker({ queues, units, trackingRows, queuedLabel }: {
   queues: WorkQueue[]; units: Unit[]; trackingRows: TrackRow[]; queuedLabel?: string
 }) {
   const [openId, setOpenId] = useState<string | null>(null)
-  // a car counts as gated-out by its LIVE Car Status — so cars gated out any way
+  // a car counts as gated-out by its LIVE status — so cars gated out any way
   // (sequence flow, plain gate-out, import) show "gate out" and count toward
-  // progress, even if the queue item's own flag was never set.
+  // progress, even if the queue item's own flag was never set. Shares
+  // hasLeftGate with the reconciler + station badges: this card reading its own
+  // looser rule is exactly why it showed 30/30 while the badge still said 29.
   const goneVins = useMemo(() => {
     const s = new Set<string>()
-    for (const r of trackingRows) if (/gate-?out/i.test(r.cells['Car Status'] || '')) s.add(r.vin)
+    for (const r of trackingRows) if (hasLeftGate(r.cells)) s.add(r.vin)
     return s
   }, [trackingRows])
   const isGone = (i: QueueItem) => i.gatedOut === true || goneVins.has(i.vin)
