@@ -352,7 +352,8 @@ interface YardState {
   subscribeRealtime: () => void
   unsubscribeRealtime: () => void
   // --- co-inspection defects ---
-  importDefects: (defects: DefectRow[], trackingRows: Record<string, TrackRow>) => Promise<{ units: number; damages: number }>
+  /** @param onProgress 0–100 with a Thai phase label, for the import screen's bar */
+  importDefects: (defects: DefectRow[], trackingRows: Record<string, TrackRow>, onProgress?: (pct: number, label: string) => void) => Promise<{ units: number; damages: number }>
 }
 
 /** Next free block id — single letters A–Z, then B1, B2… */
@@ -1560,8 +1561,13 @@ export const useYard = create<YardState>()(
       // Creates a minimal unit (from the tracking row) when one doesn't exist yet,
       // so imported defects display in the Unit List / Check views. Deterministic
       // damage ids mean re-importing the same file updates rather than duplicates.
-      importDefects: async (defects, trackingRows) => {
+      importDefects: async (defects, trackingRows, onProgress) => {
         if (!defects.length) return { units: 0, damages: 0 }
+        // phase weights across the whole run — the cloud writes dominate the
+        // wall clock (10k+ rows), so they own most of the bar
+        const phase = (from: number, to: number, label: string) => (done: number, total: number) =>
+          onProgress?.(from + (to - from) * (total ? done / total : 1), label)
+        onProgress?.(0, 'กำลังรวมข้อมูล Defect…')
         const units = { ...get().units }
         const site = get().currentSite ?? undefined
         const byVin = new Map<string, DefectRow[]>()
@@ -1684,10 +1690,16 @@ export const useYard = create<YardState>()(
         // can keep a "saving…" state up and the user won't reload mid-upload (that
         // was silently truncating the 16k-row damage push → units synced, damages lost)
         try {
-          if (removedIds.length) await db.deleteDamages(removedIds)
-          await db.upsertUnits(changedUnits) // FK parents first
-          await db.upsertDamages(dmgItems)
+          onProgress?.(12, 'กำลังลบ Defect เดิมที่ไม่มีในไฟล์…')
+          if (removedIds.length) await db.deleteDamages(removedIds, phase(12, 25, 'กำลังลบ Defect เดิมที่ไม่มีในไฟล์…'))
+          // KEEP PLACEMENT: a defect sheet says nothing about where a car stands,
+          // so this write must never carry block/row/slot (see db.ts) — otherwise
+          // it wipes the yard-plan slot of every VIN whose unit this device has
+          // not loaded from the cloud yet.
+          await db.upsertUnitsKeepPlacement(changedUnits, phase(25, 45, 'กำลังบันทึกข้อมูลรถ…')) // FK parents first
+          await db.upsertDamages(dmgItems, phase(45, 100, 'กำลังบันทึก Defect ขึ้น cloud…'))
         } catch (e) { console.error('[db] importDefects', e) }
+        onProgress?.(100, 'เสร็จแล้ว')
         return { units: newUnits, damages: dmgCount }
       },
     }),
