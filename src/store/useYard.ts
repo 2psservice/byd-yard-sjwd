@@ -1265,8 +1265,20 @@ export const useYard = create<YardState>()(
           for (const u of batch) units[u.vin] = withPending(u)
           return { units }
         })
+        // VIN + ตำแหน่ง มาก่อน: the placement-only pass runs alongside the full
+        // one and lands first, so the plan shows where every car stands while the
+        // defects and the rest of each record are still downloading. It carries no
+        // defects, so a car this device already has keeps the ones it has.
+        const streamPlacements = (batch: Unit[]) => set((s) => {
+          const units = { ...s.units }
+          for (const u of batch) {
+            const cur = units[u.vin]
+            units[u.vin] = cur ? { ...u, damages: cur.damages } : withPending(u)
+          }
+          return { units }
+        })
         const [cloud, trailers] = await Promise.all([
-          db.fetchAllUnits(siteId, streamUnits),
+          db.fetchAllUnits(siteId, streamUnits, streamPlacements),
           db.fetchTrailers(siteId),
         ])
         await blocksDone // callers may assume the layout is settled on return
