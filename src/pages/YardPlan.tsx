@@ -401,21 +401,27 @@ export function YardPlan() {
                 <MapPin size={13} /> {siteName}
               </span>
             )}
-            {/* while the cloud units are still landing this is a transient,
-                shifting count that reads as disagreeing with the other "In
-                Yard" numbers on screen (Dashboard / header pill) — show one
-                quiet loading chip instead, and reveal the real, final number
-                once the fetch finishes. ONE merged badge, not two: "In Yard"
-                here now matches Dashboard/the header pill exactly (same
-                tracking-row formula) — /{yardCap} is the yard's REAL
-                capacity (Report → Max Cap.), not the drawn blocks' grid total
-                — and "ยังไม่มีตำแหน่ง" folds in every car that isn't sitting
-                on a tile this plan draws, whatever the reason. */}
+            {/* ONE merged badge, not two: "In Yard" here matches Dashboard/the
+                header pill exactly (same tracking-row formula) — /{yardCap} is
+                the yard's REAL capacity (Report → Max Cap.), not the drawn
+                blocks' grid total — and "ยังไม่มีตำแหน่ง" folds in every car
+                that isn't sitting on a tile this plan draws, whatever the
+                reason.
+
+                While the cloud units are still landing the yard total is
+                already correct (it comes from the tracking rows, which arrive
+                first) — it was the /ช่องจอด split that was still settling. So
+                show the number from the first moment and mark it as still
+                filling in, rather than replacing the whole badge with a
+                loading chip: a plain "กำลังโหลดรถ…" told nobody how many cars
+                are in the yard, which is the one thing the badge is for. */}
             {(() => {
               const unplacedTotal = inYardStats.unplaced + inYardStats.offMap
               if (!unitsCloudDone) return (
-                <span className="badge tabular" style={{ color: 'var(--muted)', background: 'var(--chip)', fontSize: 13, padding: '3px 10px' }}>
-                  <span className="animate-pulse">กำลังโหลดรถ…</span>
+                <span className="badge tabular" title={`In Yard ${inYardStats.inYard.toLocaleString()} คัน (ตรงกับ Dashboard) — กำลังโหลดตำแหน่งรถในผัง`}
+                  style={{ color: 'var(--muted)', background: 'var(--chip)', fontSize: 13, padding: '3px 10px' }}>
+                  In Yard {inYardStats.inYard.toLocaleString()}{yardCap ? ` / ${yardCap.toLocaleString()}` : ''}
+                  <span className="animate-pulse ml-1.5" style={{ fontSize: 11.5 }}>· กำลังลงผัง {inYardStats.inSlot.toLocaleString()}…</span>
                 </span>
               )
               // The headline is the count that matches what the plan DRAWS in
