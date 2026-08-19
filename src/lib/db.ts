@@ -249,6 +249,30 @@ export async function fetchUnitsInLane(siteId: string | null, slot: number): Pro
  */
 const PLACEMENT_SELECT = 'vin, site_id, model, model_name, color, color_hex, status, block, row, slot, parked_at, gate_in_at, imported_at'
 
+/**
+ * Every in-yard car's VIN + where it stands, straight from the cloud.
+ *
+ * Cheap enough to run on a timer: it is the yard plan's whole truth in a few
+ * hundred bytes a car. Realtime keeps screens live, but a dropped event leaves
+ * one device drawing a stale plan with nothing to correct it — this pass is
+ * what makes every device converge on the same picture.
+ */
+export async function fetchUnitPlacements(siteId?: string | null, onPage?: (units: Unit[]) => void): Promise<Unit[]> {
+  if (!isConfigured()) return []
+  const PAGE = 1000
+  const out: Unit[] = []
+  for (let from = 0; ; from += PAGE) {
+    let q = supabase.from('units').select(PLACEMENT_SELECT).neq('status', 'DEPARTED')
+    if (siteId) q = (q as any).eq('site_id', siteId)
+    const { data, error } = await (q as any).order('vin').range(from, from + PAGE - 1)
+    if (error) { console.error('[db] fetchUnitPlacements', error); throw error }
+    const batch = ((data ?? []) as DbUnit[]).map((r) => parseUnitRow(r))
+    if (batch.length) { out.push(...batch); onPage?.(batch) }
+    if (batch.length < PAGE) break
+  }
+  return out
+}
+
 export async function fetchAllUnits(
   siteId?: string | null,
   /** called with each page THE MOMENT it lands — lets the yard plan paint cars
@@ -308,17 +332,7 @@ export async function fetchAllUnits(
   // being ~25× smaller, wins by a wide margin. A failure here is cosmetic: the
   // full pull below still delivers everything.
   if (onPlacements) {
-    const LIGHT_PAGE = 1000
-    const lightPage = async (p: number) => {
-      let q = supabase.from('units').select(PLACEMENT_SELECT).neq('status', 'DEPARTED')
-      if (siteId) q = (q as any).eq('site_id', siteId)
-      const { data, error } = await (q as any).order('vin').range(p * LIGHT_PAGE, p * LIGHT_PAGE + LIGHT_PAGE - 1)
-      if (error) throw error
-      const units = ((data ?? []) as DbUnit[]).map((r) => parseUnitRow(r))
-      if (units.length) onPlacements(units)
-    }
-    Promise.all(Array.from({ length: Math.ceil(total / LIGHT_PAGE) }, (_, p) => lightPage(p)))
-      .catch((e) => console.error('[db] fetchAllUnits placements', e))
+    fetchUnitPlacements(siteId, onPlacements).catch((e) => console.error('[db] fetchAllUnits placements', e))
   }
   const pages = await Promise.all(Array.from({ length: pageCount }, (_, p) => fetchPage(p)))
   return pages.flat()

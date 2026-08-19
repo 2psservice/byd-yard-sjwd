@@ -17,6 +17,7 @@ import { onSync, sendSync } from '../lib/syncBus'
 import { hashPassword, verifyPassword, isHashed } from '../lib/password'
 import { resolvePart, resolveDefect } from '../lib/masterDefect'
 import { supabase } from '../lib/supabase'
+import { blockKeyOfTag, pos as posCode } from '../lib/format'
 import type { DbDamage, DbUnit } from '../lib/database.types'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 
@@ -28,6 +29,14 @@ let tid = 0
  *  cleared so nothing silently ANDs the result down to zero rows. */
 const revealUnitList = () => {
   useUnitsView.getState().patch({ tab: 'units', q: '', fGroup: '', colFilters: {} })
+}
+
+/** Append a move line to the car's tracking-row history (same trail ops scan and
+ *  the admin Event tab read). Lazy import — useTracking reads useYard. */
+function logMoveEvent(vin: string, by: string, from: string, to: string): void {
+  import('./useTracking')
+    .then((m) => m.useTracking.getState().appendHistory(vin, { at: Date.now(), by, field: 'Location', from, to }))
+    .catch(() => {})
 }
 
 /** Append a damage audit line to the car's tracking-row history so it shows in
@@ -247,6 +256,12 @@ interface YardState {
   endTrip: (vin: string) => void
   purgeNonTracking: (realVins: Set<string>) => void
   ensureUnitSites: () => void
+  /** Give every car on a shared square its own คันที่ — same lane only, never a
+   *  different ช่อง. Returns how many cars were re-numbered. */
+  dedupeSlots: () => number
+  /** Re-read VIN + position for this yard from the cloud and adopt what it says,
+   *  so every device converges on the same plan even if a realtime event dropped. */
+  refreshPlacements: () => Promise<number>
   // --- supabase ---
   loadFromSupabase: () => Promise<void>
   /** boot cache: fill the yard plan from IndexedDB before the network answers */
@@ -1163,6 +1178,116 @@ export const useYard = create<YardState>()(
           trips: s.trips.filter((tr) => realVins.has(tr.vin)),
         })),
 
+      /**
+       * รถซ้อนช่องกัน → เลื่อนเติมให้เต็มในแถวเดิม ห้ามข้ามแถว
+       *
+       * A square can end up claimed by two cars (two devices handing out the
+       * same คันที่ down one lane). The plan draws one car per square, so the
+       * other one simply is not on the plan — staff walk to a lane and find a
+       * car the system says is somewhere else.
+       *
+       * The repair is deliberately the narrowest one possible: the car that has
+       * stood there longest keeps the square, the others take the free คันที่
+       * numbers left in THE SAME ช่อง (block + slot never change), and a car
+       * that already has a square to itself is never touched. Every device
+       * computes the identical answer from the identical data — longest-parked
+       * first, VIN as the tie-break — so they all converge instead of fighting.
+       *
+       * Runs only once this device holds the whole yard (unitsCloudDone): fixing
+       * against a half-loaded copy is how the duplicates got created in the
+       * first place.
+       */
+      dedupeSlots: () => {
+        const s = get()
+        if (!s.unitsCloudDone) return 0
+        const blocks = curBlocks(s)
+        const depthOf = (blockTag?: string) => {
+          const b = blocks.find((x) => blockKeyOfTag(x.name) === blockKeyOfTag(blockTag) || blockKeyOfTag(x.id) === blockKeyOfTag(blockTag))
+          return b?.rows ?? MAX_LANE_DEPTH
+        }
+        // group by lane: block + ช่อง + yard
+        const lanes = new Map<string, Unit[]>()
+        for (const u of Object.values(s.units)) {
+          if (!u.block || !u.row || !u.slot) continue
+          if (u.status !== 'PARKED' && u.status !== 'ASSIGNED' && u.status !== 'LOADED') continue
+          const k = `${blockKeyOfTag(u.block)}|${u.site ?? ''}|${u.slot}`
+          const arr = lanes.get(k)
+          if (arr) arr.push(u); else lanes.set(k, [u])
+        }
+        const moved: Unit[] = []
+        const units = { ...s.units }
+        for (const lane of lanes.values()) {
+          const byDepth = new Map<number, Unit[]>()
+          for (const u of lane) {
+            const arr = byDepth.get(u.row!)
+            if (arr) arr.push(u); else byDepth.set(u.row!, [u])
+          }
+          if (![...byDepth.values()].some((a) => a.length > 1)) continue // ไม่มีรถซ้อน
+          const taken = new Set(byDepth.keys())
+          const depth = depthOf(lane[0].block)
+          for (const [, cars] of [...byDepth.entries()].sort((a, b) => a[0] - b[0])) {
+            if (cars.length < 2) continue
+            // longest-parked keeps the square; VIN breaks a tie so every device
+            // picks the same winner
+            const order = [...cars].sort((a, b) =>
+              (a.parkedAt ?? a.importedAt ?? 0) - (b.parkedAt ?? b.importedAt ?? 0) || a.vin.localeCompare(b.vin))
+            for (const u of order.slice(1)) {
+              let free = 0
+              for (let r = 1; r <= depth; r++) if (!taken.has(r)) { free = r; break }
+              if (!free) break // แถวเต็มจริงๆ — ปล่อยไว้ให้คนตัดสิน ห้ามย้ายไปแถวอื่น
+              taken.add(free)
+              const next = { ...u, row: free }
+              units[u.vin] = next
+              moved.push(next)
+              logMoveEvent(u.vin, 'แก้ตำแหน่งซ้ำ (แถวเดิม)', posCode(u), posCode(next))
+            }
+          }
+        }
+        if (!moved.length) return 0
+        set({ units })
+        db.upsertUnits(moved).catch((e) => console.error('[db] dedupeSlots', e))
+        get().toast('info', `พบรถซ้อนช่องกัน — จัดคันที่ใหม่ในแถวเดิม ${moved.length} คัน`)
+        return moved.length
+      },
+
+      /**
+       * ทุกเครื่องเห็นผังเหมือนกัน: re-read VIN + position for this yard and adopt
+       * what the cloud says. Realtime keeps screens live, but an event that never
+       * arrives leaves one device drawing a stale plan forever — nothing else
+       * re-checks. This pass is cheap (position columns only, no defects), so it
+       * can run on a timer and whenever the screen comes back into view.
+       */
+      refreshPlacements: async () => {
+        const siteId = get().currentSite
+        if (!db.isConfigured() || !siteId) return 0
+        let cloud: Unit[]
+        try { cloud = await db.fetchUnitPlacements(siteId) } catch { return 0 }
+        if (!cloud.length) return 0
+        let changed = 0
+        set((s) => {
+          const units = { ...s.units }
+          const seen = new Set<string>()
+          for (const c of cloud) {
+            seen.add(c.vin)
+            const cur = units[c.vin]
+            if (cur && cur.block === c.block && cur.row === c.row && cur.slot === c.slot && cur.status === c.status) continue
+            // keep everything this device knows that the light pass does not carry
+            units[c.vin] = cur ? { ...cur, block: c.block, row: c.row, slot: c.slot, status: c.status, site: c.site } : c
+            changed++
+          }
+          // a car this device still parks here but the cloud no longer lists is
+          // one that left through another device — free its square
+          for (const u of Object.values(units)) {
+            if (u.site !== siteId || !u.block || seen.has(u.vin)) continue
+            units[u.vin] = { ...u, status: 'DEPARTED', block: undefined, row: undefined, slot: undefined }
+            changed++
+          }
+          return changed ? { units } : s
+        })
+        if (changed) get().dedupeSlots()
+        return changed
+      },
+
       ensureUnitSites: () =>
         set((s) => {
           const ids = s.sites.map((x) => x.id)
@@ -1709,6 +1834,43 @@ if (typeof window !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden' && unitsIdbTimer) flushUnitsIdb()
   })
+}
+
+// ── รถซ้อนช่องกัน → จัดคันที่ใหม่ในแถวเดิม (อัตโนมัติ) ────────────────────────
+// A collision can appear from any device at any moment (a relocation racing
+// another phone's), so the check rides on the units store itself. dedupeSlots
+// only acts on squares claimed by MORE THAN ONE car and only ever re-numbers
+// within the same ช่อง — a lane with holes but no collision is left exactly as
+// the yard put it, and no car ever changes lane. It also writes nothing when
+// there is nothing to fix, so its own set() cannot loop.
+let dedupeTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleDedupe(delay = 1200) {
+  if (dedupeTimer) clearTimeout(dedupeTimer)
+  dedupeTimer = setTimeout(() => {
+    dedupeTimer = null
+    try { useYard.getState().dedupeSlots() } catch { /* store mid-teardown */ }
+  }, delay)
+}
+useYard.subscribe((s, prev) => {
+  if (s.units !== prev.units || s.unitsCloudDone !== prev.unitsCloudDone) scheduleDedupe()
+})
+
+// ── ทุกเครื่องเห็นผังเดียวกัน: นาฬิกากระทบยอดตำแหน่ง ──────────────────────────
+// Realtime carries every move the moment it happens, but a websocket that drops
+// an event — or a phone that was asleep — leaves that device drawing a plan
+// nobody else sees, with nothing to correct it until someone reloads. Re-reading
+// VIN + position is cheap (no defects), so do it on a timer and whenever the
+// screen comes back, and adopt whatever the cloud says.
+const PLACEMENT_RESYNC_MS = 3 * 60_000
+if (typeof window !== 'undefined') {
+  const resync = () => {
+    const s = useYard.getState()
+    if (!s.loggedInUserId || !s.currentSite || !s.unitsCloudDone) return
+    s.refreshPlacements().catch(() => {})
+  }
+  setInterval(resync, PLACEMENT_RESYNC_MS)
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') resync() })
+  window.addEventListener('online', resync)
 }
 
 // ── syncBus receivers: another device changed the layout / trailers → refetch ──
