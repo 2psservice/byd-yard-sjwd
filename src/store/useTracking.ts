@@ -3,7 +3,7 @@ import { create } from 'zustand'
 import { quotaSafeStorage } from '../lib/persistStorage'
 import { persist } from 'zustand/middleware'
 import type { Column } from '../lib/trackingColumns'
-import { defaultColumns, reconcileColumns, MAX_FILTERS, DEFAULT_FILTER_COLS } from '../lib/trackingColumns'
+import { defaultColumns, reconcileColumns, columnNameKey, duplicatesBuiltIn, MAX_FILTERS, DEFAULT_FILTER_COLS } from '../lib/trackingColumns'
 import type { ParseResult, RowEvent, TrackRow } from '../lib/excelTracking'
 import { parseTrackingWorkbook } from '../lib/excelTracking'
 import { idbBulkPut, idbClear, idbDelete, idbGetAllRows, idbPut } from '../lib/idb'
@@ -98,15 +98,20 @@ function applyOptions(columns: Column[], options: Record<string, string[]>): Col
 
 /** Add a plain text column for every imported header not already in the config,
  *  so EVERY uploaded column shows up in the Unit List (data is already stored in
- *  each row's cells + synced to cloud; this just makes it visible/usable). */
+ *  each row's cells + synced to cloud; this just makes it visible/usable).
+ *
+ *  A header that only re-spells a column we already have gets no column of its
+ *  own: the file's "LOCATION" used to sit beside the computed "Location" as a
+ *  second, permanently empty column, and that empty one is what people read. */
 function mergeImportedColumns(columns: Column[], headers: string[] | undefined): Column[] {
   if (!headers?.length) return columns
-  const have = new Set(columns.map((c) => c.key))
+  const have = new Set(columns.flatMap((c) => [columnNameKey(c.key), columnNameKey(c.label)]))
   const extra: Column[] = []
   for (const h of headers) {
     const key = (h ?? '').trim()
-    if (!key || have.has(key)) continue
-    have.add(key)
+    const name = columnNameKey(key)
+    if (!key || have.has(name)) continue
+    have.add(name)
     extra.push({ key, label: key, group: 'vehicle', type: 'text', width: 150, visible: true, editable: true, custom: true })
   }
   return extra.length ? [...columns, ...extra] : columns
@@ -689,9 +694,16 @@ export const useTracking = create<TrackingState>()(
         set((s) => {
           const trimmed = label.trim()
           if (!trimmed) return s
+          // refuse a name that only re-spells a built-in column — reconcileColumns
+          // drops those on the next load, so allowing it here would let a column
+          // appear and then silently vanish
+          if (duplicatesBuiltIn(trimmed)) {
+            useYard.getState().toast('err', `มีคอลัมน์ชื่อ "${trimmed}" อยู่แล้ว`)
+            return s
+          }
           let key = trimmed
           let n = 2
-          while (s.columns.some((c) => c.key === key)) key = `${trimmed} (${n++})`
+          while (s.columns.some((c) => columnNameKey(c.key) === columnNameKey(key))) key = `${trimmed} (${n++})`
           const col: Column = { key, label: trimmed, group: 'pm', type: 'text', width: 140, visible: true, editable: true, custom: true }
           return { columns: [...s.columns, col] }
         }),

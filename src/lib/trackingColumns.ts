@@ -240,13 +240,42 @@ export const SELECT_DATA_KEYS = SELECT_FROM_DATA
  *  - user ordering / visibility / custom columns survive,
  *  - stale defaults are dropped.
  */
+/**
+ * What a column is CALLED, for comparing two columns by name.
+ *
+ * An uploaded file's headers each become a column, keyed by the header text —
+ * so a sheet with a "LOCATION" header produced a second, always-empty Location
+ * column sitting beside the real one (which is computed from the car's slot and
+ * keyed `__location`, labelled "Location"). Same name to a human, two columns on
+ * screen, and the empty one is the one people read. Case and spacing are not a
+ * meaningful difference between column names, so fold them away.
+ */
+export const columnNameKey = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ')
+
+/** Every name the built-in columns answer to — key AND label. */
+function builtInNames(): Set<string> {
+  const out = new Set<string>()
+  for (const c of defaultColumns()) { out.add(columnNameKey(c.key)); out.add(columnNameKey(c.label)) }
+  return out
+}
+
+/** Is this an imported/manual column that merely re-spells a built-in one? */
+export function duplicatesBuiltIn(name: string, names = builtInNames()): boolean {
+  return names.has(columnNameKey(name))
+}
+
 export function reconcileColumns(saved: Column[] | undefined): Column[] {
   const defs = defaultColumns()
   if (!saved || !saved.length) return defs
   const defByKey = new Map(defs.map((c) => [c.key, c]))
+  const builtIn = builtInNames()
   const out: Column[] = []
   const seen = new Set<string>()
   for (const s of saved) {
+    // a custom column that only re-spells a built-in ("LOCATION" next to the
+    // computed "Location") is dropped — its cell data stays in the row, nothing
+    // is deleted, it just stops showing as a second empty column
+    if (s.custom && duplicatesBuiltIn(s.key) && !defByKey.has(s.key)) continue
     if (s.custom) { out.push(s); seen.add(s.key); continue }
     const d = defByKey.get(s.key)
     if (!d) continue // dropped default
