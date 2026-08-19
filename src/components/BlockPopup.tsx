@@ -1,12 +1,14 @@
 import { useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { X, ArrowLeftRight } from 'lucide-react'
+import { X, ArrowLeftRight, Layers, Wand2 } from 'lucide-react'
 import type { Block, Unit } from '../types'
 import { CarTopView } from './CarTopView'
 import { StatusBadge } from './ui'
 import { ViewLegend } from './ViewLegend'
 import { blockTag, pos, unitInBlock } from '../lib/format'
 import { resolveSlotColor, type YardViewMode } from '../lib/yardView'
+import { useYard } from '../store/useYard'
+import { useTracking } from '../store/useTracking'
 
 const CELL = 18, GUTTER = 26, HEADER = 18
 
@@ -17,9 +19,13 @@ export function BlockPopup({
   block: Block; units: Unit[]; onClose: () => void; onToggleTranspose?: () => void; onFocus?: () => void; index?: number
   viewMode?: YardViewMode; vinCells?: Map<string, Record<string, string>>; modelColors?: Map<string, string>
 }) {
+  const { currentUser, updateLocations, toast } = useYard()
+  const appendHistory = useTracking((s) => s.appendHistory)
   const [p, setP] = useState({ x: 60 + (index % 5) * 46, y: 84 + (index % 5) * 54 })
   const drag = useRef<null | { sx: number; sy: number; ox: number; oy: number }>(null)
   const [sel, setSel] = useState<Unit | null>(null)
+  // a square claimed by several cars → list them all rather than pick one
+  const [stack, setStack] = useState<null | { label: string; list: Unit[] }>(null)
   const [region, setRegion] = useState<null | { r1: number; c1: number; r2: number; c2: number }>(null)
   const gridRef = useRef<HTMLDivElement>(null)
   const selStart = useRef<null | { r: number; c: number }>(null)
@@ -30,17 +36,60 @@ export function BlockPopup({
   const dCols = transposed ? block.rows : block.cols // columns in the displayed grid
   const toActual = (dr: number, dc: number) => (transposed ? { r: dc, c: dr } : { r: dr, c: dc })
 
+  // A square can legitimately end up claimed by MORE THAN ONE car: depth down a
+  // lane ("คันที่ N") is handed out as the first free number, computed from a
+  // units cache that fills page by page, so two devices could both hand out
+  // คันที่ 1. This map used to keep one car per square, which meant the extra
+  // car vanished from the plan entirely — N1 held 5 cars and the plan drew 4.
+  // Keep every car: the square shows the first and flags the clash, and the
+  // occupancy count counts them all, so the plan and the lane list agree.
   const grid = useMemo(() => {
-    const m = new Map<string, Unit>()
+    const m = new Map<string, Unit[]>()
     for (const u of units) {
-      if (unitInBlock(u, block) && u.row && u.slot && (u.status === 'PARKED' || u.status === 'ASSIGNED' || u.status === 'LOADED'))
-        m.set(`${u.row}-${u.slot}`, u)
+      if (unitInBlock(u, block) && u.row && u.slot && (u.status === 'PARKED' || u.status === 'ASSIGNED' || u.status === 'LOADED')) {
+        const k = `${u.row}-${u.slot}`
+        const at = m.get(k)
+        if (at) at.push(u); else m.set(k, [u])
+      }
     }
+    for (const list of m.values()) if (list.length > 1) list.sort((a, b) => (a.parkedAt ?? a.importedAt ?? 0) - (b.parkedAt ?? b.importedAt ?? 0))
     return m
   }, [units, block.id, block.name])
-  const unitAt = (dr: number, dc: number) => { const a = toActual(dr, dc); return grid.get(`${a.r + 1}-${a.c + 1}`) }
-  const filled = grid.size, cap = block.rows * block.cols, pct = cap ? Math.round((filled / cap) * 100) : 0
+  const unitsAt = (dr: number, dc: number) => { const a = toActual(dr, dc); return grid.get(`${a.r + 1}-${a.c + 1}`) }
+  const unitAt = (dr: number, dc: number) => unitsAt(dr, dc)?.[0]
+  let filled = 0
+  let clashes = 0
+  for (const list of grid.values()) { filled += list.length; if (list.length > 1) clashes += list.length - 1 }
+  const cap = block.rows * block.cols, pct = cap ? Math.round((filled / cap) * 100) : 0
   const resolveColor = (u: Unit): string => resolveSlotColor(u, viewMode, vinCells, modelColors)
+
+  /**
+   * Give every car on one square its own depth — run by a person, never by
+   * itself. The car that has stood there longest keeps the square; the others
+   * take the shallowest free depths left in the SAME lane, so nothing that
+   * already has a square of its own is touched and no car changes lane.
+   */
+  const fixStack = (list: Unit[]) => {
+    const slot = list[0]?.slot
+    if (!slot || list.length < 2) return
+    const lane = units.filter((u) => unitInBlock(u, block) && u.slot === slot && u.row
+      && (u.status === 'PARKED' || u.status === 'ASSIGNED' || u.status === 'LOADED'))
+    const taken = new Set(lane.map((u) => u.row!))
+    const updates: { vin: string; block: string; row: number; slot: number; modelName?: string; color?: string }[] = []
+    for (const u of list.slice(1)) { // [0] is the longest-standing car — it stays put
+      let depth = 0
+      for (let r = 1; r <= block.rows; r++) if (!taken.has(r)) { depth = r; break }
+      if (!depth) break // lane genuinely full — leave the rest for a human to move
+      taken.add(depth)
+      updates.push({ vin: u.vin, block: blockTag(block), row: depth, slot, modelName: u.modelName, color: u.color })
+      appendHistory(u.vin, { at: Date.now(), by: currentUser, field: 'Location',
+        from: pos(u), to: pos({ block: blockTag(block), row: depth, slot }) })
+    }
+    if (!updates.length) { toast('err', `แถวนี้เต็ม — ย้ายรถออกก่อนจึงจะแยกช่องได้`); return }
+    updateLocations(updates)
+    setStack(null)
+    toast('ok', `แยกช่องให้ ${updates.length} คันแล้ว — ${updates.map((u) => pos(u)).join(', ')}`)
+  }
 
   // ── drag the popup by its title bar ──
   const onTitleDown = (e: React.PointerEvent) => {
@@ -79,8 +128,11 @@ export function BlockPopup({
     const hit = cellAt(e)
     // a click (no drag) on an occupied slot → show its detail, clear selection
     if (s && hit && s.r === hit.r && s.c === hit.c) {
-      const u = unitAt(hit.r, hit.c)
-      if (u) { setSel(u); setRegion(null) }
+      const list = unitsAt(hit.r, hit.c)
+      if (!list?.length) return
+      setRegion(null)
+      if (list.length > 1) setStack({ label: pos({ block: blockTag(block), row: toActual(hit.r, hit.c).r + 1, slot: toActual(hit.r, hit.c).c + 1 }), list })
+      else setSel(list[0])
     }
   }
   const inRegion = (r: number, c: number) => region && r >= region.r1 && r <= region.r2 && c >= region.c1 && c <= region.c2
@@ -126,17 +178,31 @@ export function BlockPopup({
               <div key={r} className="flex items-center" style={{ height: CELL }}>
                 <div className="tabular text-right pr-1.5 font-semibold" style={{ width: GUTTER, fontSize: 9.5, color: 'var(--muted)' }}>{r + 1}</div>
                 {Array.from({ length: dCols }, (_, c) => {
-                  const u = unitAt(r, c)
+                  const list = unitsAt(r, c)
+                  const u = list?.[0]
+                  const many = (list?.length ?? 0) > 1
                   const picked = inRegion(r, c)
+                  const label = pos({ block: blockTag(block), row: toActual(r, c).r + 1, slot: toActual(r, c).c + 1 })
                   return (
-                    <div key={c} title={u ? `${u.vin} · ${u.modelName}` : pos({ block: blockTag(block), row: toActual(r, c).r + 1, slot: toActual(r, c).c + 1 })}
+                    <div key={c} className="relative"
+                      title={many ? `${label} · มีรถซ้อนกัน ${list!.length} คัน — ${list!.map((x) => x.vin.slice(-6)).join(', ')}`
+                        : u ? `${u.vin} · ${u.modelName}` : label}
                       style={{
                         width: CELL - 2, height: CELL - 2, margin: 1, borderRadius: 3,
                         background: u ? resolveColor(u) : '#eef1f5',
                         border: u ? 'none' : '1px solid #dde3ea',
                         opacity: u && viewMode === 'status' && u.status === 'ASSIGNED' ? 0.7 : 1,
-                        boxShadow: picked ? 'inset 0 0 0 2px #0f172a' : sel && u && sel.vin === u.vin ? '0 0 0 2px #fff, 0 0 0 3px var(--brand)' : undefined,
-                      }} />
+                        boxShadow: picked ? 'inset 0 0 0 2px #0f172a'
+                          : many ? 'inset 0 0 0 2px #dc2626'
+                          : sel && u && sel.vin === u.vin ? '0 0 0 2px #fff, 0 0 0 3px var(--brand)' : undefined,
+                      }}>
+                      {many && (
+                        <span className="absolute tabular font-bold pointer-events-none"
+                          style={{ right: -1, bottom: -3, fontSize: 8, lineHeight: 1, color: '#fff', textShadow: '0 0 2px #dc2626, 0 0 2px #dc2626' }}>
+                          {list!.length}
+                        </span>
+                      )}
+                    </div>
                   )
                 })}
               </div>
@@ -156,13 +222,69 @@ export function BlockPopup({
       {/* ── footer: legend (matches the active VIEW mode) + selection / detail ── */}
       <div className="px-3 py-2 border-t hairline overflow-auto" style={{ background: 'var(--app-bg)', maxHeight: 90 }}>
         <ViewLegend viewMode={viewMode} modelColors={modelColors} />
+        {clashes > 0 && (
+          <div className="text-[11.5px] mt-1.5 font-semibold" style={{ color: '#dc2626' }}>
+            มีรถซ้อนช่องกัน {clashes} คัน — ช่องที่ขอบแดงมีรถมากกว่า 1 คัน แตะเพื่อดู
+          </div>
+        )}
         {regionCount > 1 && (
           <div className="text-[11.5px] mt-1.5 font-semibold" style={{ color: '#0f172a' }}>เลือก {regionCount} ช่อง ({region!.c2 - region!.c1 + 1}×{region!.r2 - region!.r1 + 1})</div>
         )}
       </div>
 
       {/* slot click → rich vehicle detail card (with car .png) */}
+      {stack && <StackCard label={stack.label} list={stack.list} onPick={(u) => { setStack(null); setSel(u) }}
+        onFix={() => fixStack(stack.list)} onClose={() => setStack(null)} />}
       {sel && <SlotDetailCard u={sel} label={sel.block ? pos(sel) : sel.vin} onClose={() => setSel(null)} />}
+    </div>,
+    document.body,
+  )
+}
+
+/**
+ * One square, several cars. The plan can only paint one car per square, so the
+ * rest would simply not be on the plan — the lane list said 5 and the plan drew
+ * 4. Everything on the square is listed here, and the operator can hand the
+ * extras their own depth in the same lane (a person's decision, logged like any
+ * other move — the system never re-numbers anything on its own).
+ */
+function StackCard({ label, list, onPick, onFix, onClose }: {
+  label: string; list: Unit[]; onPick: (u: Unit) => void; onFix: () => void; onClose: () => void
+}) {
+  return createPortal(
+    <div className="fixed inset-0 z-[90] flex items-center justify-center p-4" style={{ background: 'rgba(8,15,28,0.55)', backdropFilter: 'blur(3px)' }} onClick={onClose}>
+      <div className="rounded-2xl overflow-hidden pop" style={{ width: 340, maxWidth: '92vw', background: '#fff', boxShadow: '0 30px 70px -18px rgba(0,0,0,0.7)' }} onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-2 px-4 py-2.5" style={{ background: '#dc2626' }}>
+          <Layers size={16} color="#fff" />
+          <span className="font-extrabold text-[15px] text-white tracking-wide">{label}</span>
+          <span className="text-[11.5px] font-bold px-2 py-0.5 rounded-md" style={{ background: 'rgba(255,255,255,0.2)', color: '#fff' }}>{list.length} คัน</span>
+          <button onClick={onClose} className="ml-auto w-7 h-7 rounded-lg flex items-center justify-center" style={{ background: 'rgba(255,255,255,0.18)', color: '#fff' }}><X size={15} /></button>
+        </div>
+        <div className="px-4 py-2.5 text-[12px]" style={{ color: 'var(--muted)', background: '#fef2f2' }}>
+          รถหลายคันถูกบันทึกเป็น <b>คันที่เดียวกัน</b> ในแถวนี้ ผังจึงวาดได้ช่องเดียว — แยกช่องให้เพื่อให้เห็นครบทุกคัน
+        </div>
+        <div className="divide-y hairline" style={{ maxHeight: '46vh', overflowY: 'auto' }}>
+          {list.map((u, i) => (
+            <button key={u.vin} onClick={() => onPick(u)} className="w-full text-left px-4 py-2.5 flex items-center gap-3 hover:bg-slate-50">
+              <span className="badge tabular shrink-0" style={{ background: i === 0 ? 'rgba(22,163,74,0.12)' : 'var(--chip)', color: i === 0 ? '#16a34a' : 'var(--muted)' }}>
+                {i === 0 ? 'อยู่ก่อน' : `ซ้อน ${i}`}
+              </span>
+              <span className="min-w-0">
+                <span className="vin font-bold text-[13px] block truncate">{u.vin}</span>
+                <span className="text-[11.5px] block truncate" style={{ color: 'var(--muted)' }}>{u.modelName} · {u.color}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+        <div className="p-3" style={{ background: 'var(--app-bg)' }}>
+          <button onClick={onFix} className="w-full py-2.5 rounded-xl text-[13.5px] font-bold text-white flex items-center justify-center gap-2" style={{ background: '#0ea5e9' }}>
+            <Wand2 size={15} /> แยกช่องให้อยู่คนละคันที่
+          </button>
+          <div className="text-[11px] text-center mt-1.5" style={{ color: 'var(--faint)' }}>
+            คันที่อยู่ก่อนอยู่ที่เดิม · คันที่ซ้อนย้ายไปคันที่ว่างในแถวเดียวกัน
+          </div>
+        </div>
+      </div>
     </div>,
     document.body,
   )

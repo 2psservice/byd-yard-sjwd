@@ -18,21 +18,27 @@ export function BlockGrid({
   const lang = useYard((s) => s.lang)
   const [sel, setSel] = useState<Unit | null>(null)
 
+  // one square can be claimed by more than one car (two devices handing out the
+  // same "คันที่" down a lane) — keep them all so the count matches the lane
+  // list and no car quietly drops off the plan
   const grid = useMemo(() => {
-    const map = new Map<string, Unit>()
+    const map = new Map<string, Unit[]>()
     for (const u of units) {
       if (unitInBlock(u, block) && u.row && u.slot && (u.status === 'PARKED' || u.status === 'ASSIGNED' || u.status === 'LOADED')) {
-        map.set(`${u.row}-${u.slot}`, u)
+        const k = `${u.row}-${u.slot}`
+        const at = map.get(k)
+        if (at) at.push(u); else map.set(k, [u])
       }
     }
     return map
   }, [units, block.id, block.name])
 
-  const filled = grid.size
+  let filled = 0
+  for (const list of grid.values()) filled += list.length
   const cap = block.rows * block.cols
   const models = useMemo(() => {
     const s = new Set<string>()
-    grid.forEach((u) => s.add(u.model))
+    grid.forEach((list) => list.forEach((u) => s.add(u.model)))
     return [...s]
   }, [grid])
 
@@ -71,9 +77,11 @@ export function BlockGrid({
               <div className="mono text-right pr-1.5" style={{ width: 24, fontSize: 9, color: 'var(--faint)' }}>{r + 1}</div>
               <div className="flex" style={{ gap: 1 }}>
                 {Array.from({ length: block.cols }, (_, c) => {
-                  const u = grid.get(`${r + 1}-${c + 1}`)
+                  const list = grid.get(`${r + 1}-${c + 1}`)
+                  const u = list?.[0]
+                  const many = (list?.length ?? 0) > 1
                   const m = u ? modelById(u.model) : null
-                  const isHi = u && highlight && u.vin === highlight
+                  const isHi = list && highlight && list.some((x) => x.vin === highlight)
                   return (
                     <div
                       key={c}
@@ -82,12 +90,14 @@ export function BlockGrid({
                         width: cell, height: cell,
                         background: u ? m?.color ?? '#888' : undefined,
                         opacity: u && u.status === 'ASSIGNED' ? 0.55 : 1,
-                        boxShadow: isHi ? '0 0 0 2px #fff, 0 0 12px 2px var(--brand)' : undefined,
+                        boxShadow: isHi ? '0 0 0 2px #fff, 0 0 12px 2px var(--brand)'
+                          : many ? 'inset 0 0 0 2px #dc2626' : undefined,
                         cursor: u ? 'pointer' : pickMode ? 'cell' : 'default',
                       }}
-                      title={u ? `${u.vin} · ${u.modelName}` : pickMode ? `${block.id}-${r + 1}-${c + 1}` : ''}
+                      title={many ? `${block.id}-${r + 1}-${c + 1} · มีรถซ้อนกัน ${list!.length} คัน — ${list!.map((x) => x.vin.slice(-6)).join(', ')}`
+                        : u ? `${u.vin} · ${u.modelName}` : pickMode ? `${block.id}-${r + 1}-${c + 1}` : ''}
                       onClick={() => {
-                        if (u) setSel(u)
+                        if (u) setSel(highlight ? list!.find((x) => x.vin === highlight) ?? u : u)
                         else if (pickMode && onPick) onPick({ block: block.id, row: r + 1, slot: c + 1 })
                       }}
                     />

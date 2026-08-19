@@ -211,6 +211,28 @@ export async function fetchUnitsByVins(vins: string[]): Promise<Unit[]> {
   return out
 }
 
+/**
+ * Every car the CLOUD parks in one lane (a block's column), whatever this
+ * device happens to hold locally.
+ *
+ * Depth down a lane ("คันที่ N") is picked as the first free number, and it was
+ * picked from the local units cache — which fills page by page and is simply
+ * incomplete on a phone opened a minute ago. Two devices then both handed out
+ * คันที่ 1, two cars ended up claiming the same square, and the yard plan (one
+ * car per square) drew four cars for a lane that holds five.
+ *
+ * `block` is matched on the caller's side: the column holds a block TAG whose
+ * spelling varies (N / N1), and blockKeyOfTag is what normalises it.
+ */
+export async function fetchUnitsInLane(siteId: string | null, slot: number): Promise<Unit[]> {
+  if (!isConfigured() || !slot) return []
+  let q = supabase.from('units').select('*, damages(*)').eq('slot', slot)
+  if (siteId) q = q.eq('site_id', siteId)
+  const { data, error } = await q
+  if (error) { console.error('[db] fetchUnitsInLane', error); throw error }
+  return ((data ?? []) as DbUnitWithDamages[]).map(rowToUnit)
+}
+
 /** โหลดรถทุกคัน (+ ความเสียหาย) จาก Supabase; กรองตาม site หากระบุ.
  *  Paginated — PostgREST caps a single request at 1,000 rows, so a >1,000-unit
  *  yard silently lost the tail (units past the cap never loaded → their damages
