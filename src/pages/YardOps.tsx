@@ -591,10 +591,29 @@ function VinInput({
 
   const go = (raw?: string) => {
     const v = (raw ?? val).trim().toUpperCase()
-    if (v.length >= 3) { onScan(v); setVal('') }
+    if (v.length < 3) return
+    // หุบแป้นพิมพ์ก่อนส่งเลขวินออกไป
+    // The scan is submitted; there is nothing left to type until the worker sees
+    // the result. Blur while this field is still ON SCREEN — a phone keyboard
+    // only comes down for a real blur, and if the field is unmounted by the next
+    // screen while it still holds focus, Android leaves the keys up covering the
+    // card and its ตกลง button, which is exactly what the gate-out screen hit.
+    ref.current?.blur()
+    onScan(v)
+    setVal('')
   }
 
-  useEffect(() => { if (autoFocus) ref.current?.focus() }, [autoFocus])
+  useEffect(() => {
+    if (!autoFocus) return
+    // ห้ามดึงโฟกัสตอนมีกล่องเต็มจอเปิดอยู่
+    // Confirming a scan re-mounts this field behind the result box, and grabbing
+    // focus here is what pops the phone keyboard straight back up over that box
+    // — the worker then has to close the keyboard before every ตกลง. A worker
+    // who wants to type the next VIN taps the field; the handheld scanner and
+    // the camera never needed focus in the first place.
+    if (document.querySelector('div.fixed.inset-0')) return
+    ref.current?.focus()
+  }, [autoFocus])
 
   // ── handheld (keyboard-wedge) scanners: the SCAN trigger types the code as a
   // rapid keystroke burst + Enter. When focus is NOT in any text field, catch

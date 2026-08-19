@@ -9,6 +9,7 @@ import { useYard, useMe, isOpsOnlyRole } from './store/useYard'
 import { useTrackingRows, useTracking } from './store/useTracking'
 import { useOps } from './store/useOps'
 import { startSyncBus, stopSyncBus } from './lib/syncBus'
+import { startKeyboardGuard } from './lib/keyboardGuard'
 import { deriveCarStatus } from './lib/carStatus'
 import { yardLocCode, LAST_LOCATION_KEY } from './lib/groupingImport'
 import { matchModel } from './lib/sampleData'
@@ -60,6 +61,12 @@ export default function App() {
   const subscribeTracking = useTracking((s) => s.subscribeRealtime)
   const unsubscribeTracking = useTracking((s) => s.unsubscribeRealtime)
   const purgedRef = useRef(false)
+
+  // ── แป้นพิมพ์มือถือต้องไม่บังกล่องยืนยัน ──
+  // after a scan the field still holds focus, so the keyboard stays up and the
+  // result box ("Pre Gate-out สำเร็จ!") opens behind it with its ตกลง button
+  // covered. Blur the field whenever a full-screen box appears.
+  useEffect(() => startKeyboardGuard(), [])
 
   // ── Supabase Realtime: live status / yard-plan / ops updates across all devices ──
   useEffect(() => {
