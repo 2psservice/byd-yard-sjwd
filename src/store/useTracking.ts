@@ -60,6 +60,9 @@ interface TrackingState {
   /** Append a free-form audit entry to a row's history (no cell change) — used to
    *  log damage add/remove so the admin Event tab keeps a permanent record. */
   appendHistory: (vin: string, entry: RowEvent) => void
+  /** Version of the system-history purge this device has already run cloud-side.
+   *  Bumping SYS_HISTORY_PURGE_V forces one full sync that cleans every row. */
+  sysHistoryPurged: number
   addRow: (vin: string, cells?: Record<string, string>) => boolean
   deleteRows: (vins: string[]) => void
   clearRows: () => void
@@ -121,6 +124,31 @@ function mergeImportedColumns(columns: Column[], headers: string[] | undefined):
 const hasVin = (r: { cells?: Record<string, string> | null } | null | undefined) =>
   !!(r?.cells?.['Vin'] ?? '').trim()
 
+// ── เก็บกวาดประวัติการย้ายที่ "ระบบ" เขียนเอง ─────────────────────────────────
+// เดิมระบบมีกลไกจัดตำแหน่งรถให้อัตโนมัติ แล้วบันทึกลงประวัติการย้ายในนาม "ระบบ"
+// ตอนนี้เลิกใช้แล้ว (ตำแหน่งรถเปลี่ยนได้ทางเดียวคือพนักงาน / ops scan / admin)
+// แต่บรรทัดเก่ายังค้างอยู่ในฐานข้อมูล กินพื้นที่และทำให้อ่านประวัติแล้วไม่รู้ว่า
+// ใครย้ายรถจริง จึงลบทิ้งทุกจุดที่แถวไหลเข้าเครื่อง แล้วเขียนกลับขึ้น cloud ให้
+// หายถาวรทุกเครื่อง — เหลือแต่ประวัติของพนักงานและแอดมิน
+// `\b` is an ASCII word boundary — it never matches after Thai letters, so the
+// test has to be a plain prefix. No staff account is called "ระบบ" / "system".
+const isSystemEvent = (h: RowEvent) => {
+  const by = (h.by ?? '').trim()
+  return by.startsWith('ระบบ') || /^system\b/i.test(by)
+}
+
+/** Bump to re-run the cloud-side sweep on every device (one full sync each). */
+const SYS_HISTORY_PURGE_V = 1
+
+/** The row without its system-authored entries — returns the SAME object when
+ *  there is nothing to drop, so callers can use identity to spot rows to save. */
+function stripSystemHistory(r: TrackRow): TrackRow {
+  const h = r.history
+  if (!h?.length) return r
+  const kept = h.filter((e) => !isSystemEvent(e))
+  return kept.length === h.length ? r : { ...r, history: kept }
+}
+
 const MAX_ROW_HISTORY = 100
 function withHistoryEntry(r: TrackRow, key: string, value: string, columns: Column[], by: string): TrackRow {
   const from = r.cells[key] ?? ''
@@ -144,6 +172,7 @@ export const useTracking = create<TrackingState>()(
       lastImport: null,
       lastSync: 0,
       realtimeConnected: false,
+      sysHistoryPurged: 0,
 
       loadFromIdb: async () => {
         if (get().loaded) return
@@ -154,9 +183,11 @@ export const useTracking = create<TrackingState>()(
           const fallback = get().lastImport?.at ?? Date.now()
           const fixed: TrackRow[] = []
           const phantom: string[] = [] // blank-Vin rows → purge locally + in the cloud
-          for (const r of all) {
-            if (!hasVin(r)) { phantom.push(r.vin); continue }
-            if (r.updatedAt == null) { r.updatedAt = fallback; fixed.push(r) }
+          for (const raw of all) {
+            if (!hasVin(raw)) { phantom.push(raw.vin); continue }
+            const r = stripSystemHistory(raw)
+            if (r.updatedAt == null) r.updatedAt = fallback
+            if (r !== raw || raw.updatedAt == null) fixed.push(r)
             rows[r.vin] = r
           }
           if (fixed.length) idbBulkPut(fixed).catch(() => {})
@@ -181,9 +212,9 @@ export const useTracking = create<TrackingState>()(
               const siteRows = await db.fetchTrackingRowsForSite(siteName)
               if (siteRows.length) {
                 const rec: Record<string, TrackRow> = {}
-                for (const r of siteRows) if (hasVin(r)) rec[r.vin] = r
+                for (const r of siteRows) if (hasVin(r)) rec[r.vin] = stripSystemHistory(r)
                 set({ rows: rec })
-                idbBulkPut(siteRows.filter(hasVin)).catch(() => {})
+                idbBulkPut(Object.values(rec)).catch(() => {})
               }
             } catch { /* fall through to the full sync below */ }
           }
@@ -205,7 +236,10 @@ export const useTracking = create<TrackingState>()(
         // full pull the first time, or as a safety resync if the last one is stale (>6h);
         // otherwise fetch only what changed since last sync (minus a 2-min skew margin)
         const stale = startedAt - lastSync > 6 * 3600_000
-        const incremental = lastSync > 0 && hasLocal && !stale
+        // the retired system-history sweep needs to SEE every row once, and an
+        // incremental sync only returns rows changed since last time
+        const needPurge = get().sysHistoryPurged !== SYS_HISTORY_PURGE_V
+        const incremental = lastSync > 0 && hasLocal && !stale && !needPurge
         const since = incremental ? lastSync - 120_000 : undefined
 
         let cloud: TrackRow[] = []
@@ -216,10 +250,15 @@ export const useTracking = create<TrackingState>()(
         // or newer in the cloud. A tombstone (deletedAt set) always wins over a
         // stale local copy → the delete propagates to every device.
         const merged: Record<string, TrackRow> = { ...local }
+        // rows whose CLOUD copy still carries the retired "ระบบ" move history —
+        // they need re-writing even when this device's own copy is already clean
+        // (loadFromIdb strips on read, so `local` alone can never reveal them)
+        const dirty: TrackRow[] = []
         const pull: TrackRow[] = []
         const drop: string[] = []
         const phantom: string[] = [] // blank-Vin rows in the cloud → tombstone them
         for (const cr of cloud) {
+          if (!cr.deletedAt && stripSystemHistory(cr) !== cr) dirty.push(cr)
           const lr = local[cr.vin]
           if (cr.deletedAt) {
             if (lr) { delete merged[cr.vin]; drop.push(cr.vin) }
@@ -227,7 +266,8 @@ export const useTracking = create<TrackingState>()(
             if (lr) { delete merged[cr.vin]; drop.push(cr.vin) }
             phantom.push(cr.vin)
           } else if (!lr || (cr.updatedAt ?? 0) > (lr.updatedAt ?? 0)) {
-            merged[cr.vin] = cr; pull.push(cr)
+            const clean = stripSystemHistory(cr)
+            merged[cr.vin] = clean; pull.push(clean)
           }
         }
         // also sweep any blank-Vin rows already sitting in local state
@@ -249,11 +289,30 @@ export const useTracking = create<TrackingState>()(
           }
         }
 
-        if (pull.length || drop.length) { set({ rows: merged }) }
-        if (pull.length) idbBulkPut(pull).catch(() => {})
+        // sweep the retired system-authored move history out of every row this
+        // device holds, and push the cleaned rows so the cloud copy shrinks too
+        const pruned: TrackRow[] = []
+        for (const vin in merged) {
+          const clean = stripSystemHistory(merged[vin])
+          if (clean !== merged[vin]) { merged[vin] = clean; pruned.push(clean) }
+        }
+        // …plus the ones only the cloud still holds dirty. Keep OUR history when
+        // this device has the fresher row — the cloud's is the stale copy then.
+        for (const cr of dirty) {
+          if (merged[cr.vin] && pruned.every((r) => r.vin !== cr.vin)) pruned.push(merged[cr.vin])
+        }
+
+        if (pull.length || drop.length || pruned.length) { set({ rows: merged }) }
+        if (pull.length || pruned.length) idbBulkPut([...pull, ...pruned]).catch(() => {})
         if (drop.length) idbDelete(drop).catch(() => {})
-        if (push.length) db.upsertTrackingRows(push).catch(() => {})
+        // one write per VIN — Postgres rejects a batch that names the same
+        // conflict target twice (a pruned row may also be in `push`)
+        const outgoing = new Map(push.map((r) => [r.vin, r] as const))
+        for (const r of pruned) outgoing.set(r.vin, merged[r.vin])
+        if (outgoing.size) db.upsertTrackingRows([...outgoing.values()]).catch(() => {})
         set({ lastSync: startedAt })
+        // a full run has now seen — and cleaned — every row; don't force another
+        if (!incremental) set({ sysHistoryPurged: SYS_HISTORY_PURGE_V })
         // occasionally clear tombstones older than 30 days so the table stays lean
         if (!incremental) db.purgeTrackingTombstones(30 * 24 * 3600_000).catch(() => {})
       },
@@ -286,13 +345,13 @@ export const useTracking = create<TrackingState>()(
                 return
               }
               if (!(r.cells?.['Vin'] ?? '').trim()) return // ignore phantom blank-Vin inserts
-              const incoming: TrackRow = {
+              const incoming: TrackRow = stripSystemHistory({
                 vin: r.vin,
                 cells: r.cells ?? {},
                 updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : Date.now(),
                 site: r.site ?? undefined,
                 history: r.history ?? undefined,
-              }
+              })
               set((s) => {
                 const cur = s.rows[incoming.vin]
                 if (cur && (cur.updatedAt ?? 0) >= (incoming.updatedAt ?? 0)) return s // stale / self-echo
@@ -721,7 +780,7 @@ export const useTracking = create<TrackingState>()(
       name: 'sjwd-tracking',
       // only the (small) column + filter config is persisted to localStorage; rows live in IndexedDB
       storage: quotaSafeStorage(),
-      partialize: (s) => ({ columns: s.columns, filterCols: s.filterCols, defaultSeeded: s.defaultSeeded, viewDefaultVersion: s.viewDefaultVersion, lastImport: s.lastImport, lastSync: s.lastSync }),
+      partialize: (s) => ({ columns: s.columns, filterCols: s.filterCols, defaultSeeded: s.defaultSeeded, viewDefaultVersion: s.viewDefaultVersion, lastImport: s.lastImport, lastSync: s.lastSync, sysHistoryPurged: s.sysHistoryPurged }),
       merge: (persisted, current) => {
         const p = persisted as Partial<TrackingState> | undefined
         return {
@@ -730,6 +789,7 @@ export const useTracking = create<TrackingState>()(
           filterCols: Array.isArray(p?.filterCols) ? p!.filterCols!.slice(0, MAX_FILTERS) : initialFilterCols(),
           defaultSeeded: p?.defaultSeeded ?? false,
           viewDefaultVersion: p?.viewDefaultVersion ?? 0,
+          sysHistoryPurged: p?.sysHistoryPurged ?? 0,
         }
       },
     },

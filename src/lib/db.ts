@@ -298,6 +298,10 @@ const PLACEMENT_COLS = ['block', 'row', 'slot', 'plan_mode', 'assigned_at', 'dri
  * seen — so uploading a defect sheet mid-load quietly erased the yard-plan slot
  * (N0502 → ไม่พบ) of every car it touched, on every device.
  */
+export async function upsertUnitKeepPlacement(u: Unit): Promise<void> {
+  return upsertUnitsKeepPlacement([u])
+}
+
 export async function upsertUnitsKeepPlacement(units: Unit[], onProgress?: ChunkProgress): Promise<void> {
   if (!isConfigured() || !units.length) return
   const rows = units.map((u) => {
