@@ -1,8 +1,14 @@
 /**
  * syncBus — one shared Supabase Broadcast channel that tells every open client
  * "X changed, refetch it". Used for tables that aren't in the postgres_changes
- * publication (blocks / ops queues / trailers); units, damages, sites and
- * tracking_rows already stream row-level changes directly.
+ * publication (blocks / ops queues / trailers).
+ *
+ * `moves` is different: it carries the new positions themselves, not a "go
+ * refetch" hint. Car positions are the one thing every screen in the yard is
+ * looking at, and relying on the units table's row-level stream means a plan
+ * that silently stops updating whenever that stream is unavailable — nothing in
+ * the app can tell. Broadcast needs no publication membership and no DDL, so a
+ * move announced this way lands on every open screen the moment it happens.
  *
  * Broadcast needs no DB DDL and no publication membership — clients just relay
  * small {event, payload} messages through the realtime server.
@@ -10,12 +16,16 @@
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase, isConfigured } from './supabase'
 
-export type SyncEvent = 'blocks' | 'ops' | 'trailers' | 'viewdefault' | 'policies'
+export type SyncEvent = 'blocks' | 'ops' | 'trailers' | 'viewdefault' | 'policies' | 'moves'
+
+/** One car's new spot, as broadcast to every other open client. */
+export interface MoveMsg { vin: string; block?: string; row?: number; slot?: number; status?: string; at: number }
+export interface MovesPayload { siteId: string | null; moves: MoveMsg[] }
 type Handler = (payload: any) => void
 
 let channel: RealtimeChannel | null = null
 const handlers = new Map<SyncEvent, Handler[]>()
-const EVENTS: SyncEvent[] = ['blocks', 'ops', 'trailers', 'viewdefault', 'policies']
+const EVENTS: SyncEvent[] = ['blocks', 'ops', 'trailers', 'viewdefault', 'policies', 'moves']
 
 /** Register a listener (module-scope, survives channel restarts). */
 export function onSync(event: SyncEvent, h: Handler): void {
@@ -37,6 +47,15 @@ export function startSyncBus(): void {
   channel.subscribe()
 }
 
+/** Dev/test only: play the part of an incoming broadcast from another device,
+ *  so a test can check that this client reacts without needing a real socket. */
+export function __deliverForTest(event: SyncEvent, payload: unknown): void {
+  if (!import.meta.env.DEV) return
+  for (const h of handlers.get(event) ?? []) {
+    try { h(payload) } catch (e) { console.error(`[syncBus] ${event} handler`, e) }
+  }
+}
+
 export function stopSyncBus(): void {
   if (channel) supabase.removeChannel(channel) // unsubscribe alone left the topic registered → duplicates on re-login
   channel = null
@@ -47,6 +66,11 @@ export function stopSyncBus(): void {
  *  so check the status and retry once — a silently dropped broadcast meant
  *  other devices never refetched a layout/rule change. */
 export function sendSync(event: SyncEvent, payload: object = {}): void {
+  // dev-only tap so automated tests can see what this client announced
+  if (import.meta.env.DEV && typeof window !== 'undefined') {
+    const w = window as unknown as { __syncSent?: { event: string; payload: unknown }[] }
+    ;(w.__syncSent ??= []).push({ event, payload })
+  }
   const c = channel
   if (!c) return
   c.send({ type: 'broadcast', event, payload }).then((status: string) => {

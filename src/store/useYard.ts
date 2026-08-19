@@ -13,7 +13,7 @@ import type { DefectRow, TrackRow } from '../lib/excelTracking'
 import * as db from '../lib/db'
 import { useUnitsView } from './useUnitsView'
 import { idbGetAllUnits, idbPutUnits, idbDeleteUnits } from '../lib/idb'
-import { onSync, sendSync } from '../lib/syncBus'
+import { onSync, sendSync, type MoveMsg, type MovesPayload } from '../lib/syncBus'
 import { hashPassword, verifyPassword, isHashed } from '../lib/password'
 import { resolvePart, resolveDefect } from '../lib/masterDefect'
 import { supabase } from '../lib/supabase'
@@ -1835,6 +1835,75 @@ if (typeof window !== 'undefined') {
     if (document.visibilityState === 'hidden' && unitsIdbTimer) flushUnitsIdb()
   })
 }
+
+// ── ตำแหน่งรถ → ทุกเครื่องเห็นทันที ──────────────────────────────────────────
+// The units table streams row-level changes, and when that stream is healthy
+// every screen follows along. But it is one mechanism with one failure mode:
+// if those events do not arrive — the table is not in the realtime publication,
+// the socket is wedged, a proxy ate the frames — the yard plan simply stops
+// changing and NOTHING in the app can tell. Ops re-locates a car, the admin's
+// plan keeps showing the old spot, and only a page refresh puts it right.
+//
+// So every position this device writes is also ANNOUNCED on the broadcast bus,
+// which needs no publication membership, and every client applies what it hears
+// straight to its own plan. Two independent paths for the one thing the whole
+// yard is looking at.
+const posSig = (u?: Unit) =>
+  u ? `${u.block ?? '-'}|${u.slot ?? 0}|${u.row ?? 0}|${u.status}` : ''
+/** Last position known to be shared with the other clients — sent OR received.
+ *  Comparing against it is what stops a received move being echoed straight
+ *  back out again. */
+const posShared = new Map<string, string>()
+const pendingMoves = new Map<string, MoveMsg>()
+let movesTimer: ReturnType<typeof setTimeout> | null = null
+/** More than a handful of cars changing at once is a bulk load / re-sync, not
+ *  someone moving a car — those devices reconcile on their own. */
+const MOVES_BROADCAST_MAX = 200
+
+function flushMoves() {
+  movesTimer = null
+  if (!pendingMoves.size) return
+  const moves = [...pendingMoves.values()]
+  pendingMoves.clear()
+  if (moves.length > MOVES_BROADCAST_MAX) return
+  sendSync('moves', { siteId: useYard.getState().currentSite, moves } satisfies MovesPayload)
+}
+
+useYard.subscribe((s, prev) => {
+  if (s.units === prev.units) return
+  for (const vin in s.units) {
+    const u = s.units[vin]
+    const sig = posSig(u)
+    if (posShared.get(vin) === sig) continue
+    const first = prev.units[vin] === undefined
+    posShared.set(vin, sig)
+    if (first) continue // a car arriving from the initial load is not a move
+    pendingMoves.set(vin, { vin, block: u.block, row: u.row, slot: u.slot, status: u.status, at: Date.now() })
+  }
+  if (pendingMoves.size && !movesTimer) movesTimer = setTimeout(flushMoves, 250)
+})
+
+onSync('moves', (p: MovesPayload) => {
+  const moves = p?.moves
+  if (!Array.isArray(moves) || !moves.length) return
+  const sid = useYard.getState().currentSite
+  if (p.siteId && sid && p.siteId !== sid) return // another yard's move
+  useYard.setState((s) => {
+    const units = { ...s.units }
+    let hit = 0
+    for (const m of moves) {
+      const cur = units[m.vin]
+      if (!cur) continue // this device does not hold the car — its own load will bring it
+      const next: Unit = { ...cur, block: m.block, row: m.row, slot: m.slot, status: (m.status as Unit['status']) ?? cur.status }
+      const sig = posSig(next)
+      if (posSig(cur) === sig) { posShared.set(m.vin, sig); continue }
+      posShared.set(m.vin, sig) // mark as shared BEFORE the set() so it is not echoed back
+      units[m.vin] = next
+      hit++
+    }
+    return hit ? { units } : s
+  })
+})
 
 // ── รถซ้อนช่องกัน → จัดคันที่ใหม่ในแถวเดิม (อัตโนมัติ) ────────────────────────
 // A collision can appear from any device at any moment (a relocation racing
