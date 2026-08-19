@@ -3700,6 +3700,35 @@ function RelocationView() {
   const curYard = row ? (row.cells['Location yard'] || row.cells['storage Yard'] || siteName || '—') : ''
   const placed = !!(unit?.block && unit.row && unit.slot)
 
+  // The position lives on the UNIT, and units arrive from the cloud page by
+  // page — a phone opened minutes ago can easily not hold the very car the
+  // operator is standing next to, while its tracking row (IndexedDB + realtime)
+  // is already there. The card then read "ยังไม่ระบุตำแหน่งในลาน", which states
+  // a FACT about the car when the truth was only "this device hasn't loaded it
+  // yet" — two phones on the same VIN disagreed, and an operator trusting the
+  // empty one would re-park a car that already has a slot. Hurry that single
+  // VIN (same one-shot fetch the other stations use) and, until it answers, say
+  // we are loading rather than that there is no position.
+  const [unitFetching, setUnitFetching] = useState(false)
+  const [unitMissing, setUnitMissing] = useState(false)
+  useEffect(() => {
+    if (!vin || unit) { setUnitFetching(false); setUnitMissing(false); return }
+    let cancelled = false
+    let tries = 0
+    setUnitFetching(true); setUnitMissing(false)
+    const attempt = () => {
+      if (cancelled) return
+      tries++
+      fetchUnitFallback(vin).then((found) => {
+        if (cancelled || found) return // found → `unit` re-renders this effect away
+        if (tries < 4) setTimeout(attempt, 1500 * tries)
+        else { setUnitFetching(false); setUnitMissing(true) }
+      })
+    }
+    attempt()
+    return () => { cancelled = true }
+  }, [vin, unit])
+
   // every relocation this car has been through — updateCell logs who/when/where
   // under the Location column, so the station sees the same trail the admin does
   const moves = useMemo(() =>
@@ -4104,6 +4133,19 @@ function RelocationView() {
                   Block {blockCode(unit!.block ?? '')} · ช่อง {unit!.slot} · คันที่ {unit!.row} ในช่อง
                 </div>
               </>
+            ) : unitFetching ? (
+              // still fetching this VIN — never claim the car has no position
+              <div className="font-bold text-[15px] flex items-center gap-2 animate-pulse" style={{ color: 'var(--muted)' }}>
+                <RefreshCw size={14} className="animate-spin" /> กำลังโหลดตำแหน่ง…
+              </div>
+            ) : unitMissing ? (
+              // the fetch gave up (offline / weak yard wifi) — still not proof the
+              // car is unplaced, so offer a retry instead of a wrong statement
+              <div>
+                <div className="font-bold text-[15px]" style={{ color: '#b45309' }}>โหลดตำแหน่งไม่สำเร็จ</div>
+                <button onClick={() => { setUnitMissing(false); setUnitFetching(true); fetchUnitFallback(vin!).then((f) => { if (!f) { setUnitFetching(false); setUnitMissing(true) } }) }}
+                  className="btn btn-ghost mt-1.5 text-[12px] py-1 px-2.5">ลองใหม่</button>
+              </div>
             ) : (
               <div className="font-bold text-[15px]" style={{ color: 'var(--faint)' }}>ยังไม่ระบุตำแหน่งในลาน</div>
             )}
@@ -4434,6 +4476,24 @@ function CheckView() {
 
   const row  = vin ? (trackingRows.find(r => r.vin === vin) ?? null) : null
   const unit = vin ? (units.find(u => u.vin === vin) ?? null)        : null
+
+  // the site-wide pull above can take a while on 17k units; the scanned car's
+  // own slot should not wait for it (without the unit, the Location tab could
+  // only show the yard NAME, never the "V3703" the driver walks to)
+  useEffect(() => {
+    if (!vin || unit) return
+    let cancelled = false
+    let tries = 0
+    const attempt = () => {
+      if (cancelled) return
+      tries++
+      fetchUnitFallback(vin).then((found) => {
+        if (!found && !cancelled && tries < 4) setTimeout(attempt, 1500 * tries)
+      })
+    }
+    attempt()
+    return () => { cancelled = true }
+  }, [vin, unit])
 
   const onScan = (v: string) => {
     let found: string | null = null
