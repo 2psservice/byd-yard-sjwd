@@ -10,7 +10,7 @@ import { downloadTemplate } from '../lib/excel'
 import { parseTrackingWorkbook, parseImportWorkbook, type ParseResult } from '../lib/excelTracking'
 import { parseLane, parseLaneWorkbook, type LaneParseResult, type LaneRow } from '../lib/laneImport'
 import { coInspectionAccepts, rowInSite, siteForRow } from '../lib/siteScope'
-import { deriveCarStatus } from '../lib/carStatus'
+import { deriveCarStatus, hasLeftGate } from '../lib/carStatus'
 import { pos, blockKeyOfTag, blockTag, resolveBlockByName } from '../lib/format'
 import { yardLocFull } from '../lib/groupingImport'
 import { PageHead } from '../components/ui'
@@ -234,9 +234,24 @@ export function ImportPage() {
     setCoProg({ pct: 0, label: 'กำลังรวมข้อมูลลงตารางหลัก…' })
     try {
       const { updated, added, skipped, gateOut, moved } = commitCoInspection(coParsed)
+      // rows AFTER the merge — this file may have just gated cars out, and those
+      // count as gone for the defect pass below
+      const rowsNow = useTracking.getState().rows
       // defects: only for VINs that belong to this yard (accepted from the file, or already here)
       const okVins = new Set(coAccepted.map((r) => r.vin))
-      const defectsForSite = coParsed.defects.filter((d) => okVins.has(d.vin) || rowInSite(existing[d.vin], currentSite, sites))
+      // …and skip cars that have already LEFT. A Co-Inspection workbook carries
+      // the yard's whole defect history, so most of its rows belong to cars
+      // delivered long ago — re-uploading them every import changed nothing and
+      // was the bulk of the wait (measured: ~72% of the rows pushed). Their
+      // existing defects are untouched: importDefects only rewrites VINs it is
+      // actually given. A VIN with no row here is left in — we cannot tell.
+      let goneSkipped = 0
+      const defectsForSite = coParsed.defects.filter((d) => {
+        const r = rowsNow[d.vin]
+        if (!(okVins.has(d.vin) || rowInSite(r, currentSite, sites))) return false
+        if (r && hasLeftGate(r.cells)) { goneSkipped++; return false }
+        return true
+      })
       // AWAIT the cloud write — importDefects can push 10k+ damage rows; blocking here
       // (with the overlay below) stops the user reloading before it finishes
       const def = await importDefects(defectsForSite, existing, (pct, label) => setCoProg({ pct, label }))
@@ -245,6 +260,7 @@ export function ImportPage() {
         `Co Inspection · เติม ${updated.toLocaleString()} คัน${added ? ` · ใหม่ ${added.toLocaleString()}` : ''}` +
           (gateOut ? ` · Gate-out ${gateOut.toLocaleString()}` : '') +
           (def.damages ? ` · Defect ${def.damages.toLocaleString()}` : '') +
+          (goneSkipped ? ` · ข้ามรถที่ออกไปแล้ว ${goneSkipped.toLocaleString()} รายการ` : '') +
           (moved ? ` · ย้ายไปยาร์ดที่ถูกต้อง ${moved.toLocaleString()}` : '') +
           (skipped ? ` · ข้ามยาร์ดอื่น ${skipped.toLocaleString()}` : ''),
       )
