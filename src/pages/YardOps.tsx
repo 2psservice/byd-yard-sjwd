@@ -1379,8 +1379,14 @@ function WalkView() {
   // the Dashboard's sitewide Pre Gate-in tally — collect every uncovered row
   // into one virtual entry so the two numbers can never disagree.
   const uncoveredPreGateIn = useMemo(() => {
+    // Only a STILL-OPEN queue item covers a car. Counting every item — done ones
+    // included — hid cars that came back to Pre Gate-in after their import batch
+    // had been ticked off: the old queue is complete (so it is filtered off the
+    // list) yet its VINs still looked "covered", so they appeared in no card at
+    // all. That is exactly what an admin flipping Car Status back to Pre Gate-in
+    // produces, and the station had no way to know the car was waiting.
     const queuedVins = new Set<string>()
-    for (const q of queues) if (isPreGateInQueue(q.name)) for (const i of q.items) queuedVins.add(i.vin)
+    for (const q of queues) if (isPreGateInQueue(q.name)) for (const i of q.items) if (!i.done) queuedVins.add(i.vin)
     return trackingRows.filter(r => !queuedVins.has(r.vin) && deriveCarStatus(r.cells) === 'Pre Gate-in')
   }, [queues, trackingRows])
   // Pre Gate-in queues "(M-D-N)" — process queues (PDI / PM / Wash) live under the
@@ -4852,8 +4858,9 @@ export function YardOps() {
   const menuBadges = useMemo(() => {
     const n: Partial<Record<RoleKey, number>> = {}
     const add = (k: RoleKey, v: number) => { if (v > 0) n[k] = (n[k] ?? 0) + v }
+    // only OPEN items count as covered — same rule as the station's own list
     const queuedPreGateInVins = new Set<string>()
-    for (const q of queues) if (isPreGateInQueue(q.name)) for (const i of q.items) queuedPreGateInVins.add(i.vin)
+    for (const q of queues) if (isPreGateInQueue(q.name)) for (const i of q.items) if (!i.done) queuedPreGateInVins.add(i.vin)
     for (const q of queues) {
       if (isQueueComplete(q)) continue
       if (isSequenceQueue(q)) {

@@ -293,10 +293,14 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
   const isToday = filterDate == null || filterDate === todayKey()
   const uncovered = useMemo(() => {
     if (!isToday) return [] as TrackRow[]
+    // a car is "covered" only while it still has an OPEN item — a done item in a
+    // finished batch leaves nothing on screen for the operator to work from, so
+    // a car returned to Pre Gate-in (admin edit / re-import) must fall through to
+    // the virtual card below instead of silently belonging to a hidden queue
     const queuedVins = new Set<string>()
     for (const q of all) {
       if (!q.name.trim().startsWith('(') || (q.site && q.site !== currentSite)) continue
-      for (const i of q.items) queuedVins.add(i.vin)
+      for (const i of q.items) if (!i.done) queuedVins.add(i.vin)
     }
     return rows.filter((r) => rowInSite(r, currentSite, useYard.getState().sites)
       && !queuedVins.has(r.vin) && deriveCarStatus(r.cells) === 'Pre Gate-in')
