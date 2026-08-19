@@ -8,7 +8,6 @@ import { BLOCKS, DEFAULT_POLICIES, MODELS, generateSample, matchModel, paintHex 
 import { autoAssign, nextFreeSlotInBlock } from '../lib/parkingEngine'
 import { haversineM, makeDemoTrip, mulberry32, slotToLatLng } from '../lib/geo'
 import { IN_YARD_STATUSES } from '../lib/carStatus'
-import { blockKeyOfTag } from '../lib/format'
 import type { RawRow } from '../lib/excel'
 import type { DefectRow, TrackRow } from '../lib/excelTracking'
 import * as db from '../lib/db'
@@ -72,96 +71,13 @@ function withModelId(u: Unit): Unit {
  *  this alone does not make a 8-row block stack 20 deep. */
 export const MAX_LANE_DEPTH = 20
 
-// ── lane compaction ──────────────────────────────────────────────────────────
-/** One lane = block name + yard + column. */
-const laneKey = (u: { block?: string; slot?: number; site?: string }) =>
-  `${blockKeyOfTag(u.block)}|${u.site ?? ''}|${u.slot ?? 0}`
-
-/** Lanes these (pre-move) units were parked in. */
-function lanesOf(list: (Unit | undefined)[]): Set<string> {
-  const s = new Set<string>()
-  for (const u of list) if (u?.block && u.row && u.slot) s.add(laneKey(u))
-  return s
-}
-
-/** Re-pack the given lanes so positions read 1,2,3… with no holes: when the
- *  2nd car of a lane leaves, cars 3-4-5 shift up one place (คันที่ 3 4 5
- *  เลื่อนขึ้น). MUTATES `units` in place and returns the changed cars. Because
- *  lanes never keep holes, every "first free position" scan (re-location,
- *  parking engine, Update Location import) now lands a returning car at the
- *  END of its lane — exactly the yard's rule for a car that comes back. */
-function compactLanes(units: Record<string, Unit>, lanes: Set<string>): Unit[] {
-  if (!lanes.size) return []
-  const byLane = new Map<string, Unit[]>()
-  for (const vin in units) {
-    const u = units[vin]
-    if (!u.block || !u.row || !u.slot || u.status === 'DEPARTED') continue
-    const k = laneKey(u)
-    if (!lanes.has(k)) continue
-    const arr = byLane.get(k)
-    if (arr) arr.push(u); else byLane.set(k, [u])
-  }
-  const changed: Unit[] = []
-  for (const arr of byLane.values()) {
-    arr.sort((a, b) => a.row! - b.row!)
-    arr.forEach((u, i) => {
-      if (u.row !== i + 1) {
-        const nu = { ...u, row: i + 1 }
-        units[u.vin] = nu
-        changed.push(nu)
-      }
-    })
-  }
-  return changed
-}
-
-/** Persist compaction-slid rows through the stale-copy guard. EVERY device
- *  compacts lanes (boot pass, gate-out sweep, departures, relocations) using
- *  its LOCAL copy — one that may not have received a relocation done elsewhere.
- *  Unchecked, that stale copy is "slid" back into the old lane and pushed with
- *  a fresh timestamp, overwriting the real move (a car moved N1602 → N3201 on
- *  device A was re-written to N1601 by device B compacting lane N16). Before
- *  persisting, compare each slid car's CLOUD position with the position this
- *  device slid it FROM: a mismatch means our copy was stale — adopt the cloud
- *  row and drop our write for that car. The adopt triggers another (now fresh)
- *  pass that converges properly. Offline / no cloud: persist as before. */
-function persistSlid(
-  setUnits: (fn: (s: { units: Record<string, Unit> }) => { units: Record<string, Unit> }) => void,
-  before: Record<string, Unit>,
-  slid: Unit[],
-  label: string,
-) {
-  if (!slid.length) return
-  const finish = (rows: Unit[]) => {
-    if (rows.length) db.upsertUnits(rows).catch((e) => console.error(`[db] ${label}`, e))
-  }
-  if (!db.isConfigured()) { finish(slid); return }
-  const prevPos = new Map(slid.map((u) => {
-    const p = before[u.vin]
-    return [u.vin, p ? `${p.block}|${p.slot}|${p.row}` : ''] as const
-  }))
-  db.fetchUnitsByVins(slid.map((u) => u.vin))
-    .then((cloud) => {
-      const cloudBy = new Map(cloud.map((u) => [u.vin, u]))
-      const push: Unit[] = []
-      const adopt: Unit[] = []
-      for (const u of slid) {
-        const c = cloudBy.get(u.vin)
-        if (!c) { push.push(u); continue } // not in cloud yet — keep ours
-        if (`${c.block}|${c.slot}|${c.row}` === prevPos.get(u.vin)) push.push(u)
-        else adopt.push(c) // cloud moved on — our slide used a stale copy
-      }
-      if (adopt.length) {
-        setUnits((s) => {
-          const next = { ...s.units }
-          for (const c of adopt) next[c.vin] = { ...c, damages: s.units[c.vin]?.damages?.length ? s.units[c.vin].damages : c.damages }
-          return { units: next }
-        })
-      }
-      finish(push)
-    })
-    .catch(() => finish(slid)) // cloud unreachable (offline) — persist as before
-}
+// ── ตำแหน่งรถ: ระบบห้ามแตะ ────────────────────────────────────────────────────
+// เดิมมี "lane compaction" คอยเลื่อนรถขึ้นมาปิดช่องว่างในเลนเองอัตโนมัติ (คันที่
+// 3 เลื่อนขึ้นเป็นคันที่ 2 เมื่อคันหน้าออกไป) แล้วเขียนตำแหน่งใหม่ขึ้น cloud
+// โดยไม่บันทึกประวัติ — หน้างานตั้ง R7 ไว้ กลับมาดูอีกทีรถไปอยู่ R9 หารถไม่เจอ
+// ตอนนี้เอาออกทั้งหมด: ตำแหน่งรถเปลี่ยนได้ทางเดียวคือพนักงาน / ops scan / admin
+// สั่งเอง ช่องว่างที่รถออกไปแล้วปล่อยไว้ตามจริง แล้วให้ nextFreeSlotInBlock มา
+// เติมเองตอนจอดคันใหม่
 
 // ── Defect import helpers (Defect-Yard / Defect-Factory → Damage) ───────────
 function defHash(s: string): string {
@@ -283,10 +199,6 @@ interface YardState {
    *  state update + ONE cloud write, so a 124-car delivery run does not fire
    *  124 renders and 124 upserts. */
   markDepartedMany: (vins: string[]) => void
-  /** One pass over EVERY lane: close all holes left by departures that happened
-   *  before compaction existed. Runs after boot / site-switch loads; idempotent
-   *  and deterministic, so concurrent devices converge on the same layout. */
-  compactAllLanes: () => number
   markTrailerArrived: (no: number, arrived?: boolean) => void
   gateIn: (vin: string) => void
   setInspected: (vin: string, v: boolean) => void
@@ -643,11 +555,8 @@ export const useYard = create<YardState>()(
       },
       setCurrentSite: (id) => {
         set({ currentSite: id, siteModalOpen: false })
-        // units/trailers are loaded per-site → fetch the newly selected yard,
-        // then close up any lane holes left from before compaction existed
-        get().loadFromSupabase()
-          .catch((e) => console.error('[db] setCurrentSite load', e))
-          .finally(() => { try { get().compactAllLanes() } catch { /* noop */ } })
+        // units/trailers are loaded per-site → fetch the newly selected yard
+        get().loadFromSupabase().catch((e) => console.error('[db] setCurrentSite load', e))
       },
       openSiteModal: () => set({ siteModalOpen: true }),
       closeSiteModal: () => set({ siteModalOpen: false }),
@@ -696,8 +605,13 @@ export const useYard = create<YardState>()(
         }
         trailers.sort((a, b) => a.no - b.no)
         set({ units, trailers })
-        // sync to Supabase
-        db.upsertUnits(changedUnits).catch((e) => console.error('[db] importUnits', e))
+        // sync to Supabase — WITHOUT the placement columns. This runs on every
+        // file import AND on App.tsx's minute-by-minute model heal, from this
+        // device's copy of the yard. That copy goes stale the moment another
+        // phone re-locates a car, so writing block/row/slot here pushed the OLD
+        // position back over the new one — the "ops ตั้ง R7 แล้วรถไปโผล่ R9"
+        // report. Model/colour/lot are what this call owns; position is not.
+        db.upsertUnitsKeepPlacement(changedUnits).catch((e) => console.error('[db] importUnits', e))
         if (siteId && newTrailers.length) {
           Promise.all(newTrailers.map((t) => db.upsertTrailer(siteId, t)))
             .then(() => sendSync('trailers', { siteId }))
@@ -733,14 +647,12 @@ export const useYard = create<YardState>()(
 
       removeUnit: (vin) => {
         const before = get().units
-        const old = before[vin]
-        if (!old) return
+        if (!before[vin]) return
         const units = { ...before }
         delete units[vin]
-        const slid = compactLanes(units, lanesOf([old]))
+        // the lane keeps its hole — no other car may be moved by this
         set((s) => ({ units, trips: s.trips.filter((t) => t.vin !== vin) }))
         db.deleteUnit(vin).catch((e) => console.error('[db] removeUnit', e))
-        persistSlid(set, before, slid, 'removeUnit compact')
       },
 
       markDeparted: (vin) => {
@@ -752,43 +664,26 @@ export const useYard = create<YardState>()(
         if (!u) return // sheet-only car (no yard unit) — nothing to release
         const units = { ...before }
         units[vin] = { ...u, status: 'DEPARTED', block: undefined, row: undefined, slot: undefined }
-        // the lane it left closes up behind it (คันถัดไปเลื่อนขึ้น) — the slide
-        // goes through the stale-copy guard, the departure itself pushes as-is
-        const slid = compactLanes(units, lanesOf([u]))
+        // the car that leaves frees ONLY its own place — every other car in the
+        // lane stays exactly where the yard put it
         set({ units })
         db.upsertUnits([units[vin]]).catch((e) => console.error('[db] markDeparted', e))
-        persistSlid(set, before, slid, 'markDeparted compact')
       },
 
       markDepartedMany: (vins) => {
         const before = get().units
         const units = { ...before }
-        const old: Unit[] = []
         const cleared: Unit[] = []
         for (const vin of vins) {
           const u = units[vin]
           if (!u) continue // sheet-only car (no yard unit) — nothing to release
-          old.push(u)
           const updated: Unit = { ...u, status: 'DEPARTED', block: undefined, row: undefined, slot: undefined }
           units[vin] = updated
           cleared.push(updated)
         }
         if (!cleared.length) return
-        const slid = compactLanes(units, lanesOf(old))
         set({ units })
         db.upsertUnits(cleared).catch((e) => console.error('[db] markDepartedMany', e))
-        persistSlid(set, before, slid, 'markDepartedMany compact')
-      },
-
-      compactAllLanes: () => {
-        const before = get().units
-        const units = { ...before }
-        const lanes = lanesOf(Object.values(units))
-        const changed = compactLanes(units, lanes)
-        if (!changed.length) return 0
-        set({ units })
-        persistSlid(set, before, changed, 'compactAllLanes')
-        return changed.length
       },
 
       markTrailerArrived: (no, arrived = true) => {
@@ -861,7 +756,7 @@ export const useYard = create<YardState>()(
         set((s) => {
           if (!s.units[vin]) return s
           const updated: Unit = { ...s.units[vin], inspected: v }
-          db.upsertUnit(updated).catch((e) => console.error('[db] setInspected', e))
+          db.upsertUnitKeepPlacement(updated).catch((e) => console.error('[db] setInspected', e))
           return { units: { ...s.units, [vin]: updated } }
         }),
 
@@ -880,7 +775,7 @@ export const useYard = create<YardState>()(
           // dropping it — otherwise the next full units re-pull (backgrounding
           // the app to take a photo, reconnecting) silently overwrites this
           // local-only defect and it looks like the save never happened.
-          db.upsertUnit(u).then(() => db.insertDamage(vin, dmg)).catch((e) => {
+          db.upsertUnitKeepPlacement(u).then(() => db.insertDamage(vin, dmg)).catch((e) => {
             console.error('[db] addDamage', e)
             get().toast('err', `บันทึก Defect ไว้ในเครื่องนี้ แต่ยังไม่ขึ้น cloud (เน็ตหลุด?) — กำลังลองใหม่อัตโนมัติ — ${vin.slice(-6)}`)
             set((s2) => ({ pendingDamages: { ...s2.pendingDamages, [dmg.id]: { vin, dmg } } }))
@@ -905,7 +800,7 @@ export const useYard = create<YardState>()(
             // response was lost) — the cloud copy is authoritative either way
             if (u.damages.every((x) => x.id !== id)) { done.push(id); continue }
             try {
-              await db.upsertUnit(u)
+              await db.upsertUnitKeepPlacement(u)
               await db.insertDamage(vin, dmg)
               done.push(id)
             } catch (e) { console.error('[db] flushPendingDamages', vin, e) }
@@ -970,7 +865,7 @@ export const useYard = create<YardState>()(
         const u: Unit = { ...m, damages: [...m.damages, dmg] }
         set({ units: { ...s.units, [vin]: u } })
         // FK-safe: parent unit first, then the damage
-        db.upsertUnit(u).then(() => db.upsertDamages([{ vin, d: dmg }])).catch((e) => console.error('[db] addManualDamage', e))
+        db.upsertUnitKeepPlacement(u).then(() => db.upsertDamages([{ vin, d: dmg }])).catch((e) => console.error('[db] addManualDamage', e))
       },
 
       addManualDamageBulk: (vins, f) => {
@@ -1010,7 +905,7 @@ export const useYard = create<YardState>()(
         if (!changedUnits.length) return 0
         set({ units })
         // FK-safe: parent units first (batch), then the damages (batch)
-        db.upsertUnits(changedUnits).then(() => db.upsertDamages(dmgItems)).catch((e) => console.error('[db] addManualDamageBulk', e))
+        db.upsertUnitsKeepPlacement(changedUnits).then(() => db.upsertDamages(dmgItems)).catch((e) => console.error('[db] addManualDamageBulk', e))
         return changedUnits.length
       },
 
@@ -1094,10 +989,8 @@ export const useYard = create<YardState>()(
         const { block, row, slot, assignedAt, drivingStartedAt, parkedAt, ...rest } = u
         const units = { ...before }
         units[vin] = { ...rest, status: 'GATE_IN' }
-        const slid = compactLanes(units, lanesOf([u]))
         set({ units })
         db.upsertUnits([units[vin]]).catch((e) => console.error('[db] resetParking', e))
-        persistSlid(set, before, slid, 'resetParking compact')
       },
 
       // Update Location import: place each car into its lane's block/row at the
@@ -1107,8 +1000,6 @@ export const useYard = create<YardState>()(
         const units = { ...s.units }
         const changed: Unit[] = []
         const now = Date.now()
-        // lanes the moved cars are leaving — they close up after the move
-        const fromLanes = lanesOf(items.map((it) => units[it.vin]))
         for (const it of items) {
           const existed = units[it.vin]
           const m = matchModel(it.modelName || existed?.modelName || '')
@@ -1134,20 +1025,12 @@ export const useYard = create<YardState>()(
           changed.push(u)
         }
         if (!changed.length) return 0
-        // a lane a car moved OUT of keeps no hole — cars behind it shift up.
-        // (Lanes cars moved INTO are excluded automatically: their occupants sit
-        // at 1..n already, and the mover was appended at first-free = n+1.)
-        const moved = changed.length
-        const slid = compactLanes(units, fromLanes)
+        // ONLY the cars named in this request move — the lane a car leaves keeps
+        // its hole, and no bystander is ever re-numbered behind the user's back
         set({ units })
-        // the deliberate placements push as-is (a relocation IS an intentional
-        // overwrite); only the compaction slide goes through the stale-copy
-        // guard. One write per car — a car both placed AND re-rowed must not
-        // appear twice in the same upsert batch (Postgres rejects that).
         const intentional = new Set(changed.map((u) => u.vin))
         db.upsertUnits([...intentional].map((v) => units[v])).catch((e) => console.error('[db] updateLocations', e))
-        persistSlid(set, s.units, slid.filter((u) => !intentional.has(u.vin)), 'updateLocations compact')
-        return moved
+        return changed.length
       },
 
       autoParkAll: () => {
@@ -1815,23 +1698,6 @@ if (typeof window !== 'undefined') {
     if (document.visibilityState === 'hidden' && unitsIdbTimer) flushUnitsIdb()
   })
 }
-
-// ── realtime lane compaction ─────────────────────────────────────────────────
-// Lanes must never sit with holes, no matter which device caused them: a
-// gate-out on another phone arrives here through the units realtime channel,
-// and this debounced pass closes the gap moments later. compactAllLanes is
-// deterministic and writes nothing when lanes are already tight, so the
-// subscription can't loop (its own set() triggers one more pass that no-ops)
-// and every device converges on the same layout.
-let compactTimer: ReturnType<typeof setTimeout> | null = null
-function scheduleCompact(delay = 900) {
-  if (compactTimer) clearTimeout(compactTimer)
-  compactTimer = setTimeout(() => {
-    try { useYard.getState().compactAllLanes() } catch { /* store mid-teardown */ }
-  }, delay)
-}
-useYard.subscribe((s, prev) => { if (s.units !== prev.units) scheduleCompact() })
-scheduleCompact(1500) // heal once shortly after boot, without waiting for the cloud load
 
 // ── syncBus receivers: another device changed the layout / trailers → refetch ──
 onSync('blocks', async (p: { siteId?: string }) => {
