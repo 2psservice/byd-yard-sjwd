@@ -36,7 +36,7 @@ import { yardLocCode, yardLocFull, blockCode, byYardLocation, LAST_LOCATION_KEY 
 import { parseLane } from '../lib/laneImport'
 import { LOCATION_KEY } from '../lib/trackingColumns'
 import { blockTag, blockKeyOfTag, resolveBlockByName } from '../lib/format'
-import { fetchUnitsByVins, isConfigured } from '../lib/db'
+import { fetchUnitsByVins, fetchUnitsInLane, isConfigured } from '../lib/db'
 import { useRecentOps } from '../store/useRecentOps'
 import { buildWorkRows, buildEventLog, fmtHistAt, histOf } from '../lib/carHistory'
 
@@ -3655,6 +3655,50 @@ function GateOutView() {
 }
 
 // ── Re-location view ──────────────────────────────────────────────────────────
+/** Cars a given unit list parks in one lane (block + column), shallowest first. */
+function laneOccupants(list: Unit[], blockId: string, slot: number, exceptVin?: string): Unit[] {
+  if (!blockId || !slot) return []
+  return list
+    .filter(u => u.vin !== exceptVin && u.block && u.slot === slot && blockKeyOfTag(u.block) === blockId)
+    .sort((a, b) => (a.row ?? 0) - (b.row ?? 0))
+}
+
+/** The shallowest depth nobody occupies, or null when the lane is full. */
+function firstFreeDepth(list: Unit[], blockId: string, slot: number, depth: number, exceptVin?: string): number | null {
+  if (!blockId || !slot) return null
+  const taken = new Set(laneOccupants(list, blockId, slot, exceptVin).map(u => u.row))
+  for (let r = 1; r <= depth; r++) if (!taken.has(r)) return r
+  return null
+}
+
+/**
+ * The lane as the CLOUD knows it, merged over what this device holds.
+ *
+ * "คันที่ N" is handed out as the first free depth, and it used to be computed
+ * from the local units cache alone. That cache fills page by page, so a phone
+ * opened a minute ago genuinely does not know about the cars already standing
+ * in the lane — it hands out คันที่ 1 on top of someone, two cars claim the
+ * same square, and the yard plan (one car per square) then draws four cars for
+ * a lane holding five. Ask the cloud for that one lane before writing.
+ *
+ * Falls back to the local view when offline or when the yard's wifi stalls —
+ * a relocation must never be blocked by a slow network.
+ */
+async function laneFromCloud(local: Unit[], siteId: string | null, blockId: string, slot: number): Promise<Unit[]> {
+  if (!isConfigured() || !blockId || !slot) return local
+  try {
+    const cloud = await Promise.race([
+      fetchUnitsInLane(siteId, slot),
+      new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 2500)),
+    ])
+    const byVin = new Map(local.map(u => [u.vin, u] as const))
+    for (const u of cloud) byVin.set(u.vin, u) // the cloud is the authority on where a car stands
+    return [...byVin.values()]
+  } catch {
+    return local // offline / slow yard wifi — behave as before
+  }
+}
+
 function RelocationView() {
   const trackingRows = useSiteRows()
   const siteUnits = useSiteUnits()
@@ -3759,17 +3803,8 @@ function RelocationView() {
 
   /** Which space down that column: the first free one, exactly how the Update
    *  Location import stacks cars into a lane. */
-  const nextRow = useMemo(() => {
-    if (!blockId || !slotOk) return null
-    const depth = blk?.rows ?? 8
-    const taken = new Set(
-      siteUnits
-        .filter(u => u.vin !== vin && u.block && u.slot === slotNo && blockKeyOfTag(u.block) === blockId)
-        .map(u => u.row),
-    )
-    for (let r = 1; r <= depth; r++) if (!taken.has(r)) return r
-    return null // column full
-  }, [blockId, slotNo, slotOk, blk, siteUnits, vin])
+  const nextRow = useMemo(() => firstFreeDepth(siteUnits, blockId, slotNo, blk?.rows ?? 8, vin ?? undefined),
+    [blockId, slotNo, slotOk, blk, siteUnits, vin]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const laneFull = !!blockId && slotOk && nextRow === null
   // a block this plan does not draw has no grid to land in, so refuse it rather
@@ -3951,17 +3986,15 @@ function RelocationView() {
         })
       }
     }
-    if (!incumbents.length || !isConfigured()) buildAndApply(incumbents)
-    else Promise.race([
-      fetchUnitsByVins(incumbents.map(c => c.vin)),
-      // flaky yard wifi must not stall the lane rebuild — after 2.5s fall back
-      new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 2500)),
-    ])
-      .then(cloud => buildAndApply(incumbents.filter(local => {
-        const cu = cloud.find(x => x.vin === local.vin)
-        return cu && cu.block && cu.slot === L.slot && blockKeyOfTag(cu.block) === L.blockId
-      })))
-      .catch(() => buildAndApply(incumbents)) // cloud unreachable — behave as before
+    // The incumbent list is derived from THIS device's units, and that cuts both
+    // ways: a car it still shows here may have been relocated elsewhere (sliding
+    // it back would teleport it — the T5004→W0101 bug), and a car it has never
+    // loaded is invisible, so the rebuild stacks a scanned car on top of it and
+    // two cars end up claiming one square. Ask the cloud for the whole lane and
+    // rebuild from that. Offline / slow wifi keeps the old trust-local behaviour.
+    if (!isConfigured()) buildAndApply(incumbents)
+    else laneFromCloud(siteUnits, currentSite, L.blockId, L.slot).then((lane) =>
+      buildAndApply(laneOccupants(lane, L.blockId, L.slot).filter(u => !ord.includes(u.vin) && u.vin !== r!.vin)))
     const code = codeOf(L.blockId, L.slot, pos)
     appendHistory(r.vin, {
       at: Date.now(), by: currentUser, field: 'Location', src: 'scan',
@@ -3973,17 +4006,29 @@ function RelocationView() {
     toast('ok', `${code} · คันที่ ${pos} · ${r.vin.slice(-6)} — ยิงคันถัดไปต่อได้เลย`)
   }
 
-  const doSave = () => {
+  const doSave = async () => {
     if (!canSave || !row || nextRow === null) return
     // double-tap / double-Enter guard: `saved` state hasn't flushed yet when a
     // second event lands in the same frame — this ref has
     if (Date.now() - lastSaveGuard.current < 1200) return
     lastSaveGuard.current = Date.now()
+    // `nextRow` came from this device's units, which may not hold every car
+    // already standing in the lane — confirm the depth against the cloud so two
+    // phones can never hand out the same คันที่ and stack two cars on one square
+    const depthMax = blk?.rows ?? 8
+    const lane = await laneFromCloud(siteUnits, currentSite, blockId, slotNo)
+    const depth = firstFreeDepth(lane, blockId, slotNo, depthMax, row.vin)
+    if (depth === null) {
+      lastSaveGuard.current = 0
+      toast('err', `แถว ${blockId}${slotNo} เต็มแล้ว (${depthMax} คัน)`)
+      return
+    }
+    if (depth !== nextRow) toast('info', `แถวนี้มีรถเพิ่มจากเครื่องอื่น — ลงเป็นคันที่ ${depth}`)
     // move the CAR, not the "Location yard" cell — that cell names the yard and
     // is what scopes a row to its site, so a slot code written into it used to
     // drop the car out of its own yard
     updateLocations([{
-      vin: row.vin, block: blockId, row: nextRow, slot: slotNo,
+      vin: row.vin, block: blockId, row: depth, slot: slotNo,
       modelName: row.cells['Model name'] || row.cells['Model'] || undefined,
       color: row.cells['Color'] || undefined,
     }])
@@ -3992,11 +4037,11 @@ function RelocationView() {
     appendHistory(row.vin, {
       at: Date.now(), by: currentUser, field: 'Location', src: 'scan',
       from: placed ? yardLocFull(unit) : '',
-      to: codeOf(blockId, slotNo, nextRow),
+      to: codeOf(blockId, slotNo, depth),
     })
-    recordRecent('reloc:save', row.vin, `ย้ายไป ${codeOf(blockId, slotNo, nextRow)}`)
+    recordRecent('reloc:save', row.vin, `ย้ายไป ${codeOf(blockId, slotNo, depth)}`)
     setSaved(true)
-    toast('ok', `ย้ายไป ${codeOf(blockId, slotNo, nextRow)} · ${row.vin.slice(-6)}`)
+    toast('ok', `ย้ายไป ${codeOf(blockId, slotNo, depth)} · ${row.vin.slice(-6)}`)
     setTimeout(() => { setVin(null); setSaved(false) }, 1600)
   }
 
