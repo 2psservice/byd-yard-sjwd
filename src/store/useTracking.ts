@@ -20,6 +20,19 @@ let trackingChannel: RealtimeChannel | null = null
 // remember a websocket drop so the re-subscribe runs an incremental syncCloud
 // to catch up on rows changed while the socket was down
 let trackingHadDrop = false
+// one sync at a time: the reconcile clock, the tab-visible catch-up and a
+// reconnect can all fire within the same second, and two runs racing would both
+// read the same `lastSync` and push the same rows twice
+let syncInFlight = false
+// a realtime payload can arrive with the record body stripped (Supabase drops it
+// when the row exceeds the channel's max_record_bytes — a car with a long cell
+// set + audit history reaches that). The event then carries no VIN, so nothing
+// can be applied from it; remember that SOMETHING changed and reconcile shortly.
+let truncatedSyncTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleTruncatedSync(run: () => void) {
+  if (truncatedSyncTimer) clearTimeout(truncatedSyncTimer)
+  truncatedSyncTimer = setTimeout(() => { truncatedSyncTimer = null; run() }, 1500)
+}
 
 /** Migrate the filter config from its old standalone localStorage key (pre-store). */
 function initialFilterCols(): string[] {
@@ -239,7 +252,9 @@ export const useTracking = create<TrackingState>()(
       // rows changed since `lastSync` are pulled/pushed, so repeat loads are near
       // instant instead of re-downloading all ~11 MB every time.
       syncCloud: async () => {
-        if (!db.isConfigured()) return
+        if (!db.isConfigured() || syncInFlight) return
+        syncInFlight = true
+        try {
         const startedAt = Date.now()
         const lastSync = get().lastSync ?? 0
         const local = get().rows
@@ -326,6 +341,7 @@ export const useTracking = create<TrackingState>()(
         if (!incremental) set({ sysHistoryPurged: SYS_HISTORY_PURGE_V })
         // occasionally clear tombstones older than 30 days so the table stays lean
         if (!incremental) db.purgeTrackingTombstones(30 * 24 * 3600_000).catch(() => {})
+        } finally { syncInFlight = false }
       },
 
       // Live updates: any device that changes a car's status / cells broadcasts
@@ -341,13 +357,19 @@ export const useTracking = create<TrackingState>()(
             (payload) => {
               if (payload.eventType === 'DELETE') {
                 const vin = (payload.old as { vin?: string })?.vin
-                if (!vin) return
+                // key-only / truncated DELETE — nothing to apply, but something
+                // DID change: reconcile rather than drop the event on the floor
+                if (!vin) { scheduleTruncatedSync(() => get().syncCloud().catch(() => {})); return }
                 set((s) => { if (!s.rows[vin]) return s; const rows = { ...s.rows }; delete rows[vin]; return { rows } })
                 idbDelete([vin]).catch(() => {})
                 return
               }
               const r = payload.new as { vin?: string; cells?: Record<string, string> | null; updated_at?: string | null; site?: string | null; deleted_at?: string | null; history?: TrackRow['history'] | null }
-              if (!r?.vin) return
+              // body stripped by the server (row over max_record_bytes): the VIN
+              // is gone, so this device cannot know WHICH car changed. Silently
+              // returning is what left one browser reading 2,200 In Yard while
+              // another read 2,198 — pull the delta instead.
+              if (!r?.vin) { scheduleTruncatedSync(() => get().syncCloud().catch(() => {})); return }
               // soft-delete arrives here as an UPDATE with deleted_at set → drop locally
               if (r.deleted_at) {
                 const vin = r.vin
@@ -399,6 +421,7 @@ export const useTracking = create<TrackingState>()(
 
       unsubscribeRealtime: () => {
         if (trackingChannel) { supabase.removeChannel(trackingChannel); trackingChannel = null }
+        if (truncatedSyncTimer) { clearTimeout(truncatedSyncTimer); truncatedSyncTimer = null } // no reconcile after logout / site switch
         set({ realtimeConnected: false })
       },
 
@@ -850,6 +873,30 @@ export const useTracking = create<TrackingState>()(
     },
   ),
 )
+
+// ── ทุกเครื่องเห็นสถานะรถชุดเดียวกัน: นาฬิกากระทบยอดสถานะ ─────────────────────
+// Car positions already have three independent paths to every device (realtime,
+// the `moves` broadcast, and the placement clock). Car STATUS had only one —
+// the realtime stream — so a single missed event left that browser counting a
+// car as In Yard forever while everyone else had it Gate-out, with nothing to
+// correct it short of a reload. Events do get missed: the server strips the
+// body of an oversized row, and the change poller has a per-tick ceiling that a
+// bulk import or a busy minute at the gate blows straight through.
+//
+// syncCloud is already incremental — one query for rows touched since the last
+// run — so asking on a clock costs a request that usually returns nothing, and
+// it bounds how far any two screens can drift apart.
+const STATUS_RESYNC_MS = 60_000
+if (typeof window !== 'undefined') {
+  const resync = () => {
+    const s = useTracking.getState()
+    if (!s.loaded || !useYard.getState().loggedInUserId) return
+    s.syncCloud().catch(() => {})
+  }
+  setInterval(resync, STATUS_RESYNC_MS)
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') resync() })
+  window.addEventListener('online', resync)
+}
 
 // admin published a new shared default → adopt it live on every other open
 // client (version-checked inside seedViewDefault, so it only pulls when newer).
