@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import { CarTopView } from '../components/CarTopView'
 import { printIr, printDn, printIrPaper } from '../lib/dnir'
+import { printVehicleLabels } from '../lib/vehicleLabel'
 import { useYard } from '../store/useYard'
 import { useTracking, useTrackingRows, useVisibleColumns } from '../store/useTracking'
 import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, LOCATION_KEY, MAX_FILTERS, DEFAULT_FILTER_COLS, agingPmDays, cleanStorage, isDateColumn, fmtSerialToDate, type ColGroup, type Column } from '../lib/trackingColumns'
@@ -373,6 +374,20 @@ export function Units() {
           </div>
           <button className={cx('btn py-1', filtersOpen && 'btn-blue')} onClick={() => patchView({ filtersOpen: !filtersOpen })}>
             <Filter size={14} /> ตัวกรอง
+          </button>
+          {/* Vehicle Label sticker — one page per selected car, matched to the
+              reference PDF (QR + Code-128 of the VIN). Falls back to the whole
+              filtered list when nothing is ticked, same rule as CSV export. */}
+          <button className="btn btn-blue py-1" title="พิมพ์ป้ายติดรถ (QR + บาร์โค้ดเลขวิน) — 1 แผ่นต่อ 1 คัน · เลือกรถก่อนหรือพิมพ์ตามรายการที่กรองไว้"
+            onClick={() => {
+              const targets = sel.size ? filtered.filter((r) => sel.has(r.vin)) : filtered
+              const toast = useYard.getState().toast
+              if (!targets.length) { toast('err', 'ไม่มีรถให้พิมพ์ — เลือกรถหรือปรับตัวกรองก่อน'); return }
+              if (targets.length > 200) { toast('err', `เลือกไว้ ${targets.length.toLocaleString()} คัน — พิมพ์ได้ครั้งละไม่เกิน 200 แผ่น`); return }
+              printVehicleLabels(targets)
+              toast('ok', `พิมพ์ป้ายติดรถ ${targets.length.toLocaleString()} แผ่น`)
+            }}>
+            <Printer size={14} /> Print Vehicle Label{sel.size ? ` (${sel.size.toLocaleString()})` : ''}
           </button>
           <button className="btn py-1" onClick={doExport}><Download size={14} /> CSV</button>
           <button className="btn btn-ghost p-1" title="โหลดใหม่" onClick={() => location.reload()}><RefreshCw size={14} style={{ color: 'var(--muted)' }} /></button>
