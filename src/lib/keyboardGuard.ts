@@ -18,6 +18,24 @@
  */
 const OVERLAY = 'div.fixed.inset-0'
 
+/**
+ * A full-screen element is only a DIALOG if it has something in it.
+ *
+ * An empty one is a click-catcher — the transparent sheet a dropdown lays over
+ * the page to notice a tap outside itself (MasterCombo's suggestion list uses
+ * one). Those open BECAUSE a field was focused, and treating them as dialogs
+ * closed the keyboard the instant the worker tapped ตำแหน่ง / รายละเอียด DEFECT,
+ * so the field could never be typed in at all.
+ */
+export function isDialog(el: Element): boolean {
+  return el.childElementCount > 0
+}
+
+/** Is a real dialog on screen right now? */
+export function hasDialogOpen(): boolean {
+  return [...document.querySelectorAll(OVERLAY)].some(isDialog)
+}
+
 function blurOutside(overlay: Element): void {
   const el = document.activeElement
   if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return
@@ -32,7 +50,7 @@ export function startKeyboardGuard(): () => void {
     for (const r of records) {
       for (const n of r.addedNodes) {
         if (!(n instanceof HTMLElement)) continue
-        const overlay = n.matches(OVERLAY) ? n : n.querySelector(OVERLAY)
+        const overlay = [n, ...n.querySelectorAll(OVERLAY)].find((e) => e.matches(OVERLAY) && isDialog(e))
         if (overlay) { blurOutside(overlay); return }
       }
     }

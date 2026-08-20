@@ -37,6 +37,7 @@ import { parseLane } from '../lib/laneImport'
 import { LOCATION_KEY } from '../lib/trackingColumns'
 import { blockTag, blockKeyOfTag, resolveBlockByName } from '../lib/format'
 import { fetchUnitsByVins, fetchUnitsInLane, isConfigured } from '../lib/db'
+import { hasDialogOpen } from '../lib/keyboardGuard'
 import { useRecentOps } from '../store/useRecentOps'
 import { buildWorkRows, buildEventLog, fmtHistAt, histOf } from '../lib/carHistory'
 
@@ -611,7 +612,7 @@ function VinInput({
     // — the worker then has to close the keyboard before every ตกลง. A worker
     // who wants to type the next VIN taps the field; the handheld scanner and
     // the camera never needed focus in the first place.
-    if (document.querySelector('div.fixed.inset-0')) return
+    if (hasDialogOpen()) return
     ref.current?.focus()
   }, [autoFocus])
 
