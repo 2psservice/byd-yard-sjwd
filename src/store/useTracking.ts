@@ -60,6 +60,9 @@ interface TrackingState {
   /** Append a free-form audit entry to a row's history (no cell change) — used to
    *  log damage add/remove so the admin Event tab keeps a permanent record. */
   appendHistory: (vin: string, entry: RowEvent) => void
+  /** Merge rows fetched straight from the cloud (per-VIN scan fallback) into
+   *  this device's copy — newer wins, never clobbers fresher local edits. */
+  adoptCloudRows: (rows: TrackRow[]) => number
   /** Version of the system-history purge this device has already run cloud-side.
    *  Bumping SYS_HISTORY_PURGE_V forces one full sync that cleans every row. */
   sysHistoryPurged: number
@@ -602,6 +605,26 @@ export const useTracking = create<TrackingState>()(
         set({ rows: { ...get().rows, [vin]: next } })
         idbPut(next).catch(() => {})
         db.upsertTrackingRows([next]).catch(() => {})
+      },
+
+      adoptCloudRows: (incoming) => {
+        let adopted = 0
+        const fresh: TrackRow[] = []
+        set((s) => {
+          const rows = { ...s.rows }
+          for (const raw of incoming) {
+            if (!hasVin(raw) || raw.deletedAt) continue
+            const r = stripSystemHistory(raw)
+            const cur = rows[r.vin]
+            if (cur && (cur.updatedAt ?? 0) >= (r.updatedAt ?? 0)) continue // local is fresher
+            rows[r.vin] = r
+            fresh.push(r)
+            adopted++
+          }
+          return adopted ? { rows } : s
+        })
+        if (fresh.length) idbBulkPut(fresh).catch(() => {})
+        return adopted
       },
 
       appendHistory: (vin, entry) => {

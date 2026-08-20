@@ -754,6 +754,31 @@ const toTrackRow = (r: TrackRowRow): TrackRow => ({
 })
 
 /**
+ * One car's tracking row, straight from the cloud, by full VIN or ท้าย ≥3 ตัว.
+ *
+ * Every scan station resolves a VIN against THIS DEVICE'S copy of the rows, and
+ * copies age at different rates per phone (a dead realtime socket, a fresh
+ * install still mid first-load). The same sticker then scans fine on one phone
+ * and reads "ไม่พบ VIN" on the next. This is the escape hatch: before a station
+ * declares a car not found, it asks the cloud for that one car.
+ */
+export async function fetchTrackingRowsByVin(q: string): Promise<TrackRow[]> {
+  if (!isConfigured() || q.length < 3) return []
+  const run = (cols: string) => {
+    let query = supabase.from('tracking_rows').select(cols)
+    // a full VIN matches exactly; a partial matches as a suffix (เลขท้าย)
+    query = (q.length >= 17 ? query.eq('vin', q) : query.like('vin', `%${q}`)) as typeof query
+    return (query as any).limit(6)
+  }
+  let res: any = await run('vin, cells, updated_at, site, history, deleted_at')
+  if (res.error) res = await run('vin, cells, updated_at, site, history')
+  if (res.error) res = await run('vin, cells, updated_at, site')
+  if (res.error) res = await run('vin, cells, updated_at')
+  if (res.error) { console.error('[db] fetchTrackingRowsByVin', res.error); throw res.error }
+  return ((res.data ?? []) as TrackRowRow[]).map(toTrackRow).filter((r) => !r.deletedAt)
+}
+
+/**
  * Fetch tracking rows from Supabase.
  * - `sinceMs` set → INCREMENTAL: only rows changed after that time (small, fast).
  * - omitted → FULL: all rows, fetched with every page IN PARALLEL (≈1 round-trip
