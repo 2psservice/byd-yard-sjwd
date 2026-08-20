@@ -9,7 +9,7 @@ import { parseTrackingWorkbook } from '../lib/excelTracking'
 import { idbBulkPut, idbClear, idbDelete, idbGetAllRows, idbPut } from '../lib/idb'
 import * as db from '../lib/db'
 import { supabase } from '../lib/supabase'
-import { onSync, sendSync } from '../lib/syncBus'
+import { onSync, sendSync, type RowMsg, type RowsPayload } from '../lib/syncBus'
 import { useYard } from './useYard'
 import { siteForRow, siteIdForLocation, coInspectionAccepts } from '../lib/siteScope'
 import { CAR_STATUS_ORDER, deriveCarStatus, isGateOutStamp } from '../lib/carStatus'
@@ -294,6 +294,7 @@ export const useTracking = create<TrackingState>()(
           } else if (!lr || (cr.updatedAt ?? 0) > (lr.updatedAt ?? 0)) {
             const clean = stripSystemHistory(cr)
             merged[cr.vin] = clean; pull.push(clean)
+            broadcastOnly.delete(cr.vin) // the authoritative row (with history) is here now
           }
         }
         // also sweep any blank-Vin rows already sitting in local state
@@ -303,9 +304,18 @@ export const useTracking = create<TrackingState>()(
         // local → cloud: on a full run, anything the cloud lacks or is older on;
         // incrementally, just local edits since last sync (covers offline changes).
         // Never re-push a VIN the cloud has tombstoned — that was the resurrection bug.
+        // `local` is the pre-merge snapshot, so a row the pull just replaced is
+        // still sitting in it with its OLD contents — pushing that writes the
+        // stale copy straight back over the fresher one we just accepted.
+        const pulled = new Set(pull.map((r) => r.vin))
         const push: TrackRow[] = []
         for (const lr of Object.values(local)) {
           if (!hasVin(lr)) continue // never re-push phantom rows
+          if (pulled.has(lr.vin)) continue // superseded a moment ago — not ours to write
+          // a row this device only heard ABOUT (broadcast, no history on the
+          // wire) is not ours to write back — pushing it would erase the
+          // sender's new audit line for everyone
+          if (broadcastOnly.has(lr.vin)) continue
           const cr = cloudByVin.get(lr.vin)
           if (cr?.deletedAt) continue
           if (incremental) {
@@ -328,6 +338,9 @@ export const useTracking = create<TrackingState>()(
           if (merged[cr.vin] && pruned.every((r) => r.vin !== cr.vin)) pruned.push(merged[cr.vin])
         }
 
+        // a row that arrived FROM the cloud is already common knowledge — record
+        // it as shared so the announcer below doesn't relay it back out again
+        for (const r of pull) rowShared.set(r.vin, r.updatedAt ?? 0)
         if (pull.length || drop.length || pruned.length) { set({ rows: merged }) }
         if (pull.length || pruned.length) idbBulkPut([...pull, ...pruned]).catch(() => {})
         if (drop.length) idbDelete(drop).catch(() => {})
@@ -874,7 +887,88 @@ export const useTracking = create<TrackingState>()(
   ),
 )
 
-// ── ทุกเครื่องเห็นสถานะรถชุดเดียวกัน: นาฬิกากระทบยอดสถานะ ─────────────────────
+// ── ทุกเครื่องเห็นสถานะรถชุดเดียวกัน (1): ประกาศทันทีที่มีการแก้ ────────────────
+// The reconcile clock below bounds how far two screens can drift, but a minute
+// is a long time at a gate where a car's status decides whether the next person
+// may scan it. So mirror what positions already do: every row this device
+// changes is ANNOUNCED on the broadcast bus the moment it changes, and every
+// client applies what it hears straight into its own copy. Broadcast needs no
+// publication membership and no DDL, so it keeps working in exactly the cases
+// that make the row-level stream drop events.
+//
+// Last-write-wins on `at` (the sender's updatedAt) settles any collision, the
+// same rule the row-level stream uses — so the two paths can never fight.
+const ROW_BROADCAST_MAX = 30
+/** updatedAt last known shared with the other clients — sent OR received.
+ *  Comparing against it is what stops a received row echoing straight back. */
+const rowShared = new Map<string, number>()
+const pendingRows = new Map<string, RowMsg>()
+let rowsTimer: ReturnType<typeof setTimeout> | null = null
+/** Cars whose local copy arrived by broadcast, so it carries fresh cells but
+ *  NOT the sender's new history line. Such a row must never be pushed back to
+ *  the cloud — the upsert writes the whole row and would erase that line
+ *  everywhere. It is dropped from here the moment a real pull refills it. */
+const broadcastOnly = new Set<string>()
+
+function flushRows() {
+  rowsTimer = null
+  if (!pendingRows.size) return
+  const rows = [...pendingRows.values()]
+  pendingRows.clear()
+  // a wave this size is an import / bulk sync, not somebody editing a car —
+  // those devices pull it themselves, and the payload would blow the bus limit
+  if (rows.length > ROW_BROADCAST_MAX) return
+  sendSync('status', { rows } satisfies RowsPayload)
+}
+
+useTracking.subscribe((s, prev) => {
+  if (s.rows === prev.rows) return
+  for (const vin in s.rows) {
+    const r = s.rows[vin]
+    const at = r.updatedAt ?? 0
+    if (rowShared.get(vin) === at) continue
+    const first = prev.rows[vin] === undefined
+    rowShared.set(vin, at)
+    // changed HERE, so this device owns the row again and may write it back
+    broadcastOnly.delete(vin)
+    if (first) continue // a row arriving from the initial load is not an edit
+    pendingRows.set(vin, { vin, cells: r.cells ?? {}, at })
+  }
+  if (pendingRows.size && !rowsTimer) rowsTimer = setTimeout(flushRows, 250)
+})
+
+onSync('status', (p: RowsPayload) => {
+  const rows = p?.rows
+  if (!Array.isArray(rows) || !rows.length) return
+  const fresh: TrackRow[] = []
+  useTracking.setState((s) => {
+    const next = { ...s.rows }
+    let hit = 0
+    for (const m of rows) {
+      if (!m?.vin || !(m.cells?.['Vin'] ?? '').trim()) continue
+      const cur = next[m.vin]
+      if (!cur) continue // this device does not hold the car — its own sync brings it
+      if ((cur.updatedAt ?? 0) >= m.at) { rowShared.set(m.vin, cur.updatedAt ?? 0); continue }
+      // Land a hair BEHIND the sender's stamp: the cells are live on screen at
+      // once, and the cloud copy — the one that also carries the new history
+      // line — still reads as newer, so the next reconcile refills it. Stamping
+      // m.at exactly would tie, and this device would keep a row with no record
+      // of the change that just happened to it.
+      const at = m.at - 1
+      rowShared.set(m.vin, at) // mark as shared BEFORE the set() so it is not echoed back
+      broadcastOnly.add(m.vin)
+      // history is deliberately not on the wire — keep the copy this device has
+      const row: TrackRow = { ...cur, cells: m.cells, updatedAt: at }
+      next[m.vin] = row
+      fresh.push(row)
+      hit++
+    }
+    return hit ? { rows: next } : s
+  })
+  if (fresh.length) idbBulkPut(fresh).catch(() => {})
+})
+
+// ── ทุกเครื่องเห็นสถานะรถชุดเดียวกัน (2): นาฬิกากระทบยอดสถานะ ─────────────────
 // Car positions already have three independent paths to every device (realtime,
 // the `moves` broadcast, and the placement clock). Car STATUS had only one —
 // the realtime stream — so a single missed event left that browser counting a

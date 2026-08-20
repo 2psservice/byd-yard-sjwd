@@ -16,16 +16,27 @@
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase, isConfigured } from './supabase'
 
-export type SyncEvent = 'blocks' | 'ops' | 'trailers' | 'viewdefault' | 'policies' | 'moves'
+export type SyncEvent = 'blocks' | 'ops' | 'trailers' | 'viewdefault' | 'policies' | 'moves' | 'status'
 
 /** One car's new spot, as broadcast to every other open client. */
 export interface MoveMsg { vin: string; block?: string; row?: number; slot?: number; status?: string; at: number }
 export interface MovesPayload { siteId: string | null; moves: MoveMsg[] }
+
+/**
+ * One car's changed data, as broadcast to every other open client — the same
+ * second path `moves` gives positions, for the cells every screen counts
+ * (Car Status above all). Carries the row's full `cells` so the receiver ends
+ * up byte-identical to the sender rather than half-merged; `history` is left
+ * out because it is the bulky part and the row-level stream / reconcile carry
+ * it. `at` is the sender's updatedAt, so newer-wins works on the far side.
+ */
+export interface RowMsg { vin: string; cells: Record<string, string>; at: number }
+export interface RowsPayload { rows: RowMsg[] }
 type Handler = (payload: any) => void
 
 let channel: RealtimeChannel | null = null
 const handlers = new Map<SyncEvent, Handler[]>()
-const EVENTS: SyncEvent[] = ['blocks', 'ops', 'trailers', 'viewdefault', 'policies', 'moves']
+const EVENTS: SyncEvent[] = ['blocks', 'ops', 'trailers', 'viewdefault', 'policies', 'moves', 'status']
 
 /** Register a listener (module-scope, survives channel restarts). */
 export function onSync(event: SyncEvent, h: Handler): void {
