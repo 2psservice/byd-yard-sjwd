@@ -3384,6 +3384,10 @@ function GateOutView() {
   // driver from dispatching a car with the wrong group
   const [wrongGroup, setWrongGroup] = useState<{ vin: string; group: string } | null>(null)
   const [done, setDone] = useState<{ vin: string; label: string } | { group: number } | null>(null)
+  // VINs gated out SINCE this DN was opened — a re-scanned Note whose cars all
+  // left earlier gets a grey, dead "already recorded" button, not a second green
+  // "confirm the group" that re-records a dispatch that already happened
+  const [sessionOut, setSessionOut] = useState<string[]>([])
 
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
 
@@ -3433,7 +3437,7 @@ function GateOutView() {
     if (!g) return
     const n = trackingRows.filter(r => normGroup(r.cells[GROUP_KEY]) === g).length
     if (!n) { toast('err', `ไม่พบ DN / เลข Grouping: ${raw}`); return }
-    setVin(null); setDn(g)
+    setVin(null); setDn(g); setSessionOut([])
   }
 
   const onScanRef = useRef<(v: string) => void>(() => {})
@@ -3513,6 +3517,7 @@ function GateOutView() {
     markDeparted(row.vin) // release the parking slot — the car left it for the preload lane
     // close the delivery-sequence item too, if this car belongs to one
     if (seqHit) confirmSeqGateOut(seqHit.queue.id, row.vin, currentUser)
+    setSessionOut(prev => [...prev, row.vin]) // this Note session did real work
     setDone({ vin: row.vin, label: 'Pre Gate-out' }); setVin(null)
   }
 
@@ -3669,12 +3674,27 @@ function GateOutView() {
               // checks is easy to walk away from believing the DN dispatched when
               // it hasn't; this makes the final confirmation an explicit action.
               <div className="px-4 py-3 border-t hairline">
-                <button
-                  onClick={() => { setDone({ group: dnCars.length }); setDn(null) }}
-                  className="w-full py-3 rounded-2xl text-[15px] font-bold text-white flex items-center justify-center gap-2 transition-all active:scale-95"
-                  style={{ background: '#16a34a' }}>
-                  <CheckCircle2 size={18} /> ยืนยัน Gate-out ครบกลุ่ม {dnCars.length} คัน
-                </button>
+                {sessionOut.length > 0 ? (
+                  <button
+                    onClick={() => { setDone({ group: dnCars.length }); setDn(null) }}
+                    className="w-full py-3 rounded-2xl text-[15px] font-bold text-white flex items-center justify-center gap-2 transition-all active:scale-95"
+                    style={{ background: '#16a34a' }}>
+                    <CheckCircle2 size={18} /> ยืนยัน Gate-out ครบกลุ่ม {dnCars.length} คัน
+                  </button>
+                ) : (
+                  // every car left in an EARLIER session — the group's dispatch is
+                  // already on record, so the confirm is a dead grey plaque here
+                  <>
+                    <button disabled
+                      className="w-full py-3 rounded-2xl text-[15px] font-bold flex items-center justify-center gap-2"
+                      style={{ background: '#cbd5e1', color: '#64748b', cursor: 'not-allowed' }}>
+                      <CheckCircle2 size={18} /> ยืนยัน Gate-out ครบกลุ่ม {dnCars.length} คัน
+                    </button>
+                    <div className="text-[11px] text-center mt-1.5" style={{ color: 'var(--muted)' }}>
+                      กลุ่มนี้บันทึก Gate-out ครบไปแล้ว — กดซ้ำไม่ได้
+                    </div>
+                  </>
+                )}
               </div>
             )}
             <div className="px-4 py-2.5 border-t hairline text-[10.5px] text-center leading-snug" style={{ color: 'var(--muted)', borderColor: 'var(--line)' }}>
