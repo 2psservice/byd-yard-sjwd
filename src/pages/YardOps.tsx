@@ -3457,16 +3457,30 @@ function GateOutView() {
       setWrongGroup({ vin: r.vin, group: (r.cells[GROUP_KEY] ?? '').trim() })
       return
     }
-    // Gate-out follows the delivery run: only a car listed in an open
-    // Grouping-to-Dealer queue may leave, so nothing walks out of the yard
-    // without being planned. (A car already Pre Gate-out stays scannable — its
-    // Preload still has to be confirmable before the 09:30 flush.)
     const model = r.cells['Model name'] ?? r.cells['Model'] ?? ''
     const status = (r.cells['Car Status'] ?? '').trim()
+    // a car the gate already released must never be stamped out a second time —
+    // the popup names who scanned it and when, and the block only lifts once
+    // the car's status is back to In Yard (a re-scan would re-run doGateOut:
+    // fresh timestamp, queue re-confirm, another slot release)
+    if (hasLeftGate(r.cells)) {
+      // no field-name matching needed: only a Car Status change ever writes
+      // these values, and reversed order finds the LATEST gate-out
+      const ev = [...(r.history ?? [])].reverse()
+        .find(h => h.to === 'Pre Gate-out' || h.to === 'Gate-out')
+      const when = ev?.at ? fmtHistAt(ev.at)
+        : (r.cells['Gate Out time stamp'] || r.cells['Gate Out Date'] || '').trim()
+      blockWith(r.vin, model, 'รถ Gate-out ไปแล้ว',
+        <>รถคันนี้ถูกยิง Gate-out ไปแล้ว{ev?.by ? <> โดย <b style={{ color: 'var(--brand)' }}>{ev.by}</b></> : null}
+          {when ? <><br />วันที่ <b style={{ color: 'var(--brand)' }}>{when}</b></> : null}<br />
+          ไม่สามารถยิงซ้ำได้ จนกว่าสถานะรถจะกลับเป็น <b style={{ color: 'var(--brand)' }}>In Yard</b></>)
+      return
+    }
+    // Gate-out follows the delivery run: only a car listed in an open
+    // Grouping-to-Dealer queue may leave, so nothing walks out of the yard
+    // without being planned.
     const inSeq = !!findSeqItem(r.vin, queues)
-    // a car that already left keeps its scan, so the panel can say so plainly
-    const alreadyOut = status === 'Pre Gate-out' || status === 'Gate-out'
-    if (!inSeq && !alreadyOut) {
+    if (!inSeq) {
       blockWith(r.vin, model, 'ไม่มีคิวงาน Gate-out',
         <>รถคันนี้ไม่อยู่ในคิวงานส่งมอบ (<b style={{ color: 'var(--brand)' }}>Grouping to Dealer</b>)<br />
           ต้องเพิ่มรถเข้าคิวงานที่หน้า Operation ก่อน จึงจะ Gate-out ได้</>)
@@ -3474,7 +3488,7 @@ function GateOutView() {
     }
     // cars in a delivery sequence may sit at Wash/lane statuses that aren't in
     // the generic "gated-in" set — those are fine; a car that never gated in is not
-    if (!isGatedInStatus(status) && !alreadyOut) { blockGate(r.vin, model); return }
+    if (!isGatedInStatus(status)) { blockGate(r.vin, model); return }
     setVin(r.vin) // dn stays — after this car confirms, the next scan continues the Note
   }
   onScanRef.current = onScan
