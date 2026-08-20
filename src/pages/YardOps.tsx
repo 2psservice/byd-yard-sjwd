@@ -36,7 +36,7 @@ import { yardLocCode, yardLocFull, blockCode, byYardLocation, LAST_LOCATION_KEY 
 import { parseLane } from '../lib/laneImport'
 import { LOCATION_KEY } from '../lib/trackingColumns'
 import { blockTag, blockKeyOfTag, resolveBlockByName } from '../lib/format'
-import { fetchUnitsByVins, fetchUnitsInLane, isConfigured } from '../lib/db'
+import { fetchUnitsByVins, fetchUnitsInLane, fetchTrackingRowsByVin, isConfigured } from '../lib/db'
 import { hasDialogOpen } from '../lib/keyboardGuard'
 import { useRecentOps } from '../store/useRecentOps'
 import { buildWorkRows, buildEventLog, fmtHistAt, histOf } from '../lib/carHistory'
@@ -257,6 +257,51 @@ const hasGoneOut = (c?: Record<string, string>) => !!c && deriveCarStatus(c) ===
 // time or never resolve the one car being waited on, leaving "กำลังโหลด
 // ข้อมูลรถ…" stuck. A direct per-VIN lookup answers in one small request
 // regardless of yard size or the car's exact status.
+// ── สแกนไม่เจอในเครื่อง → ถาม cloud หาคันนั้นคันเดียวก่อนบอกว่า "ไม่พบ" ──────
+// Every phone holds its own copy of the rows and the copies age at different
+// rates (dead realtime socket, fresh install mid-load) — so the same sticker
+// scanned fine on one phone and read "ไม่พบ VIN" on the next. Before any
+// station declares a car not found, it asks the cloud for that one car, adopts
+// the row (and its unit, for the position), and re-runs the very same scan.
+// เจอจริงก็ทำงานต่อเหมือนไม่มีอะไรเกิดขึ้น — ไม่เจอใน cloud ด้วยค่อยขึ้นไม่พบ
+const cloudLookups = new Map<string, number>() // query → เวลาที่ถามไป (กันวนซ้ำ)
+function cloudRescan(q: string, retry: (v: string) => void): void {
+  const toast = useYard.getState().toast
+  const last = cloudLookups.get(q) ?? 0
+  if (!isConfigured() || Date.now() - last < 8000) {
+    // เพิ่งถามไปหมาดๆ แล้วยังไม่เจอ (หรือออฟไลน์) — คำตอบสุดท้ายคือไม่พบจริง
+    toast('err', `ไม่พบ VIN: ${q}${isConfigured() ? ' (ตรวจกับระบบกลางแล้ว)' : ''}`)
+    return
+  }
+  cloudLookups.set(q, Date.now())
+  toast('info', 'ไม่พบในเครื่องนี้ — กำลังค้นหาจากระบบกลาง…')
+  fetchTrackingRowsByVin(q)
+    .then(async (rows) => {
+      const adopted = useTracking.getState().adoptCloudRows(rows)
+      if (!rows.length) { toast('err', `ไม่พบ VIN: ${q} (ตรวจกับระบบกลางแล้ว)`); return }
+      // ดึงตำแหน่ง (unit) ของคันที่เจอมาด้วย — สถานี Re-location/Check ใช้ต่อทันที
+      await Promise.all(rows.slice(0, 4).map((r) => fetchUnitFallback(r.vin).catch(() => false)))
+      // ยิงสแกนเดิมซ้ำหลัง store อัปเดตแล้ว — คราวนี้เจอในเครื่องแน่ (ถ้า adopt
+      // ไม่ได้เพราะเครื่องมีสำเนาใหม่กว่า แถวนั้นก็มีอยู่แล้วโดยนิยาม)
+      void adopted
+      setTimeout(() => retry(q), 200)
+    })
+    .catch(() => toast('err', 'ค้นหาจากระบบกลางไม่สำเร็จ — เช็คสัญญาณเน็ตแล้วลองใหม่'))
+}
+
+/** Per-station glue: on "not found", show the wrong-site hint when the car IS
+ *  known but lives in another yard — otherwise ask the cloud and re-run the
+ *  station's LATEST scan handler (the ref dodges the stale-closure trap). */
+function useCloudNotFound(retryRef: { current: (v: string) => void }): (v: string) => void {
+  const wrongSite = useWrongSiteHint()
+  const toast = useYard((st) => st.toast)
+  return (v: string) => {
+    const hint = wrongSite(v)
+    if (hint) toast('err', hint)
+    else cloudRescan(v, (vv) => retryRef.current(vv))
+  }
+}
+
 async function fetchUnitFallback(vin: string): Promise<boolean> {
   if (!isConfigured()) return false
   try {
@@ -1509,6 +1554,8 @@ function WalkView() {
     return true
   }
 
+  const onScanRef = useRef<(v: string) => void>(() => {})
+  const scanNotFound = useCloudNotFound(onScanRef)
   const onScan = (v: string) => {
     setTrackingVin(null)
     // 1. exact yard unit
@@ -1527,8 +1574,9 @@ function WalkView() {
       if (trackHits.length === 1) { setTrackingVin(trackHits[0].vin); return }
       if (trackHits.length > 1) { toast('err', `พบ ${trackHits.length} คัน ที่ลงท้าย ${v} — กรอกให้ยาวขึ้น`); return }
     }
-    toast('err', wrongSite(v) ?? `ไม่พบ VIN: ${v}`)
+    scanNotFound(v)
   }
+  onScanRef.current = onScan
 
   const doGateIn = () => {
     if (!unit) return
@@ -2245,14 +2293,17 @@ function DriverView() {
   )
   const proposal = cands[Math.min(altIdx, Math.max(0, cands.length - 1))] ?? null
 
+  const onScanRef = useRef<(v: string) => void>(() => {})
+  const scanNotFound = useCloudNotFound(onScanRef)
   const onScan = (v: string) => {
     const res = resolveForUnit(v, units, trackingRows)
     if (res.type === 'ambiguous') { toast('err', `พบ ${res.count} คัน — พิมพ์ให้ยาวขึ้น`); return }
-    if (res.type === 'none') { toast('err', wrongSite(v) ?? `ไม่พบ VIN: ${v}`); return }
+    if (res.type === 'none') { scanNotFound(v); return }
     if (res.type === 'notGated') { blockGate(res.vin, res.model); return }
     if (res.type === 'okPending') { toast('ok', 'กำลังโหลดข้อมูลรถ…'); fetchUnitFallback(res.vin) } // unit not synced yet
     setVin(res.vin)
   }
+  onScanRef.current = onScan
   const doAssign = (slot: { block: string; row: number; slot: number }) => {
     if (!unit) return
     const from = unit.block && unit.row && unit.slot ? yardLocFull(unit) : ''
@@ -2950,16 +3001,19 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
   const walkDmgs = unit ? walkAroundDamages(unit) : []                              // found at gate-in
   const otherDmgs = unit ? unit.damages.filter(d => d.source && d.source !== 'walkaround') : [] // PDI / ช่าง
 
+  const onScanRef = useRef<(v: string) => void>(() => {})
+  const scanNotFound = useCloudNotFound(onScanRef)
   const onScan = (v: string) => {
     // fast path: match against this station's own queue(s) first
     let res = resolveForUnit(v, queueUnits, queueRows)
     if (res.type === 'none') res = resolveForUnit(v, units, trackingRows) // not in a queue here — full site search
     if (res.type === 'ambiguous') { toast('err', `พบ ${res.count} คัน — พิมพ์ให้ยาวขึ้น`); return }
-    if (res.type === 'none') { toast('err', wrongSite(v) ?? `ไม่พบ VIN: ${v}`); return }
+    if (res.type === 'none') { scanNotFound(v); return }
     if (res.type === 'notGated') { blockGate(res.vin, res.model); return }
     if (res.type === 'okPending') fetchUnitFallback(res.vin) // unit not synced yet — hurry just this one car
     setVin(res.vin); setJustOk(false)
   }
+  onScanRef.current = onScan
   // called by FinalCheckPanel after it records the inspection (OK / NG)
   const onSaved = (label: string, result: 'OK' | 'NG') => {
     setOkLabel(label); setOkResult(result)
@@ -3225,15 +3279,18 @@ function MechanicView() {
   const repairQueueUnits = useMemo(() => units.filter(u => repairQueueVins.has(u.vin)), [units, repairQueueVins])
   const repairQueueRows = useMemo(() => trackingRows.filter(r => repairQueueVins.has(r.vin)), [trackingRows, repairQueueVins])
 
+  const onScanRef = useRef<(v: string) => void>(() => {})
+  const scanNotFound = useCloudNotFound(onScanRef)
   const onScan = (v: string) => {
     let res = resolveForUnit(v, repairQueueUnits, repairQueueRows)
     if (res.type === 'none') res = resolveForUnit(v, units, trackingRows) // not in a queue here — full site search
     if (res.type === 'ambiguous') { toast('err', `พบ ${res.count} คัน — พิมพ์ให้ยาวขึ้น`); return }
-    if (res.type === 'none') { toast('err', wrongSite(v) ?? `ไม่พบ VIN: ${v}`); return }
+    if (res.type === 'none') { scanNotFound(v); return }
     if (res.type === 'notGated') { blockGate(res.vin, res.model); return }
     if (res.type === 'okPending') { toast('ok', 'กำลังโหลดข้อมูลรถ…'); fetchUnitFallback(res.vin) } // unit not synced yet
     setVin(res.vin); setShowForm(false)
   }
+  onScanRef.current = onScan
   const doRelease = (id: string) => {
     if (!unit) return
     removeDamage(unit.vin, id)
@@ -3379,6 +3436,8 @@ function GateOutView() {
     setVin(null); setDn(g)
   }
 
+  const onScanRef = useRef<(v: string) => void>(() => {})
+  const scanNotFound = useCloudNotFound(onScanRef)
   // VIN scan INSIDE a scanned DN — the operator walks to the physical car and
   // scans it there, so what leaves the gate is exactly what the Note says.
   const onScan = (v: string) => {
@@ -3391,7 +3450,7 @@ function GateOutView() {
       if (hits.length === 1) r = hits[0]
       else if (hits.length > 1) { toast('err', `พบ ${hits.length} คัน — พิมพ์ให้ยาวขึ้น`); return }
     }
-    if (!r) { toast('err', wrongSite(v) ?? `ไม่พบ VIN: ${v}`); return }
+    if (!r) { scanNotFound(v); return }
     // the whole point of scanning at the car: a car whose grouping is not THIS
     // DN must never slip into the load — stop it with a popup, not a quiet toast
     if (normGroup(r.cells[GROUP_KEY]) !== dn) {
@@ -3418,6 +3477,7 @@ function GateOutView() {
     if (!isGatedInStatus(status) && !alreadyOut) { blockGate(r.vin, model); return }
     setVin(r.vin) // dn stays — after this car confirms, the next scan continues the Note
   }
+  onScanRef.current = onScan
 
   // Ops-scan gate-out → "Pre Gate-out": the car is staged in preload, NOT gone
   // yet. deriveCarStatus finalises it to a real Gate-out at the next 09:30 flush
@@ -3847,6 +3907,8 @@ function RelocationView() {
     return true
   }
 
+  const onScanRef = useRef<(v: string) => void>(() => {})
+  const scanNotFound = useCloudNotFound(onScanRef)
   const onScan = (v: string) => {
     setSaved(false); setFLoc('')
     let r = trackingRows.find(x => x.vin === v)
@@ -3855,7 +3917,7 @@ function RelocationView() {
       if (hits.length === 1) r = hits[0]
       else if (hits.length > 1) { toast('err', `พบ ${hits.length} คัน — พิมพ์ให้ยาวขึ้น`); return }
     }
-    if (!r) { toast('err', wrongSite(v) ?? `ไม่พบ VIN: ${v}`); return }
+    if (!r) { scanNotFound(v); return }
     // "has left" is tested BEFORE "never arrived": a row whose Car Status cell is
     // blank but whose Gate-Out stamp is set is a departed car, and the
     // not-gated-in popup would name the wrong reason
@@ -3869,6 +3931,7 @@ function RelocationView() {
     setVin(r.vin)
     recordRecent('reloc:search', r.vin)
   }
+  onScanRef.current = onScan
 
   /** "T1201" — block name + column + which car down it, the yard's own form. */
   const codeOf = (b: string, col: number, depth: number) =>
@@ -3918,6 +3981,8 @@ function RelocationView() {
     return () => clearTimeout(t)
   }, [laneStr]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  const onLaneScanRef = useRef<(v: string) => void>(() => {})
+  const laneNotFound = useCloudNotFound(onLaneScanRef)
   const onLaneScan = (v: string, laneOverride?: string) => {
     const L = laneOverride != null ? laneInfoOf(laneOverride) : laneCur
     if (!L.ready) { toast('err', 'ใส่แถวก่อน — Block + เลขช่อง เช่น A10'); return }
@@ -3927,7 +3992,7 @@ function RelocationView() {
       if (hits.length === 1) r = hits[0]
       else if (hits.length > 1) { toast('err', `พบ ${hits.length} คัน — พิมพ์ให้ยาวขึ้น`); return }
     }
-    if (!r) { toast('err', wrongSite(v) ?? `ไม่พบ VIN: ${v}`); return }
+    if (!r) { laneNotFound(v); return }
     if (hasGoneOut(r.cells)) {
       blockGate2(r.vin, r.cells['Model name'] ?? r.cells['Model'] ?? '', 'รถออกจากลานแล้ว',
         <>รถคันนี้ <b style={{ color: '#dc2626' }}>Gate-out</b> ไปแล้ว จึงไม่มีตำแหน่งในลานให้ย้าย</>)
@@ -4025,6 +4090,7 @@ function RelocationView() {
     setLaneAdded(seq.map((vin, i) => ({ vin, code: codeOf(L.blockId, L.slot, i + 1) })))
     toast('ok', `${code} · คันที่ ${pos} · ${r.vin.slice(-6)} — ยิงคันถัดไปต่อได้เลย`)
   }
+  onLaneScanRef.current = onLaneScan
 
   const doSave = async () => {
     if (!canSave || !row || nextRow === null) return
@@ -4347,6 +4413,8 @@ function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', s
     if (unit && hasPhotolessDamage(unit)) fetchUnitPhotoHeal(unit.vin)
   }, [unit])
 
+  const onScanRef = useRef<(v: string) => void>(() => {})
+  const scanNotFound = useCloudNotFound(onScanRef)
   const onScan = (v: string) => {
     let found: string | null = null
     const eu = units.find(u => u.vin === v); if (eu) found = eu.vin
@@ -4361,7 +4429,7 @@ function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', s
         else if (th.length > 1) { toast('err', `พบ ${th.length} คัน`); return }
       }
     }
-    if (!found) { toast('err', wrongSite(v) ?? `ไม่พบ VIN: ${v}`); return }
+    if (!found) { scanNotFound(v); return }
     const fu = units.find(u => u.vin === found)
     const fr = trackingRows.find(r => r.vin === found)
     const gated = (fu && fu.status !== 'EXPECTED') || (fr && isGatedInStatus(fr.cells['Car Status']))
@@ -4369,6 +4437,7 @@ function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', s
     setVin(found); setShowAdd(false)
     recordRecent(`${recentKey}:search`, found)
   }
+  onScanRef.current = onScan
 
   const fmt = (ts: number) => {
     const d = new Date(ts)
@@ -4566,6 +4635,8 @@ function CheckView() {
     return () => { cancelled = true }
   }, [vin, unit])
 
+  const onScanRef = useRef<(v: string) => void>(() => {})
+  const scanNotFound = useCloudNotFound(onScanRef)
   const onScan = (v: string) => {
     let found: string | null = null
     const et = trackingRows.find(r => r.vin === v); if (et) found = et.vin
@@ -4580,7 +4651,7 @@ function CheckView() {
         else if (uh.length > 1) { toast('err', `พบ ${uh.length} คัน — พิมพ์ให้ยาวขึ้น`); return }
       }
     }
-    if (!found) { toast('err', wrongSite(v) ?? `ไม่พบ VIN: ${v}`); return }
+    if (!found) { scanNotFound(v); return }
     setVin(found)
     setCtab('info')
     recordRecent('check:search', found)
@@ -4588,6 +4659,7 @@ function CheckView() {
     // device (PDI tablet) appear on this scan, not the next app restart
     loadFromSupabase().catch(() => {})
   }
+  onScanRef.current = onScan
 
   // Work checklist + Event log — the SAME data the admin Unit detail shows,
   // built by the shared lib so หน้างาน reads the identical history
