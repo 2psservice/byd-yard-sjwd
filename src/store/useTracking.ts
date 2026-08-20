@@ -158,6 +158,9 @@ function stripSystemHistory(r: TrackRow): TrackRow {
 }
 
 const MAX_ROW_HISTORY = 100
+// how close together two Location moves on the SAME car by the SAME actor
+// have to land to count as one physical cascade rather than two real moves
+const LOCATION_BURST_MS = 90_000
 function withHistoryEntry(r: TrackRow, key: string, value: string, columns: Column[], by: string): TrackRow {
   const from = r.cells[key] ?? ''
   const cells = { ...r.cells, [key]: value }
@@ -638,6 +641,23 @@ export const useTracking = create<TrackingState>()(
         if (lastH && lastH.field === entry.field && lastH.from === entry.from
             && lastH.to === entry.to && lastH.by === entry.by
             && Math.abs(entry.at - lastH.at) < 8000) return
+        // a Location burst — scanning several cars down one lane re-shoves the
+        // SAME not-yet-scanned car once per additional scan, and re-parking
+        // logic can do the same — so one physical car can otherwise pick up a
+        // handful of near-instant hops that are only noise once it settles.
+        // Roll them into the ONE line a person actually cares about: where it
+        // really started, where it ended up. A DIFFERENT actor mid-burst still
+        // gets its own line — that IS a second real event.
+        if (lastH && entry.field === 'Location' && lastH.field === 'Location' && lastH.by === entry.by
+            && entry.at - lastH.at >= 0 && entry.at - lastH.at < LOCATION_BURST_MS) {
+          const merged: TrackRow = { ...r,
+            history: [...hist.slice(0, -1), { ...lastH, to: entry.to, at: entry.at }],
+            updatedAt: Date.now() }
+          set({ rows: { ...get().rows, [vin]: merged } })
+          idbPut(merged).catch(() => {})
+          db.upsertTrackingRows([merged]).catch(() => {})
+          return
+        }
         const next: TrackRow = { ...r, history: [...hist, entry].slice(-MAX_ROW_HISTORY), updatedAt: Date.now() }
         set({ rows: { ...get().rows, [vin]: next } })
         idbPut(next).catch(() => {})
