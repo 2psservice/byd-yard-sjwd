@@ -6,6 +6,7 @@ import { CarTopView } from './CarTopView'
 import { StatusBadge } from './ui'
 import { ViewLegend } from './ViewLegend'
 import { blockTag, pos, unitInBlock } from '../lib/format'
+import { laneFromCloud } from '../lib/laneCloud'
 import { resolveSlotColor, type YardViewMode } from '../lib/yardView'
 import { useYard } from '../store/useYard'
 import { useTracking } from '../store/useTracking'
@@ -69,14 +70,32 @@ export function BlockPopup({
    * take the shallowest free depths left in the SAME lane, so nothing that
    * already has a square of its own is touched and no car changes lane.
    */
-  const fixStack = (list: Unit[]) => {
+  const fixStack = async (list: Unit[]) => {
     const slot = list[0]?.slot
     if (!slot || list.length < 2) return
-    const lane = units.filter((u) => unitInBlock(u, block) && u.slot === slot && u.row
+    // Which depths are free is decided from the CLOUD, not from this browser's
+    // copy of the yard. Handing out a depth from a stale copy is how a car that
+    // moved away kept holding its old square — and how a car nobody here had
+    // loaded yet got landed on. Offline this falls back to the local view.
+    const fresh = await laneFromCloud(units, useYard.getState().currentSite, blockTag(block), slot)
+    const lane = fresh.filter((u) => unitInBlock(u, block) && u.slot === slot && u.row
       && (u.status === 'PARKED' || u.status === 'ASSIGNED' || u.status === 'LOADED'))
     const taken = new Set(lane.map((u) => u.row!))
+    // …and the clash itself is re-checked against the cloud. A car this browser
+    // draws on the square may have been driven elsewhere since; it is not part
+    // of the pile any more, and re-parking it here would undo a real move.
+    const byVin = new Map(fresh.map((u) => [u.vin, u] as const))
+    const stacked = list.filter((u) => {
+      const now = byVin.get(u.vin) ?? u
+      return unitInBlock(now, block) && now.slot === slot
+    })
+    if (stacked.length < 2) {
+      setStack(null)
+      toast('info', 'ตรวจกับระบบกลางแล้ว — รถไม่ได้ซ้อนช่องกันจริง (มีคันที่ถูกย้ายไปแล้ว)')
+      return
+    }
     const updates: { vin: string; block: string; row: number; slot: number; modelName?: string; color?: string }[] = []
-    for (const u of list.slice(1)) { // [0] is the longest-standing car — it stays put
+    for (const u of stacked.slice(1)) { // [0] is the longest-standing car — it stays put
       let depth = 0
       for (let r = 1; r <= block.rows; r++) if (!taken.has(r)) { depth = r; break }
       if (!depth) break // lane genuinely full — leave the rest for a human to move

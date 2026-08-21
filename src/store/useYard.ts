@@ -18,6 +18,7 @@ import { hashPassword, verifyPassword, isHashed } from '../lib/password'
 import { resolvePart, resolveDefect } from '../lib/masterDefect'
 import { supabase } from '../lib/supabase'
 import { blockKeyOfTag, pos as posCode } from '../lib/format'
+import { laneFromCloud } from '../lib/laneCloud'
 import type { DbDamage, DbUnit } from '../lib/database.types'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 
@@ -258,7 +259,7 @@ interface YardState {
   ensureUnitSites: () => void
   /** Give every car on a shared square its own คันที่ — same lane only, never a
    *  different ช่อง. Returns how many cars were re-numbered. */
-  dedupeSlots: () => number
+  dedupeSlots: () => Promise<number>
   /** Re-read VIN + position for this yard from the cloud and adopt what it says,
    *  so every device converges on the same plan even if a realtime event dropped. */
   refreshPlacements: () => Promise<number>
@@ -1197,32 +1198,68 @@ export const useYard = create<YardState>()(
        * against a half-loaded copy is how the duplicates got created in the
        * first place.
        */
-      dedupeSlots: () => {
-        const s = get()
-        if (!s.unitsCloudDone) return 0
-        const blocks = curBlocks(s)
+      dedupeSlots: async () => {
+        const s0 = get()
+        if (!s0.unitsCloudDone) return 0
+        const blocks = curBlocks(s0)
         const depthOf = (blockTag?: string) => {
           const b = blocks.find((x) => blockKeyOfTag(x.name) === blockKeyOfTag(blockTag) || blockKeyOfTag(x.id) === blockKeyOfTag(blockTag))
           return b?.rows ?? MAX_LANE_DEPTH
         }
-        // group by lane: block + ช่อง + yard
+        const parked = (u: Unit) => !!u.block && !!u.row && !!u.slot
+          && (u.status === 'PARKED' || u.status === 'ASSIGNED' || u.status === 'LOADED')
+        // lane identity: block + ช่อง + yard
+        const laneKey = (u: Unit) => `${blockKeyOfTag(u.block)}|${u.site ?? ''}|${u.slot}`
+
+        // ── pass 1: does anything even LOOK like a clash? (local, costs nothing)
         const lanes = new Map<string, Unit[]>()
-        for (const u of Object.values(s.units)) {
-          if (!u.block || !u.row || !u.slot) continue
-          if (u.status !== 'PARKED' && u.status !== 'ASSIGNED' && u.status !== 'LOADED') continue
-          const k = `${blockKeyOfTag(u.block)}|${u.site ?? ''}|${u.slot}`
+        for (const u of Object.values(s0.units)) {
+          if (!parked(u)) continue
+          const k = laneKey(u)
           const arr = lanes.get(k)
           if (arr) arr.push(u); else lanes.set(k, [u])
         }
+        const looksClashed = (lane: Unit[]) => {
+          const seen = new Set<number>()
+          for (const u of lane) { if (seen.has(u.row!)) return true; seen.add(u.row!) }
+          return false
+        }
+        const suspects = [...lanes.entries()].filter(([, lane]) => looksClashed(lane))
+        if (!suspects.length) return 0 // the overwhelmingly common case — no query at all
+
+        // ── pass 2: ask the cloud who is REALLY in those lanes, before moving anyone.
+        // This runs by itself, with nobody watching, so it must never act on a
+        // hunch. Most "clashes" this device sees are not clashes at all: it is
+        // still holding a car somebody drove elsewhere, and the pile is imaginary.
+        // Acting on that wrote the car back into the lane it had left — the same
+        // fault as the row scan's, but silent and on a timer. Only lanes that
+        // still look clashed once the cloud has spoken get touched.
+        const verified = new Map<string, Unit[]>()
+        const healed: Unit[] = []
+        for (const [k, lane] of suspects) {
+          const [blockId, site, slotStr] = k.split('|')
+          const slot = Number(slotStr)
+          const scope = Object.values(s0.units).filter((u) => (u.site ?? '') === site)
+          const fresh = await laneFromCloud(scope, site || null, blockId, slot)
+          const byVin = new Map(fresh.map((u) => [u.vin, u] as const))
+          // whatever the cloud corrected, adopt — this device was simply wrong
+          for (const u of lane) {
+            const now = byVin.get(u.vin)
+            if (now && (now.block !== u.block || now.row !== u.row || now.slot !== u.slot)) healed.push(now)
+          }
+          verified.set(k, fresh.filter((u) => parked(u) && laneKey(u) === k))
+        }
+
         const moved: Unit[] = []
-        const units = { ...s.units }
-        for (const lane of lanes.values()) {
+        const units = { ...get().units }
+        for (const u of healed) units[u.vin] = u
+        for (const lane of verified.values()) {
           const byDepth = new Map<number, Unit[]>()
           for (const u of lane) {
             const arr = byDepth.get(u.row!)
             if (arr) arr.push(u); else byDepth.set(u.row!, [u])
           }
-          if (![...byDepth.values()].some((a) => a.length > 1)) continue // ไม่มีรถซ้อน
+          if (![...byDepth.values()].some((a) => a.length > 1)) continue // ไม่ได้ซ้อนจริง
           const taken = new Set(byDepth.keys())
           const depth = depthOf(lane[0].block)
           for (const [, cars] of [...byDepth.entries()].sort((a, b) => a[0] - b[0])) {
@@ -1243,6 +1280,7 @@ export const useYard = create<YardState>()(
             }
           }
         }
+        if (healed.length && !moved.length) { set({ units }); return 0 }
         if (!moved.length) return 0
         set({ units })
         db.upsertUnits(moved).catch((e) => console.error('[db] dedupeSlots', e))
@@ -1284,7 +1322,7 @@ export const useYard = create<YardState>()(
           }
           return changed ? { units } : s
         })
-        if (changed) get().dedupeSlots()
+        if (changed) get().dedupeSlots().catch(() => {})
         return changed
       },
 
@@ -1917,7 +1955,7 @@ function scheduleDedupe(delay = 1200) {
   if (dedupeTimer) clearTimeout(dedupeTimer)
   dedupeTimer = setTimeout(() => {
     dedupeTimer = null
-    try { useYard.getState().dedupeSlots() } catch { /* store mid-teardown */ }
+    try { useYard.getState().dedupeSlots().catch(() => {}) } catch { /* store mid-teardown */ }
   }, delay)
 }
 useYard.subscribe((s, prev) => {
