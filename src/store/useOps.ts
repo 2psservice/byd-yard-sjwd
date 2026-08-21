@@ -23,7 +23,7 @@ export type QueueStage = 'queued' | 'at-station' | 'checked'
  *   PM → the next empty PM1…PM15 slot · PDI → the "PDI" date ·
  *   FINAL → "Final check date" (+ Final Status) · WASH / SPECIAL → no cell,
  *   the completion is only recorded in the car's Event log. */
-export type QueueType = 'PDI' | 'PM' | 'FINAL' | 'REPAIR' | 'WASH' | 'SPECIAL'
+export type QueueType = 'PDI' | 'PM' | 'FINAL' | 'REPAIR' | 'WASH' | 'SPECIAL' | 'GATEIN'
 
 /** Preset work types offered on the Operation page (order = button order). */
 export const QUEUE_TYPES: { type: QueueType; name: string; th: string }[] = [
@@ -87,6 +87,8 @@ export const PRESET_QUEUES = ['PM', 'Wash for sale', 'PDI', 'FINAL CHECK'] as co
  *  from the name so legacy queues (created before `type` existed) still classify. */
 export function queueTypeOf(q: WorkQueue): QueueType {
   if (q.type) return q.type
+  // arrival lots are named "(yard · date · N)" by the importer
+  if ((q.name ?? '').trim().startsWith('(')) return 'GATEIN'
   const n = (q.name ?? '').toLowerCase()
   if (n.includes('pdi')) return 'PDI'
   // PM before FINAL: a legacy queue named "FINAL PM" is a PM run — classifying
@@ -123,8 +125,10 @@ const PDI_KEYS = ['PDI', ...Array.from({ length: 8 }, (_, i) => `RE PDI  Date #$
  * written. WASH / SPECIAL have no date cell.
  */
 export function stampStationDate(vin: string, type: QueueType): boolean {
-  // REPAIR/WASH/SPECIAL have no date column on the master sheet — event log only
-  if (type === 'REPAIR' || type === 'WASH' || type === 'SPECIAL') return false
+  // REPAIR/WASH/SPECIAL have no date column on the master sheet — event log only.
+  // GATEIN neither: arrival is stamped by the gate station's own write (Gate In
+  // Time / Inspector), and falling through here would date 'Final check date'.
+  if (type === 'REPAIR' || type === 'WASH' || type === 'SPECIAL' || type === 'GATEIN') return false
   const tr = useTracking.getState()
   const row = tr.rows[vin]
   if (!row) return false
@@ -282,7 +286,7 @@ export const useOps = create<OpsState>()(
         set((s) => {
           const base = s.queues.some((q) => q.id === id)
             ? s.queues
-            : [...s.queues, { id, name: n, createdAt: now, createdBy: by, items: [] as QueueItem[], site: siteTag }]
+            : [...s.queues, { id, name: n, createdAt: now, createdBy: by, items: [] as QueueItem[], site: siteTag, type: 'GATEIN' as QueueType }]
           return {
             queues: base.map((q) => {
               if (q.id !== id) return q
@@ -326,7 +330,16 @@ export const useOps = create<OpsState>()(
       },
 
       renameQueue: (id, name) => {
-        set((s) => ({ queues: s.queues.map((q) => (q.id === id ? { ...q, name: name.trim() || q.name } : q)) }))
+        set((s) => ({
+          queues: s.queues.map((q) => {
+            if (q.id !== id) return q
+            // Pin what the queue IS before renaming it, because for a lot that
+            // predates the `type` field the old name is the only thing saying
+            // so — rename it first and that fact is gone for good.
+            const type = q.type ?? queueTypeOf(q)
+            return { ...q, name: name.trim() || q.name, type }
+          }),
+        }))
         pushQueue(get, id)
       },
 
@@ -850,6 +863,21 @@ export const stageOf = (item: QueueItem): QueueStage => item.stage ?? 'queued'
 /** A Grouping-to-Dealer delivery sequence. `kind` is dropped on the cloud
  *  round-trip (no column), so fall back to the per-item laneLoad which lives in
  *  the items JSONB and always survives. */
+/**
+ * Is this an arrival lot (the queues the gate works through)?
+ *
+ * Shared so the Dashboard card, the Gate In/Out board and the Ops-Scan station
+ * all pick out the same queues instead of each re-deriving the rule.
+ *
+ * Identity is the queue's TYPE, not its name. Import names a lot
+ * "(yard · date · N)" and the rule used to be "name starts with (" — so the
+ * moment the office renamed a lot to something meaningful it stopped counting
+ * as an arrival lot and vanished from the board and from every phone at the
+ * gate. The name is a label; the type is what the lot IS. Lots created before
+ * the type existed still resolve by name through queueTypeOf.
+ */
+export const isPreGateInQueue = (q: WorkQueue): boolean => queueTypeOf(q) === 'GATEIN'
+
 export const isSequenceQueue = (q: WorkQueue): boolean =>
   q.kind === 'sequence' || q.items.some((i) => i.laneLoad != null || i.dest != null)
 

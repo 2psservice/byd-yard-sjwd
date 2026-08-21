@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ScanLine, LogOut, ChevronDown, ChevronRight, CheckCircle2, Clock, Calendar, X, ClipboardList, ListChecks } from 'lucide-react'
+import { ScanLine, LogOut, ChevronDown, ChevronRight, CheckCircle2, Clock, Calendar, X, ClipboardList, ListChecks, Pencil } from 'lucide-react'
 import { useYard, useUnits } from '../store/useYard'
 import { PageHead, cx } from '../components/ui'
 import { useTracking, useTrackingRows } from '../store/useTracking'
-import { useActiveQueues, queueProgress, isSequenceQueue, isQueueComplete } from '../store/useOps'
+import { useActiveQueues, useOps, queueProgress, isSequenceQueue, isQueueComplete, isPreGateInQueue } from '../store/useOps'
 import type { WorkQueue } from '../store/useOps'
 import { deriveCarStatus, CAR_STATUS_META } from '../lib/carStatus'
 import { rowInSite } from '../lib/siteScope'
@@ -256,6 +256,53 @@ function GroupCard({ group, mode, dateFilter }: { group: Group; mode: 'in' | 'ou
   )
 }
 
+/**
+ * The lot's name, renameable in place.
+ *
+ * Import names a lot "(yard · date · N)", which says nothing about what is on
+ * the truck. The office knows — "ATTO 3 lot 2", "รอบบ่าย" — and that name is
+ * what the gate operator reads on the scan station, so let it be typed here.
+ * The virtual "no queue yet" card is not a real queue and has nothing to save
+ * a name to, so it stays read-only.
+ */
+function QueueName({ q, onExpand }: { q: WorkQueue; onExpand: () => void }) {
+  const renameQueue = useOps((s) => s.renameQueue)
+  const toast = useYard((s) => s.toast)
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(q.name)
+  const virtual = q.id === '__uncovered_pregatein'
+
+  const save = () => {
+    const n = draft.trim()
+    if (n && n !== q.name) { renameQueue(q.id, n); toast('ok', 'เปลี่ยนชื่อคิวงานแล้ว') }
+    setEditing(false)
+  }
+
+  if (editing) {
+    return (
+      <input className="input py-1 text-[13px] font-bold w-full" value={draft} autoFocus
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') { setDraft(q.name); setEditing(false) } }} />
+    )
+  }
+  return (
+    <div className="flex items-center gap-1.5 min-w-0">
+      {/* the name still opens the lot on tap, exactly as before the pencil
+          arrived — renaming is the small deliberate target beside it */}
+      <button className="font-bold text-[13px] truncate text-left" style={{ color: 'var(--brand)' }}
+        onClick={onExpand}>{q.name}</button>
+      {!virtual && (
+        <button className="shrink-0 p-1 rounded-md transition hover:bg-chip"
+          title="เปลี่ยนชื่อคิวงาน — ชื่อนี้จะขึ้นที่หน้าสแกนของหน้างานด้วย"
+          onClick={() => { setDraft(q.name); setEditing(true) }}>
+          <Pencil size={12} style={{ color: 'var(--muted)' }} />
+        </button>
+      )}
+    </div>
+  )
+}
+
 // ── Pre Gate-in work queues (the "(yard · date · N)" import batches) — same view
 //    as YardOps: name · done/total · waiting VIN list. Scoped to the active site. ──
 function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
@@ -276,7 +323,7 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
     return m
   }, [rows])
   const queues = useMemo(
-    () => all.filter((q) => q.name.trim().startsWith('(') && (!q.site || q.site === currentSite) && queueOnDate(q, filterDate)),
+    () => all.filter((q) => isPreGateInQueue(q) && (!q.site || q.site === currentSite) && queueOnDate(q, filterDate)),
     [all, currentSite, filterDate],
   )
   // ── safety net: a Pre Gate-in car this board doesn't cover with any queue ──
@@ -299,7 +346,7 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
     // the virtual card below instead of silently belonging to a hidden queue
     const queuedVins = new Set<string>()
     for (const q of all) {
-      if (!q.name.trim().startsWith('(') || (q.site && q.site !== currentSite)) continue
+      if (!isPreGateInQueue(q) || (q.site && q.site !== currentSite)) continue
       for (const i of q.items) if (!i.done) queuedVins.add(i.vin)
     }
     return rows.filter((r) => rowInSite(r, currentSite, useYard.getState().sites)
@@ -327,25 +374,27 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
           const complete = pending.length === 0
           return (
             <div key={q.id}>
-              <button className="w-full text-left px-4 py-3 transition active:bg-chip" onClick={() => setOpenId(open ? null : q.id)}>
+              <div className="w-full text-left px-4 py-3 transition">
                 <div className="flex items-center justify-between gap-2">
                   <div className="min-w-0 flex-1">
-                    <div className="font-bold text-[13px] truncate" style={{ color: 'var(--brand)' }}>{q.name}</div>
-                    <div className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
+                    <QueueName q={q} onExpand={() => setOpenId(open ? null : q.id)} />
+                    <button className="text-[11px] mt-0.5 block text-left" style={{ color: 'var(--muted)' }}
+                      onClick={() => setOpenId(open ? null : q.id)}>
                       {done}/{total} เสร็จ{complete ? '' : ` · รอ Gate-in ${pending.length} คัน`}
-                    </div>
+                    </button>
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
+                  <button className="flex items-center gap-2 shrink-0" onClick={() => setOpenId(open ? null : q.id)}>
                     <span className="badge tabular" style={complete
                       ? { background: 'rgba(22,163,74,0.12)', color: '#16a34a' }
                       : { background: '#fef9c3', color: '#854d0e' }}>{done}/{total}</span>
                     {open ? <ChevronDown size={14} style={{ color: 'var(--muted)' }} /> : <ChevronRight size={14} style={{ color: 'var(--muted)' }} />}
-                  </div>
+                  </button>
                 </div>
-                <div className="h-1.5 rounded-full overflow-hidden mt-2" style={{ background: 'var(--chip)' }}>
+                <button className="h-1.5 rounded-full overflow-hidden mt-2 block w-full" style={{ background: 'var(--chip)' }}
+                  onClick={() => setOpenId(open ? null : q.id)}>
                   <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: complete ? '#22c55e' : 'var(--brand)' }} />
-                </div>
-              </button>
+                </button>
+              </div>
               {open && (
                 <div className="border-t hairline max-h-[320px] overflow-y-auto divide-y">
                   {complete && (

@@ -14,7 +14,7 @@ import {
 import { useYard, useUnits, useTrips, useBlocks } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { isDamaged, deriveCarStatus, hasLeftGate, IN_YARD_STATUSES, CAR_STATUS_META } from '../lib/carStatus'
-import { useOps, useActiveQueues, activeProcess, stageOf, isSequenceQueue, seqStageOf, isQueueComplete, isStationWorkComplete, queueTypeOf, stampStationDate, stationProgress, drivingNow } from '../store/useOps'
+import { useOps, useActiveQueues, activeProcess, stageOf, isSequenceQueue, isPreGateInQueue, seqStageOf, isQueueComplete, isStationWorkComplete, queueTypeOf, stampStationDate, stationProgress, drivingNow } from '../store/useOps'
 import type { WorkQueue, QueueItem, QueueType, QueueStage } from '../store/useOps'
 import { CarTopView } from '../components/CarTopView'
 import { LogoMark } from '../components/Logo'
@@ -443,7 +443,6 @@ function CheckedByLine({ by, at }: { by?: string; at?: number }) {
 // Pre Gate-in queues are auto-named "(M-D-N)" (start with "("); admin process
 // queues (PDI / FINAL PM / WASHFORSALE …) are plain names — keep the two apart
 // so each shows under its own role and they don't get mixed up.
-const isPreGateInQueue = (name: string) => name.trim().startsWith('(')
 
 /** car colour name → swatch hex (for the Gate-in card Color chip) */
 const COLOR_SWATCH: Record<string, string> = {
@@ -459,7 +458,7 @@ const colorSwatch = (c: string | undefined): string | null =>
 function stationStatusOf(vin: string, queues: WorkQueue[]): { queue: string; text: string; color: string } | null {
   let target: { name: string; item: QueueItem } | null = null
   for (const q of queues) {
-    if (isPreGateInQueue(q.name)) continue
+    if (isPreGateInQueue(q)) continue
     const item = q.items.find(i => i.vin === vin)
     if (!item) continue
     if (!item.done) { target = { name: q.name, item }; break } // active queue wins
@@ -1451,7 +1450,7 @@ function WalkView() {
     // all. That is exactly what an admin flipping Car Status back to Pre Gate-in
     // produces, and the station had no way to know the car was waiting.
     const queuedVins = new Set<string>()
-    for (const q of queues) if (isPreGateInQueue(q.name)) for (const i of q.items) if (!i.done) queuedVins.add(i.vin)
+    for (const q of queues) if (isPreGateInQueue(q)) for (const i of q.items) if (!i.done) queuedVins.add(i.vin)
     return trackingRows.filter(r => !queuedVins.has(r.vin) && deriveCarStatus(r.cells) === 'Pre Gate-in')
   }, [queues, trackingRows])
   // Pre Gate-in queues "(M-D-N)" — process queues (PDI / PM / Wash) live under the
@@ -1459,7 +1458,7 @@ function WalkView() {
   // its own progress ("17/17 · เหลือ 0"), same as the Driver's delivery-run cards.
   const gateInQueues = useMemo(() => {
     // completed queues drop off the live Ops-Scan list (they've filed under their day)
-    const real = queues.filter(q => isPreGateInQueue(q.name) && !isQueueComplete(q))
+    const real = queues.filter(q => isPreGateInQueue(q) && !isQueueComplete(q))
     if (!uncoveredPreGateIn.length) return real
     const virtual: WorkQueue = {
       id: '__uncovered_pregatein', name: '(รอ Gate-in · ยังไม่มีคิวงาน)', createdAt: 0,
@@ -2264,14 +2263,14 @@ function DriverView() {
   const allWorkQueues = useMemo(
     // finished station work (every car done or checked) leaves the driver's
     // browser too — a "เหลือ 0" queue only blocked the screen
-    () => queues.filter(q => !isSequenceQueue(q) && !isPreGateInQueue(q.name) && !isQueueComplete(q) && !isStationWorkComplete(q)),
+    () => queues.filter(q => !isSequenceQueue(q) && !isPreGateInQueue(q) && !isQueueComplete(q) && !isStationWorkComplete(q)),
     [queues],
   )
 
   // the car's current station task (PDI / PM / Wash …), if any — Pre Gate-in
   // queues are NOT stations: matching them offered "ส่งเข้าสถานี · (Rayong·…)"
   // and wrote a bogus "PARKING (…)" Car Status
-  const activeProc = useMemo(() => (unit ? activeProcess(unit.vin, queues.filter(q => !isPreGateInQueue(q.name))) : null), [unit, queues])
+  const activeProc = useMemo(() => (unit ? activeProcess(unit.vin, queues.filter(q => !isPreGateInQueue(q))) : null), [unit, queues])
   const procStage = activeProc ? stageOf(activeProc.item) : null
   // a slot proposal is needed both for the gate-in first-park AND for returning a checked car
   const needsSlot = !!unit && (unit.status === 'GATE_IN' || (unit.status === 'PARKED' && procStage === 'checked'))
@@ -2942,7 +2941,7 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
   // while some cars still wait for the drive back to a slot ("เหลือ 0" cards).
   // A just-created queue with no cars yet IS shown (it used to vanish, so an
   // operator who had just created it thought the queue never arrived).
-  const procQueues = useMemo(() => queues.filter(q => !isPreGateInQueue(q.name) && !isQueueComplete(q) && !isStationWorkComplete(q)), [queues])
+  const procQueues = useMemo(() => queues.filter(q => !isPreGateInQueue(q) && !isQueueComplete(q) && !isStationWorkComplete(q)), [queues])
   // scan should resolve against the queue(s) already on screen first — a
   // handful of VINs, not the whole site's units/tracking rows — so it's
   // instant for the common case (the car being worked is in this station's
@@ -3262,7 +3261,7 @@ function MechanicView() {
   // was assigned to fix today; scanning a car still opens its NG list directly.
   const repairQueues = useMemo(
     () => allQueues.filter(q => {
-      if (isSequenceQueue(q) || isPreGateInQueue(q.name) || isQueueComplete(q)) return false
+      if (isSequenceQueue(q) || isPreGateInQueue(q) || isQueueComplete(q)) return false
       const t = queueTypeOf(q)
       return t === 'REPAIR' || t === 'SPECIAL'
     }),
@@ -5031,7 +5030,7 @@ export function YardOps() {
     const add = (k: RoleKey, v: number) => { if (v > 0) n[k] = (n[k] ?? 0) + v }
     // only OPEN items count as covered — same rule as the station's own list
     const queuedPreGateInVins = new Set<string>()
-    for (const q of queues) if (isPreGateInQueue(q.name)) for (const i of q.items) if (!i.done) queuedPreGateInVins.add(i.vin)
+    for (const q of queues) if (isPreGateInQueue(q)) for (const i of q.items) if (!i.done) queuedPreGateInVins.add(i.vin)
     for (const q of queues) {
       if (isQueueComplete(q)) continue
       if (isSequenceQueue(q)) {
@@ -5041,7 +5040,7 @@ export function YardOps() {
         add('driver', q.items.filter(i => !i.done && !i.atLaneAt).length)
         continue
       }
-      if (isPreGateInQueue(q.name)) { add('walk', q.items.filter(i => !i.done).length); continue }
+      if (isPreGateInQueue(q)) { add('walk', q.items.filter(i => !i.done).length); continue }
       const t = queueTypeOf(q)
       // the station's own count: cars whose check hasn't been recorded yet
       const unchecked = q.items.filter(i => !i.done && stageOf(i) !== 'checked').length
