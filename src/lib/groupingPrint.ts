@@ -156,7 +156,20 @@ export interface FindListRow {
   model: string
   color: string
   location: string  // yard code "N-N12" (or the raw cell fallback), '' when unknown
+  /** Set when the car has left the yard: the gate-out date as "12AUG26" (or ''
+   *  when it left but no readable date survives). A car with no location is
+   *  usually not lost — it has already gone out — and "ไม่พบตำแหน่ง" sent
+   *  drivers hunting the yard for it. */
+  gateOut?: string
   remark: string
+}
+
+/** What the Location column says for one row — the same answer on screen, in
+ *  the PDF and in the Excel, so a printed sheet never contradicts the panel. */
+export function findLocationText(r: FindListRow): string {
+  if (r.location) return r.location
+  if (r.gateOut !== undefined) return r.gateOut ? `Gate out ${r.gateOut}` : 'Gate out'
+  return ''
 }
 
 const findListTitle = (count: number, date: string): string =>
@@ -169,7 +182,7 @@ function findListTableHtml(rows: FindListRow[]): string {
     <td class="vin">${esc(r.vin)}</td>
     <td class="c">${esc(r.model)}</td>
     <td class="c">${esc(r.color)}</td>
-    <td class="c"><b>${esc(r.location || '—')}</b></td>
+    <td class="c"><b>${esc(findLocationText(r) || '—')}</b></td>
     <td>${esc(r.remark)}</td>
   </tr>`).join('')
   return `<table>
@@ -221,7 +234,7 @@ export async function exportFindListXlsx(rows: FindListRow[], date: string): Pro
 
   const sorted = [...rows].sort((a, b) => byYardLocation(a.location, b.location))
   sorted.forEach((r, i) => {
-    const row = ws.addRow([i + 1, r.vin, r.model, r.color, r.location || '—', r.remark])
+    const row = ws.addRow([i + 1, r.vin, r.model, r.color, findLocationText(r) || '—', r.remark])
     row.height = 16
     row.eachCell((c: any, col: number) => {
       c.border = border
