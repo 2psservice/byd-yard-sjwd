@@ -4043,10 +4043,22 @@ function RelocationView() {
     // incumbent list is verified against the CLOUD first — only cars the cloud
     // still parks in this lane slide — then the batch applies. Offline (or no
     // cloud configured) keeps the old trust-local behavior.
-    type LocUpdate = { vin: string; block: string; row: number; slot: number; modelName?: string; color?: string }
+    type LocUpdate = {
+      vin: string; block: string; row: number; slot: number; modelName?: string; color?: string
+      from?: { block?: string; row?: number; slot?: number }
+    }
     const gen = ++laneGenRef.current
-    const buildAndApply = (inc: typeof incumbents) => {
+    /** `verified` = the lane exactly as the cloud just described it. Every move
+     *  built from it carries where the car WAS, so the write lands only while
+     *  that is still true — another phone reordering this same lane a second
+     *  later can no longer be silently overwritten. */
+    const buildAndApply = (inc: typeof incumbents, verified?: Unit[]) => {
       if (gen !== laneGenRef.current) return // a newer scan supersedes this rebuild
+      const truth = new Map((verified ?? []).map(x => [x.vin, x] as const))
+      const seenAt = (vin: string) => {
+        const x = truth.get(vin)
+        return x ? { block: x.block, row: x.row, slot: x.slot } : undefined
+      }
       const updates: LocUpdate[] = []
       seq.forEach((vin, i) => {
         const cu = siteUnits.find(x => x.vin === vin)
@@ -4055,12 +4067,14 @@ function RelocationView() {
         const tr2 = vin === r!.vin ? r : trackingRows.find(x => x.vin === vin)
         updates.push({ vin, block: L.blockId, row, slot: L.slot,
           modelName: cu?.modelName || tr2?.cells['Model name'] || tr2?.cells['Model'] || undefined,
-          color: cu?.color || tr2?.cells['Color'] || undefined })
+          color: cu?.color || tr2?.cells['Color'] || undefined,
+          from: seenAt(vin) })
       })
       inc.forEach((cu, i) => {
         const row = seq.length + 1 + i
         if (cu.block === L.blockId && cu.slot === L.slot && cu.row === row) return
-        updates.push({ vin: cu.vin, block: L.blockId, row, slot: L.slot, modelName: cu.modelName, color: cu.color })
+        updates.push({ vin: cu.vin, block: L.blockId, row, slot: L.slot, modelName: cu.modelName, color: cu.color,
+          from: { block: cu.block, row: cu.row, slot: cu.slot } })
       })
       if (!updates.length) return
       updateLocations(updates)
@@ -4085,7 +4099,7 @@ function RelocationView() {
     // rebuild from that. Offline / slow wifi keeps the old trust-local behaviour.
     if (!isConfigured()) buildAndApply(incumbents)
     else laneFromCloud(siteUnits, currentSite, L.blockId, L.slot).then((lane) =>
-      buildAndApply(laneOccupants(lane, L.blockId, L.slot).filter(u => !ord.includes(u.vin) && u.vin !== r!.vin)))
+      buildAndApply(laneOccupants(lane, L.blockId, L.slot).filter(u => !ord.includes(u.vin) && u.vin !== r!.vin), lane))
     const code = codeOf(L.blockId, L.slot, pos)
     appendHistory(r.vin, {
       at: Date.now(), by: currentUser, field: 'Location', src: 'scan',
@@ -4119,10 +4133,14 @@ function RelocationView() {
     // move the CAR, not the "Location yard" cell — that cell names the yard and
     // is what scopes a row to its site, so a slot code written into it used to
     // drop the car out of its own yard
+    const seenAt = lane.find(x => x.vin === row.vin)
     updateLocations([{
       vin: row.vin, block: blockId, row: depth, slot: slotNo,
       modelName: row.cells['Model name'] || row.cells['Model'] || undefined,
       color: row.cells['Color'] || undefined,
+      // where the cloud just said this car stands — the save lands only while
+      // that is still true, so a move somebody else made meanwhile is not lost
+      from: seenAt ? { block: seenAt.block, row: seenAt.row, slot: seenAt.slot } : undefined,
     }])
     // log the move under the Location column: from → to, who, when — the same
     // trail this screen and the admin's Event tab show
