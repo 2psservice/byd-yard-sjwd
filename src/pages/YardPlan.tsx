@@ -13,7 +13,7 @@ import { rowInSite } from '../lib/siteScope'
 import { blockTag, blockKeyOfTag } from '../lib/format'
 import { rowsToCsv, type TrackRow } from '../lib/excelTracking'
 import { matchVins, toFindListRows } from '../lib/findCar'
-import { printFindList, exportFindListXlsx } from '../lib/groupingPrint'
+import { printFindList, exportFindListXlsx, findLocationText } from '../lib/groupingPrint'
 import { makeT } from '../i18n'
 import { MODELS, ZONE_COLOR } from '../lib/sampleData'
 import { BlockPopup } from '../components/BlockPopup'
@@ -921,7 +921,14 @@ function FindCarPanel({ units, siteName, onClose }: { units: Unit[]; siteName: s
                   <span className="vin text-[12.5px] font-bold clip">{r.vin}</span>
                   <span className="text-[11.5px] clip" style={{ color: 'var(--muted)' }}>{r.model || '—'}</span>
                   <span className="text-[11.5px] clip" style={{ color: 'var(--muted)' }}>{r.color || '—'}</span>
-                  <span className="gbadge tabular" style={{ color: r.location ? 'var(--brand)' : '#a16207', background: r.location ? 'var(--brand-soft)' : 'rgba(234,179,8,0.16)', justifySelf: 'start' }}>{r.location || 'ไม่พบตำแหน่ง'}</span>
+                  {/* a car with no spot is usually not lost — it has left the
+                      yard. Say so, in its own grey, so it never reads as a
+                      position a driver could walk to. */}
+                  <span className="gbadge tabular" style={
+                    r.location ? { color: 'var(--brand)', background: 'var(--brand-soft)', justifySelf: 'start' }
+                      : r.gateOut !== undefined ? { color: '#475569', background: 'rgba(100,116,139,0.14)', justifySelf: 'start' }
+                        : { color: '#a16207', background: 'rgba(234,179,8,0.16)', justifySelf: 'start' }
+                  }>{findLocationText(r) || 'ไม่พบตำแหน่ง'}</span>
                 </div>
               ))}
             </>

@@ -12,6 +12,29 @@
 import type { TrackRow } from './excelTracking'
 import type { FindListRow } from './groupingPrint'
 import { yardLocCode, siteGroupingConfig } from './groupingImport'
+import { hasLeftGate, isGateOutStamp } from './carStatus'
+import { parseLooseDate } from './dayKey'
+
+const MONTHS_UP = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
+/** "12AUG26" — the short stamp the gate sheets are written in. */
+const ddMmmYy = (d: Date) =>
+  `${String(d.getDate()).padStart(2, '0')}${MONTHS_UP[d.getMonth()]}${String(d.getFullYear() % 100).padStart(2, '0')}`
+
+/**
+ * When did this car leave, if it has?
+ *
+ * Returns undefined while the car is still in the yard; a date string once it
+ * has gone; '' when it has gone but no readable date survived (an import that
+ * only set the status). The caller uses the difference between "still here"
+ * and "gone, date unknown" — both used to print as ไม่พบตำแหน่ง, which reads
+ * as "we lost it" for a car that simply drove out days ago.
+ */
+function gateOutStamp(cells: Record<string, string>): string | undefined {
+  if (!hasLeftGate(cells)) return undefined
+  const raw = [cells['Gate Out time stamp'], cells['Gate Out Date']].find((v) => isGateOutStamp(v))
+  const d = parseLooseDate(raw)
+  return d ? ddMmmYy(d) : ''
+}
 
 export interface MatchResult {
   found: TrackRow[]
@@ -88,6 +111,8 @@ export function toFindListRows(
       model: r.cells['Model'] || u?.modelName || r.cells['Model name'] || '',
       color: r.cells['Color'] || u?.color || '',
       location: loc,
+      // only fills the gap — a car the yard still holds keeps its real spot
+      gateOut: loc ? undefined : gateOutStamp(r.cells),
       remark: r.cells['หมายเหตุ'] || r.cells['Remark'] || '',
     }
   })
