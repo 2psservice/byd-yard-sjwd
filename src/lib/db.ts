@@ -909,6 +909,36 @@ export async function deleteTrackingRows(vins: string[]): Promise<void> {
   }
 }
 
+/**
+ * Which of these VINs the cloud has explicitly TOMBSTONED (deleted_at set).
+ *
+ * Deliberately asks "which were deleted", not "which are still alive": a VIN
+ * the table has never heard of is not a deleted car. Queue items are built from
+ * more than the tracking sheet, so treating absence as proof of deletion would
+ * quietly throw away real work. Only a tombstone — the mark an admin's delete
+ * leaves behind — counts.
+ *
+ * Throws on a query error so a caller offline never mistakes silence for
+ * "deleted".
+ */
+export async function fetchDeletedVins(vins: string[]): Promise<Set<string>> {
+  const dead = new Set<string>()
+  if (!isConfigured() || !vins.length) return dead
+  for (let i = 0; i < vins.length; i += 200) {
+    const slice = vins.slice(i, i + 200)
+    const { data, error } = await supabase
+      .from('tracking_rows').select('vin').in('vin', slice).not('deleted_at', 'is', null)
+    // `deleted_at` not migrated yet → nothing can be tombstoned; nothing to purge
+    if (error) {
+      if (isMissingColumn(error)) return dead
+      console.error('[db] fetchDeletedVins', error)
+      throw error
+    }
+    for (const r of (data ?? []) as { vin: string }[]) dead.add(r.vin)
+  }
+  return dead
+}
+
 /** ล้าง tombstone เก่าทิ้งถาวร (แถวที่ถูก soft-delete นานเกิน `olderThanMs`) เพื่อไม่ให้ตารางบวม */
 export async function purgeTrackingTombstones(olderThanMs: number): Promise<void> {
   if (!isConfigured()) return
