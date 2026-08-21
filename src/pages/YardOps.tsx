@@ -9,7 +9,7 @@ import {
   CheckCircle2, XCircle, AlertTriangle, Navigation, Clock,
   User, RefreshCw, Plus, Trash2,
   ArrowRight, Zap, Hand, X, Camera, Pencil, Gauge, Route, Crosshair,
-  LogOut, MapPin, ClipboardList, ListChecks, Copy, Check,
+  LogOut, MapPin, ClipboardList, ListChecks, Copy, Check, Loader2,
 } from 'lucide-react'
 import { useYard, useUnits, useTrips, useBlocks } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
@@ -599,6 +599,7 @@ function VinInput({
   const [val, setVal] = useState('')
   const [camOpen, setCamOpen] = useState(false)
   const [camErr, setCamErr] = useState('')
+  const [camLive, setCamLive] = useState(false) // first frame is on screen
   const ref = useRef<HTMLInputElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   // ZXing scanner controls — decodes QR + 1D barcodes (Code128/39, EAN, DataMatrix)
@@ -705,9 +706,10 @@ function VinInput({
     setZoomCap(null); setZoom(1); setTorchCap(false); setTorchOn(false)
     const z0 = Math.min(3, savedScanZoom())
     setDigitalZoom(false); setDz(z0); dzRef.current = z0; opticalRef.current = false
+    setCamLive(false)
   }
 
-  const openCamera = () => { setCamErr(''); setCamOpen(true) }
+  const openCamera = () => { setCamErr(''); setCamLive(false); setCamOpen(true) }
   const closeCamera = () => { stopScan(); setCamOpen(false) }
 
   // Start the scanner whenever the overlay opens. ZXing manages getUserMedia +
@@ -717,10 +719,19 @@ function VinInput({
     if (!camOpen) return
     let cancelled = false
 
-    // ask for a real capture size: the default 640×480 left a windshield QR
-    // only ~40 px wide, below what any decoder can read. 2560 gives iPhones
-    // (which clamp to what the sensor pipeline allows) every pixel available.
-    const VIDEO: MediaTrackConstraints = { facingMode: { ideal: 'environment' }, width: { ideal: 2560 }, height: { ideal: 1440 } }
+    // Two-stage capture size, because asking for everything up front is what
+    // made the camera take seconds to appear on some phones. A 2560×1440
+    // request forces the sensor into a mode it may have to negotiate and
+    // re-allocate buffers for, and the preview stays black the whole time —
+    // "กดแล้วรอนาน", and only on the devices whose pipeline is slow at it.
+    //
+    // Stage 1 asks for 1280×720: a native mode on essentially every phone, so
+    // it opens almost immediately, and still ~4× the pixels of the old 640×480
+    // default if a device ignores stage 2. Stage 2 then raises it to the full
+    // sensor size on the LIVE track, which happens behind an already-visible
+    // preview and costs the operator nothing.
+    const VIDEO: MediaTrackConstraints = { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
+    const HI_RES: MediaTrackConstraints = { width: { ideal: 2560 }, height: { ideal: 1440 } }
 
     // zoom + torch, where the hardware offers them. A slight starting zoom
     // (2×, capped) puts far more pixels on the small sticker code.
@@ -755,19 +766,14 @@ function VinInput({
     // Path 1 — native BarcodeDetector (Android Chrome): hardware-accelerated and
     // markedly better than JS decoding at glare / angle / focus hunting. Detects
     // straight off the <video> ~8×/sec.
-    const startNative = async (): Promise<boolean> => {
+    const startNative = async (video: HTMLVideoElement): Promise<boolean> => {
       const BD = (window as unknown as { BarcodeDetector?: { new (o: { formats: string[] }): { detect: (v: HTMLVideoElement) => Promise<{ rawValue?: string }[]> }; getSupportedFormats?: () => Promise<string[]> } }).BarcodeDetector
       if (!BD) return false
       try {
         const supported = (await BD.getSupportedFormats?.()) ?? []
         const want = ['qr_code', 'code_128', 'code_39', 'ean_13', 'data_matrix'].filter(f => supported.includes(f))
         if (!want.includes('qr_code')) return false
-        const video = videoRef.current
-        if (!video || cancelled) return false
-        const stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO })
-        if (cancelled) { stream.getTracks().forEach(t => t.stop()); return true }
-        video.srcObject = stream
-        await video.play().catch(() => {})
+        if (cancelled) return true
         const det = new BD({ formats: want })
         const iv = setInterval(async () => {
           if (video.readyState < 2) return
@@ -787,23 +793,19 @@ function VinInput({
     // pixels), each tick decodes a CENTER CROP of the frame — the aiming box —
     // which multiplies the code's effective size. Every 3rd tick decodes the
     // full frame too, so a large/off-center code still hits.
-    const startZxing = async () => {
-      const video = videoRef.current
-      if (!video || cancelled) return
-      const stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO })
-      if (cancelled) { stream.getTracks().forEach(t => t.stop()); return }
-      video.srcObject = stream
-      await video.play().catch(() => {})
+    const startZxing = async (video: HTMLVideoElement, warm: Promise<unknown>) => {
+      if (cancelled) return
 
       // ── decoder: zxing-wasm (the C++ engine compiled to WebAssembly) — near
       // Android-native accuracy and speed on tiny / glarey windshield codes.
       // Falls back to the pure-JS @zxing/library if the wasm fails to load.
       let wasmRead: ((img: ImageData) => Promise<string | null>) | null = null
       try {
-        const [{ readBarcodes, prepareZXingModule }, wasmUrlMod] = await Promise.all([
-          import('zxing-wasm/reader'),
-          import('zxing-wasm/reader/zxing_reader.wasm?url'),
-        ])
+        // `warm` was started BEFORE the camera was even asked for, so on a warm
+        // connection the decoder is already here by the time the preview is up
+        const [{ readBarcodes, prepareZXingModule }, wasmUrlMod] = await (warm as Promise<[
+          typeof import('zxing-wasm/reader'), { default: string },
+        ]>)
         const wasmUrl = (wasmUrlMod as { default: string }).default
         prepareZXingModule({ overrides: { locateFile: (p: string, prefix: string) => (p.endsWith('.wasm') ? wasmUrl : prefix + p) } })
         const OPTS = { formats: ['QRCode', 'Code128', 'Code39', 'EAN13', 'DataMatrix'], tryHarder: true, maxNumberOfSymbols: 1 } as const
@@ -826,7 +828,7 @@ function VinInput({
         hints.set(DecodeHintType.TRY_HARDER, true)
         jsReader = new BrowserMultiFormatReader(hints as never)
       }
-      if (cancelled) { stream.getTracks().forEach(t => t.stop()); return }
+      if (cancelled) return
 
       const canvas = document.createElement('canvas')
       const ctx = canvas.getContext('2d', { willReadFrequently: true })
@@ -865,7 +867,28 @@ function VinInput({
 
     ;(async () => {
       try {
-        if (!(await startNative())) await startZxing()
+        const video = videoRef.current
+        if (!video || cancelled) return
+
+        // Fetch the wasm decoder and open the camera AT THE SAME TIME. These
+        // used to run one after the other, so a phone paid for the download and
+        // then for the camera; now the slower of the two sets the pace.
+        const warm = Promise.all([
+          import('zxing-wasm/reader'),
+          import('zxing-wasm/reader/zxing_reader.wasm?url'),
+        ])
+        warm.catch(() => {}) // handled where it is awaited
+
+        const stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO })
+        if (cancelled) { stream.getTracks().forEach(t => t.stop()); return }
+        video.srcObject = stream
+        await video.play().catch(() => {})
+        setCamLive(true) // preview is up — everything below happens behind it
+
+        // now push the sensor to full size, on the running track
+        stream.getVideoTracks()[0]?.applyConstraints(HI_RES).catch(() => {})
+
+        if (!(await startNative(video))) await startZxing(video, warm)
       } catch (e) {
         console.error('[scan] camera', e)
         if (!cancelled) setCamErr('เปิดกล้องไม่สำเร็จ — โปรดอนุญาตสิทธิ์กล้องในเบราว์เซอร์ แล้วลองใหม่')
@@ -901,6 +924,14 @@ function VinInput({
               muted
               autoPlay
             />
+            {/* Until the first frame lands the overlay is pure black, which
+                reads as "hung" — say what is happening instead. */}
+            {!camLive && !camErr && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 pointer-events-none">
+                <Loader2 size={30} className="animate-spin" color="#fff" />
+                <span className="text-white text-[13.5px] font-semibold">กำลังเปิดกล้อง…</span>
+              </div>
+            )}
             {/* scan frame */}
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
               <div className="relative w-60 h-44">
