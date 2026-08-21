@@ -266,7 +266,11 @@ export function Dashboard() {
     const mine = opsQueues.filter(q => isPreGateInQueue(q) && (!q.site || q.site === currentSite))
     const lots = mine.filter(q => !isQueueComplete(q)).map(q => {
       const { done, total } = queueProgress(q)
-      return { id: q.id, name: q.name, done, total }
+      // this card counts what is still OUTSIDE the gate, so the lot lines read
+      // the same way as the headline above them — waiting, not arrived. (The
+      // gate's own screens count the opposite direction, arrived/total: there
+      // the question is how much of the lot is done, here it is what is left.)
+      return { id: q.id, name: q.name, pending: total - done, total }
     })
     // cars waiting at the gate that no open lot covers — the same safety net the
     // station and the board keep, so the lines can't add up to less than the
@@ -275,7 +279,7 @@ export function Dashboard() {
     for (const q of mine) for (const i of q.items) if (!i.done) covered.add(i.vin)
     const loose = trackingRows.filter(r =>
       !covered.has(r.vin) && deriveCarStatus(r.cells) === 'Pre Gate-in').length
-    if (loose) lots.push({ id: '__uncovered', name: '(รอ Gate-in · ยังไม่มีคิวงาน)', done: 0, total: loose })
+    if (loose) lots.push({ id: '__uncovered', name: '(รอ Gate-in · ยังไม่มีคิวงาน)', pending: loose, total: loose })
     return lots.sort((a, b) => b.total - a.total)
   }, [opsQueues, currentSite, trackingRows])
 
@@ -364,8 +368,9 @@ export function Dashboard() {
               <div className="mt-1.5 space-y-0.5">
                 {preGateInLots.slice(0, PRE_GATEIN_LOT_LINES).map(l => (
                   <div key={l.id} className="flex items-baseline gap-1.5" title={l.name}>
-                    <span className="tabular font-bold shrink-0" style={{ color: 'var(--st-pending)' }}>
-                      {l.done.toLocaleString()}/{l.total.toLocaleString()}
+                    <span className="tabular font-bold shrink-0" style={{ color: 'var(--st-pending)' }}
+                      title={`${l.name} — ยังไม่เข้าลาน ${l.pending.toLocaleString()} จากทั้งหมด ${l.total.toLocaleString()} คัน`}>
+                      {l.pending.toLocaleString()}/{l.total.toLocaleString()}
                     </span>
                     <span className="truncate text-[10.5px]" style={{ color: 'var(--faint)' }}>{l.name}</span>
                   </div>
