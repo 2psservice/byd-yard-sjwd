@@ -34,6 +34,42 @@ function scheduleTruncatedSync(run: () => void) {
   truncatedSyncTimer = setTimeout(() => { truncatedSyncTimer = null; run() }, 1500)
 }
 
+/** A car that no longer exists must not keep sitting in a station's work queue.
+ *  Lazy import — useOps reads useYard, which reads back this way. */
+function purgeFromQueues(vins: string[]): void {
+  if (!vins.length) return
+  import('./useOps')
+    .then((m) => m.useOps.getState().purgeVins(vins))
+    .catch(() => {})
+}
+
+/**
+ * Clear queue items left behind by a car deleted BEFORE this ran.
+ *
+ * Catching the delete as it happens only helps from now on; a car removed last
+ * week is already gone from every row set, and its tombstone has long fallen
+ * out of the incremental sync window — so the stranded queue line would sit
+ * there for good. Here the queue itself names the suspects: any VIN it holds
+ * that this device has no row for. That alone proves nothing — the row may
+ * simply not have synced yet, and not every queued car comes from the tracking
+ * sheet at all — so the cloud is asked which of them carry a TOMBSTONE, and
+ * only those are removed. A failed query removes nothing.
+ */
+let orphanSweepAt = 0
+async function sweepOrphanQueueItems(rows: Record<string, TrackRow>): Promise<void> {
+  if (!db.isConfigured() || Date.now() - orphanSweepAt < 5 * 60_000) return
+  const { useOps } = await import('./useOps').catch(() => ({ useOps: null as never }))
+  if (!useOps) return
+  const suspects = [...new Set(
+    useOps.getState().queues.flatMap((q) => q.items.map((i) => i.vin)).filter((v) => !rows[v]),
+  )]
+  if (!suspects.length) return
+  orphanSweepAt = Date.now()
+  const dead = await db.fetchDeletedVins(suspects).catch(() => null)
+  if (!dead?.size) return // offline, or nothing actually deleted → drop nothing
+  useOps.getState().purgeVins([...dead])
+}
+
 /** Migrate the filter config from its old standalone localStorage key (pre-store). */
 function initialFilterCols(): string[] {
   try {
@@ -283,12 +319,18 @@ export const useTracking = create<TrackingState>()(
         const pull: TrackRow[] = []
         const drop: string[] = []
         const phantom: string[] = [] // blank-Vin rows in the cloud → tombstone them
+        // every VIN the cloud says is gone — INCLUDING ones this device dropped
+        // on an earlier run. A queue item can outlive the row it points at, and
+        // then only the tombstone can tell us to clear it out.
+        const gone: string[] = []
         for (const cr of cloud) {
           if (!cr.deletedAt && stripSystemHistory(cr) !== cr) dirty.push(cr)
           const lr = local[cr.vin]
           if (cr.deletedAt) {
+            gone.push(cr.vin)
             if (lr) { delete merged[cr.vin]; drop.push(cr.vin) }
           } else if (!hasVin(cr)) {
+            gone.push(cr.vin)
             if (lr) { delete merged[cr.vin]; drop.push(cr.vin) }
             phantom.push(cr.vin)
           } else if (!lr || (cr.updatedAt ?? 0) > (lr.updatedAt ?? 0)) {
@@ -300,6 +342,7 @@ export const useTracking = create<TrackingState>()(
         // also sweep any blank-Vin rows already sitting in local state
         for (const lr of Object.values(local)) if (!hasVin(lr) && !drop.includes(lr.vin)) { delete merged[lr.vin]; drop.push(lr.vin) }
         if (phantom.length) db.deleteTrackingRows(phantom).catch(() => {})
+        purgeFromQueues(gone)
 
         // local → cloud: on a full run, anything the cloud lacks or is older on;
         // incrementally, just local edits since last sync (covers offline changes).
@@ -354,6 +397,7 @@ export const useTracking = create<TrackingState>()(
         if (!incremental) set({ sysHistoryPurged: SYS_HISTORY_PURGE_V })
         // occasionally clear tombstones older than 30 days so the table stays lean
         if (!incremental) db.purgeTrackingTombstones(30 * 24 * 3600_000).catch(() => {})
+        sweepOrphanQueueItems(merged).catch(() => {})
         } finally { syncInFlight = false }
       },
 
@@ -375,6 +419,7 @@ export const useTracking = create<TrackingState>()(
                 if (!vin) { scheduleTruncatedSync(() => get().syncCloud().catch(() => {})); return }
                 set((s) => { if (!s.rows[vin]) return s; const rows = { ...s.rows }; delete rows[vin]; return { rows } })
                 idbDelete([vin]).catch(() => {})
+                purgeFromQueues([vin])
                 return
               }
               const r = payload.new as { vin?: string; cells?: Record<string, string> | null; updated_at?: string | null; site?: string | null; deleted_at?: string | null; history?: TrackRow['history'] | null }
@@ -388,6 +433,7 @@ export const useTracking = create<TrackingState>()(
                 const vin = r.vin
                 set((s) => { if (!s.rows[vin]) return s; const rows = { ...s.rows }; delete rows[vin]; return { rows } })
                 idbDelete([vin]).catch(() => {})
+                purgeFromQueues([vin])
                 return
               }
               if (!(r.cells?.['Vin'] ?? '').trim()) return // ignore phantom blank-Vin inserts
@@ -736,6 +782,7 @@ export const useTracking = create<TrackingState>()(
         set({ rows })
         idbDelete(vins).catch(() => {})
         db.deleteTrackingRows(vins).catch(() => {})
+        purgeFromQueues(vins) // no station should keep asking for a deleted car
       },
 
       clearRows: () => {

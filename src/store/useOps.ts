@@ -197,6 +197,9 @@ interface OpsState {
   renameQueue: (id: string, name: string) => void
   addVins: (id: string, vins: string[]) => { added: number; dup: number }
   removeVin: (id: string, vin: string) => void
+  /** Drop these VINs from EVERY queue — the car was deleted from the system, so
+   *  no station should keep asking for it. Returns how many items were removed. */
+  purgeVins: (vins: string[]) => number
   toggleDone: (id: string, vin: string, by?: string) => void
   setAllDone: (id: string, done: boolean, by?: string) => void
   clearQueues: () => void
@@ -352,6 +355,29 @@ export const useOps = create<OpsState>()(
       removeVin: (id, vin) => {
         set((s) => ({ queues: s.queues.map((q) => (q.id === id ? { ...q, items: q.items.filter((i) => i.vin !== vin) } : q)) }))
         pushQueue(get, id)
+      },
+
+      // A car deleted from the system (transport cancelled, never arrived) used
+      // to stay in its work queue forever: the station kept counting it as
+      // outstanding, and the line showed a bare VIN with no model, colour or
+      // location because the row behind it was gone. Deleting a car now clears
+      // it out of every queue it was planned into.
+      purgeVins: (vins) => {
+        if (!vins.length) return 0
+        const kill = new Set(vins)
+        const touched: string[] = []
+        let removed = 0
+        set((s) => ({
+          queues: s.queues.map((q) => {
+            const items = q.items.filter((i) => !kill.has(i.vin))
+            if (items.length === q.items.length) return q
+            removed += q.items.length - items.length
+            touched.push(q.id)
+            return { ...q, items }
+          }),
+        }))
+        for (const id of touched) pushQueue(get, id)
+        return removed
       },
 
       toggleDone: (id, vin, by) => {
