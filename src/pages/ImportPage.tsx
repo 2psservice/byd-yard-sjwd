@@ -13,6 +13,7 @@ import { coInspectionAccepts, rowInSite, siteForRow } from '../lib/siteScope'
 import { deriveCarStatus, hasLeftGate } from '../lib/carStatus'
 import { pos, blockKeyOfTag, blockTag, resolveBlockByName } from '../lib/format'
 import { yardLocFull } from '../lib/groupingImport'
+import type { Block, Unit } from '../types'
 import { PageHead } from '../components/ui'
 
 /** group key for a row's date — Pre Gate-in files date by "Gate In Date",
@@ -31,6 +32,78 @@ function dateSortVal(s: string): number {
   m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/) // 2025-12-10
   if (m) return +m[1] * 10000 + +m[2] * 100 + +m[3]
   return -Infinity
+}
+
+/**
+ * Slot plan: the lane digits are the block's COLUMN (ช่องด้านบน, e.g. N-O15 →
+ * block OO column 15); cars stack down that column's rows 1..8 in file order,
+ * skipping cells already occupied by cars NOT in this file (a re-placed car
+ * frees its old cell).
+ *
+ * Where the file wants every car parked, given who is standing where already.
+ *
+ * Pulled out of the render so the CONFIRM step can run it a second time against
+ * freshly-pulled cloud positions: the preview may have been computed minutes
+ * ago from this browser's copy, and a plan that thinks a square is free when
+ * somebody has since parked there lands two cars on one spot.
+ */
+function buildLocPlan(
+  locParsed: { rows: LaneRow[]; noLane: number } | null,
+  yardUnits: Record<string, Unit>,
+  blocksBySite: Record<string, Block[]>,
+  currentSite: string | null,
+  laneDepth: number,
+) {
+  if (!locParsed) return null
+  // the file is the source of truth, newest row wins: a VIN repeated in the
+  // file (movement history) keeps only its LAST row's lane
+  const lastIdx = new Map<string, number>()
+  locParsed.rows.forEach((r, i) => lastIdx.set(r.vin, i))
+  const dup = locParsed.rows.length - lastIdx.size
+  const rows = locParsed.rows.filter((r, i) => lastIdx.get(r.vin) === i)
+  const placing = new Set(rows.map((r) => r.vin))
+  const occ = new Map<string, Set<number>>() // "block|column" → used rows
+  for (const u of Object.values(yardUnits)) {
+    if (!u.block || !u.row || !u.slot || u.status === 'DEPARTED' || placing.has(u.vin)) continue
+    // only THIS yard's cars occupy this yard's lanes — every yard has blocks
+    // named A/O/WCL, so a car parked at NYB2 A|15 was blocking 20Rai's A|15
+    if (u.site && currentSite && u.site !== currentSite) continue
+    const k = `${blockKeyOfTag(u.block)}|${u.slot}`
+    if (!occ.has(k)) occ.set(k, new Set())
+    occ.get(k)!.add(u.row)
+  }
+  // this yard's blocks — the file's lane token resolves to the block it NAMES
+  // (name-first, so an internal id can never hijack another block's letter)
+  const yardBlocks = blocksBySite[currentSite ?? '_global'] ?? []
+  const placements: { vin: string; block: string; row: number; slot: number; modelName?: string; color?: string; gateInAt?: number }[] = []
+  const badLane: LaneRow[] = []
+  const rowFull: LaneRow[] = []
+  for (const r of rows) {
+    const lane = parseLane(r.lane)
+    if (!lane) { badLane.push(r); continue }
+    const hit = resolveBlockByName(lane.block, yardBlocks)
+    // the car is tagged with the block's canonical NAME; an undrawn token
+    // keeps its collapsed form so it still surfaces in the warnings below
+    const block = hit ? blockTag(hit) : blockKeyOfTag(lane.block)
+    const k = `${block}|${lane.row}`
+    if (!occ.has(k)) occ.set(k, new Set())
+    const used = occ.get(k)!
+    // how deep this column may stack: the block's own row count, or the global
+    // lane depth when the file names a block this yard has not drawn yet
+    const depth = hit?.rows ?? laneDepth
+    let posn = 0
+    for (let i = 1; i <= depth; i++) if (!used.has(i)) { posn = i; break }
+    if (!posn) { rowFull.push(r); continue }
+    used.add(posn)
+    placements.push({ vin: r.vin, block, row: posn, slot: lane.row, modelName: r.modelName, color: r.colorName, gateInAt: r.gateInAt })
+  }
+  const byBlock = new Map<string, number>()
+  for (const p of placements) byBlock.set(p.block, (byBlock.get(p.block) ?? 0) + 1)
+  const matched = placements.filter((p) => yardUnits[p.vin]).length
+  // blocks referenced by the file but not yet drawn in this yard's plan
+  const drawnTags = new Set(yardBlocks.map((b) => blockTag(b)))
+  const missingBlocks = [...byBlock.keys()].filter((b) => !drawnTags.has(b)).sort()
+  return { placements, badLane, rowFull, dup, matched, byBlock: [...byBlock.entries()].sort(), missingBlocks }
 }
 
 export function ImportPage() {
@@ -101,65 +174,21 @@ export function ImportPage() {
     } finally { setLocBusy(false) }
   }
 
-  // slot plan: the lane digits = the block's COLUMN (ช่องด้านบน, e.g. N-O15 →
-  // block OO column 15); cars stack down that column's rows 1..8 in file order,
-  // skipping cells already occupied by cars NOT in this file (re-placed cars
-  // free their old cell)
-  const locPlan = useMemo(() => {
-    if (!locParsed) return null
-    // the file is the source of truth, newest row wins: a VIN repeated in the
-    // file (movement history) keeps only its LAST row's lane
-    const lastIdx = new Map<string, number>()
-    locParsed.rows.forEach((r, i) => lastIdx.set(r.vin, i))
-    const dup = locParsed.rows.length - lastIdx.size
-    const rows = locParsed.rows.filter((r, i) => lastIdx.get(r.vin) === i)
-    const placing = new Set(rows.map((r) => r.vin))
-    const occ = new Map<string, Set<number>>() // "block|column" → used rows
-    for (const u of Object.values(yardUnits)) {
-      if (!u.block || !u.row || !u.slot || u.status === 'DEPARTED' || placing.has(u.vin)) continue
-      // only THIS yard's cars occupy this yard's lanes — every yard has blocks
-      // named A/O/WCL, so a car parked at NYB2 A|15 was blocking 20Rai's A|15
-      if (u.site && currentSite && u.site !== currentSite) continue
-      const k = `${blockKeyOfTag(u.block)}|${u.slot}`
-      if (!occ.has(k)) occ.set(k, new Set())
-      occ.get(k)!.add(u.row)
-    }
-    // this yard's blocks — the file's lane token resolves to the block it NAMES
-    // (name-first, so an internal id can never hijack another block's letter)
-    const yardBlocks = blocksBySite[currentSite ?? '_global'] ?? []
-    const placements: { vin: string; block: string; row: number; slot: number; modelName?: string; color?: string; gateInAt?: number }[] = []
-    const badLane: LaneRow[] = []
-    const rowFull: LaneRow[] = []
-    for (const r of rows) {
-      const lane = parseLane(r.lane)
-      if (!lane) { badLane.push(r); continue }
-      const hit = resolveBlockByName(lane.block, yardBlocks)
-      // the car is tagged with the block's canonical NAME; an undrawn token
-      // keeps its collapsed form so it still surfaces in the warnings below
-      const block = hit ? blockTag(hit) : blockKeyOfTag(lane.block)
-      const k = `${block}|${lane.row}`
-      if (!occ.has(k)) occ.set(k, new Set())
-      const used = occ.get(k)!
-      // how deep this column may stack: the block's own row count, or the global
-      // lane depth when the file names a block this yard has not drawn yet
-      const depth = hit?.rows ?? laneDepth
-      let posn = 0
-      for (let i = 1; i <= depth; i++) if (!used.has(i)) { posn = i; break }
-      if (!posn) { rowFull.push(r); continue }
-      used.add(posn)
-      placements.push({ vin: r.vin, block, row: posn, slot: lane.row, modelName: r.modelName, color: r.colorName, gateInAt: r.gateInAt })
-    }
-    const byBlock = new Map<string, number>()
-    for (const p of placements) byBlock.set(p.block, (byBlock.get(p.block) ?? 0) + 1)
-    const matched = placements.filter((p) => yardUnits[p.vin]).length
-    // blocks referenced by the file but not yet drawn in this yard's plan
-    const drawnTags = new Set(yardBlocks.map((b) => blockTag(b)))
-    const missingBlocks = [...byBlock.keys()].filter((b) => !drawnTags.has(b)).sort()
-    return { placements, badLane, rowFull, dup, matched, byBlock: [...byBlock.entries()].sort(), missingBlocks }
-  }, [locParsed, yardUnits, blocksBySite, currentSite, laneDepth])
+  const locPlan = useMemo(() => buildLocPlan(locParsed, yardUnits, blocksBySite, currentSite, laneDepth),
+    [locParsed, yardUnits, blocksBySite, currentSite, laneDepth])
 
-  const confirmLoc = () => {
+  const confirmLoc = async () => {
     if (!locPlan || !locPlan.placements.length) return
+    // Re-read who is standing where before writing. The preview above was built
+    // from this browser's copy of the yard, which may be minutes old and misses
+    // every car the field has parked since — and this button rewrites thousands
+    // of positions at once, so a stale idea of which squares are free is the
+    // most expensive one in the app to get wrong. One light read of the site's
+    // placements (VIN + spot only) and the plan is rebuilt on top of it.
+    setBusy(true)
+    try { await useYard.getState().refreshPlacements() } catch { /* offline — plan on what we have */ }
+    setBusy(false)
+    const plan = buildLocPlan(locParsed, useYard.getState().units, blocksBySite, currentSite, laneDepth) ?? locPlan
     // ── หน้างานชนะ: a car whose latest Location entry came from a FIELD SCAN
     // (driver parking / re-location) keeps the scanned lane — the file was
     // exported earlier and is the less certain source. Legacy scan entries
@@ -173,24 +202,25 @@ export function ImportPage() {
       const last = [...hist].reverse().find((e) => e.field === 'Location')
       return !!last && ((last as { src?: string }).src === 'scan' || !(last.by ?? '').includes('·'))
     }
-    const apply = locPlan.placements.filter((p) => !scanHeld(p.vin))
-    const held = locPlan.placements.length - apply.length
+    const apply = plan.placements.filter((p) => !scanHeld(p.vin))
+    const held = plan.placements.length - apply.length
     // every placement that MOVES a car leaves a Location history line — a
     // silent position rewrite made screens contradict each other (the unit
     // said one spot, ประวัติการย้าย another, and nobody could tell why)
     const by = `${useYard.getState().currentUser} · นำเข้าไฟล์`
     const appendHistory = useTracking.getState().appendHistory
     const now = Date.now()
+    const freshUnits = useYard.getState().units
     for (const p of apply) {
-      const from = yardLocFull(yardUnits[p.vin])
+      const from = yardLocFull(freshUnits[p.vin])
       const to = yardLocFull({ block: p.block, slot: p.slot, row: p.row })
       if (from !== to) appendHistory(p.vin, { at: now, by, field: 'Location', from, to })
     }
     const n = updateLocations(apply)
     toast('ok', `Update Location · จัดตำแหน่ง ${n.toLocaleString()} คัน` +
       (held ? ` · ยึดตำแหน่งสแกนหน้างาน ${held.toLocaleString()}` : '') +
-      (locPlan.rowFull.length ? ` · ช่องเต็ม ข้าม ${locPlan.rowFull.length}` : '') +
-      (locPlan.badLane.length ? ` · Lane อ่านไม่ได้ ${locPlan.badLane.length}` : ''))
+      (plan.rowFull.length ? ` · ช่องเต็ม ข้าม ${plan.rowFull.length}` : '') +
+      (plan.badLane.length ? ` · Lane อ่านไม่ได้ ${plan.badLane.length}` : ''))
     setLocParsed(null); setLocFileName('')
   }
 
