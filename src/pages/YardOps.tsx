@@ -3796,16 +3796,39 @@ function firstFreeDepth(list: Unit[], blockId: string, slot: number, depth: numb
  *
  * Falls back to the local view when offline or when the yard's wifi stalls —
  * a relocation must never be blocked by a slow network.
+ *
+ * The lane query alone is not enough, and this is the subtle half. It asks for
+ * the cars the cloud puts in THIS lane, so it can only ever ADD cars this
+ * device did not know about. A car this device still believes is parked here,
+ * but which somebody moved to another lane hours ago, is simply absent from
+ * that answer — and absence left the stale local copy standing. The rebuild
+ * then counted the ghost as an occupant and slid it down the lane, writing the
+ * car back to a spot it left long ago: a car that had gone to N34 reappeared at
+ * K09 every time anyone scanned K09, over and over. So the cars only THIS
+ * device claims for the lane are looked up by VIN as well, and wherever the
+ * cloud says they are is what counts.
  */
 async function laneFromCloud(local: Unit[], siteId: string | null, blockId: string, slot: number): Promise<Unit[]> {
   if (!isConfigured() || !blockId || !slot) return local
+  const deadline = <T,>(p: Promise<T>) => Promise.race([
+    p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 2500)),
+  ])
   try {
-    const cloud = await Promise.race([
-      fetchUnitsInLane(siteId, slot),
-      new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 2500)),
-    ])
+    const cloud = await deadline(fetchUnitsInLane(siteId, slot))
     const byVin = new Map(local.map(u => [u.vin, u] as const))
-    for (const u of cloud) byVin.set(u.vin, u) // the cloud is the authority on where a car stands
+    const confirmed = new Set<string>()
+    for (const u of cloud) { byVin.set(u.vin, u); confirmed.add(u.vin) } // the cloud is the authority
+    // local-only claims on this lane: the cloud was asked about this exact lane
+    // and did not name them. That is what a car that has moved away looks like
+    // — but also what an unsynced local placement looks like, so ask outright
+    // rather than assuming, and only move what the cloud actually answers for.
+    const ghosts = [...byVin.values()]
+      .filter(u => !confirmed.has(u.vin) && u.slot === slot && u.block && blockKeyOfTag(u.block) === blockId)
+      .map(u => u.vin)
+    if (ghosts.length) {
+      const real = await deadline(fetchUnitsByVins(ghosts))
+      for (const u of real) byVin.set(u.vin, u)
+    }
     return [...byVin.values()]
   } catch {
     return local // offline / slow yard wifi — behave as before
