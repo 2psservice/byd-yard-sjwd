@@ -75,7 +75,7 @@ function Pivot({ rows, cellKey, presetKey, title, caption, icon }: {
 
       {open && (
         <div className="overflow-x-auto border-t hairline">
-          <table className="w-full" style={{ fontSize: 11.5, borderCollapse: 'collapse' }}>
+          <table className="w-full pivot-grid" style={{ fontSize: 11.5, borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: 'var(--app-bg)' }}>
                 <th className="text-left px-3 py-1.5 font-bold whitespace-nowrap" style={{ color: 'var(--muted)' }}>Model</th>
