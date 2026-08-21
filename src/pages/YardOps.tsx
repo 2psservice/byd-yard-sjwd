@@ -9,7 +9,7 @@ import {
   CheckCircle2, XCircle, AlertTriangle, Navigation, Clock,
   User, RefreshCw, Plus, Trash2,
   ArrowRight, Zap, Hand, X, Camera, Pencil, Gauge, Route, Crosshair,
-  LogOut, MapPin, ClipboardList, ListChecks, Copy, Check, Loader2,
+  LogOut, MapPin, ClipboardList, ListChecks, Copy, Check, Loader2, Images,
 } from 'lucide-react'
 import { useYard, useUnits, useTrips, useBlocks } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
@@ -1256,12 +1256,15 @@ const mkRow = (): DmgRow => ({
   photos: [],
 })
 
-/** Thumbnail strip: existing photos (tap × to remove) + an "add photo" tile.
- *  The file input accepts multiple images at once (gallery) or one shot at a time (camera). */
+/** Thumbnail strip: existing photos (tap × to remove) + two "add photo" tiles —
+ *  camera (opens straight into the viewfinder, `capture`) and album (the OS
+ *  gallery picker, no `capture`), so a photo taken earlier can be attached too. */
 function PhotoStrip({ photos, onAdd, onRemove, busy }: {
   photos: string[]; onAdd: (files: FileList) => void; onRemove: (i: number) => void; busy: boolean
 }) {
-  const fileRef = useRef<HTMLInputElement>(null)
+  const camRef = useRef<HTMLInputElement>(null)
+  const albumRef = useRef<HTMLInputElement>(null)
+  const tile = 'shrink-0 rounded-lg flex items-center justify-center border-2 border-dashed transition disabled:opacity-50'
   return (
     <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
       {photos.map((p, i) => (
@@ -1274,14 +1277,19 @@ function PhotoStrip({ photos, onAdd, onRemove, busy }: {
           </button>
         </div>
       ))}
-      <button
-        onClick={() => fileRef.current?.click()}
-        disabled={busy}
-        className="shrink-0 rounded-lg flex items-center justify-center border-2 border-dashed transition disabled:opacity-50"
+      <button onClick={() => camRef.current?.click()} disabled={busy} className={tile}
+        title="ถ่ายรูป"
         style={{ width: 44, height: 44, borderColor: 'var(--line-strong)', color: 'var(--muted)' }}>
         <Camera size={16} />
       </button>
-      <input ref={fileRef} type="file" accept="image/*" capture="environment" multiple className="hidden"
+      <button onClick={() => albumRef.current?.click()} disabled={busy} className={tile}
+        title="เลือกจากอัลบั้ม"
+        style={{ width: 44, height: 44, borderColor: 'var(--line-strong)', color: 'var(--muted)' }}>
+        <Images size={16} />
+      </button>
+      <input ref={camRef} type="file" accept="image/*" capture="environment" multiple className="hidden"
+        onChange={e => { if (e.target.files?.length) onAdd(e.target.files); e.target.value = '' }} />
+      <input ref={albumRef} type="file" accept="image/*" multiple className="hidden"
         onChange={e => { if (e.target.files?.length) onAdd(e.target.files); e.target.value = '' }} />
     </div>
   )
