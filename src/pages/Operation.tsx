@@ -9,7 +9,7 @@ import {
   ShieldCheck, ClipboardCheck, Layers, QrCode, ListChecks, CheckCircle2, MapPin,
   Archive, RotateCcw,
 } from 'lucide-react'
-import { useOps, useActiveQueues, queueProgress, isSequenceQueue, queueTypeOf, QUEUE_TYPES, type QueueType, type WorkQueue } from '../store/useOps'
+import { useOps, useActiveQueues, queueProgress, isSequenceQueue, isPreGateInQueue, queueTypeOf, QUEUE_TYPES, type QueueType, type WorkQueue } from '../store/useOps'
 import { useTrackingRows } from '../store/useTracking'
 import { useYard, useUnits } from '../store/useYard'
 import { yardLocCode, byYardLocation } from '../lib/groupingImport'
@@ -40,10 +40,10 @@ const TYPE_WRITEBACK: Record<QueueType, string> = {
   REPAIR: 'บันทึกใน Event log (งานซ่อมของช่าง)',
   WASH: 'บันทึกใน Event log',
   SPECIAL: 'บันทึกใน Event log',
+  GATEIN: 'บันทึกเวลา Gate-in ที่หน้าสแกน',
 }
 
-// queues auto-created by import ("(M-D-N)" pre-gate-in) don't belong on this board
-const isPreGateInQueue = (name: string) => name.trim().startsWith('(')
+// arrival lots (created by import, worked at the gate) don't belong on this board
 
 export function Operation() {
   const all = useActiveQueues() // gated-out cars filtered out of every queue view
@@ -64,7 +64,7 @@ export function Operation() {
   // ── per-site scope: work queues are separated by yard, never combined ──
   const allQueues = useMemo(
     () => all.filter((q) =>
-      !isSequenceQueue(q) && !isPreGateInQueue(q.name) &&
+      !isSequenceQueue(q) && !isPreGateInQueue(q) &&
       (!currentSite || !q.site || q.site === currentSite),
     ),
     [all, currentSite],
@@ -195,6 +195,8 @@ const TYPE_BADGE: Record<QueueType, { th: string; color: string; bg: string }> =
   REPAIR: { th: 'ช่าง (ซ่อม)', color: '#c2680b', bg: 'rgba(194,104,11,0.12)' },
   WASH: { th: 'Wash', color: '#2563eb', bg: 'rgba(37,99,235,0.12)' },
   SPECIAL: { th: 'งานพิเศษ', color: '#64748b', bg: 'rgba(100,116,139,0.12)' },
+  // arrival lots never reach this board (filtered out) — mapped so the record stays total
+  GATEIN: { th: 'Pre Gate-in', color: '#1e40af', bg: 'rgba(37,99,235,0.12)' },
 }
 
 function Stat({ label, value, accent, icon }: { label: string; value: number; accent: string; icon: React.ReactNode }) {

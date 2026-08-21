@@ -9,10 +9,16 @@ import { deriveCarStatus, CAR_STATUS_META, CAR_STATUS_ORDER, PARKED_STATUSES, is
 import { rowInSite } from '../lib/siteScope'
 import { pct, pos, timeAgo } from '../lib/format'
 import { defectLabel } from '../lib/damageLabel'
+import { useOps, isPreGateInQueue, isQueueComplete, queueProgress } from '../store/useOps'
 import { PageHead, ProgressBar, Stat } from '../components/ui'
 import { YardSummary } from '../components/YardSummary'
 import { STATUS_META } from '../lib/format'
 import type { Unit } from '../types'
+
+/** How many arrival lots the Pre Gate-in card lists before summarising the rest
+ *  — the five KPI cards share a grid row, so this one growing without bound
+ *  would stretch all of them. */
+const PRE_GATEIN_LOT_LINES = 4
 
 // ── VIN list popup ────────────────────────────────────────────────────────────
 type PopupDef = { label: string; accent: string; units: Unit[] }
@@ -167,6 +173,7 @@ export function Dashboard() {
   const allUnits = useUnits()
   const blocks = useBlocks()
   const allTrackingRows = useTrackingRows()
+  const opsQueues = useOps((st) => st.queues)
   const loadFromIdb = useTracking((st) => st.loadFromIdb)
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
   // per-yard separation: the whole dashboard reflects only the active site
@@ -249,6 +256,29 @@ export function Dashboard() {
   // VINs that are real (from Excel) — used to exclude sample units from live events
   const trackingVins = useMemo(() => new Set(trackingRows.map(r => r.vin)), [trackingRows])
 
+  // ── Pre Gate-in progress, one line per arrival lot ────────────────────────
+  // The card's headline number is how many cars are still outside the gate; on
+  // its own it never says how big the job is. "88" reads the same whether the
+  // lot is nearly finished or has barely started. Each lot's arrived/total —
+  // the same pair the gate station and the Gate In/Out board already show —
+  // turns that into progress the office can read at a glance.
+  const preGateInLots = useMemo(() => {
+    const mine = opsQueues.filter(q => isPreGateInQueue(q) && (!q.site || q.site === currentSite))
+    const lots = mine.filter(q => !isQueueComplete(q)).map(q => {
+      const { done, total } = queueProgress(q)
+      return { id: q.id, name: q.name, done, total }
+    })
+    // cars waiting at the gate that no open lot covers — the same safety net the
+    // station and the board keep, so the lines can't add up to less than the
+    // headline number (see the "(รอ Gate-in · ยังไม่มีคิวงาน)" card there)
+    const covered = new Set<string>()
+    for (const q of mine) for (const i of q.items) if (!i.done) covered.add(i.vin)
+    const loose = trackingRows.filter(r =>
+      !covered.has(r.vin) && deriveCarStatus(r.cells) === 'Pre Gate-in').length
+    if (loose) lots.push({ id: '__uncovered', name: '(รอ Gate-in · ยังไม่มีคิวงาน)', done: 0, total: loose })
+    return lots.sort((a, b) => b.total - a.total)
+  }, [opsQueues, currentSite, trackingRows])
+
   const events = useMemo(() => {
     type Ev = { ts: number; vin: string; kind: string; text: string; color: string }
     const evs: Ev[] = []
@@ -328,7 +358,26 @@ export function Dashboard() {
           image="/side.png" imageVariant="side"
           onClick={kpiClick(t('inYard'), 'var(--brand)', u => ['GATE_IN','ASSIGNED','PARKED'].includes(u.status), 'inYard')} />
         <Stat label={t('expected')} value={<Num n={s.expected} />} accent="var(--st-pending)" icon={<Hourglass size={17} />}
-          sub={lang === 'th' ? 'ยังไม่เข้าลาน' : 'not arrived'} image="/car-top.png" imageVariant="top"
+          sub={<>
+            <div>{lang === 'th' ? 'ยังไม่เข้าลาน' : 'not arrived'}</div>
+            {preGateInLots.length > 0 && (
+              <div className="mt-1.5 space-y-0.5">
+                {preGateInLots.slice(0, PRE_GATEIN_LOT_LINES).map(l => (
+                  <div key={l.id} className="flex items-baseline gap-1.5" title={l.name}>
+                    <span className="tabular font-bold shrink-0" style={{ color: 'var(--st-pending)' }}>
+                      {l.done.toLocaleString()}/{l.total.toLocaleString()}
+                    </span>
+                    <span className="truncate text-[10.5px]" style={{ color: 'var(--faint)' }}>{l.name}</span>
+                  </div>
+                ))}
+                {preGateInLots.length > PRE_GATEIN_LOT_LINES && (
+                  <div className="text-[10.5px]" style={{ color: 'var(--faint)' }}>
+                    +{preGateInLots.length - PRE_GATEIN_LOT_LINES} {lang === 'th' ? 'คิวงาน' : 'more'}
+                  </div>
+                )}
+              </div>
+            )}
+          </>} image="/car-top.png" imageVariant="top"
           onClick={kpiClick(t('expected'), 'var(--st-pending)', u => u.status === 'EXPECTED', 'expected')} />
         <Stat label="Pre Gate-out" value={<Num n={s.preGateOut} />} accent="#f59e0b" icon={<LogOut size={17} />}
           sub={lang === 'th' ? 'รอออก (flush 09:30)' : 'awaiting 09:30'} image="/car-top.png" imageVariant="top"
