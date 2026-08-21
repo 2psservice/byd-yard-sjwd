@@ -8,7 +8,7 @@
  * verdict — which stamps the station's date on the car's Overview.
  */
 import { useMemo, useRef, useState } from 'react'
-import { ShieldCheck, CheckCircle2, AlertTriangle, Plus, Trash2, Camera, X } from 'lucide-react'
+import { ShieldCheck, CheckCircle2, AlertTriangle, Plus, Trash2, Camera, Images, X } from 'lucide-react'
 import { useYard } from '../store/useYard'
 import { useTracking } from '../store/useTracking'
 import { useOps, stampStationDate } from '../store/useOps'
@@ -59,7 +59,8 @@ export default function StationSheet({ unit, row, activeProc, onSaved, stationTi
   const [tab, setTab] = useState(0)
   const [state, setState] = useState<Record<string, CheckItemState>>({})
   const [ngList, setNgList] = useState<NgEntry[]>([])
-  const fileRef = useRef<HTMLInputElement | null>(null)
+  const fileRef = useRef<HTMLInputElement | null>(null)   // camera (capture)
+  const albumRef = useRef<HTMLInputElement | null>(null)  // gallery picker
   const pickingId = useRef<string | null>(null)   // item id, or "ng:<entry id>"
 
   const stationName = activeProc?.queue.name ?? stationTitle
@@ -97,6 +98,7 @@ export default function StationSheet({ unit, row, activeProc, onSaved, stationTi
       }
     } catch { toast('err', 'อัปโหลดรูปไม่สำเร็จ') }
     if (fileRef.current) fileRef.current.value = ''
+    if (albumRef.current) albumRef.current.value = ''
   }
 
   const addNg = () => setNgList(l => [...l, { id: `ng${++ngSeq}`, position: '', defect: '', note: '', photos: [] }])
@@ -197,6 +199,7 @@ export default function StationSheet({ unit, row, activeProc, onSaved, stationTi
   return (
     <div className="panel overflow-hidden">
       <input ref={fileRef} type="file" accept="image/*" capture="environment" multiple hidden onChange={e => onPick(e.target.files)} />
+      <input ref={albumRef} type="file" accept="image/*" multiple hidden onChange={e => onPick(e.target.files)} />
 
       <div className="px-4 py-2.5 border-b hairline flex items-center gap-2" style={{ background: `linear-gradient(135deg, ${accent}, ${accent}cc)` }}>
         <ShieldCheck size={15} color="#fff" />
@@ -273,7 +276,8 @@ export default function StationSheet({ unit, row, activeProc, onSaved, stationTi
                 return (
                   <CheckItemRow key={ii} n={ii + 1} item={it} state={get(id)}
                     onChange={patch => setItem(id, patch)}
-                    onPickPhoto={() => { pickingId.current = id; fileRef.current?.click() }} />
+                    onPickPhoto={() => { pickingId.current = id; fileRef.current?.click() }}
+                    onPickAlbum={() => { pickingId.current = id; albumRef.current?.click() }} />
                 )
               })}
             </div>
@@ -318,9 +322,16 @@ export default function StationSheet({ unit, row, activeProc, onSaved, stationTi
                     </div>
                   ))}
                   <button onClick={() => { pickingId.current = `ng:${e.id}`; fileRef.current?.click() }}
+                    title="ถ่ายรูป"
                     className="w-12 h-12 rounded-lg flex items-center justify-center"
                     style={{ border: '1px dashed var(--line)', color: 'var(--muted)' }}>
                     <Camera size={16} />
+                  </button>
+                  <button onClick={() => { pickingId.current = `ng:${e.id}`; albumRef.current?.click() }}
+                    title="เลือกจากอัลบั้ม"
+                    className="w-12 h-12 rounded-lg flex items-center justify-center"
+                    style={{ border: '1px dashed var(--line)', color: 'var(--muted)' }}>
+                    <Images size={16} />
                   </button>
                 </div>
               </div>

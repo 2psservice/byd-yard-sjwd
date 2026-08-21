@@ -3,7 +3,7 @@
  * photos that evidence it. Shared by the PDI checklist and the FINAL CHECK sheet
  * so both stations answer an item exactly the same way.
  */
-import { Camera, X } from 'lucide-react'
+import { Camera, Images, X } from 'lucide-react'
 import type { CheckItem, CheckItemState, CheckResult } from '../lib/checkSheet'
 
 const RESULTS: CheckResult[] = ['OK', 'NG', 'NG Heavy']
@@ -15,12 +15,14 @@ const resultStyle = (r: CheckResult, active: boolean) => {
   return { background: '#dc2626', color: '#fff' } // NG Heavy
 }
 
-export function CheckItemRow({ n, item, state, onChange, onPickPhoto }: {
+export function CheckItemRow({ n, item, state, onChange, onPickPhoto, onPickAlbum }: {
   n: number
   item: CheckItem
   state: CheckItemState
   onChange: (patch: Partial<CheckItemState>) => void
   onPickPhoto: () => void
+  /** open the OS gallery picker instead of the camera (a photo taken earlier) */
+  onPickAlbum?: () => void
 }) {
   const isNg = state.result === 'NG' || state.result === 'NG Heavy'
   const photos = state.photos ?? []
@@ -68,11 +70,18 @@ export function CheckItemRow({ n, item, state, onChange, onPickPhoto }: {
                 </button>
               </div>
             ))}
-            <button onClick={onPickPhoto}
+            <button onClick={onPickPhoto} title="ถ่ายรูป"
               className="w-12 h-12 rounded-lg flex items-center justify-center"
               style={{ border: '1px dashed var(--line)', color: 'var(--muted)' }}>
               <Camera size={16} />
             </button>
+            {onPickAlbum && (
+              <button onClick={onPickAlbum} title="เลือกจากอัลบั้ม"
+                className="w-12 h-12 rounded-lg flex items-center justify-center"
+                style={{ border: '1px dashed var(--line)', color: 'var(--muted)' }}>
+                <Images size={16} />
+              </button>
+            )}
           </div>
         </div>
       )}
