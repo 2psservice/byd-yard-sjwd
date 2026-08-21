@@ -190,6 +190,20 @@ input, textarea, select, [contenteditable='true'] {
 .tos-table tbody tr.sel { background: rgba(0, 122, 255, 0.1); }
 .tos-table tbody tr.sel:hover { background: rgba(0, 122, 255, 0.14); }
 
+/* ---------- dashboard pivots (Summary · Vin Of Status) ---------- */
+/* Vertical rules between columns. These tables are wide grids of bare numbers,
+   and with only horizontal lines the eye loses the column it is following
+   partway across — the count under "Waiting Repair" reads as if it sat under
+   "Waiting". Ruling every column gives each one its own lane. */
+.pivot-grid th:not(:last-child),
+.pivot-grid td:not(:last-child) { border-right: 1px solid var(--line); }
+/* the Model label column and the รวม total aren't values — set them apart with
+   the heavier rule, the same weight the totals row already uses */
+.pivot-grid th:first-child,
+.pivot-grid td:first-child,
+.pivot-grid th:nth-last-child(2),
+.pivot-grid td:nth-last-child(2) { border-right-color: var(--line-strong); }
+
 /* ---------- animations (iOS spring-ish) ---------- */
 @keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 .fade-up { animation: fadeUp 0.45s cubic-bezier(0.22, 1, 0.36, 1) both; }
