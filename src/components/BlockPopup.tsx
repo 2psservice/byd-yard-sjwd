@@ -94,13 +94,18 @@ export function BlockPopup({
       toast('info', 'ตรวจกับระบบกลางแล้ว — รถไม่ได้ซ้อนช่องกันจริง (มีคันที่ถูกย้ายไปแล้ว)')
       return
     }
-    const updates: { vin: string; block: string; row: number; slot: number; modelName?: string; color?: string }[] = []
+    const updates: {
+      vin: string; block: string; row: number; slot: number; modelName?: string; color?: string
+      from?: { block?: string; row?: number; slot?: number }
+    }[] = []
     for (const u of stacked.slice(1)) { // [0] is the longest-standing car — it stays put
       let depth = 0
       for (let r = 1; r <= block.rows; r++) if (!taken.has(r)) { depth = r; break }
       if (!depth) break // lane genuinely full — leave the rest for a human to move
       taken.add(depth)
-      updates.push({ vin: u.vin, block: blockTag(block), row: depth, slot, modelName: u.modelName, color: u.color })
+      const seenAt = byVin.get(u.vin) ?? u
+      updates.push({ vin: u.vin, block: blockTag(block), row: depth, slot, modelName: u.modelName, color: u.color,
+        from: { block: seenAt.block, row: seenAt.row, slot: seenAt.slot } })
       appendHistory(u.vin, { at: Date.now(), by: currentUser, field: 'Location',
         from: pos(u), to: pos({ block: blockTag(block), row: depth, slot }) })
     }

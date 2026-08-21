@@ -234,7 +234,15 @@ interface YardState {
   confirmParked: (vin: string) => void
   resetParking: (vin: string) => void
   /** Update Location import — bulk place cars into block/row/slot as PARKED. */
-  updateLocations: (items: { vin: string; block: string; row: number; slot: number; modelName?: string; color?: string; gateInAt?: number }[]) => number
+  /** Move cars. `from` (where the caller SAW the car when it decided) turns the
+   *  write into a compare-and-set: the move lands only if the car is still
+   *  there, so two phones acting on the same lane a moment apart cannot
+   *  overwrite each other. Omit it and the write is unconditional, as before. */
+  updateLocations: (items: {
+    vin: string; block: string; row: number; slot: number
+    modelName?: string; color?: string; gateInAt?: number
+    from?: { block?: string; row?: number; slot?: number }
+  }[]) => number
   autoParkAll: () => number
   /** Auto-park every listed VIN into the WCL staging block that doesn't
    *  already have a real block/row/slot — leaves already-positioned units
@@ -1045,7 +1053,36 @@ export const useYard = create<YardState>()(
         // its hole, and no bystander is ever re-numbered behind the user's back
         set({ units })
         const intentional = new Set(changed.map((u) => u.vin))
-        db.upsertUnits([...intentional].map((v) => units[v])).catch((e) => console.error('[db] updateLocations', e))
+        const guarded = items.filter((it) => it.from && intentional.has(it.vin))
+        const plain = [...intentional].filter((v) => !guarded.some((g) => g.vin === v))
+        if (plain.length) {
+          db.upsertUnits(plain.map((v) => units[v])).catch((e) => console.error('[db] updateLocations', e))
+        }
+        if (guarded.length) {
+          // compare-and-set: a car somebody else moved between our read and this
+          // write is left exactly where THEY put it, and the operator is told —
+          // silently winning the race is how a car ends up back in a lane it left
+          void (async () => {
+            const lost: { vin: string; at: string }[] = []
+            for (const it of guarded) {
+              const res = await db.updatePlacementIfUnchanged({ vin: it.vin, from: it.from! }, units[it.vin])
+                .catch(() => ({ applied: true as const }))
+              if (res.applied) continue
+              lost.push({ vin: it.vin, at: posCode(res.current) || '—' })
+              // adopt what the cloud says rather than keeping our rejected guess
+              set((st) => {
+                const cur = st.units[it.vin]
+                if (!cur) return st
+                return { units: { ...st.units, [it.vin]: { ...cur, ...res.current } } }
+              })
+            }
+            if (lost.length) {
+              get().toast('err', lost.length === 1
+                ? `รถ ${lost[0].vin.slice(-6)} เพิ่งถูกย้ายไป ${lost[0].at} โดยเครื่องอื่น — ตำแหน่งนี้ไม่ถูกบันทึก กรุณาสแกนใหม่`
+                : `${lost.length} คันเพิ่งถูกย้ายโดยเครื่องอื่น — ไม่ได้บันทึกทับ กรุณาสแกนใหม่`)
+            }
+          })()
+        }
         return changed.length
       },
 
@@ -1251,6 +1288,7 @@ export const useYard = create<YardState>()(
         }
 
         const moved: Unit[] = []
+        const guards: db.PlacementGuard[] = []
         const units = { ...get().units }
         for (const u of healed) units[u.vin] = u
         for (const lane of verified.values()) {
@@ -1276,6 +1314,7 @@ export const useYard = create<YardState>()(
               const next = { ...u, row: free }
               units[u.vin] = next
               moved.push(next)
+              guards.push({ vin: u.vin, from: { block: u.block, row: u.row, slot: u.slot } })
               logMoveEvent(u.vin, 'แก้ตำแหน่งซ้ำ (แถวเดิม)', posCode(u), posCode(next))
             }
           }
@@ -1283,9 +1322,19 @@ export const useYard = create<YardState>()(
         if (healed.length && !moved.length) { set({ units }); return 0 }
         if (!moved.length) return 0
         set({ units })
-        db.upsertUnits(moved).catch((e) => console.error('[db] dedupeSlots', e))
-        get().toast('info', `พบรถซ้อนช่องกัน — จัดคันที่ใหม่ในแถวเดิม ${moved.length} คัน`)
-        return moved.length
+        // compare-and-set here too: this runs unattended, so a car somebody is
+        // parking at this very moment must win over the tidy-up, not lose to it
+        let applied = 0
+        for (let i = 0; i < moved.length; i++) {
+          const res = await db.updatePlacementIfUnchanged(guards[i], moved[i]).catch(() => ({ applied: true as const }))
+          if (res.applied) { applied++; continue }
+          set((st) => {
+            const cur = st.units[guards[i].vin]
+            return cur ? { units: { ...st.units, [guards[i].vin]: { ...cur, ...res.current } } } : st
+          })
+        }
+        if (applied) get().toast('info', `พบรถซ้อนช่องกัน — จัดคันที่ใหม่ในแถวเดิม ${applied} คัน`)
+        return applied
       },
 
       /**

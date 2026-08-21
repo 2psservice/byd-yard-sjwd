@@ -388,6 +388,60 @@ export async function upsertUnitsKeepPlacement(units: Unit[], onProgress?: Chunk
   await bulkUpsert('units', rows, 200, 'vin', 5, undefined, onProgress)
 }
 
+/** Where a car stood when a move was decided, and where it should go. */
+export interface PlacementGuard {
+  vin: string
+  /** the spot the decision was based on — the write applies only if the car is
+   *  still there. `null` fields mean "was not parked anywhere". */
+  from: { block?: string | null; row?: number | null; slot?: number | null }
+}
+
+/**
+ * Move a car ONLY IF it is still standing where we last saw it.
+ *
+ * Reading the cloud before writing (laneFromCloud) closes the big hole, but not
+ * the sliver between the read and the write: two phones can each read the same
+ * free depth a moment apart and both write into it, and the second one wins
+ * silently. Here the condition rides along WITH the write — Postgres matches
+ * the row on vin AND its current spot, so a car somebody moved in between
+ * simply matches nothing and the update touches zero rows. No extra round-trip,
+ * and no way for the two to interleave.
+ *
+ * Returns true when the move applied, false when the car had already moved on
+ * (the caller re-reads and tells the operator), and true on a transport error —
+ * a failed request is not evidence of a conflict, and the yard must not be told
+ * a move was rejected because the wifi blinked. The ordinary sync repairs that.
+ */
+export async function updatePlacementIfUnchanged(
+  guard: PlacementGuard, next: Unit,
+): Promise<{ applied: true } | { applied: false; current: { block?: string; row?: number; slot?: number } }> {
+  if (!isConfigured()) return { applied: true }
+  const row = unitToRow(next) as Record<string, unknown>
+  // an absent spot is NULL in Postgres and `= NULL` never matches, so the two
+  // cases need different operators — otherwise an unparked car could never be
+  // placed at all, every write reading as a conflict
+  let q = supabase.from('units').update(row).eq('vin', guard.vin)
+  for (const [col, v] of [['block', guard.from.block], ['row', guard.from.row], ['slot', guard.from.slot]] as const) {
+    q = (v === null || v === undefined || v === '' ? q.is(col, null) : q.eq(col, v as never))
+  }
+  const { data, error } = await q.select('vin')
+  // a failed request is not evidence of a conflict — the yard must not be told
+  // a move was rejected because the wifi blinked. The ordinary sync repairs it.
+  if (error) { console.error('[db] updatePlacementIfUnchanged', guard.vin, error); return { applied: true } }
+  if ((data ?? []).length > 0) return { applied: true }
+
+  // Zero rows matched — but that has TWO causes, and only one is a conflict.
+  // The car may simply have no units row yet (a placement whose first upload
+  // never landed); an UPDATE can't create one, and calling that a conflict
+  // would strand the car forever. Ask which it is.
+  const { data: cur, error: readErr } = await supabase
+    .from('units').select('vin, block, row, slot').eq('vin', guard.vin).maybeSingle()
+  if (readErr) { console.error('[db] updatePlacementIfUnchanged read-back', guard.vin, readErr); return { applied: true } }
+  if (!cur) { await upsertUnits([next]); return { applied: true } } // never existed → create it
+  const c = cur as { block?: string | null; row?: number | null; slot?: number | null }
+  return { applied: false, current: { block: c.block ?? undefined, row: c.row ?? undefined, slot: c.slot ?? undefined } }
+}
+
 /** ลบรถ (cascade → ลบ damages + trips อัตโนมัติ) */
 export async function deleteUnit(vin: string): Promise<void> {
   if (!isConfigured()) return
