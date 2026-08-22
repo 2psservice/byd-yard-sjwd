@@ -473,6 +473,11 @@ export async function deleteTrailersForSite(siteId: string): Promise<void> {
 
 // ── damage operations ─────────────────────────────────────────────────────
 
+/** Detect a Postgres unique-violation (23505) — the row is already there. */
+function isDuplicateKey(e: unknown): boolean {
+  const s = JSON.stringify(e ?? '')
+  return s.includes('23505') || s.includes('duplicate key')
+}
 /** Detect a PostgREST "column does not exist" error (schema not yet migrated). */
 function isMissingColumn(e: unknown): boolean {
   const s = JSON.stringify(e ?? '')
@@ -490,12 +495,17 @@ export async function insertDamage(vin: string, d: Damage): Promise<void> {
   try {
     await withRetry(() => supabase.from('damages').insert(row))
   } catch (error) {
+    // the same damage id already in the cloud = an earlier write DID land but
+    // its response was lost (flaky yard network). The retry queue re-sends
+    // until it sees a success — a duplicate IS that success, so report it as
+    // one instead of erroring forever on a defect that is safely stored.
+    if (isDuplicateKey(error)) return
     // optional columns (remark / area_th / item_th) may not be migrated yet —
     // retry without them so the damage still saves (extra fields stay on this
     // device until the columns exist).
     if (isMissingColumn(error)) {
       const { error: e2 } = await supabase.from('damages').insert(stripOptionalDamageCols(row))
-      if (!e2) return
+      if (!e2 || isDuplicateKey(e2)) return
     }
     console.error('[db] insertDamage', vin, error)
     throw error

@@ -11,7 +11,7 @@ import {
   ArrowRight, Zap, Hand, X, Camera, Pencil, Gauge, Route, Crosshair,
   LogOut, MapPin, ClipboardList, ListChecks, Copy, Check, Loader2, Images,
 } from 'lucide-react'
-import { useYard, useUnits, useTrips, useBlocks } from '../store/useYard'
+import { useYard, useUnits, useTrips, useBlocks, attachPendingDamages } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { isDamaged, deriveCarStatus, hasLeftGate, IN_YARD_STATUSES, CAR_STATUS_META } from '../lib/carStatus'
 import { useOps, useActiveQueues, activeProcess, stageOf, isSequenceQueue, isPreGateInQueue, seqStageOf, isQueueComplete, isStationWorkComplete, queueTypeOf, stampStationDate, stationProgress, drivingNow } from '../store/useOps'
@@ -4496,7 +4496,8 @@ function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', s
       try {
         const [cloud] = await fetchUnitsByVins([vin])
         if (cloud) {
-          useYard.setState(s => ({ units: { ...s.units, [cloud.vin]: cloud } }))
+          // never let the cloud copy erase a defect still queued locally
+          useYard.setState(s => ({ units: { ...s.units, [cloud.vin]: attachPendingDamages(s.pendingDamages, cloud) } }))
           target = cloud
         }
       } catch (e) { console.error('[db] saveDefects fetch unit', e) }
