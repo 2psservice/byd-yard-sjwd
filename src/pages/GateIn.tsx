@@ -267,6 +267,8 @@ function GroupCard({ group, mode, dateFilter }: { group: Group; mode: 'in' | 'ou
  */
 function QueueName({ q, onExpand }: { q: WorkQueue; onExpand: () => void }) {
   const renameQueue = useOps((s) => s.renameQueue)
+  const createGateInQueue = useOps((s) => s.createGateInQueue)
+  const currentUser = useYard((s) => s.currentUser)
   const toast = useYard((s) => s.toast)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(q.name)
@@ -274,13 +276,27 @@ function QueueName({ q, onExpand }: { q: WorkQueue; onExpand: () => void }) {
 
   const save = () => {
     const n = draft.trim()
-    if (n && n !== q.name) { renameQueue(q.id, n); toast('ok', 'เปลี่ยนชื่อคิวงานแล้ว') }
+    if (n && n !== q.name) {
+      if (virtual) {
+        // the "(รอ Gate-in · ยังไม่มีคิวงาน)" card is synthesized from cars no
+        // queue covers — there is no queue object to rename. Naming it CREATES
+        // a real GATEIN queue over exactly those cars, which then replaces this
+        // card here and on the ops-scan station (same find-or-create the
+        // importer uses, so a matching name merges instead of duplicating).
+        createGateInQueue(n, q.items.map((i) => i.vin), currentUser)
+        toast('ok', `สร้างคิวงาน "${n}" แล้ว`)
+      } else {
+        renameQueue(q.id, n)
+        toast('ok', 'เปลี่ยนชื่อคิวงานแล้ว')
+      }
+    }
     setEditing(false)
   }
 
   if (editing) {
     return (
       <input className="input py-1 text-[13px] font-bold w-full" value={draft} autoFocus
+        placeholder="ตั้งชื่อคิวงาน…"
         onChange={(e) => setDraft(e.target.value)}
         onBlur={save}
         onKeyDown={(e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') { setDraft(q.name); setEditing(false) } }} />
@@ -292,13 +308,13 @@ function QueueName({ q, onExpand }: { q: WorkQueue; onExpand: () => void }) {
           arrived — renaming is the small deliberate target beside it */}
       <button className="font-bold text-[13px] truncate text-left" style={{ color: 'var(--brand)' }}
         onClick={onExpand}>{q.name}</button>
-      {!virtual && (
-        <button className="shrink-0 p-1 rounded-md transition hover:bg-chip"
-          title="เปลี่ยนชื่อคิวงาน — ชื่อนี้จะขึ้นที่หน้าสแกนของหน้างานด้วย"
-          onClick={() => { setDraft(q.name); setEditing(true) }}>
-          <Pencil size={12} style={{ color: 'var(--muted)' }} />
-        </button>
-      )}
+      <button className="shrink-0 p-1 rounded-md transition hover:bg-chip"
+        title={virtual
+          ? 'ตั้งชื่อคิวงาน — รถชุดนี้จะกลายเป็นคิวงานจริง แสดงที่หน้าสแกนของหน้างานด้วย'
+          : 'เปลี่ยนชื่อคิวงาน — ชื่อนี้จะขึ้นที่หน้าสแกนของหน้างานด้วย'}
+        onClick={() => { setDraft(virtual ? '' : q.name); setEditing(true) }}>
+        <Pencil size={12} style={{ color: 'var(--muted)' }} />
+      </button>
     </div>
   )
 }
