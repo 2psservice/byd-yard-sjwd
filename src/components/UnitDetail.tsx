@@ -9,6 +9,7 @@ import { clock, pos, tState, CATEGORY_META, STATUS_META } from '../lib/format'
 import { modelById } from '../lib/sampleData'
 import { zoneLabel } from '../pages/GateIn'
 import { partLabel, defectLabel } from '../lib/damageLabel'
+import { refreshUnitFocus } from '../lib/unitFocus'
 import type { Unit, UnitStatus } from '../types'
 
 const GLOW: Record<UnitStatus, string> = {
@@ -24,6 +25,10 @@ export function UnitDetail({ vin, onClose }: { vin: string | null; onClose: () =
   const [tab, setTab] = useState<Tab>('overview')
 
   useEffect(() => { setTab('overview') }, [vin])
+  // this panel used to read ONLY the local copy — stale for a defect recorded
+  // on another device, frozen forever for a car that has gated out (site pulls
+  // filter DEPARTED). One per-VIN fetch shows what the database really holds.
+  useEffect(() => { if (vin) refreshUnitFocus(vin) }, [vin])
   useEffect(() => {
     if (!vin) return
     const h = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
