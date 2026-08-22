@@ -37,6 +37,7 @@ import { parseLane } from '../lib/laneImport'
 import { LOCATION_KEY } from '../lib/trackingColumns'
 import { blockTag, blockKeyOfTag, resolveBlockByName } from '../lib/format'
 import { fetchUnitsByVins, fetchTrackingRowsByVin, isConfigured } from '../lib/db'
+import { refreshUnitFocus } from '../lib/unitFocus'
 import { laneFromCloud } from '../lib/laneCloud'
 import { hasDialogOpen } from '../lib/keyboardGuard'
 import { useRecentOps } from '../store/useRecentOps'
@@ -303,15 +304,11 @@ function useCloudNotFound(retryRef: { current: (v: string) => void }): (v: strin
   }
 }
 
-async function fetchUnitFallback(vin: string): Promise<boolean> {
-  if (!isConfigured()) return false
-  try {
-    const [u] = await fetchUnitsByVins([vin])
-    if (!u) return false
-    useYard.setState((s) => (s.units[u.vin] ? s : { units: { ...s.units, [u.vin]: u } }))
-    return true
-  } catch (e) { console.error('[db] fetchUnitFallback', e); return false }
-}
+/** ALWAYS adopts the cloud copy now (it used to no-op when a local copy
+ *  existed — but a stale local copy is exactly how a defect recorded on
+ *  another device, or on a car that has since gated out, stayed invisible
+ *  here forever). See lib/unitFocus for the full story. */
+const fetchUnitFallback = refreshUnitFocus
 
 // A saved defect always carries ≥1 photo (the add-Defect form requires one
 // before Save is even enabled) — a damage with NEITHER `photo` NOR `photos`
@@ -3019,8 +3016,11 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
   // one-VIN fetch on its own — no need to wait for the operator to notice the
   // spinner and tap "ลองใหม่" themselves, and no need to hurry the entire
   // site's units for one car
+  // …and refresh EVERY focused car, even when a local copy exists — a stale
+  // copy (defect recorded on another device; car since gated out, which every
+  // site pull filters away) is precisely what made saved defects invisible.
   useEffect(() => {
-    if (!vin || unit) return
+    if (!vin) return
     let cancelled = false
     let tries = 0
     const attempt = () => {
@@ -3032,7 +3032,7 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
     }
     attempt()
     return () => { cancelled = true }
-  }, [vin, unit])
+  }, [vin])
   // the station task this car is currently in (PDI / FINAL PM / Wash …)
   const activeProc = useMemo(() => (unit ? activeProcess(unit.vin, queues) : null), [unit, queues])
   const procStage = activeProc ? stageOf(activeProc.item) : null
@@ -4468,9 +4468,31 @@ function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', s
 
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
 
-  const unit = vin ? units.find(u => u.vin === vin) ?? null : null
+  // raw-store fallback: a car that gated out is dropped from the site-scoped
+  // list, but its adopted cloud copy (below) still lives in the store — its
+  // defects must stay visible here (repair follow-ups outlive the gate-out)
+  const rawUnit = useYard(s => (vin ? s.units[vin] : undefined))
+  const unit = vin ? units.find(u => u.vin === vin) ?? rawUnit ?? null : null
   const trackRow = vin ? trackingRows.find(r => r.vin === vin) ?? null : null
   const damages = unit?.damages ?? []
+
+  // refresh EVERY focused car from the cloud (one row, damages included) — the
+  // local copy can be stale (defect recorded on another device) or frozen (a
+  // gated-out car no site pull ever refreshes again); both hid saved defects
+  useEffect(() => {
+    if (!vin) return
+    let cancelled = false
+    let tries = 0
+    const attempt = () => {
+      if (cancelled) return
+      tries++
+      refreshUnitFocus(vin).then((found) => {
+        if (!found && !cancelled && tries < 4) setTimeout(attempt, 1500 * tries)
+      })
+    }
+    attempt()
+    return () => { cancelled = true }
+  }, [vin])
 
   /**
    * Save the form's defects, fetching or creating the car's unit row first.
@@ -4720,13 +4742,19 @@ function CheckView() {
   useEffect(() => { loadFromIdb(); loadFromSupabase() }, [loadFromIdb, loadFromSupabase])
 
   const row  = vin ? (trackingRows.find(r => r.vin === vin) ?? null) : null
-  const unit = vin ? (units.find(u => u.vin === vin) ?? null)        : null
+  // raw-store fallback — a gated-out car falls off the site-scoped list, but
+  // its adopted cloud copy must still show here (defects included)
+  const rawUnit = useYard(s => (vin ? s.units[vin] : undefined))
+  const unit = vin ? (units.find(u => u.vin === vin) ?? rawUnit ?? null) : null
 
   // the site-wide pull above can take a while on 17k units; the scanned car's
   // own slot should not wait for it (without the unit, the Location tab could
   // only show the yard NAME, never the "V3703" the driver walks to)
+  // …and refresh EVERY focused car, even when a local copy exists — a stale
+  // copy (defect recorded on another device; car since gated out, which every
+  // site pull filters away) is precisely what made saved defects invisible.
   useEffect(() => {
-    if (!vin || unit) return
+    if (!vin) return
     let cancelled = false
     let tries = 0
     const attempt = () => {
@@ -4738,7 +4766,7 @@ function CheckView() {
     }
     attempt()
     return () => { cancelled = true }
-  }, [vin, unit])
+  }, [vin])
 
   const onScanRef = useRef<(v: string) => void>(() => {})
   const scanNotFound = useCloudNotFound(onScanRef)
