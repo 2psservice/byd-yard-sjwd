@@ -67,6 +67,12 @@ function scheduleDamageRefetch(run: () => void) {
   damageRefetchTimer = setTimeout(() => { damageRefetchTimer = null; run() }, 1500)
 }
 
+// How many times loadFromSupabase has failed in a row, and the pending retry.
+// Module scope so concurrent callers share one backoff and one timer instead of
+// each starting its own retry loop against an already-struggling database.
+let loadRetry = 0
+let loadRetryTimer: ReturnType<typeof setTimeout> | null = null
+
 /** A unit whose `model` is the CANONICAL policy id. The stored model can be
  *  empty (placeholder unit) or non-canonical ("BYD ATTO 2" vs "ATTO2"), which
  *  makes the parking policy fall back to "any block". Always re-derive it via
@@ -1502,13 +1508,31 @@ export const useYard = create<YardState>()(
           })
         }
         set({ unitsCloudDone: true })
+          loadRetry = 0 // landed — the next failure starts from the short delay again
         } catch (e) {
           // a partial/failed fetch must NOT flip unitsCloudDone — that would
           // show the "ไม่แสดงบนผัง" count as final while this device is
           // actually still missing a chunk of cars (the cross-device count
           // mismatch this used to cause). Keep the loading chip up and retry.
+          //
+          // BACK OFF. This retried every 3s forever, and each attempt re-pulls
+          // the whole site's units. When the database slows down, ~35 devices
+          // all land in that loop at once — ~700 full-table pulls a minute — so
+          // a brief wobble became a self-sustaining storm that kept the database
+          // saturated and every station failing. Doubling up to a minute (with
+          // jitter, so the fleet doesn't retry in lockstep) still recovers on
+          // its own but lets the database out from under the load.
           console.error('[db] loadFromSupabase units', e)
-          setTimeout(() => { if (get().currentSite === siteId) get().loadFromSupabase() }, 3000)
+          const wait = Math.min(3000 * 2 ** loadRetry, 60_000) * (0.75 + Math.random() * 0.5)
+          loadRetry++
+          if (loadRetryTimer) clearTimeout(loadRetryTimer)
+          loadRetryTimer = setTimeout(() => {
+            loadRetryTimer = null
+            // a backgrounded tab is nobody's screen — retrying from it only adds
+            // load. App.tsx re-pulls on visibilitychange, so it catches up anyway.
+            if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+            if (get().currentSite === siteId) get().loadFromSupabase()
+          }, wait)
         }
       },
 
