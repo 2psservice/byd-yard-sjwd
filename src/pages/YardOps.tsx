@@ -4457,16 +4457,75 @@ function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', s
   const trackingRows = useSiteRows()
   const wrongSite = useWrongSiteHint()
   const { loadFromIdb } = useTracking()
-  const { addDamage, updateRepairStatus, toast, loadFromSupabase } = useYard()
+  const { addDamage, updateRepairStatus, toast, importUnits } = useYard()
   const { block: blockGate, modal: gateModal } = useNotGatedIn()
   const [vin, setVin] = useState<string | null>(null)
   const [showAdd, setShowAdd] = useState(false)
+  // guards the async save below. A ref, not state: the cloud read can outlast
+  // DamageForm's own 1500 ms double-tap guard, and a state flag read inside the
+  // already-created closure would still be false on the second tap.
+  const savingRef = useRef(false)
 
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
 
   const unit = vin ? units.find(u => u.vin === vin) ?? null : null
   const trackRow = vin ? trackingRows.find(r => r.vin === vin) ?? null : null
   const damages = unit?.damages ?? []
+
+  /**
+   * Save the form's defects, fetching or creating the car's unit row first.
+   *
+   * addDamage() drops the defect on the floor when this device has no unit for
+   * the VIN, so this station used to refuse the save and ask the operator to
+   * wait and press again — with a site-wide reload as the only remedy. That
+   * reload cannot help in the two cases that actually happen: the car is
+   * DEPARTED (the site pull filters those out, so it never arrives no matter
+   * how long you wait) and the site pull itself is failing or slow. The
+   * operator was left holding photos they could not file.
+   *
+   * A per-VIN cloud read answers both — it carries no status filter and costs
+   * one row — and if the cloud genuinely has no unit for a car the tracking
+   * sheet knows, we register one from the sheet. importUnits never writes
+   * placement columns, so neither path can overwrite a position another device
+   * set.
+   */
+  const saveDefects = async (dmgs: DamageInput[]) => {
+    if (!vin) return
+    let target = unit
+    if (!target && isConfigured()) {
+      try {
+        const [cloud] = await fetchUnitsByVins([vin])
+        if (cloud) {
+          useYard.setState(s => ({ units: { ...s.units, [cloud.vin]: cloud } }))
+          target = cloud
+        }
+      } catch (e) { console.error('[db] saveDefects fetch unit', e) }
+    }
+    if (!target && trackRow) {
+      importUnits([{
+        vin: trackRow.vin,
+        model: trackRow.cells['Model name'] ?? trackRow.cells['Model'] ?? '',
+        color: trackRow.cells['Color'] ?? '',
+        lot: trackRow.cells['Lot transfer'] ?? undefined,
+        trailer: parseInt(trackRow.cells['Grouping  Number'] ?? '0') || 0,
+      }])
+      target = useYard.getState().units[vin] ?? null
+    }
+    if (!target) {
+      // keep the form (and its photos) exactly as it is — nothing was consumed
+      toast('err', 'บันทึกไม่สำเร็จ — ไม่พบข้อมูลรถคันนี้ กรุณาลองใหม่อีกครั้ง')
+      return
+    }
+    dmgs.forEach(d => addDamage(target.vin, { ...d, source, station: stationName }))
+    recordRecent(`${recentKey}:save`, target.vin, dmgs.length > 1 ? `บันทึก Defect ${dmgs.length} รายการ` : 'บันทึก Defect 1 รายการ')
+    setShowAdd(false)
+    toast('ok', dmgs.length > 1 ? `บันทึก Defect ${dmgs.length} รายการ` : 'บันทึก Defect แล้ว')
+  }
+  const onSaveAll = (dmgs: DamageInput[]) => {
+    if (savingRef.current) return
+    savingRef.current = true
+    saveDefects(dmgs).finally(() => { savingRef.current = false })
+  }
 
   // this scanned car's local copy has a defect with no photo at all — that's
   // an IndexedDB boot-cache stub racing a cloud fetch that hasn't landed yet,
@@ -4534,12 +4593,7 @@ function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', s
               <div className="mb-2">
                 <DamageForm
                   key={vin}
-                  onSaveAll={dmgs => {
-                    dmgs.forEach(d => addDamage(unit.vin, { ...d, source, station: stationName }))
-                    recordRecent(`${recentKey}:save`, unit.vin, dmgs.length > 1 ? `บันทึก Defect ${dmgs.length} รายการ` : 'บันทึก Defect 1 รายการ')
-                    setShowAdd(false)
-                    toast('ok', dmgs.length > 1 ? `บันทึก Defect ${dmgs.length} รายการ` : 'บันทึก Defect แล้ว')
-                  }}
+                  onSaveAll={onSaveAll}
                   onCancel={() => setShowAdd(false)}
                 />
               </div>
@@ -4585,20 +4639,7 @@ function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', s
             <div className="border-t hairline p-3" style={{ background: accent + '08' }}>
               <DamageForm
                 key={vin ?? 'none'}
-                onSaveAll={dmgs => {
-                  if (!unit) {
-                    // the car exists only as a tracking row (unit not synced yet) —
-                    // keep the filled form open, tell the operator, and hurry the fetch
-                    // instead of silently discarding their photos and entries.
-                    toast('err', 'ข้อมูลรถยังโหลดไม่เสร็จ — รอสักครู่แล้วกดบันทึกอีกครั้ง')
-                    loadFromSupabase()
-                    return
-                  }
-                  dmgs.forEach(d => addDamage(unit.vin, { ...d, source, station: stationName }))
-                  recordRecent(`${recentKey}:save`, unit.vin, dmgs.length > 1 ? `บันทึก Defect ${dmgs.length} รายการ` : 'บันทึก Defect 1 รายการ')
-                  setShowAdd(false)
-                  toast('ok', dmgs.length > 1 ? `บันทึก Defect ${dmgs.length} รายการ` : 'บันทึก Defect แล้ว')
-                }}
+                onSaveAll={onSaveAll}
                 onCancel={() => setShowAdd(false)}
               />
             </div>
