@@ -1332,7 +1332,15 @@ export const useYard = create<YardState>()(
         const moved: Unit[] = []
         const guards: db.PlacementGuard[] = []
         const units = { ...get().units }
-        for (const u of healed) units[u.vin] = u
+        // `healed` cars come straight from a cloud lane fetch (laneFromCloud) —
+        // real damages, but not this device's own not-yet-synced defect if the
+        // insert hasn't landed yet. A bare overwrite here erased it: this runs
+        // automatically after every units change (see the useYard.subscribe
+        // below), so a defect saved on a car sitting in a busy staging lane
+        // (WCL — every gate-in and re-location car in one lane) could vanish
+        // within the debounce window of the SAME save that added it.
+        const pendingNow = get().pendingDamages
+        for (const u of healed) units[u.vin] = attachPendingDamages(pendingNow, u)
         for (const lane of verified.values()) {
           const byDepth = new Map<number, Unit[]>()
           for (const u of lane) {
