@@ -332,6 +332,24 @@ function scheduleBlockSync(get: () => { currentSite: string | null; blocksBySite
 
 // ── pending-defect retry (self-rescheduling, backs off while offline) ──────
 let pendingDamagesTimer: ReturnType<typeof setTimeout> | null = null
+/**
+ * Re-attach this device's not-yet-synced defects onto a unit fetched from the
+ * cloud. Every "adopt the cloud copy wholesale" merge must pass through here:
+ * a defect still waiting in pendingDamages exists ONLY in local state, so a
+ * bare `units[u.vin] = cloudCopy` erased it from the screen — and the flusher
+ * then read that absence as "already landed" and dropped it from the queue
+ * too. That pair is how a station saw "บันทึก Defect แล้ว" and minutes later
+ * the defect (photos and all) was gone everywhere.
+ */
+export function attachPendingDamages(
+  pending: Record<string, { vin: string; dmg: Damage }>, u: Unit,
+): Unit {
+  const extra = Object.values(pending)
+    .filter((p) => p.vin === u.vin && !u.damages.some((x) => x.id === p.dmg.id))
+    .map((p) => p.dmg)
+  return extra.length ? { ...u, damages: [...u.damages, ...extra] } : u
+}
+
 let pendingDamagesFlushing = false
 function scheduleFlushPendingDamages(get: () => { flushPendingDamages: () => Promise<void>; pendingDamages: Record<string, unknown> }, delay = 15_000) {
   if (pendingDamagesTimer) clearTimeout(pendingDamagesTimer)
@@ -825,15 +843,33 @@ export const useYard = create<YardState>()(
           const done: string[] = []
           for (const [id, { vin, dmg }] of entries) {
             const u = get().units[vin]
-            if (!u) { done.push(id); continue } // car no longer local (departed/removed) — nothing to push
-            // already landed (e.g. a previous flush's write succeeded but the
-            // response was lost) — the cloud copy is authoritative either way
-            if (u.damages.every((x) => x.id !== id)) { done.push(id); continue }
+            // NOTE: a damage missing from the LOCAL unit proves nothing — a
+            // cloud merge may have overwritten the unit while this entry was
+            // still queued. Reading that absence as "already landed" (the old
+            // logic) silently dropped the queue entry, and the defect — photos
+            // and all — was gone everywhere. The queue itself is the truth:
+            // push until the CLOUD write succeeds (insertDamage treats a
+            // duplicate id as success, so a landed-but-unconfirmed write from
+            // an earlier round converges instead of erroring forever).
             try {
-              await db.upsertUnitKeepPlacement(u)
+              // FK-safe: parent unit row first. A car merged away locally can
+              // still exist in the cloud — then the insert rides on that row.
+              if (u) await db.upsertUnitKeepPlacement(u)
               await db.insertDamage(vin, dmg)
               done.push(id)
-            } catch (e) { console.error('[db] flushPendingDamages', vin, e) }
+              // it is in the cloud now — if a merge stripped it from the local
+              // copy meanwhile, put it back so the screen agrees again
+              set((s) => {
+                const cu = s.units[vin]
+                if (!cu || cu.damages.some((x) => x.id === id)) return s
+                return { units: { ...s.units, [vin]: { ...cu, damages: [...cu.damages, dmg] } } }
+              })
+            } catch (e) {
+              // no local unit AND the cloud insert failed → the car is gone
+              // everywhere (deleted / never registered); the defect has no home
+              if (!u) { done.push(id); continue }
+              console.error('[db] flushPendingDamages', vin, e)
+            }
           }
           if (done.length) {
             set((s) => {
@@ -1586,7 +1622,8 @@ export const useYard = create<YardState>()(
                       if (!cloud.length) return
                       set((s) => {
                         const merged: Record<string, Unit> = { ...s.units }
-                        for (const u of cloud) merged[u.vin] = u
+                        // never let the cloud copy erase a defect still queued locally
+                        for (const u of cloud) merged[u.vin] = attachPendingDamages(s.pendingDamages, u)
                         return { units: merged }
                       })
                     }).catch((e) => console.error('[db] damage delete refetch', e))
@@ -1615,7 +1652,8 @@ export const useYard = create<YardState>()(
                     if (!cloud.length) return
                     set((s) => {
                       const merged: Record<string, Unit> = { ...s.units }
-                      for (const u of cloud) merged[u.vin] = u
+                      // never let the cloud copy erase a defect still queued locally
+                      for (const u of cloud) merged[u.vin] = attachPendingDamages(s.pendingDamages, u)
                       return { units: merged }
                     })
                   }).catch((e) => console.error('[db] damage refetch', e))
@@ -1666,7 +1704,8 @@ export const useYard = create<YardState>()(
                 if (!cloud.length) return
                 set((s) => {
                   const merged: Record<string, Unit> = { ...s.units }
-                  for (const u of cloud) merged[u.vin] = u
+                  // never let the cloud copy erase a defect still queued locally
+                  for (const u of cloud) merged[u.vin] = attachPendingDamages(s.pendingDamages, u)
                   return { units: merged }
                 })
               }).catch(() => {})
