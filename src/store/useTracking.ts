@@ -34,6 +34,21 @@ function scheduleTruncatedSync(run: () => void) {
   truncatedSyncTimer = setTimeout(() => { truncatedSyncTimer = null; run() }, 1500)
 }
 
+// VINs whose direct push to the cloud failed (database down / timing out).
+// Every fire-and-forget write below lands here on failure, and the next
+// syncCloud pushes their CURRENT copy again until one lands. Without this, an
+// edit made while the database was struggling stayed local-only until the
+// 6-hour full sync — the operator saw "saved", every other device saw the old
+// value for half a day.
+const failedPush = new Set<string>()
+/** Fire-and-forget row push that REMEMBERS failures for syncCloud to retry. */
+function pushRows(rows: TrackRow[]): void {
+  if (!rows.length) return
+  db.upsertTrackingRows(rows)
+    .then(() => { for (const r of rows) failedPush.delete(r.vin) })
+    .catch(() => { for (const r of rows) failedPush.add(r.vin) })
+}
+
 /** A car that no longer exists must not keep sitting in a station's work queue.
  *  Lazy import — useOps reads useYard, which reads back this way. */
 function purgeFromQueues(vins: string[]): void {
@@ -391,7 +406,17 @@ export const useTracking = create<TrackingState>()(
         // conflict target twice (a pruned row may also be in `push`)
         const outgoing = new Map(push.map((r) => [r.vin, r] as const))
         for (const r of pruned) outgoing.set(r.vin, merged[r.vin])
-        if (outgoing.size) db.upsertTrackingRows([...outgoing.values()]).catch(() => {})
+        // rows whose direct push failed earlier (database was down) — resend
+        // their CURRENT copy. Their updatedAt predates lastSync by now, so the
+        // incremental condition above would never pick them up again.
+        for (const vin of failedPush) {
+          if (outgoing.has(vin)) continue
+          const r = merged[vin]
+          // row gone (deleted meanwhile) → nothing left to deliver, stop tracking it
+          if (!r || !hasVin(r) || cloudByVin.get(vin)?.deletedAt) { failedPush.delete(vin); continue }
+          if (!broadcastOnly.has(vin)) outgoing.set(vin, r)
+        }
+        if (outgoing.size) pushRows([...outgoing.values()])
         set({ lastSync: startedAt })
         // a full run has now seen — and cleaned — every row; don't force another
         if (!incremental) set({ sysHistoryPurged: SYS_HISTORY_PURGE_V })
@@ -521,7 +546,7 @@ export const useTracking = create<TrackingState>()(
           rows[r.vin] = stamped; added.push(stamped)
         }
         idbBulkPut(added).catch(() => {})
-        db.upsertTrackingRows(added).catch(() => {})
+        pushRows(added)
         set({
           rows,
           // surface EVERY uploaded column in the Unit List (not just the canonical set)
@@ -672,7 +697,7 @@ export const useTracking = create<TrackingState>()(
           gateOut++
         }
         idbBulkPut(changed).catch(() => {})
-        db.upsertTrackingRows(changed).catch(() => {})
+        pushRows(changed)
         set({
           rows,
           columns: applyOptions(get().columns, res.options),
@@ -689,7 +714,7 @@ export const useTracking = create<TrackingState>()(
         const next: TrackRow = { ...withHistoryEntry(r, key, value, get().columns, by), updatedAt: Date.now() }
         set({ rows: { ...get().rows, [vin]: next } })
         idbPut(next).catch(() => {})
-        db.upsertTrackingRows([next]).catch(() => {})
+        pushRows([next])
       },
 
       adoptCloudRows: (incoming) => {
@@ -737,13 +762,13 @@ export const useTracking = create<TrackingState>()(
             updatedAt: Date.now() }
           set({ rows: { ...get().rows, [vin]: merged } })
           idbPut(merged).catch(() => {})
-          db.upsertTrackingRows([merged]).catch(() => {})
+          pushRows([merged])
           return
         }
         const next: TrackRow = { ...r, history: [...hist, entry].slice(-MAX_ROW_HISTORY), updatedAt: Date.now() }
         set({ rows: { ...get().rows, [vin]: next } })
         idbPut(next).catch(() => {})
-        db.upsertTrackingRows([next]).catch(() => {})
+        pushRows([next])
       },
 
       bulkUpdate: (vins, key, value) => {
@@ -761,7 +786,7 @@ export const useTracking = create<TrackingState>()(
         }
         set({ rows })
         idbBulkPut(changed).catch(() => {})
-        db.upsertTrackingRows(changed).catch(() => {})
+        pushRows(changed)
       },
 
       addRow: (vin, cells = {}) => {
@@ -772,7 +797,7 @@ export const useTracking = create<TrackingState>()(
         const row: TrackRow = { vin: v, cells: fullCells, updatedAt: Date.now(), site: siteForRow(fullCells, sites, currentSite) }
         set({ rows: { ...get().rows, [v]: row } })
         idbPut(row).catch(() => {})
-        db.upsertTrackingRows([row]).catch(() => {})
+        pushRows([row])
         return true
       },
 
