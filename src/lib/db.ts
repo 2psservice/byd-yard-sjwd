@@ -824,10 +824,14 @@ export async function fetchTrackingRowsByVin(q: string): Promise<TrackRow[]> {
     query = (q.length >= 17 ? query.eq('vin', q) : query.like('vin', `%${q}`)) as typeof query
     return (query as any).limit(6)
   }
+  // the shrinking column sets exist ONLY for a database whose newer columns
+  // aren't migrated yet — so walk them only on a missing-column error. Any
+  // other failure (timeout, network) would fail all four identically, and
+  // firing them anyway quadrupled the load on a database already in trouble.
   let res: any = await run('vin, cells, updated_at, site, history, deleted_at')
-  if (res.error) res = await run('vin, cells, updated_at, site, history')
-  if (res.error) res = await run('vin, cells, updated_at, site')
-  if (res.error) res = await run('vin, cells, updated_at')
+  if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at, site, history')
+  if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at, site')
+  if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at')
   if (res.error) { console.error('[db] fetchTrackingRowsByVin', res.error); throw res.error }
   return ((res.data ?? []) as TrackRowRow[]).map(toTrackRow).filter((r) => !r.deletedAt)
 }
@@ -849,10 +853,12 @@ export async function fetchTrackingRows(sinceMs?: number): Promise<TrackRow[]> {
       if (sinceIso) q = q.gt('updated_at', sinceIso)
       return q.range(from, from + PAGE - 1)
     }
+    // fall through the shrinking column sets ONLY on a missing-column error
+    // (see fetchTrackingRowsByVin) — a timeout must not fan out into 4 scans
     let res: any = await run('vin, cells, updated_at, site, history, deleted_at')
-    if (res.error) res = await run('vin, cells, updated_at, site, history') // `deleted_at` column not migrated yet
-    if (res.error) res = await run('vin, cells, updated_at, site') // `history` column not migrated yet
-    if (res.error) res = await run('vin, cells, updated_at') // `site` column not migrated yet
+    if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at, site, history') // `deleted_at` column not migrated yet
+    if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at, site') // `history` column not migrated yet
+    if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at') // `site` column not migrated yet
     if (res.error) { console.error('[db] fetchTrackingRows', res.error); return [] }
     return (res.data ?? []) as TrackRowRow[]
   }
@@ -900,9 +906,9 @@ export async function fetchTrackingRowsForSite(locationYard: string): Promise<Tr
     const run = (cols: string) =>
       supabase.from('tracking_rows').select(cols).eq('cells->>Location yard', locationYard).order('vin').range(from, from + PAGE - 1)
     let res: any = await run('vin, cells, updated_at, site, history, deleted_at')
-    if (res.error) res = await run('vin, cells, updated_at, site, history')
-    if (res.error) res = await run('vin, cells, updated_at, site')
-    if (res.error) res = await run('vin, cells, updated_at')
+    if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at, site, history')
+    if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at, site')
+    if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at')
     if (res.error) { console.error('[db] fetchTrackingRowsForSite', res.error); break }
     const batch = (res.data ?? []) as TrackRowRow[]
     // skip tombstoned rows — a soft-deleted VIN must not resurface in a yard view
@@ -939,8 +945,11 @@ export async function upsertTrackingRows(rows: TrackRow[]): Promise<void> {
     for (const build of variants) {
       ;({ error } = await supabase.from('tracking_rows').upsert(slice.map(build), { onConflict: 'vin' }))
       if (!error) break
+      // the next (smaller) variant only helps when a COLUMN was the problem —
+      // on any other failure it's the same doomed write 4× over
+      if (!isMissingColumn(error)) break
     }
-    if (error) console.error('[db] upsertTrackingRows chunk', i, error)
+    if (error) { console.error('[db] upsertTrackingRows chunk', i, error); throw error }
   }
 }
 
@@ -953,12 +962,28 @@ export async function deleteTrackingRows(vins: string[]): Promise<void> {
   const CHUNK = 500
   for (let i = 0; i < vins.length; i += CHUNK) {
     const slice = vins.slice(i, i + CHUNK)
-    const { error } = await supabase.from('tracking_rows')
+    let res = await supabase.from('tracking_rows')
       .upsert(slice.map((vin) => ({ vin, deleted_at: nowIso, updated_at: nowIso, cells: {} })), { onConflict: 'vin' })
-    if (error) {
-      // `deleted_at` column not migrated yet → fall back to the old hard delete
-      const { error: dErr } = await supabase.from('tracking_rows').delete().in('vin', slice)
-      if (dErr) console.error('[db] deleteTrackingRows', dErr)
+    // a transient failure (timeout, network) deserves a retry of the SAME
+    // tombstone write — the hard delete below is not a retry, it is a
+    // different, worse operation
+    if (res.error && !isMissingColumn(res.error)) {
+      await sleep(600)
+      res = await supabase.from('tracking_rows')
+        .upsert(slice.map((vin) => ({ vin, deleted_at: nowIso, updated_at: nowIso, cells: {} })), { onConflict: 'vin' })
+    }
+    if (res.error) {
+      if (isMissingColumn(res.error)) {
+        // `deleted_at` column not migrated yet → the old hard delete is the
+        // only tool this schema has. ONLY then — on a timeout this used to
+        // hard-delete instead, silently dropping the tombstone every cached
+        // device needs to learn the row is gone (the resurrection bug).
+        const { error: dErr } = await supabase.from('tracking_rows').delete().in('vin', slice)
+        if (dErr) console.error('[db] deleteTrackingRows', dErr)
+      } else {
+        console.error('[db] deleteTrackingRows tombstone', res.error)
+        throw res.error // let the caller know the delete has NOT propagated
+      }
     }
   }
 }
