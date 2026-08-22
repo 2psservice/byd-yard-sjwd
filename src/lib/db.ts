@@ -869,7 +869,12 @@ export async function fetchTrackingRows(sinceMs?: number): Promise<TrackRow[]> {
     if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at, site, history') // `deleted_at` column not migrated yet
     if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at, site') // `history` column not migrated yet
     if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at') // `site` column not migrated yet
-    if (res.error) { console.error('[db] fetchTrackingRows', res.error); return [] }
+    // THROW on a real failure. Returning [] here read as "short page = done",
+    // so a pull that failed mid-way passed for complete — the caller then
+    // stamped lastSync and the minute-sync (changed-rows-only) never went back
+    // for the missing thousands. That is how two browsers ended up counting
+    // 8 and 280 cars in a yard whose plan draws ~2,300.
+    if (res.error) { console.error('[db] fetchTrackingRows', res.error); throw res.error }
     return (res.data ?? []) as TrackRowRow[]
   }
 
@@ -902,6 +907,25 @@ export async function fetchTrackingRows(sinceMs?: number): Promise<TrackRow[]> {
   const pages = Math.max(1, Math.ceil(count / PAGE))
   const all = await Promise.all(Array.from({ length: pages }, (_, i) => page(i * PAGE)))
   return all.flat().map(toTrackRow)
+}
+
+/**
+ * How many LIVE tracking rows the cloud holds (tombstones excluded) — one HEAD
+ * request. The minute-sync compares this against the rows this device holds:
+ * a device whose earlier pull silently truncated believes it is current
+ * (lastSync says so) while missing thousands of rows, and only a number from
+ * the cloud can reveal that. Returns null when it can't answer (offline /
+ * legacy schema without deleted_at) — callers must treat null as "don't know",
+ * never as zero.
+ */
+export async function countTrackingRows(): Promise<number | null> {
+  if (!isConfigured()) return null
+  let res = await supabase.from('tracking_rows').select('vin', { count: 'exact', head: true }).is('deleted_at', null)
+  if (res.error && isMissingColumn(res.error)) {
+    res = await supabase.from('tracking_rows').select('vin', { count: 'exact', head: true })
+  }
+  if (res.error || res.count == null) return null
+  return res.count
 }
 
 /**

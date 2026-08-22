@@ -316,7 +316,19 @@ export const useTracking = create<TrackingState>()(
         // the retired system-history sweep needs to SEE every row once, and an
         // incremental sync only returns rows changed since last time
         const needPurge = get().sysHistoryPurged !== SYS_HISTORY_PURGE_V
-        const incremental = lastSync > 0 && hasLocal && !stale && !needPurge
+        let incremental = lastSync > 0 && hasLocal && !stale && !needPurge
+        // ── self-heal for a silently-truncated copy ──
+        // A pull that failed mid-way used to pass for complete, so lastSync got
+        // stamped over a fraction of the sheet — and from then on the minute-
+        // sync only asked "what changed since", which can never restore rows it
+        // never had. Each device froze at a different fraction: one browser
+        // counted 8 cars In Yard, another 280, in a yard really holding ~2,300.
+        // One HEAD count exposes the deficit; being clearly short → full pull.
+        // (Margin absorbs writes racing this check; null = can't tell → skip.)
+        if (incremental) {
+          const cloudLive = await db.countTrackingRows().catch(() => null)
+          if (cloudLive != null && cloudLive - Object.keys(local).length > 20) incremental = false
+        }
         const since = incremental ? lastSync - 120_000 : undefined
 
         let cloud: TrackRow[] = []
