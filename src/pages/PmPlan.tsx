@@ -21,7 +21,7 @@
  */
 import { useMemo, useState } from 'react'
 import { CalendarClock, Send, Table2, ClipboardList, Search } from 'lucide-react'
-import { useTrackingRows } from '../store/useTracking'
+import { useTracking, useTrackingRows } from '../store/useTracking'
 import { useYard } from '../store/useYard'
 import { parseCellDate, lastPmDate, PM_KEYS } from '../lib/trackingColumns'
 import { deriveCarStatus } from '../lib/carStatus'
@@ -62,6 +62,22 @@ function variantOf(modelName: string): string {
 }
 const modelOf = (c: Record<string, string>) =>
   (c['Model'] || c['Model name'] || '').trim() || '—'
+
+/** The measurement columns each PM round carries, exactly as the workbook lays
+ *  them out — %SOC · ODO · 12V · แรงดันลมยางทั้ง 4 ล้อ (FR/FL/RL/RR). */
+const MEAS = [
+  { key: '% SOC', head: '%SOC' },
+  { key: 'Mileage', head: 'ODO' },
+  { key: 'Voltage of 12V', head: '12V' },
+  { key: 'Tire Pressure FR', head: 'FR' },
+  { key: 'Tire Pressure FL', head: 'FL' },
+  { key: 'Tire Pressure RL', head: 'RL' },
+  { key: 'Tire Pressure RR', head: 'RR' },
+] as const
+const sameDay = (a: number, b: number) => {
+  const x = new Date(a), y = new Date(b)
+  return x.getFullYear() === y.getFullYear() && x.getMonth() === y.getMonth() && x.getDate() === y.getDate()
+}
 
 function ymNow(): string {
   const d = new Date()
@@ -190,6 +206,41 @@ export function PmPlan() {
     }
     return { list, maxPm }
   }, [triage, q])
+
+  // history logs each write under the column LABEL (falling back to the key) —
+  // accept either name when digging a round's values back out
+  const columns = useTracking((s) => s.columns)
+  const measNames = useMemo(() => new Map(MEAS.map((m) => {
+    const label = columns.find((x) => x.key === m.key)?.label ?? m.key
+    return [m.key, new Set([m.key, label])] as const
+  })), [columns])
+
+  /**
+   * The values each PM round was recorded with. ค่าแต่ละรอบไม่เหมือนกัน — the
+   * live cells only hold the LATEST round's numbers, but every save also left
+   * a history line stamped with when it happened, so a round's values are the
+   * history entries written on that round's PM date. The latest round falls
+   * back to the live cells (imported rows carry no history at all).
+   */
+  const roundVals = (r: TrackRow, count: number): { date: string; vals: string[] }[] => {
+    const c = r.cells
+    const hist = r.history ?? []
+    let lastIdx = -1
+    for (let i = 0; i < count; i++) if ((c[PM_KEYS[i]] || '').trim()) lastIdx = i
+    return Array.from({ length: count }, (_, i) => {
+      const date = (c[PM_KEYS[i]] || '').trim()
+      if (!date) return { date: '', vals: MEAS.map(() => '') }
+      const t = parseCellDate(c[PM_KEYS[i]])
+      const vals = MEAS.map((m) => {
+        const names = measNames.get(m.key)!
+        let v = ''
+        if (t != null) for (const h of hist) if (names.has(h.field) && sameDay(h.at, t)) v = h.to
+        if (!v && i === lastIdx) v = (c[m.key] || '').trim()
+        return v
+      })
+      return { date, vals }
+    })
+  }
 
   const now = new Date()
   const todayDay = now.getFullYear() === year && now.getMonth() + 1 === month ? now.getDate() : -1
@@ -384,18 +435,41 @@ export function PmPlan() {
           <div className="overflow-x-auto">
             <table className="text-[11.5px] tabular" style={{ borderCollapse: 'collapse', minWidth: '100%' }}>
               <thead>
+                {/* two-row header exactly like the workbook: each PM round is a
+                    group of วันที่ + %SOC/ODO/12V + ลมยาง 4 ล้อ */}
                 <tr style={{ background: 'var(--chip)' }}>
-                  {['No.', 'Vin', 'Model name', 'Model', 'Color', 'Gate In', ...pmCols.map((_, i) => `PM ${i + 1}`), '%SOC', 'ODO', '12V', 'Tire', 'Location', 'หมายเหตุ'].map((h, i) => (
-                    <th key={i} className={`px-2.5 py-2 font-bold whitespace-nowrap ${i === 1 ? 'text-left' : 'text-center'}`}
+                  {['No.', 'Vin', 'Model name', 'Model', 'Color', 'Gate In'].map((h, i) => (
+                    <th key={h} rowSpan={2} className={`px-2.5 py-2 font-bold whitespace-nowrap ${i === 1 ? 'text-left' : 'text-center'}`}
                       style={{ color: 'var(--muted)', borderBottom: '1px solid var(--line)', ...(i === 1 ? { position: 'sticky', left: 0, zIndex: 10, background: 'var(--chip)' } : {}) }}>
                       {h}
                     </th>
                   ))}
+                  {pmCols.map((k, gi) => (
+                    <th key={k} colSpan={1 + MEAS.length} className="px-2.5 py-1.5 text-center font-bold whitespace-nowrap"
+                      style={{ color: 'var(--brand)', borderBottom: '1px solid var(--line)', borderLeft: '2px solid var(--line)', background: gi % 2 ? 'rgba(37,99,235,0.06)' : 'var(--chip)' }}>
+                      PM {gi + 1}
+                    </th>
+                  ))}
+                  {['Location', 'หมายเหตุ'].map((h) => (
+                    <th key={h} rowSpan={2} className="px-2.5 py-2 text-center font-bold whitespace-nowrap"
+                      style={{ color: 'var(--muted)', borderBottom: '1px solid var(--line)', borderLeft: '2px solid var(--line)' }}>{h}</th>
+                  ))}
+                </tr>
+                <tr style={{ background: 'var(--chip)' }}>
+                  {pmCols.flatMap((k, gi) => [
+                    <th key={`${k}-d`} className="px-2 py-1.5 text-center font-bold whitespace-nowrap"
+                      style={{ color: 'var(--muted)', borderBottom: '1px solid var(--line)', borderLeft: '2px solid var(--line)', background: gi % 2 ? 'rgba(37,99,235,0.06)' : undefined }}>วันที่</th>,
+                    ...MEAS.map((m) => (
+                      <th key={`${k}-${m.key}`} className="px-2 py-1.5 text-center font-semibold whitespace-nowrap"
+                        style={{ color: 'var(--muted)', borderBottom: '1px solid var(--line)', background: gi % 2 ? 'rgba(37,99,235,0.06)' : undefined }}>{m.head}</th>
+                    )),
+                  ])}
                 </tr>
               </thead>
               <tbody>
                 {shownStatus.map((r, i) => {
                   const c = r.cells
+                  const rounds = roundVals(r, status.maxPm)
                   return (
                     <tr key={r.vin} className="hover:bg-chip">
                       <td className="px-2.5 py-1.5 text-center" style={{ color: 'var(--faint)', borderBottom: '1px solid var(--line)' }}>{i + 1}</td>
@@ -405,23 +479,25 @@ export function PmPlan() {
                       <td className="px-2.5 py-1.5 text-center whitespace-nowrap" style={{ borderBottom: '1px solid var(--line)' }}>{modelOf(c)}</td>
                       <td className="px-2.5 py-1.5 text-center whitespace-nowrap" style={{ borderBottom: '1px solid var(--line)' }}>{c['Color'] || '—'}</td>
                       <td className="px-2.5 py-1.5 text-center whitespace-nowrap" style={{ borderBottom: '1px solid var(--line)' }}>{c['Gate In (Rayong yard)'] || c['Gate In Date'] || '—'}</td>
-                      {pmCols.map((k) => (
-                        <td key={k} className="px-2.5 py-1.5 text-center whitespace-nowrap font-semibold"
-                          style={{ color: (c[k] || '').trim() ? '#15803d' : 'var(--faint)', borderBottom: '1px solid var(--line)' }}>
-                          {(c[k] || '').trim() || '—'}
-                        </td>
-                      ))}
-                      <td className="px-2.5 py-1.5 text-center" style={{ borderBottom: '1px solid var(--line)' }}>{c['% SOC'] || c['%SOC'] || '—'}</td>
-                      <td className="px-2.5 py-1.5 text-center" style={{ borderBottom: '1px solid var(--line)' }}>{c['Mileage'] || c['ODO'] || '—'}</td>
-                      <td className="px-2.5 py-1.5 text-center" style={{ borderBottom: '1px solid var(--line)' }}>{c['Voltage of 12V'] || '—'}</td>
-                      <td className="px-2.5 py-1.5 text-center" style={{ borderBottom: '1px solid var(--line)' }}>{c['Tire Pressure'] || '—'}</td>
-                      <td className="px-2.5 py-1.5 text-center whitespace-nowrap" style={{ borderBottom: '1px solid var(--line)' }}>{c['Location yard'] || '—'}</td>
+                      {rounds.flatMap((rd, gi) => [
+                        <td key={`d${gi}`} className="px-2 py-1.5 text-center whitespace-nowrap font-semibold"
+                          style={{ color: rd.date ? '#15803d' : 'var(--faint)', borderBottom: '1px solid var(--line)', borderLeft: '2px solid var(--line)', background: gi % 2 ? 'rgba(37,99,235,0.035)' : undefined }}>
+                          {rd.date || '—'}
+                        </td>,
+                        ...rd.vals.map((v, mi) => (
+                          <td key={`v${gi}-${mi}`} className="px-2 py-1.5 text-center whitespace-nowrap"
+                            style={{ color: v ? 'var(--text)' : 'var(--faint)', borderBottom: '1px solid var(--line)', background: gi % 2 ? 'rgba(37,99,235,0.035)' : undefined }}>
+                            {v || '—'}
+                          </td>
+                        )),
+                      ])}
+                      <td className="px-2.5 py-1.5 text-center whitespace-nowrap" style={{ borderBottom: '1px solid var(--line)', borderLeft: '2px solid var(--line)' }}>{c['Location yard'] || '—'}</td>
                       <td className="px-2.5 py-1.5 whitespace-nowrap" style={{ color: 'var(--muted)', borderBottom: '1px solid var(--line)' }}>{c['หมายเหตุ'] || c['Remark'] || ''}</td>
                     </tr>
                   )
                 })}
                 {shownStatus.length === 0 && (
-                  <tr><td colSpan={12 + pmCols.length} className="px-4 py-8 text-center" style={{ color: 'var(--faint)' }}>
+                  <tr><td colSpan={8 + pmCols.length * (1 + MEAS.length)} className="px-4 py-8 text-center" style={{ color: 'var(--faint)' }}>
                     ไม่พบรถที่เข้าเงื่อนไข PM {q ? `ที่ตรงกับ "${q}"` : ''} — รถที่มี Allocation Date ถูกตัดออกจากตารางนี้
                   </td></tr>
                 )}
