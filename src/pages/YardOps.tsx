@@ -30,7 +30,7 @@ import { rowInSite } from '../lib/siteScope'
 import { compressImage } from '../lib/photo'
 import StationSheet from '../components/StationSheet'
 import { MasterCombo } from '../components/MasterCombo'
-import { TirePressureField, TIRE_WHEELS, joinTirePressure } from '../components/MeasurementField'
+import { MeasurementField, TirePressureField, TIRE_WHEELS, joinTirePressure } from '../components/MeasurementField'
 import { FINAL_CHECK_TABS } from '../lib/finalCheckList'
 import { yardLocCode, yardLocFull, blockCode, byYardLocation, LAST_LOCATION_KEY } from '../lib/groupingImport'
 import { parseLane } from '../lib/laneImport'
@@ -2812,19 +2812,6 @@ type NgEntry = { item: string; pos: string; remark: string; photo?: string }
 /** One measurement input (SOC / Mileage / Voltage). Defined at module scope —
  *  NOT inside FinalCheckPanel — so it doesn't remount and drop focus on every
  *  keystroke (that let you type only one digit at a time). */
-function Meas({ label, value, onChange, unit: u, lastVal }: { label: string; value: string; onChange: (v: string) => void; unit?: string; lastVal: string }) {
-  return (
-    <div>
-      <div className="text-[11px] font-semibold mb-1" style={{ color: 'var(--muted)' }}>{label}</div>
-      <div className="flex items-center gap-2">
-        <input className="input flex-1 text-[13px]" inputMode="decimal" placeholder="กรอกค่า…" value={value} onChange={e => onChange(e.target.value)} />
-        {u && <span className="text-[11px] shrink-0" style={{ color: 'var(--faint)' }}>{u}</span>}
-        <span className="text-[11px] shrink-0 px-2 py-1 rounded-md" style={{ background: 'var(--chip)', color: 'var(--muted)', minWidth: 56, textAlign: 'center' }}>{lastVal}</span>
-      </div>
-    </div>
-  )
-}
-
 function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved, stationTitle, accent }: {
   unit: Unit
   row: TrackRow | null
@@ -2843,7 +2830,6 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved, stationTit
   const [tire, setTire] = useState<Record<string, string>>({}) // per-wheel FL/FR/RL/RR
   const [showNgForm, setShowNgForm] = useState(false)
 
-  const last = (k: string) => (row?.cells[k]?.trim() ? row.cells[k] : '—')
   // tag the defect with the actual queue when the car is in one, else the station menu
   const stationName = activeProc?.queue.name ?? stationTitle
   // NG found at THIS station — match the exact queue name OR any queue of this
@@ -2897,12 +2883,18 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved, stationTit
         <span className="font-bold text-[13.5px] text-white">{stationTitle}</span>
       </div>
 
-      {/* measurements */}
+      {/* measurements — MeasurementField (not the single-value Meas): the PM
+          crew asked for the trend, not just the last number — tap the value on
+          the right to unfold every earlier reading with its date, same as the
+          PDI / FINAL CHECK sheet */}
       <div className="p-4 space-y-3 border-b hairline">
-        <div className="text-[10.5px] font-bold uppercase tracking-wider" style={{ color: 'var(--muted)' }}>ค่าที่วัดได้ <span style={{ color: 'var(--faint)' }}>· ล่าสุดทางขวา</span></div>
-        <Meas label="% SOC" value={soc} onChange={setSoc} unit="%" lastVal={last('% SOC')} />
-        <Meas label="Mileage" value={mileage} onChange={setMileage} unit="กม." lastVal={last('Mileage')} />
-        <Meas label="Voltage of 12V" value={voltage} onChange={setVoltage} unit="V" lastVal={last('Voltage of 12V')} />
+        <div className="text-[10.5px] font-bold uppercase tracking-wider" style={{ color: 'var(--muted)' }}>ค่าที่วัดได้ <span style={{ color: 'var(--faint)' }}>· ล่าสุดทางขวา — แตะเพื่อดูค่าที่บันทึกไว้ทั้งหมด</span></div>
+        <MeasurementField label="% SOC" cellKey="% SOC" row={row}
+          value={soc} onChange={setSoc} />
+        <MeasurementField label="Mileage (กม.)" cellKey="Mileage" row={row}
+          value={mileage} onChange={setMileage} />
+        <MeasurementField label="Voltage of 12V" cellKey="Voltage of 12V" row={row}
+          value={voltage} onChange={setVoltage} />
         <TirePressureField label="Tire Pressure (310–340 Kpal)" row={row} values={tire}
           onChange={(k, v) => setTire(s => ({ ...s, [k]: v }))} />
       </div>
