@@ -12,7 +12,7 @@ import { printIr, printDn, printIrPaper } from '../lib/dnir'
 import { printVehicleLabels } from '../lib/vehicleLabel'
 import { useYard } from '../store/useYard'
 import { useTracking, useTrackingRows, useVisibleColumns } from '../store/useTracking'
-import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, LOCATION_KEY, MAX_FILTERS, DEFAULT_FILTER_COLS, agingPmDays, cleanStorage, isDateColumn, fmtSerialToDate, type ColGroup, type Column } from '../lib/trackingColumns'
+import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, LOCATION_KEY, MAX_FILTERS, DEFAULT_FILTER_COLS, agingPmDays, cleanStorage, storageDays, isDateColumn, fmtSerialToDate, type ColGroup, type Column } from '../lib/trackingColumns'
 import { yardLocFull } from '../lib/groupingImport'
 import { CAR_STATUS_META, deriveCarStatus, IN_YARD_STATUSES, PARKED_STATUSES, isWaitingRepair, finalColor, vinOfStatusColor, taxStatusColor } from '../lib/carStatus'
 import { rowsToCsv, type TrackRow, type RowEvent } from '../lib/excelTracking'
@@ -1589,7 +1589,9 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
     ['MODEL', head, '#ffffff'],
     ['COLOR', c['Color'] || '—', '#ffffff'],
     ['LOCATION', c['Location yard'] || '—', '#fbbf24'],
-    ['STORAGE', cleanStorage(c['storage Yard']) || '—', '#7dd3fc'],
+    // STORAGE = days in the yard counted from Gate In (the workbook's meaning),
+    // not the often-empty "storage Yard" cell that used to leave this "—"
+    ['STORAGE', storageDays(c) ? `${storageDays(c)} วัน` : '—', '#7dd3fc'],
     ['GROUPING', c['Grouping  Number'] || '—', '#7dd3fc'],
     ['COMPANY', c['company'] || '—', '#ffffff'],
     ['STATUS (PDI)', c['Status'] || '—', '#fbbf24'],
