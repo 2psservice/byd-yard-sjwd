@@ -103,6 +103,15 @@ export function agingPmDays(cells: Record<string, string>, now: number = Date.no
   return String(Math.max(0, Math.floor((now - last) / 86_400_000)))
 }
 
+/** STORAGE = whole days the car has been in the yard, counted from its Gate In
+ *  date — the same way the operations workbook's "Storage" column reads (30,
+ *  60, …). '' when the car has no gate-in date yet. */
+export function storageDays(cells: Record<string, string>, now: number = Date.now()): string {
+  const t = parseCellDate(cells['Gate In (Rayong yard)']) ?? parseCellDate(cells['Gate In Date'])
+  if (t == null) return ''
+  return String(Math.max(0, Math.floor((now - t) / 86_400_000)))
+}
+
 /** A "storage Yard" cell should be a location; when the master imports a stray
  *  Excel date-serial there (e.g. "46224" from a =TODAY() formula) it's junk, so
  *  hide it. A real storage code / name passes through untouched. */
