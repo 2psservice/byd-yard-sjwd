@@ -737,7 +737,14 @@ function reconcileGateOuts() {
   }
   const dirty: string[] = []
   const next = queues.map((q) => {
-    const isPreGateIn = (q.name ?? '').trim().startsWith('(')
+    // Pre Gate-in must be resolved the SAME way every other screen resolves it
+    // (queue type first, name only as the legacy fallback). Testing the name
+    // alone broke the moment an admin renamed an arrival lot to something
+    // readable ("CBU SEALION 7 100u"): the Gate In board still listed it as a
+    // Pre Gate-in queue and gate-in still ticked it, but this reconciler saw a
+    // station queue — so it un-ticked every car the gate had just scanned and
+    // the lot read 0/100 while 177 cars had really come in.
+    const isPreGateIn = isPreGateInQueue(q)
     // a PM/PDI/FINAL already recorded on the sheet (e.g. a Co-Inspection file
     // upload filled the date cell) counts as done for this queue too — but an
     // item the field/admin already ticked keeps ITS record (ระบบมาก่อนไฟล์).
