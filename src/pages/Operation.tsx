@@ -47,6 +47,7 @@ const TYPE_WRITEBACK: Record<QueueType, string> = {
 
 export function Operation() {
   const all = useActiveQueues() // gated-out cars filtered out of every queue view
+  const allRows = useTrackingRows() // Pre Gate-in progress reads the cars' status
   const { createTypedQueue } = useOps()
   const toast = useYard((s) => s.toast)
   const currentUser = useYard((s) => s.currentUser)
@@ -89,7 +90,8 @@ export function Operation() {
     // a recorded check IS progress, even before the drive back to a slot
     for (const q of queues) { const p = queueProgress(q); vehicles += p.total; done += p.done }
     return { queues: queues.length, vehicles, done, remaining: vehicles - done }
-  }, [queues])
+    // allRows: Pre Gate-in lots count arrivals off the sheet inside queueProgress
+  }, [queues, allRows])
 
   const make = () => {
     const l = label.trim()
@@ -212,6 +214,9 @@ function Stat({ label, value, accent, icon }: { label: string; value: number; ac
 }
 
 function QueueRow({ q, onOpen }: { q: WorkQueue; onOpen: () => void }) {
+  // a Pre Gate-in lot's progress is read off the cars' Car Status inside
+  // queueProgress — subscribe so the row re-renders when the sheet moves
+  useTrackingRows()
   const removeQueue = useOps((s) => s.removeQueue)
   const renameQueue = useOps((s) => s.renameQueue)
   const closeQueue = useOps((s) => s.closeQueue)
