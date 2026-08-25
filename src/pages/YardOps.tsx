@@ -1660,9 +1660,11 @@ function WalkView() {
       inspector: currentUser,
       gateInAt: Date.now(),
     })
-    // mark done in every queue that contains this VIN (whether or not a chip is selected)
+    // mark done only in Pre Gate-in (arrival-lot) queues that contain this VIN —
+    // gate-in must never auto-complete other stations' queues (PDI, PM, Final,
+    // Repair, ...), those only complete via their own station's check-in
     queues.forEach(q => {
-      if (q.items.some(i => i.vin === trackRow.vin && !i.done)) {
+      if (isPreGateInQueue(q) && q.items.some(i => i.vin === trackRow.vin && !i.done)) {
         toggleDone(q.id, trackRow.vin, currentUser)
       }
     })
