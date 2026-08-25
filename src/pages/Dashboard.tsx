@@ -9,7 +9,7 @@ import { deriveCarStatus, CAR_STATUS_META, CAR_STATUS_ORDER, PARKED_STATUSES, is
 import { rowInSite } from '../lib/siteScope'
 import { pct, pos, timeAgo } from '../lib/format'
 import { defectLabel } from '../lib/damageLabel'
-import { useOps, isPreGateInQueue, queueProgress } from '../store/useOps'
+import { useOps, isPreGateInQueue, isQueueComplete, queueProgress } from '../store/useOps'
 import { PageHead, ProgressBar, Stat } from '../components/ui'
 import { YardSummary } from '../components/YardSummary'
 import { STATUS_META } from '../lib/format'
@@ -264,30 +264,29 @@ export function Dashboard() {
   // the same pair the gate station and the Gate In/Out board already show —
   // turns that into progress the office can read at a glance.
   const preGateInLots = useMemo(() => {
-    // Which lots to list: every open arrival lot of this yard that still holds
-    // cars. It used to drop lots whose items were all ticked done — but that
-    // tick is a flag several devices write back and forth, so a finished lot
-    // blinked in and out of the card (and its line flapped 15/100 ↔ 100/100).
-    // An admin closing the lot is what archives it; until then a lot that is
-    // fully in reads a steady "0/77", which is also what the yard asked for.
+    // Which lots to list: this yard's open arrival lots that still have cars to
+    // bring in. A lot whose cars are ALL in is finished and drops off — old
+    // batches ("8-14 · 309", "7-22 · 117") otherwise pile up on the card reading
+    // a full 309/309 forever. Completeness is measured off the cars' own Car
+    // Status (see isQueueComplete), not the done flag several devices write
+    // back and forth, so a lot can't blink on and off the card either.
     const mine = opsQueues.filter(q =>
       isPreGateInQueue(q) && (!q.site || q.site === currentSite) && !opsClosed[q.id] && q.items.length > 0)
-    const lots = mine.map(q => {
+    const lots = mine.filter(q => !isQueueComplete(q)).map(q => {
+      // arrived / total — "95/100" reads "95 of the 100 are in", the same
+      // direction the gate station and the Gate In/Out board count. The
+      // headline above stays the opposite number (how many are still outside).
       const { done, total } = queueProgress(q)
-      // this card counts what is still OUTSIDE the gate, so the lot lines read
-      // the same way as the headline above them — waiting, not arrived. (The
-      // gate's own screens count the opposite direction, arrived/total: there
-      // the question is how much of the lot is done, here it is what is left.)
-      return { id: q.id, name: q.name, pending: total - done, total }
+      return { id: q.id, name: q.name, arrived: done, total }
     })
     // cars waiting at the gate that no open lot covers — the same safety net the
-    // station and the board keep, so the lines can't add up to less than the
-    // headline number (see the "(รอ Gate-in · ยังไม่มีคิวงาน)" card there)
+    // station and the board keep, so the card can't show fewer waiting cars
+    // than the Unit List does (see the "(รอ Gate-in · ยังไม่มีคิวงาน)" card there)
     const covered = new Set<string>()
     for (const q of mine) for (const i of q.items) if (!i.done) covered.add(i.vin)
     const loose = trackingRows.filter(r =>
       !covered.has(r.vin) && deriveCarStatus(r.cells) === 'Pre Gate-in').length
-    if (loose) lots.push({ id: '__uncovered', name: '(รอ Gate-in · ยังไม่มีคิวงาน)', pending: loose, total: loose })
+    if (loose) lots.push({ id: '__uncovered', name: '(รอ Gate-in · ยังไม่มีคิวงาน)', arrived: 0, total: loose })
     return lots.sort((a, b) => b.total - a.total)
   }, [opsQueues, opsClosed, currentSite, trackingRows])
 
@@ -377,8 +376,8 @@ export function Dashboard() {
                 {preGateInLots.slice(0, PRE_GATEIN_LOT_LINES).map(l => (
                   <div key={l.id} className="flex items-baseline gap-1.5" title={l.name}>
                     <span className="tabular font-bold shrink-0" style={{ color: 'var(--st-pending)' }}
-                      title={`${l.name} — ยังไม่เข้าลาน ${l.pending.toLocaleString()} จากทั้งหมด ${l.total.toLocaleString()} คัน`}>
-                      {l.pending.toLocaleString()}/{l.total.toLocaleString()}
+                      title={`${l.name} — เข้าลานแล้ว ${l.arrived.toLocaleString()} จากทั้งหมด ${l.total.toLocaleString()} คัน (ยังไม่เข้า ${(l.total - l.arrived).toLocaleString()})`}>
+                      {l.arrived.toLocaleString()}/{l.total.toLocaleString()}
                     </span>
                     <span className="truncate text-[10.5px]" style={{ color: 'var(--faint)' }}>{l.name}</span>
                   </div>
