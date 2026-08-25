@@ -5,7 +5,7 @@ import { useTrackingRows } from '../store/useTracking'
 import { zoneLabel } from '../components/CarDiagramMultiView'
 import { partLabel, defectLabel } from '../lib/damageLabel'
 import { PageHead } from '../components/ui'
-import { YARD_SHEET, FACTORY_SHEET, exportDefectExcel, printDefectReport, type DefectExportRow } from '../lib/defectReport'
+import { YARD_SHEET, FACTORY_SHEET, exportDefectExcel, exportDefectPhotoExcel, printDefectReport, type DefectExportRow } from '../lib/defectReport'
 import { thaiKbToLatin } from '../lib/findCar'
 import type { Damage, Unit } from '../types'
 
@@ -138,6 +138,19 @@ function DamageReportModal({ units, onClose }: { units: Unit[]; onClose: () => v
     if (!total) { toast('err', 'ยังไม่พบ Defect ของ VIN ที่ใส่'); return }
     printDefectReport(sheets, trackByVin, docTitle)
   }
+  // photo report — the "Summary Defect list" template with embedded photos
+  // (Export Label = per-car VIN shot · Zoom / General View = defect photos)
+  const doExcelPhotos = async () => {
+    if (!total) { toast('err', 'ยังไม่พบ Defect ของ VIN ที่ใส่'); return }
+    setBusy(true)
+    try {
+      await exportDefectPhotoExcel(
+        [{ name: 'Defect-Yard', rows: yard }, { name: 'Defect-Factory', rows: factory }],
+        trackByVin, `SJWD-Defect-Photo-Report-${matched}คัน-${stamp}.xlsx`)
+      toast('ok', `ออกรายงาน Excel พร้อมรูป — ${total} รายการ`)
+    } catch (e) { console.error('[damage report] excel+photos', e); toast('err', 'ออกรายงานไม่สำเร็จ') }
+    setBusy(false)
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(15,23,42,0.5)', backdropFilter: 'blur(3px)' }} onClick={onClose}>
@@ -147,7 +160,7 @@ function DamageReportModal({ units, onClose }: { units: Unit[]; onClose: () => v
           <div className="text-[16px] font-bold">ดึง Report (Defect)</div>
           <button className="ml-auto p-1.5 rounded-lg" style={{ color: 'var(--muted)' }} onClick={onClose}><X size={18} /></button>
         </div>
-        <div className="text-[12px] mb-3" style={{ color: 'var(--muted)' }}>วางเลข VIN (เต็ม หรือ 5 ตัวท้าย) ได้หลายคัน — เว้นวรรค/ขึ้นบรรทัดใหม่ · รายงานจะมี 2 ชีท: <b>Defect-Yard</b> และ <b>Defect-Factory</b></div>
+        <div className="text-[12px] mb-3" style={{ color: 'var(--muted)' }}>วางเลข VIN (เต็ม หรือ 5 ตัวท้าย) ได้หลายคัน — เว้นวรรค/ขึ้นบรรทัดใหม่ · รายงานจะมี 2 ชีท: <b>Defect-Yard</b> และ <b>Defect-Factory</b> · <b>Excel + รูป</b> = ฟอร์ม Summary Defect list พร้อมรูป (Export Label / Zoom / General View)</div>
         <textarea className="input w-full" style={{ minHeight: 120, fontFamily: 'JetBrains Mono, monospace', fontSize: 12 }}
           placeholder={'เช่น\nLGXCE4CB0TG025322\n25314\n76C47SG037508'} value={text} onChange={(e) => setText(e.target.value)} />
 
@@ -161,7 +174,8 @@ function DamageReportModal({ units, onClose }: { units: Unit[]; onClose: () => v
         <div className="flex gap-2 mt-4">
           <button className="btn flex-1" onClick={onClose}>ปิด</button>
           <button className="btn btn-ghost flex-1" disabled={busy || !total} onClick={doPdf}><Printer size={15} /> PDF</button>
-          <button className="btn btn-primary flex-1" disabled={busy || !total} onClick={doExcel}><FileSpreadsheet size={15} /> Excel</button>
+          <button className="btn btn-ghost flex-1" disabled={busy || !total} onClick={doExcel}><FileSpreadsheet size={15} /> Excel</button>
+          <button className="btn btn-primary flex-1" disabled={busy || !total} onClick={doExcelPhotos}><FileSpreadsheet size={15} /> Excel + รูป</button>
         </div>
       </div>
     </div>

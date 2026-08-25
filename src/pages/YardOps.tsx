@@ -34,7 +34,7 @@ import { MeasurementField, TirePressureField, TIRE_WHEELS, joinTirePressure } fr
 import { FINAL_CHECK_TABS } from '../lib/finalCheckList'
 import { yardLocCode, yardLocFull, blockCode, byYardLocation, LAST_LOCATION_KEY } from '../lib/groupingImport'
 import { parseLane } from '../lib/laneImport'
-import { LOCATION_KEY } from '../lib/trackingColumns'
+import { LOCATION_KEY, VIN_PHOTO_CELL } from '../lib/trackingColumns'
 import { blockTag, blockKeyOfTag, resolveBlockByName } from '../lib/format'
 import { fetchUnitsByVins, fetchTrackingRowsByVin, isConfigured } from '../lib/db'
 import { refreshUnitFocus } from '../lib/unitFocus'
@@ -1292,15 +1292,68 @@ function PhotoStrip({ photos, onAdd, onRemove, busy }: {
   )
 }
 
-function DamageForm({ onSaveAll, onCancel }: {
+/** Single-photo capture row for the VIN label (Export Label) — camera + album
+ *  tiles like PhotoStrip, but exactly one photo (บังคับครั้งแรกของคันนี้ครั้งเดียว). */
+function VinPhotoCapture({ photo, busy, onAdd, onRemove }: {
+  photo: string; busy: boolean; onAdd: (file: File) => void; onRemove: () => void
+}) {
+  const camRef = useRef<HTMLInputElement>(null)
+  const albumRef = useRef<HTMLInputElement>(null)
+  const tile = 'shrink-0 rounded-lg flex items-center justify-center border-2 border-dashed transition disabled:opacity-50'
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap">
+      {photo ? (
+        <div className="relative shrink-0" style={{ width: 44, height: 44 }}>
+          <img src={photo} alt="" className="w-full h-full rounded-lg object-cover" style={{ border: '1px solid var(--line)' }} />
+          <button onClick={onRemove}
+            className="absolute -top-1.5 -right-1.5 rounded-full flex items-center justify-center"
+            style={{ width: 18, height: 18, background: '#0f172a', color: '#fff' }}>
+            <X size={10} />
+          </button>
+        </div>
+      ) : (
+        <>
+          <button onClick={() => camRef.current?.click()} disabled={busy} className={tile} title="ถ่ายรูปเลขวิน"
+            style={{ width: 44, height: 44, borderColor: '#fca5a5', color: 'var(--st-damage)' }}>
+            <Camera size={16} />
+          </button>
+          <button onClick={() => albumRef.current?.click()} disabled={busy} className={tile} title="เลือกรูปเลขวินจากอัลบั้ม"
+            style={{ width: 44, height: 44, borderColor: '#fca5a5', color: 'var(--st-damage)' }}>
+            <Images size={16} />
+          </button>
+          <span className="text-[11.5px]" style={{ color: 'var(--st-damage)' }}>
+            บังคับถ่ายรูปเลขวิน 1 รูป (เฉพาะครั้งแรกของคันนี้)
+          </span>
+        </>
+      )}
+      <input ref={camRef} type="file" accept="image/*" capture="environment" className="hidden" data-vinphoto="1"
+        onChange={e => { if (e.target.files?.[0]) onAdd(e.target.files[0]); e.target.value = '' }} />
+      <input ref={albumRef} type="file" accept="image/*" className="hidden" data-vinphoto="album"
+        onChange={e => { if (e.target.files?.[0]) onAdd(e.target.files[0]); e.target.value = '' }} />
+    </div>
+  )
+}
+
+function DamageForm({ onSaveAll, onCancel, vin }: {
   onSaveAll: (damages: DamageInput[]) => void
   onCancel: () => void
+  /** VIN of the car being inspected — enables the once-per-car VIN-label photo
+   *  (Export Label): required the FIRST time a defect is saved for this car, at
+   *  whichever station records it first; every station after that just sees it. */
+  vin?: string
 }) {
   const { toast } = useYard()
   const [rows, setRows] = useState<DmgRow[]>([mkRow()])
   const [busyRid, setBusyRid] = useState<string | null>(null)
   const [armed, setArmed] = useState<string | null>(null) // rid whose delete is armed (2-tap guard)
   const [heavy, setHeavy] = useState(true) // NG / HEAVY NG choice (HEAVY NG default, as before)
+  // ── VIN-label photo (Export Label), one per car ──
+  const trackHasRow = useTracking(s => !!(vin && s.rows[vin]))
+  const savedVinPhoto = useTracking(s => (vin ? s.rows[vin]?.cells[VIN_PHOTO_CELL] : undefined) || '')
+  const [vinPhoto, setVinPhoto] = useState('') // captured in this form, saved with the defects
+  const [vinBusy, setVinBusy] = useState(false)
+  const needVinPhoto = trackHasRow && !savedVinPhoto // first defect of this car → must capture
+  const vinPhotoOk = !needVinPhoto || !!vinPhoto
   const upd = (rid: string, k: keyof DmgRow, v: string) =>
     setRows(r => r.map(x => x.rid === rid ? { ...x, [k]: v } : x))
   const del = (rid: string) => { setRows(r => r.length > 1 ? r.filter(x => x.rid !== rid) : r); setArmed(null) }
@@ -1321,9 +1374,13 @@ function DamageForm({ onSaveAll, onCancel }: {
   const lastSaveRef = useRef(0) // double-tap guard — each save mints new damage ids
   const save = () => {
     if (Date.now() - lastSaveRef.current < 1500) return
-    if (busyRid) { toast('err', 'รอรูปอัปโหลดเสร็จก่อนบันทึก'); return }
+    if (busyRid || vinBusy) { toast('err', 'รอรูปอัปโหลดเสร็จก่อนบันทึก'); return }
     if (!allPhotographed) { toast('err', 'กรุณาถ่ายรูป Defect อย่างน้อย 1 รูปต่อรายการ'); return }
+    if (!vinPhotoOk) { toast('err', 'กรุณาถ่ายรูปเลขวิน (Export Label) 1 รูป — บังคับเฉพาะครั้งแรกของคันนี้'); return }
     lastSaveRef.current = Date.now()
+    // stash the once-per-car VIN-label shot on the tracking row (no history line —
+    // the value can be a large data-URL) so every station + the photo report see it
+    if (vin && vinPhoto && !savedVinPhoto) useTracking.getState().setCellNoHistory(vin, VIN_PHOTO_CELL, vinPhoto)
     onSaveAll(rows.map(row => {
     const part = resolvePart(row.area)     // { en, th } from the master Part list
     const def = resolveDefect(row.detail)  // { en, th } from the master Defect list
@@ -1350,6 +1407,31 @@ function DamageForm({ onSaveAll, onCancel }: {
         <span style={{ color: 'var(--st-damage)' }}>+ADD DEFECT</span>
       </div>
       <div className="p-4 space-y-2">
+        {/* VIN-label photo (Export Label) — one per car, whichever station gets there
+            first; after that every station just sees the saved shot */}
+        {trackHasRow && (
+          <div className="rounded-xl p-2.5 border" style={{ borderColor: savedVinPhoto || vinPhoto ? 'rgba(22,163,74,0.35)' : '#fca5a5', background: savedVinPhoto || vinPhoto ? 'rgba(22,163,74,0.05)' : '#fff8f8' }}>
+            <div className="text-[10.5px] font-bold uppercase mb-1.5" style={{ color: savedVinPhoto || vinPhoto ? '#16a34a' : 'var(--st-damage)' }}>
+              รูปเลขวิน (Export Label)
+            </div>
+            {savedVinPhoto ? (
+              <div className="flex items-center gap-2">
+                <img src={savedVinPhoto} alt="" className="rounded-lg object-cover" style={{ width: 44, height: 44, border: '1px solid var(--line)' }} />
+                <span className="text-[11.5px] flex items-center gap-1" style={{ color: '#16a34a' }}>
+                  <CheckCircle2 size={13} /> มีรูปเลขวินแล้ว — ใช้ร่วมกันทุกสถานี
+                </span>
+              </div>
+            ) : (
+              <VinPhotoCapture photo={vinPhoto} busy={vinBusy}
+                onAdd={async (file) => {
+                  setVinBusy(true)
+                  try { setVinPhoto(await compressImage(file)) } catch { toast('err', 'อ่านรูปไม่สำเร็จ') }
+                  setVinBusy(false)
+                }}
+                onRemove={() => setVinPhoto('')} />
+            )}
+          </div>
+        )}
         {/* column headers */}
         <div className="grid gap-2 px-0.5 text-[10.5px] font-bold uppercase" style={{ gridTemplateColumns: '1fr 1fr 32px', color: 'var(--muted)' }}>
           <span>ตำแหน่ง</span><span>รายละเอียด Defect</span><span />
@@ -1428,13 +1510,18 @@ function DamageForm({ onSaveAll, onCancel }: {
             <Camera size={13} /> ต้องถ่ายรูป Defect อย่างน้อย 1 รูปต่อรายการก่อนบันทึก
           </div>
         )}
+        {allPhotographed && !vinPhotoOk && (
+          <div className="text-[11.5px] flex items-center gap-1.5 pt-0.5" style={{ color: 'var(--st-damage)' }}>
+            <Camera size={13} /> ต้องถ่ายรูปเลขวิน (Export Label) 1 รูปก่อนบันทึก — เฉพาะครั้งแรกของคันนี้
+          </div>
+        )}
 
         {/* actions */}
         <div className="grid grid-cols-2 gap-2 pt-1">
           <button className="btn py-3 text-[13.5px]" onClick={onCancel}>ยกเลิก</button>
           <button className="btn py-3 text-[13.5px] font-bold"
-            onClick={save} disabled={!allPhotographed}
-            style={{ background: allPhotographed ? 'var(--st-damage)' : 'var(--chip)', color: allPhotographed ? '#fff' : 'var(--faint)', border: 'none' }}>
+            onClick={save} disabled={!allPhotographed || !vinPhotoOk}
+            style={{ background: allPhotographed && vinPhotoOk ? 'var(--st-damage)' : 'var(--chip)', color: allPhotographed && vinPhotoOk ? '#fff' : 'var(--faint)', border: 'none' }}>
             <Plus size={14} /> บันทึก {heavy ? 'HEAVY NG' : 'NG'}{rows.length > 1 ? ` (${rows.length})` : ''}
           </button>
         </div>
@@ -1905,6 +1992,7 @@ function WalkView() {
                     // NG → ต้องใส่ตำแหน่ง + แผล ก่อนถึงจะ Gate In ได้
                     <DamageForm
                       key={trackRow.vin}
+                      vin={trackRow.vin}
                       onSaveAll={damages => {
                         const valid = damages.filter(d => (d.area ?? '').trim())
                         if (!valid.length) { toast('err', 'กรุณาใส่ตำแหน่ง Defect อย่างน้อย 1 จุด'); return }
@@ -2016,6 +2104,7 @@ function WalkView() {
             {showDmg && (
               <DamageForm
                 key={unit.vin}
+                vin={unit.vin}
                 onSaveAll={damages => {
                   damages.forEach(d => addDamage(unit.vin, { ...d, source: 'walkaround', station: 'Gate-in' }))
                   toast('ok', damages.length > 1 ? `บันทึก Defect ${damages.length} รายการ` : 'บันทึก Defect แล้ว')
@@ -2911,6 +3000,7 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved, stationTit
         </div>
         {showNgForm && (
           <DamageForm
+            vin={unit.vin}
             onSaveAll={dmgs => {
               dmgs.forEach(dg => addDamage(unit.vin, { ...dg, source: 'pdi', station: stationName }))
               setShowNgForm(false)
@@ -3386,6 +3476,7 @@ function MechanicView() {
           ) : (
             <DamageForm
               key={unit.vin}
+              vin={unit.vin}
               onSaveAll={damages => {
                 damages.forEach(d => addDamage(unit.vin, { ...d, source: 'mechanic', station: 'ช่าง (Mechanic)' }))
                 setInspected(unit.vin, false)
@@ -4610,6 +4701,7 @@ function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', s
               <div className="mb-2">
                 <DamageForm
                   key={vin}
+                  vin={vin}
                   onSaveAll={onSaveAll}
                   onCancel={() => setShowAdd(false)}
                 />
@@ -4656,6 +4748,7 @@ function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', s
             <div className="border-t hairline p-3" style={{ background: accent + '08' }}>
               <DamageForm
                 key={vin ?? 'none'}
+                vin={vin ?? undefined}
                 onSaveAll={onSaveAll}
                 onCancel={() => setShowAdd(false)}
               />

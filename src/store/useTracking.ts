@@ -120,6 +120,10 @@ interface TrackingState {
   commitImport: (res: ParseResult) => void
   commitCoInspection: (res: ParseResult) => { updated: number; added: number; skipped: number; gateOut: number; moved: number }
   updateCell: (vin: string, key: string, value: string) => void
+  /** Set a cell WITHOUT writing a history line — for system/media cells (e.g. the
+   *  per-car "Vin Photo" label shot) whose value may be a huge data-URL that must
+   *  never be copied into the row's Event history. */
+  setCellNoHistory: (vin: string, key: string, value: string) => void
   bulkUpdate: (vins: string[], key: string, value: string) => void
   /** Append a free-form audit entry to a row's history (no cell change) — used to
    *  log damage add/remove so the admin Event tab keeps a permanent record. */
@@ -724,6 +728,15 @@ export const useTracking = create<TrackingState>()(
         if (!r) return
         const by = useYard.getState().currentUser
         const next: TrackRow = { ...withHistoryEntry(r, key, value, get().columns, by), updatedAt: Date.now() }
+        set({ rows: { ...get().rows, [vin]: next } })
+        idbPut(next).catch(() => {})
+        pushRows([next])
+      },
+
+      setCellNoHistory: (vin, key, value) => {
+        const r = get().rows[vin]
+        if (!r || r.cells[key] === value) return
+        const next: TrackRow = { ...r, cells: { ...r.cells, [key]: value }, updatedAt: Date.now() }
         set({ rows: { ...get().rows, [vin]: next } })
         idbPut(next).catch(() => {})
         pushRows([next])
