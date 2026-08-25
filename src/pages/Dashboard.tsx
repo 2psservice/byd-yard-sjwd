@@ -9,7 +9,7 @@ import { deriveCarStatus, CAR_STATUS_META, CAR_STATUS_ORDER, PARKED_STATUSES, is
 import { rowInSite } from '../lib/siteScope'
 import { pct, pos, timeAgo } from '../lib/format'
 import { defectLabel } from '../lib/damageLabel'
-import { useOps, isPreGateInQueue, isQueueComplete, queueProgress } from '../store/useOps'
+import { useOps, isPreGateInQueue, queueProgress } from '../store/useOps'
 import { PageHead, ProgressBar, Stat } from '../components/ui'
 import { YardSummary } from '../components/YardSummary'
 import { STATUS_META } from '../lib/format'
@@ -174,6 +174,7 @@ export function Dashboard() {
   const blocks = useBlocks()
   const allTrackingRows = useTrackingRows()
   const opsQueues = useOps((st) => st.queues)
+  const opsClosed = useOps((st) => st.closed) // admin-archived lots leave the card
   const loadFromIdb = useTracking((st) => st.loadFromIdb)
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
   // per-yard separation: the whole dashboard reflects only the active site
@@ -263,8 +264,15 @@ export function Dashboard() {
   // the same pair the gate station and the Gate In/Out board already show —
   // turns that into progress the office can read at a glance.
   const preGateInLots = useMemo(() => {
-    const mine = opsQueues.filter(q => isPreGateInQueue(q) && (!q.site || q.site === currentSite))
-    const lots = mine.filter(q => !isQueueComplete(q)).map(q => {
+    // Which lots to list: every open arrival lot of this yard that still holds
+    // cars. It used to drop lots whose items were all ticked done — but that
+    // tick is a flag several devices write back and forth, so a finished lot
+    // blinked in and out of the card (and its line flapped 15/100 ↔ 100/100).
+    // An admin closing the lot is what archives it; until then a lot that is
+    // fully in reads a steady "0/77", which is also what the yard asked for.
+    const mine = opsQueues.filter(q =>
+      isPreGateInQueue(q) && (!q.site || q.site === currentSite) && !opsClosed[q.id] && q.items.length > 0)
+    const lots = mine.map(q => {
       const { done, total } = queueProgress(q)
       // this card counts what is still OUTSIDE the gate, so the lot lines read
       // the same way as the headline above them — waiting, not arrived. (The
@@ -281,7 +289,7 @@ export function Dashboard() {
       !covered.has(r.vin) && deriveCarStatus(r.cells) === 'Pre Gate-in').length
     if (loose) lots.push({ id: '__uncovered', name: '(รอ Gate-in · ยังไม่มีคิวงาน)', pending: loose, total: loose })
     return lots.sort((a, b) => b.total - a.total)
-  }, [opsQueues, currentSite, trackingRows])
+  }, [opsQueues, opsClosed, currentSite, trackingRows])
 
   const events = useMemo(() => {
     type Ev = { ts: number; vin: string; kind: string; text: string; color: string }

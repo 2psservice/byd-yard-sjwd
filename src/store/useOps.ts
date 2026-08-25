@@ -948,8 +948,33 @@ export function seqStageOf(i: QueueItem): 'queued' | 'wash' | 'lane' | 'gateout'
   return 'queued'
 }
 
+/** Has this car actually come through the gate, per the tracking sheet?
+ *  Blank status counts as still waiting; a car that has since gated out still
+ *  arrived once, so it counts too. Same test the reconciler sorts rows with. */
+export function hasArrived(cells: Record<string, string>): boolean {
+  if (hasLeftGate(cells)) return true
+  const cs = (cells['Car Status'] || '').trim()
+  return !!cs && cs.toLowerCase() !== 'pre gate-in'
+}
+
 export function queueProgress(q: WorkQueue) {
   const total = q.items.length
+  // ── Pre Gate-in lots count the CARS, not the tick flag ──
+  // The flag is written by whichever device reconciles first and can be written
+  // back by another whose copy of the sheet is a minute behind — the board
+  // flapped between "15/100" and "100/100" on the same lot. The car's own Car
+  // Status cannot flap, and it is the very source the Dashboard headline
+  // ("ยังไม่เข้าลาน") already counts, so the headline and the per-lot lines
+  // finally agree instead of reading 90 above and 177 below.
+  // A VIN with no sheet row falls back to the flag — there is nothing to read.
+  if (isPreGateInQueue(q)) {
+    const rows = useTracking.getState().rows
+    const done = q.items.reduce((n, i) => {
+      const cells = rows[i.vin]?.cells
+      return n + (cells ? (hasArrived(cells) ? 1 : 0) : (i.done ? 1 : 0))
+    }, 0)
+    return { total, done, remaining: total - done, pct: total ? Math.round((done / total) * 100) : 0 }
+  }
   // count the way the STATION counts (stationProgress): a car is progress the
   // moment its OK/NG is recorded ('checked'), not only after a driver returns
   // it to a slot — the admin board read 0/67 while the field read 3/67.
@@ -982,7 +1007,12 @@ export function stationProgress(q: WorkQueue) {
 /** A queue is "complete" once every car in it is done (gated-in / gated-out).
  *  Complete queues drop off the live views and file under their creation day. */
 export function isQueueComplete(q: WorkQueue): boolean {
-  return q.items.length > 0 && q.items.every((i) => i.done)
+  if (!q.items.length) return false
+  // A Pre Gate-in lot is finished when its CARS are all in, not when the tick
+  // flag says so — the flag is written back and forth between devices, which
+  // made a finished lot flicker on and off the boards (see queueProgress).
+  if (isPreGateInQueue(q)) { const { total, done } = queueProgress(q); return done >= total }
+  return q.items.every((i) => i.done)
 }
 
 /** The STATION's work on a queue is finished: every car is done or at least
