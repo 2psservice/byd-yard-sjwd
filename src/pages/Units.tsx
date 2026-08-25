@@ -5,8 +5,9 @@ import {
   ArrowUpDown, ChevronUp, ChevronDown, ChevronRight, Plus, Database,
   FileText, List as ListIcon, ClipboardList, Eye, Copy, MapPin,
   Car, Clock, ShieldCheck, Route, Printer, CheckSquare, Check, History, Pencil,
-  SlidersHorizontal, Lock, Square,
+  SlidersHorizontal, Lock, Square, ImagePlus,
 } from 'lucide-react'
+import { compressImage } from '../lib/photo'
 import { CarTopView } from '../components/CarTopView'
 import { printIr, printDn, printIrPaper } from '../lib/dnir'
 import { printVehicleLabels } from '../lib/vehicleLabel'
@@ -30,7 +31,44 @@ import { buildWorkRows, buildEventLog, readingsHist as libReadingsHist, histOf, 
 const DMG_SRC: Record<string, string> = { walkaround: 'Walk-around', pdi: 'PDI', mechanic: 'ช่าง', update: 'Update', yardDefect: 'Defect-Yard', factoryDefect: 'Defect-Factory', whaleDefect: 'Defect-Whale', manual: 'เพิ่มเอง' }
 
 // blank add-damage form for the Damages tab
-const BLANK_DMG_FORM = { position: '', defect: '', categoryNG: '', categoryRepair: '', incharge: '', note: '', date: '', statusRepair: 'Waiting Repair', repairDate: '' }
+const BLANK_DMG_FORM = { position: '', defect: '', categoryNG: '', categoryRepair: '', incharge: '', note: '', date: '', statusRepair: 'Waiting Repair', repairDate: '', photos: [] as string[] }
+
+/** Photo strip for the admin add/edit Defect row — thumbnails + an "add photo"
+ *  tile that accepts several files at once (desktop admin, so a plain file
+ *  picker, not a camera capture). Each file is compressed the same way every
+ *  other photo-capture path in the app does before it's added. */
+function DmgPhotoPicker({ photos, onChange }: { photos: string[]; onChange: (next: string[]) => void }) {
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [busy, setBusy] = useState(false)
+  const addFiles = async (files: FileList) => {
+    setBusy(true)
+    try {
+      const added = await Promise.all(Array.from(files).map((f) => compressImage(f)))
+      onChange([...photos, ...added])
+    } finally { setBusy(false) }
+  }
+  return (
+    <div className="flex items-center gap-1 flex-wrap">
+      {photos.map((p, i) => (
+        <div key={i} className="relative shrink-0" style={{ width: 22, height: 22 }}>
+          <img src={p} alt="" className="w-full h-full rounded object-cover" style={{ border: '1px solid var(--line)' }} />
+          <button onClick={() => onChange(photos.filter((_, pi) => pi !== i))}
+            className="absolute -top-1 -right-1 rounded-full flex items-center justify-center"
+            style={{ width: 12, height: 12, background: '#0f172a', color: '#fff' }}>
+            <X size={8} />
+          </button>
+        </div>
+      ))}
+      <button onClick={() => fileRef.current?.click()} disabled={busy} title="เพิ่มรูป (เลือกได้หลายไฟล์)"
+        className="shrink-0 rounded flex items-center justify-center border border-dashed disabled:opacity-50"
+        style={{ width: 22, height: 22, borderColor: 'var(--line-strong)', color: 'var(--muted)' }}>
+        <ImagePlus size={12} />
+      </button>
+      <input ref={fileRef} type="file" accept="image/*" multiple className="hidden"
+        onChange={(e) => { if (e.target.files?.length) addFiles(e.target.files); e.target.value = '' }} />
+    </div>
+  )
+}
 
 // combobox: free-type + pick from a <datalist> of values seen in the imported data
 function Combo({ value, onChange, options, pairs, placeholder, id, type = 'text' }: { value: string; onChange: (v: string) => void; options?: string[]; pairs?: { value: string; label?: string }[]; placeholder?: string; id?: string; type?: string }) {
@@ -1942,6 +1980,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                   incharge: d.incharge ?? '', note: d.note ?? '',
                   date: toDateInput(d.at), statusRepair: d.statusRepair ?? 'Waiting Repair',
                   repairDate: toDateInput(d.repairDate),
+                  photos: d.photos?.length ? d.photos : (d.photo ? [d.photo] : []),
                 })
               }
               const cancelEdit = () => { setEditingId(null); setEditForm(BLANK_DMG_FORM) }
@@ -1965,6 +2004,8 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                   // only override the repair date when the admin actually typed one —
                   // updateRepairStatus above already stamps it on resolve
                   ...(editForm.repairDate ? { repairDate: fromDateInput(editForm.repairDate) } : {}),
+                  photos: editForm.photos.length ? editForm.photos : undefined,
+                  photo: editForm.photos[0],
                 })
                 cancelEdit()
               }
@@ -2003,7 +2044,10 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                         <tr style={{ background: 'rgba(37,99,235,0.06)', borderTop: '2px solid var(--brand)' }}>
                           <td className="px-2 py-2.5 font-bold whitespace-nowrap" style={{ color: 'var(--brand)', borderLeft: '3px solid var(--brand)' }}>ใหม่</td>
                           <td className="px-1 py-1.5"><Combo id="dl-pos" value={form.position} onChange={(v) => setForm({ ...form, position: v })} pairs={dmgOpts.positionPairs} placeholder="Position" /></td>
-                          <td className="px-1 py-1.5"><Combo id="dl-defect" value={form.defect} onChange={(v) => setForm({ ...form, defect: v })} pairs={dmgOpts.defectPairs} placeholder="Defect/NG" /></td>
+                          <td className="px-1 py-1.5 space-y-1">
+                            <Combo id="dl-defect" value={form.defect} onChange={(v) => setForm({ ...form, defect: v })} pairs={dmgOpts.defectPairs} placeholder="Defect/NG" />
+                            <DmgPhotoPicker photos={form.photos} onChange={(photos) => setForm({ ...form, photos })} />
+                          </td>
                           <td className="px-1 py-1.5"><Combo id="dl-catng" value={form.categoryNG} onChange={(v) => setForm({ ...form, categoryNG: v })} options={dmgOpts.catNG} placeholder="Cat NG" /></td>
                           <td className="px-1 py-1.5"><Combo id="dl-catrep" value={form.categoryRepair} onChange={(v) => setForm({ ...form, categoryRepair: v })} options={dmgOpts.catRepair} placeholder="Cat (Repair)" /></td>
                           <td className="px-1 py-1.5"><Combo id="dl-incharge" value={form.incharge} onChange={(v) => setForm({ ...form, incharge: v })} options={dmgOpts.incharge} placeholder="Incharge" /></td>
@@ -2038,7 +2082,10 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                             <tr style={{ background: 'rgba(37,99,235,0.06)', borderTop: '2px solid var(--brand)' }}>
                               <td className="px-2 py-2.5 tabular" style={{ color: 'var(--brand)', borderLeft: '3px solid var(--brand)' }}>{idx + 1}</td>
                               <td className="px-1 py-1.5"><Combo id="dl-e-pos" value={editForm.position} onChange={(v) => setEditForm({ ...editForm, position: v })} pairs={dmgOpts.positionPairs} placeholder="Position" /></td>
-                              <td className="px-1 py-1.5"><Combo id="dl-e-defect" value={editForm.defect} onChange={(v) => setEditForm({ ...editForm, defect: v })} pairs={dmgOpts.defectPairs} placeholder="Defect/NG" /></td>
+                              <td className="px-1 py-1.5 space-y-1">
+                                <Combo id="dl-e-defect" value={editForm.defect} onChange={(v) => setEditForm({ ...editForm, defect: v })} pairs={dmgOpts.defectPairs} placeholder="Defect/NG" />
+                                <DmgPhotoPicker photos={editForm.photos} onChange={(photos) => setEditForm({ ...editForm, photos })} />
+                              </td>
                               <td className="px-1 py-1.5"><Combo id="dl-e-catNG" value={editForm.categoryNG} onChange={(v) => setEditForm({ ...editForm, categoryNG: v })} options={dmgOpts.catNG} placeholder="Cat NG" /></td>
                               <td className="px-1 py-1.5"><Combo id="dl-e-catRepair" value={editForm.categoryRepair} onChange={(v) => setEditForm({ ...editForm, categoryRepair: v })} options={dmgOpts.catRepair} placeholder="Cat (Repair)" /></td>
                               <td className="px-1 py-1.5"><Combo id="dl-e-incharge" value={editForm.incharge} onChange={(v) => setEditForm({ ...editForm, incharge: v })} options={dmgOpts.incharge} placeholder="Incharge" /></td>
