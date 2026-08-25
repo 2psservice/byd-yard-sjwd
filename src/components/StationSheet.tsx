@@ -20,6 +20,7 @@ import { MeasurementField, TirePressureField, TIRE_WHEELS, joinTirePressure } fr
 import { MasterCombo } from './MasterCombo'
 import { CheckItemRow } from './CheckItemRow'
 import { REPAIR_STATUSES } from '../lib/damageLabel'
+import { VIN_PHOTO_CELL } from '../lib/trackingColumns'
 import type { Unit, DamageInput } from '../types'
 import type { TrackRow } from '../lib/excelTracking'
 import type { WorkQueue, QueueItem, QueueType } from '../store/useOps'
@@ -63,7 +64,17 @@ export default function StationSheet({ unit, row, activeProc, onSaved, stationTi
   const [ngList, setNgList] = useState<NgEntry[]>([])
   const fileRef = useRef<HTMLInputElement | null>(null)   // camera (capture)
   const albumRef = useRef<HTMLInputElement | null>(null)  // gallery picker
-  const pickingId = useRef<string | null>(null)   // item id, or "ng:<entry id>"
+  const pickingId = useRef<string | null>(null)   // item id, "ng:<entry id>", or "vin"
+
+  // ── VIN-label photo (Export Label), one per car ──
+  // The same shot the +ADD DEFECT form asks for. It is the FIRST photo column
+  // of the admin's "Excel + รูป" report, so an NG recorded here without it
+  // leaves that column blank for the whole car.
+  const savedVinPhoto = useTracking(st => (row ? st.rows[row.vin]?.cells[VIN_PHOTO_CELL] : undefined) || '')
+  const [vinPhoto, setVinPhoto] = useState('')
+  const freeNgCount = ngList.filter(e => e.position.trim() || e.defect.trim()).length
+  // only demanded when this save will actually file a free-NG Defect
+  const needVinPhoto = !!row && freeNgCount > 0 && !savedVinPhoto && !vinPhoto
 
   const stationName = activeProc?.queue.name ?? stationTitle
   const get = (id: string): CheckItemState => state[id] ?? { result: 'OK' }
@@ -89,7 +100,9 @@ export default function StationSheet({ unit, row, activeProc, onSaved, stationTi
       const added = await Promise.all(Array.from(files).map(f => compressImage(f)))
       // functional updates — an upload takes seconds, and a second shot started
       // meanwhile must not overwrite the first
-      if (id.startsWith('ng:')) {
+      if (id === 'vin') {
+        setVinPhoto(added[0] ?? '') // one shot per car
+      } else if (id.startsWith('ng:')) {
         const eid = id.slice(3)
         setNgList(list => list.map(e => (e.id === eid ? { ...e, photos: [...e.photos, ...added] } : e)))
       } else {
@@ -124,7 +137,15 @@ export default function StationSheet({ unit, row, activeProc, onSaved, stationTi
       toast('err', `กรุณาถ่ายรูปรายการ NG: ${noPhoto.slice(0, 3).join(', ')}${noPhoto.length > 3 ? ` และอีก ${noPhoto.length - 3} รายการ` : ''}`)
       return
     }
+    if (needVinPhoto) {
+      toast('err', 'กรุณาถ่ายรูปเลขวิน (Export Label) 1 รูป — บังคับเฉพาะครั้งแรกของคันนี้')
+      return
+    }
     savedRef.current = true
+
+    // stash the once-per-car VIN-label shot (no history line — it can be a big
+    // data-URL), so every station and the photo report pick it up
+    if (row && vinPhoto && !savedVinPhoto) useTracking.getState().setCellNoHistory(row.vin, VIN_PHOTO_CELL, vinPhoto)
 
     if (row) {
       for (const m of MEASUREMENTS) {
@@ -289,6 +310,50 @@ export default function StationSheet({ unit, row, activeProc, onSaved, stationTi
         {/* ── NG tab — free entries: ตำแหน่ง / ข้อบกพร่อง / หมายเหตุ ── */}
         {isNgTab && (
           <div className="space-y-2.5">
+            {/* VIN-label photo (Export Label) — one per car, shared with every
+                station, and the first photo column of the admin's Excel report */}
+            {row && (
+              <div className="rounded-xl p-2.5 border" style={{
+                borderColor: savedVinPhoto || vinPhoto ? 'rgba(22,163,74,0.35)' : '#fca5a5',
+                background: savedVinPhoto || vinPhoto ? 'rgba(22,163,74,0.05)' : '#fff8f5' }}>
+                <div className="text-[10.5px] font-bold uppercase mb-1.5"
+                  style={{ color: savedVinPhoto || vinPhoto ? '#16a34a' : '#dc2626' }}>
+                  รูปเลขวิน (Export Label)
+                </div>
+                {savedVinPhoto || vinPhoto ? (
+                  <div className="flex items-center gap-2">
+                    <img src={savedVinPhoto || vinPhoto} alt="" className="w-12 h-12 rounded-lg object-cover"
+                      style={{ border: '1px solid var(--line)' }} />
+                    <span className="text-[11.5px] flex items-center gap-1" style={{ color: '#16a34a' }}>
+                      <CheckCircle2 size={13} /> {savedVinPhoto ? 'มีรูปเลขวินแล้ว — ใช้ร่วมกันทุกสถานี' : 'ถ่ายแล้ว · จะบันทึกพร้อมใบตรวจ'}
+                    </span>
+                    {!savedVinPhoto && (
+                      <button onClick={() => setVinPhoto('')} className="ml-auto btn btn-ghost px-2 py-1"
+                        style={{ color: 'var(--faint)' }} title="ลบรูป"><X size={13} /></button>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button onClick={() => { pickingId.current = 'vin'; fileRef.current?.click() }}
+                      title="ถ่ายรูปเลขวิน"
+                      className="w-12 h-12 rounded-lg flex items-center justify-center"
+                      style={{ border: '1px dashed #fca5a5', color: '#dc2626' }}>
+                      <Camera size={16} />
+                    </button>
+                    <button onClick={() => { pickingId.current = 'vin'; albumRef.current?.click() }}
+                      title="เลือกรูปเลขวินจากอัลบั้ม"
+                      className="w-12 h-12 rounded-lg flex items-center justify-center"
+                      style={{ border: '1px dashed #fca5a5', color: '#dc2626' }}>
+                      <Images size={16} />
+                    </button>
+                    <span className="text-[11.5px]" style={{ color: '#dc2626' }}>
+                      บังคับถ่ายรูปเลขวิน 1 รูป เมื่อมีรายการ NG (เฉพาะครั้งแรกของคันนี้)
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
             {ngList.length === 0 && (
               <div className="rounded-xl px-3 py-4 text-center text-[12.5px]" style={{ border: '1px dashed var(--line)', color: 'var(--faint)' }}>
                 — ยังไม่มีรายการ NG —
@@ -387,8 +452,15 @@ export default function StationSheet({ unit, row, activeProc, onSaved, stationTi
             <AlertTriangle size={14} /> พบ NG {totalNg} รายการ — จะถูกบันทึกเป็น Defect
           </div>
         )}
-        <button onClick={save} className="btn w-full py-3 text-[14px] font-bold"
-          style={{ background: totalNg ? '#dc2626' : 'var(--st-yard)', color: '#fff', border: 'none' }}>
+        {needVinPhoto && (
+          <div className="flex items-center gap-1.5 text-[11.5px] mb-2" style={{ color: '#dc2626' }}>
+            <Camera size={13} /> ต้องถ่ายรูปเลขวิน (Export Label) 1 รูปก่อนบันทึก — อยู่ในแท็บ NG
+          </div>
+        )}
+        <button onClick={save} disabled={needVinPhoto} className="btn w-full py-3 text-[14px] font-bold"
+          style={needVinPhoto
+            ? { background: 'var(--chip)', color: 'var(--faint)', border: 'none' }
+            : { background: totalNg ? '#dc2626' : 'var(--st-yard)', color: '#fff', border: 'none' }}>
           <CheckCircle2 size={16} /> บันทึก {totalNg ? `· NG (${totalNg})` : '· OK'}
         </button>
       </div>
