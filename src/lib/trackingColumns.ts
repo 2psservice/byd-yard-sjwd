@@ -43,6 +43,12 @@ const DEFAULT_VISIBLE = new Set([
  *  e.g. "N-R1402"). Not a sheet cell — resolved from the car's placement. */
 export const LOCATION_KEY = '__location'
 
+/** Hidden cell that stores the one-per-car photo of the VIN label (Export Label).
+ *  Captured once at any Ops-Scan station's ADD DEFECT form and shown at every
+ *  station after that; the photo-report Excel uses it as each row's first photo.
+ *  Not a real table column — it lives only in the cells blob. */
+export const VIN_PHOTO_CELL = 'Vin Photo'
+
 /** The 15 PM date columns, in order (PM1 … PM15). */
 export const PM_KEYS = Array.from({ length: 15 }, (_, i) => `PM${i + 1}`)
 

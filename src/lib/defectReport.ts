@@ -6,6 +6,7 @@
  */
 import type { Damage, Unit } from '../types'
 import { partLabel, defectLabel } from './damageLabel'
+import { VIN_PHOTO_CELL } from './trackingColumns'
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 /** timestamp → "5-Jun-26" — the date shape the Defect sheets use (round-trips on re-import). */
@@ -157,6 +158,166 @@ export async function exportDefectExcel(sheets: { spec: DefectSheetSpec; rows: D
   const wb = new ExcelJS.Workbook()
   wb.creator = 'SJWD Yard Control'
   for (const { spec, rows } of sheets) buildDefectSheet(wb, spec, rows, trackByVin)
+  const buf = await wb.xlsx.writeBuffer()
+  downloadBlob(buf, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename)
+}
+
+// ── photo report — the "Summary Defect list" template (BYD NYB sheet) ────────
+// Layout measured 1:1 from the customer's file: 2-row header (Photo band merged
+// over Export Label / Zoom / General View), Arial, grey header fills, light-green
+// body rows 129 tall with one photo per cell, duplicate-VIN highlight on E,
+// landscape A4 @ 55%.
+
+const P_WIDTHS = [12.6640625, 29.77734375, 27.44140625, 20.77734375, 22.5546875, 33.33203125, 33.33203125, 33.33203125, 20.33203125, 18, 26.77734375]
+const P_HEAD1 = ['No', 'Inspection Date', 'Model Name', 'Color Name', 'Vin Number', 'Photo', '', '', 'Part Defect', 'Problem', 'Remark']
+const P_HEAD2 = ['Export Label', 'Zoom', 'General  View'] // F2:H2 (template spells General with 2 spaces)
+const P_GREY_DARK = 'FFBFBFBF'   // theme0 tint -0.25 — No + Photo band
+const P_GREY_LIGHT = 'FFD9D9D9'  // theme0 tint -0.15 — all other headers
+const P_GREEN = 'FFE2EFDA'       // theme9 (accent6) tint 0.8 — body rows
+const P_DATE_FMT = '[$-1010409]d mmm yy;@'
+const MEDIUM = { style: 'medium' as const }
+const mediumBorder = { top: MEDIUM, left: MEDIUM, bottom: MEDIUM, right: MEDIUM }
+
+/** dmg.at → Date pinned to UTC midnight of the LOCAL day, so the "d mmm yy"
+ *  cell never slips a day when exceljs serializes it as UTC. */
+function localDay(ts: number): Date {
+  const d = new Date(ts)
+  return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()))
+}
+
+/** URL / data-URL → workbook image id (cached — the same VIN-label shot repeats
+ *  on every row of that car). null when the photo can't be read (row stays blank). */
+async function photoImageId(wb: any, src: string | undefined, cache: Map<string, Promise<number | null>>): Promise<number | null> {
+  if (!src) return null
+  let p = cache.get(src)
+  if (!p) {
+    p = (async () => {
+      try {
+        let base64: string
+        let extension: 'jpeg' | 'png' = 'jpeg'
+        if (src.startsWith('data:')) {
+          const m = src.match(/^data:image\/([a-z+]+);base64,(.+)$/i)
+          if (!m) return null
+          extension = /png/i.test(m[1]) ? 'png' : 'jpeg'
+          base64 = m[2]
+        } else {
+          const res = await fetch(src)
+          if (!res.ok) return null
+          const blob = await res.blob()
+          extension = /png/i.test(blob.type) ? 'png' : 'jpeg'
+          base64 = await new Promise<string>((resolve, reject) => {
+            const r = new FileReader()
+            r.onerror = reject
+            r.onload = () => resolve((r.result as string).split(',')[1] ?? '')
+            r.readAsDataURL(blob)
+          })
+          if (!base64) return null
+        }
+        return wb.addImage({ base64, extension }) as number
+      } catch { return null }
+    })()
+    cache.set(src, p)
+  }
+  return p
+}
+
+export interface PhotoReportSheet { name: string; rows: DefectExportRow[] }
+
+/** Build one template-format photo sheet and embed its images. */
+async function buildPhotoSheet(wb: any, name: string, rows: DefectExportRow[], trackByVin: Map<string, Record<string, string>>, cache: Map<string, Promise<number | null>>): Promise<void> {
+  const ws = wb.addWorksheet(name, {
+    views: [{ zoomScale: 70, zoomScaleNormal: 70 }],
+    pageSetup: {
+      paperSize: 9, orientation: 'landscape', scale: 55,
+      margins: { left: 0, right: 0.118110236220472, top: 0.236220472440945, bottom: 0.354330708661417, header: 0.31496062992126, footer: 0.31496062992126 },
+    },
+  })
+  ws.columns = P_WIDTHS.map((w) => ({ width: w }))
+
+  // header (2 rows) — the Photo band spans F:H, everything else spans both rows
+  const h1 = ws.addRow(P_HEAD1); h1.height = 68.4
+  const h2 = ws.addRow(['', '', '', '', '', ...P_HEAD2, '', '', '']); h2.height = 79.2
+  ws.mergeCells('A1:A2'); ws.mergeCells('B1:B2'); ws.mergeCells('C1:C2'); ws.mergeCells('D1:D2')
+  ws.mergeCells('E1:E2'); ws.mergeCells('F1:H1'); ws.mergeCells('I1:I2'); ws.mergeCells('J1:J2'); ws.mergeCells('K1:K2')
+  for (const row of [h1, h2]) row.eachCell({ includeEmpty: true }, (cell: any, col: number) => {
+    // A1:A2 (merged) + the Photo band F1:H1 are the darker grey; row 2 col A is a
+    // merge-slave of A1, so it must stay dark too or its pass repaints the master
+    const dark = col === 1 || (row.number === 1 && col >= 6 && col <= 8)
+    cell.font = { name: 'Arial', size: 11, bold: true }
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: dark ? P_GREY_DARK : P_GREY_LIGHT } }
+    cell.border = mediumBorder
+    cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }
+  })
+  ws.getCell('B1').numFmt = P_DATE_FMT
+
+  // body rows + collect photo placements
+  const places: { id: Promise<number | null>; col: number; row: number }[] = []
+  rows.forEach((r, i) => {
+    const cells = trackByVin.get(r.unit.vin)
+    const remark = [r.dmg.remark, (r.dmg.severity === 'major' || /HEAVY/i.test(String(r.dmg.categoryNG ?? ''))) ? 'HV NG' : '']
+      .filter(Boolean).join(' · ')
+    const row = ws.addRow([
+      i + 1,
+      r.dmg.at ? localDay(r.dmg.at) : '',
+      cells?.['Model name'] || r.unit.modelName || '',
+      cells?.['Color'] || r.unit.color || '',
+      r.unit.vin,
+      '', '', '',
+      partLabel(r.dmg, 'en') === '—' ? '' : partLabel(r.dmg, 'en'),
+      defectLabel(r.dmg, 'en'),
+      remark,
+    ])
+    row.height = 129
+    row.eachCell({ includeEmpty: true }, (cell: any) => {
+      cell.font = { name: 'Arial', size: 11 }
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: P_GREEN } }
+      cell.border = thinBorder
+      cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }
+    })
+    row.getCell(2).numFmt = P_DATE_FMT
+    const rowIdx = row.number - 1 // 0-based for image anchors
+    const photos: (string | undefined)[] = [
+      cells?.[VIN_PHOTO_CELL],                    // F — Export Label (per-car VIN shot)
+      r.dmg.photos?.[0] ?? r.dmg.photo,           // G — Zoom (defect close-up)
+      r.dmg.photos?.[1],                          // H — General View (2nd defect photo)
+    ]
+    photos.forEach((src, pi) => {
+      if (src) places.push({ id: photoImageId(wb, src, cache), col: 5 + pi, row: rowIdx })
+    })
+  })
+
+  // duplicate-VIN highlight (the customer's file flags repeat VINs pink on E) —
+  // exceljs can't serialize the native duplicateValues rule, so use the
+  // equivalent COUNTIF expression (renders identically in Excel)
+  const lastRow = Math.max(3, rows.length + 2)
+  ws.addConditionalFormatting({
+    ref: `E3:E${lastRow}`,
+    rules: [{
+      type: 'expression', priority: 1,
+      formulae: [`COUNTIF($E$3:$E$${lastRow},E3)>1`],
+      style: { fill: { type: 'pattern', pattern: 'solid', bgColor: { argb: 'FFFFC7CE' } }, font: { color: { argb: 'FF9C0006' } } },
+    }],
+  })
+
+  for (const pl of places) {
+    const id = await pl.id
+    if (id == null) continue
+    ws.addImage(id, {
+      tl: { col: pl.col + 0.02, row: pl.row + 0.02 },
+      br: { col: pl.col + 0.98, row: pl.row + 0.98 },
+      editAs: 'oneCell',
+    })
+  }
+}
+
+/** Export the photo report (template format, embedded images) as .xlsx. */
+export async function exportDefectPhotoExcel(sheets: PhotoReportSheet[], trackByVin: Map<string, Record<string, string>>, filename: string): Promise<void> {
+  const XJS: any = await import('exceljs')
+  const ExcelJS = XJS.default ?? XJS
+  const wb = new ExcelJS.Workbook()
+  wb.creator = 'SJWD Yard Control'
+  const cache = new Map<string, Promise<number | null>>()
+  for (const { name, rows } of sheets) await buildPhotoSheet(wb, name, rows, trackByVin, cache)
   const buf = await wb.xlsx.writeBuffer()
   downloadBlob(buf, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename)
 }
