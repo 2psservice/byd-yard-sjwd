@@ -5,8 +5,30 @@ import { zoneLabel } from '../components/CarDiagramMultiView'
 import { resolvePart, resolveDefect } from './masterDefect'
 import type { Damage } from '../types'
 
+/** The repair-status options offered on every Defect picker (admin + ops-scan).
+ *  One source of truth — the ladder used to be duplicated per page. */
+export const REPAIR_STATUSES = ['Waiting Repair', 'ACC BYD', 'ACC SJWD', 'ACC REVER', 'Repaired'] as const
+
+/** Older spellings → the current option, so a record saved before the list was
+ *  reworked shows as its modern equivalent instead of an unknown extra choice.
+ *  Only unambiguous renames are mapped; anything else is displayed verbatim. */
+const LEGACY_STATUS: Record<string, string> = {
+  'acc byd': 'ACC BYD',
+  'ok repaired': 'Repaired',
+}
+
+/** Normalise a stored status to a current option where possible ('Acc byd' →
+ *  'ACC BYD', 'OK-Repaired' → 'Repaired'); unknown values pass through. */
+export function canonRepairStatus(raw?: string): string {
+  const v = (raw ?? '').trim()
+  if (!v) return 'Waiting Repair'
+  const key = v.toLowerCase().replace(/[-_]+/g, ' ').replace(/\s+/g, ' ')
+  const exact = REPAIR_STATUSES.find((s) => s.toLowerCase() === key)
+  return exact ?? LEGACY_STATUS[key] ?? v
+}
+
 /** A defect still waiting for repair (blank status counts as waiting). */
-export const isOpenDefect = (d: Damage) => !d.statusRepair || d.statusRepair === 'Waiting Repair'
+export const isOpenDefect = (d: Damage) => !d.statusRepair || canonRepairStatus(d.statusRepair) === 'Waiting Repair'
 
 /** Unrepaired defects always FIRST — resolved ones sink below. Stable, so the
  *  original order (usually record time) is kept within each group. */

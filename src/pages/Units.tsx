@@ -21,7 +21,7 @@ import { printFindList } from '../lib/groupingPrint'
 import { matchVins, toFindListRows } from '../lib/findCar'
 import { rowInSite } from '../lib/siteScope'
 import { zoneLabel } from '../components/CarDiagramMultiView'
-import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirst } from '../lib/damageLabel'
+import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirst, REPAIR_STATUSES, canonRepairStatus } from '../lib/damageLabel'
 import { resolvePart, resolveDefect, MASTER_PARTS, MASTER_DEFECTS } from '../lib/masterDefect'
 import { cx, PhotoLightbox } from '../components/ui'
 import { useQueues, queueTypeOf } from '../store/useOps'
@@ -170,8 +170,7 @@ const presetMatch = (preset: string, r: TrackRow): boolean => {
   }
 }
 
-// Status Repair options + colour (editable in the Damages tab)
-const REPAIR_STATUSES = ['Waiting Repair', 'Accept', 'Acc byd', 'OK Accept', 'OK Repaired', 'Repaired'] as const
+// Status Repair options come from lib/damageLabel (shared with the ops-scan pickers)
 // compact Excel-like date (27 Jun 26) for the defect table
 const fmtDay = (ts: number) => new Date(ts).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })
 const repairColor = (s?: string): { color: string; background: string } =>
@@ -1951,9 +1950,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
               // normalise imported spellings ("OK-Repaired", "waiting repair") onto the
               // canonical option list — an unmatched value made the <select> silently
               // display "Waiting Repair" for a defect that was actually repaired
-              const canonStatus = (raw: string) =>
-                REPAIR_STATUSES.find((s) => s.toLowerCase() === raw.trim().toLowerCase().replace(/-/g, ' ')) ?? raw
-              const stat = (d: typeof damages[number]) => canonStatus(d.statusRepair ?? (d.repairDate ? 'Repaired' : 'Waiting Repair'))
+              const stat = (d: typeof damages[number]) => canonRepairStatus(d.statusRepair ?? (d.repairDate ? 'Repaired' : 'Waiting Repair'))
               const waiting = damages.filter((d) => stat(d) === 'Waiting Repair').length
               const done = damages.length - waiting
               const TH = ['#', 'Position', 'Defect/NG', 'Cat NG', 'Cat (Repair)', 'Incharge', 'From/Stock', 'Date', 'Status Repair', 'Repair Date', '']

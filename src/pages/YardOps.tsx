@@ -22,7 +22,7 @@ import { DrivingScreen } from '../components/DrivingScreen'
 import { LiveTrackingMap } from '../components/LiveTrackingMap'
 import { ALL_ZONES, zoneLabel } from '../components/CarDiagramMultiView'
 import { MASTER_PARTS, MASTER_DEFECTS, resolvePart, resolveDefect } from '../lib/masterDefect'
-import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirst } from '../lib/damageLabel'
+import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirst, REPAIR_STATUSES, canonRepairStatus } from '../lib/damageLabel'
 import { candidates } from '../lib/parkingEngine'
 import { slotToLatLng } from '../lib/geo'
 import { cx, PhotoLightbox } from '../components/ui'
@@ -130,9 +130,10 @@ const POSITION_OPTS = MASTER_PARTS   // { id, en, th }
 const TYPES = MASTER_DEFECTS         // { id, en, th }
 
 // Repair-status ladder for a Defect — "ปลด" no longer deletes, it moves status.
-const DEFECT_STATUSES = ['Waiting Repair', 'Accept', 'Acc byd', 'OK Accept', 'OK Repaired', 'Repaired'] as const
+// Shared with the admin pickers (lib/damageLabel) so both stay in step.
+const DEFECT_STATUSES = REPAIR_STATUSES
 const defectStatusStyle = (s?: string): { color: string; background: string } =>
-  s && s !== 'Waiting Repair'
+  s && canonRepairStatus(s) !== 'Waiting Repair'
     ? { color: '#16a34a', background: '#dcfce7' } // any resolved status → green
     : { color: '#b45309', background: '#fef3c7' } // Waiting Repair (default)
 
