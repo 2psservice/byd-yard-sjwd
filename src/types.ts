@@ -60,7 +60,12 @@ export interface DamageType {
 export type DamageCategoryNG = 'NG' | 'HEAVY NG'
 export type DamageCategoryRepair = 'Re Dent' | 'Re paint' | 'Part'
 export type DamageIncharge = 'SJWD' | 'BYD'
-export type DamageStatusRepair = 'Waiting Repair' | 'Accept' | 'Acc byd' | 'OK Accept' | 'OK Repaired' | 'Repaired'
+/** Repair-status ladder offered on every Defect picker. The legacy spellings
+ *  ('Accept' / 'Acc byd' / 'OK Accept' / 'OK Repaired') stay in the union so
+ *  records saved before the list was reworked still load and display. */
+export type DamageStatusRepair =
+  | 'Waiting Repair' | 'ACC BYD' | 'ACC SJWD' | 'ACC REVER' | 'Repaired'
+  | 'Accept' | 'Acc byd' | 'OK Accept' | 'OK Repaired'
 /** Which step recorded the damage (undefined = legacy gate-in walk-around). */
 export type DamageSource = 'walkaround' | 'pdi' | 'mechanic' | 'update' | 'walkcheck' | 'yardDefect' | 'factoryDefect' | 'whaleDefect' | 'manual'
 

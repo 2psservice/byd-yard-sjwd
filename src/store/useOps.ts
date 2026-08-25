@@ -660,6 +660,44 @@ const LADDER_OF: Partial<Record<QueueType, readonly string[]>> = {
   PM: PM_KEYS, PDI: PDI_KEYS, FINAL: ['Final check date'],
 }
 
+/** Local midnight of the day a car gated in, from the epoch "Gate In Time" the
+ *  gate station stamps, else the "Gate In (Rayong yard)" day cell. */
+function gateInDay(cells: Record<string, string>): number | undefined {
+  const ms = parseInt(cells['Gate In Time'] || '')
+  if (Number.isFinite(ms) && ms > 0) { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime() }
+  return parseDayCell(cells['Gate In (Rayong yard)'])
+}
+
+/** Did this queue item ever see a real station action? recordCheck stamps
+ *  stage/result/checkedBy/checkedAt and returnToSlot stamps returnedAt — a tick
+ *  that carries none of those was never produced by the station itself. */
+const hasStationRecord = (i: QueueItem): boolean =>
+  !!i.checkedAt || !!i.result || !!i.returnedAt || i.stage === 'checked'
+
+/**
+ * A station queue (PDI / PM / FINAL …) whose item is only "done" because the
+ * gate-in flow ticked it. Until this was fixed, saving a Gate In toggled every
+ * queue holding that VIN done AND stamped today's date into the queue type's
+ * ladder cell — so the sheet now carries fabricated PDI/PM dates that made the
+ * reconciler below re-tick the item forever, and a PDI queue read 48/100 when
+ * the station had really inspected 2. Gate-in and station work are separate
+ * jobs: a station queue only counts what that station recorded.
+ *
+ * Fingerprint (all required): ticked, no station record of any kind, not a
+ * gated-out closure (those are legitimate housekeeping), and the tick landed on
+ * the very day the car gated in.
+ */
+function isGateInArtifact(i: QueueItem, cells: Record<string, string> | undefined): boolean {
+  if (!i.done || i.gatedOut || hasStationRecord(i)) return false
+  if (!cells) return false
+  const gDay = gateInDay(cells)
+  if (gDay === undefined) return false
+  const at = i.doneAt
+  if (!at) return false
+  const d = new Date(at); d.setHours(0, 0, 0, 0)
+  return d.getTime() === gDay
+}
+
 let reconcileTimer: ReturnType<typeof setTimeout> | null = null
 function reconcileGateOuts() {
   const rows = useTracking.getState().rows
@@ -705,7 +743,10 @@ function reconcileGateOuts() {
     // item the field/admin already ticked keeps ITS record (ระบบมาก่อนไฟล์).
     // Only a date on/after the queue's creation day counts: an older date is
     // last round's check, not this queue's work.
-    const ladder = !isSequenceQueue(q) && !isPreGateIn ? LADDER_OF[queueTypeOf(q)] : undefined
+    // station queues (PDI / PM / FINAL / REPAIR / SPECIAL) — their progress is
+    // the station's own work, never the gate's
+    const isStationQueue = !isSequenceQueue(q) && !isPreGateIn
+    const ladder = isStationQueue ? LADDER_OF[queueTypeOf(q)] : undefined
     const qd = new Date(q.createdAt || 0); qd.setHours(0, 0, 0, 0)
     const qDay = qd.getTime()
     let changed = false
@@ -733,13 +774,24 @@ function reconcileGateOuts() {
         changed = true
         return { ...i, done: false, doneAt: undefined, doneBy: undefined, stamped: undefined }
       }
+      // repair: drop a tick this station never made (see isGateInArtifact) — the
+      // fabricated ladder date is ignored below too, so it stays un-ticked
+      if (isStationQueue && isGateInArtifact(i, rows[i.vin]?.cells)) {
+        changed = true
+        return { ...i, done: false, doneAt: undefined, doneBy: undefined, stamped: undefined, stage: undefined }
+      }
       if (ladder && !i.done && !i.manualUndoneAt) {
         const r = rows[i.vin]
         if (r) {
+          // a ladder date written on the car's gate-in day, with no station
+          // record behind it, is the gate-in artifact described above — never
+          // let it re-tick this queue
+          const gDay = gateInDay(r.cells)
+          const trustworthy = (v: number) => hasStationRecord(i) || gDay === undefined || v !== gDay
           let ts: number | undefined
           for (const k of ladder) { // latest recorded date on the ladder (hole-safe)
             const v = parseDayCell(r.cells[k])
-            if (v !== undefined && (ts === undefined || v > ts)) ts = v
+            if (v !== undefined && trustworthy(v) && (ts === undefined || v > ts)) ts = v
           }
           if (ts !== undefined && ts >= qDay) {
             changed = true
