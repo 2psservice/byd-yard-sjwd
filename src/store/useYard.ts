@@ -230,7 +230,7 @@ interface YardState {
   removeDamage: (vin: string, id: string) => void
   updateDamage: (vin: string, id: string, patch: Partial<import('../types').Damage>) => void
   updateRepairStatus: (vin: string, id: string, status: string) => void
-  addManualDamage: (vin: string, f: { position?: string; defect?: string; categoryNG?: string; categoryRepair?: string; incharge?: string; note?: string; date?: string; statusRepair?: string; repairDate?: string; severity?: 'minor' | 'major' }) => void
+  addManualDamage: (vin: string, f: { position?: string; defect?: string; categoryNG?: string; categoryRepair?: string; incharge?: string; note?: string; date?: string; statusRepair?: string; repairDate?: string; severity?: 'minor' | 'major'; photos?: string[] }) => void
   /** Add the SAME manual defect to many VINs at once (Unit List bulk action).
    *  `source` routes it to the right Report sheet (yardDefect → Defect-Yard,
    *  factoryDefect → Defect-Factory); defaults to 'manual' (→ Defect-Yard). */
@@ -922,6 +922,8 @@ export const useYard = create<YardState>()(
           statusRepair: (f.statusRepair?.trim() as Damage['statusRepair']) || undefined,
           repairDate: parseDefDate(f.repairDate),
           repairHistory: f.statusRepair?.trim() ? [{ status: f.statusRepair.trim(), at: now, by: s.currentUser }] : undefined,
+          photos: f.photos?.length ? f.photos : undefined,
+          photo: f.photos?.[0],
         }
         const existing = s.units[vin]
         const m = existing ?? {
