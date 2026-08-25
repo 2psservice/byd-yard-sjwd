@@ -1348,6 +1348,7 @@ function DamageForm({ onSaveAll, onCancel, vin }: {
   const [busyRid, setBusyRid] = useState<string | null>(null)
   const [armed, setArmed] = useState<string | null>(null) // rid whose delete is armed (2-tap guard)
   const [heavy, setHeavy] = useState(true) // NG / HEAVY NG choice (HEAVY NG default, as before)
+  const [status, setStatus] = useState<string>('Waiting Repair') // repair status saved with the defects
   // ── VIN-label photo (Export Label), one per car ──
   const trackHasRow = useTracking(s => !!(vin && s.rows[vin]))
   const savedVinPhoto = useTracking(s => (vin ? s.rows[vin]?.cells[VIN_PHOTO_CELL] : undefined) || '')
@@ -1393,7 +1394,7 @@ function DamageForm({ onSaveAll, onCancel, vin }: {
       type:   'scratch',        // legacy field kept for back-compat
       severity: (heavy ? 'major' : 'minor') as 'major' | 'minor',
       categoryNG: heavy ? 'HEAVY NG' : 'NG',
-      statusRepair: 'Waiting Repair' as const,             // opens waiting for repair
+      statusRepair: status as DamageInput['statusRepair'],  // picker below NG/HEAVY NG
       remark: row.remark.trim() || undefined,
       photos: row.photos.length ? row.photos : undefined,
       photo: row.photos[0],
@@ -1494,6 +1495,23 @@ function DamageForm({ onSaveAll, onCancel, vin }: {
               : { background: 'var(--chip)', color: 'var(--muted)', border: '1px dashed var(--line-strong)' }}>
             {heavy && <CheckCircle2 size={14} />} HEAVY NG
           </button>
+        </div>
+
+        {/* repair status — same 5 options as the Defect status picker, and the
+            same default (Waiting Repair) the ladder starts from */}
+        <div className="pt-0.5">
+          <div className="text-[10.5px] font-bold uppercase mb-1" style={{ color: 'var(--muted)' }}>Status</div>
+          <div className="grid grid-cols-2 gap-1.5">
+            {REPAIR_STATUSES.map(st => (
+              <button key={st} onClick={() => setStatus(st)}
+                className="py-2 rounded-xl text-[12px] font-bold transition flex items-center justify-center gap-1"
+                style={status === st
+                  ? { ...defectStatusStyle(st), border: `1.5px solid ${st === 'Waiting Repair' ? '#b45309' : '#16a34a'}` }
+                  : { background: 'var(--chip)', color: 'var(--muted)', border: '1px dashed var(--line-strong)' }}>
+                {status === st && <CheckCircle2 size={13} />} {st}
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* add row */}

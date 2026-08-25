@@ -19,12 +19,14 @@ import { checkItemId, type CheckItemState, type CheckTab } from '../lib/checkShe
 import { MeasurementField, TirePressureField, TIRE_WHEELS, joinTirePressure } from './MeasurementField'
 import { MasterCombo } from './MasterCombo'
 import { CheckItemRow } from './CheckItemRow'
-import type { Unit } from '../types'
+import { REPAIR_STATUSES } from '../lib/damageLabel'
+import type { Unit, DamageInput } from '../types'
 import type { TrackRow } from '../lib/excelTracking'
 import type { WorkQueue, QueueItem, QueueType } from '../store/useOps'
 
-/** One free NG line on the NG tab: ตำแหน่ง · ข้อบกพร่อง · หมายเหตุ. */
-interface NgEntry { id: string; position: string; defect: string; note: string; photos: string[] }
+/** One free NG line on the NG tab — same shape the Gate-in / station Defect form
+ *  captures: ตำแหน่ง · ข้อบกพร่อง · หมายเหตุ · รูป · NG/HEAVY NG · Status. */
+interface NgEntry { id: string; position: string; defect: string; note: string; photos: string[]; heavy: boolean; status: string }
 
 /** Single-value measurements, each with the tracking cell it reads / writes.
  *  Tire pressure is measured per wheel and handled by TirePressureField. */
@@ -101,7 +103,7 @@ export default function StationSheet({ unit, row, activeProc, onSaved, stationTi
     if (albumRef.current) albumRef.current.value = ''
   }
 
-  const addNg = () => setNgList(l => [...l, { id: `ng${++ngSeq}`, position: '', defect: '', note: '', photos: [] }])
+  const addNg = () => setNgList(l => [...l, { id: `ng${++ngSeq}`, position: '', defect: '', note: '', photos: [], heavy: true, status: 'Waiting Repair' }])
   const setNg = (id: string, patch: Partial<NgEntry>) =>
     setNgList(l => l.map(e => (e.id === id ? { ...e, ...patch } : e)))
 
@@ -167,12 +169,12 @@ export default function StationSheet({ unit, row, activeProc, onSaved, stationTi
         type: def || '—',
         item: d.en || undefined,
         itemTh: d.th || undefined,
-        severity: 'major',
+        severity: e.heavy ? 'major' : 'minor',
         remark: e.note.trim() || undefined,
         photos: e.photos.length ? e.photos : undefined,
         photo: e.photos[0],
-        categoryNG: 'NG',
-        statusRepair: 'Waiting Repair',
+        categoryNG: e.heavy ? 'HEAVY NG' : 'NG',
+        statusRepair: e.status as DamageInput['statusRepair'],
         source: 'pdi',
         station: stationName,
       })
@@ -333,6 +335,37 @@ export default function StationSheet({ unit, row, activeProc, onSaved, stationTi
                     style={{ border: '1px dashed var(--line)', color: 'var(--muted)' }}>
                     <Images size={16} />
                   </button>
+                </div>
+
+                {/* NG / HEAVY NG — same choice the Gate-in Defect form offers */}
+                <div className="flex gap-2">
+                  {([false, true] as const).map(hv => (
+                    <button key={String(hv)} onClick={() => setNg(e.id, { heavy: hv })}
+                      className="flex-1 py-2 rounded-xl text-[12px] font-bold transition flex items-center justify-center gap-1.5"
+                      style={e.heavy === hv
+                        ? { background: hv ? '#dc2626' : '#d97706', color: '#fff' }
+                        : { background: 'var(--chip)', color: 'var(--muted)', border: '1px dashed var(--line-strong)' }}>
+                      {e.heavy === hv && <CheckCircle2 size={14} />} {hv ? 'HEAVY NG' : 'NG'}
+                    </button>
+                  ))}
+                </div>
+
+                {/* repair status — default Waiting Repair */}
+                <div>
+                  <div className="text-[10.5px] font-bold uppercase mb-1" style={{ color: 'var(--muted)' }}>Status</div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {REPAIR_STATUSES.map(st => (
+                      <button key={st} onClick={() => setNg(e.id, { status: st })}
+                        className="py-2 rounded-xl text-[12px] font-bold transition flex items-center justify-center gap-1"
+                        style={e.status === st
+                          ? st === 'Waiting Repair'
+                            ? { background: '#fef3c7', color: '#b45309', border: '1.5px solid #b45309' }
+                            : { background: '#dcfce7', color: '#16a34a', border: '1.5px solid #16a34a' }
+                          : { background: 'var(--chip)', color: 'var(--muted)', border: '1px dashed var(--line-strong)' }}>
+                        {e.status === st && <CheckCircle2 size={13} />} {st}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
             ))}
