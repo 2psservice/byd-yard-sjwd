@@ -23,6 +23,7 @@ import { rowInSite } from '../lib/siteScope'
 import { zoneLabel } from '../components/CarDiagramMultiView'
 import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirst, REPAIR_STATUSES, canonRepairStatus } from '../lib/damageLabel'
 import { resolvePart, resolveDefect, MASTER_PARTS, MASTER_DEFECTS } from '../lib/masterDefect'
+import { refreshUnitFocus } from '../lib/unitFocus'
 import { cx, PhotoLightbox } from '../components/ui'
 import { useQueues, queueTypeOf } from '../store/useOps'
 import { useUnitsView } from '../store/useUnitsView'
@@ -1526,6 +1527,14 @@ const TIMELINE_KEYS: [string, string][] = [
 ]
 
 function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
+  // Pull THIS car fresh from the cloud on open (damages + their photos). This
+  // panel used to draw whatever copy the browser happened to hold, so a defect
+  // photographed at a station showed its picture on the station's phone (that
+  // screen re-reads the car) while the admin's copy — pulled before the photo
+  // was attached, or frozen once the car went DEPARTED — rendered the same
+  // defect with no photo at all. Same one-row fetch the other focused screens
+  // already do; local pending defects are re-attached, never lost.
+  useEffect(() => { if (vin) refreshUnitFocus(vin) }, [vin])
   const row = useTracking((s) => s.rows[vin])
   const columns = useTracking((s) => s.columns)
   const lang = useYard((s) => s.lang)
