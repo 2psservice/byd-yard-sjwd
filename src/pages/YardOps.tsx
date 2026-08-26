@@ -1560,6 +1560,7 @@ function WalkView() {
   const { toggleDone } = useOps()
   const { blockWith, modal: gateModal } = useNotGatedIn()
   const queues = useSiteQueues()
+  const opsClosed = useOps(s => s.closed) // admin-archived lots leave this board
   const sites = useYard(s => s.sites)
   const currentSite = useYard(s => s.currentSite)
   const [vin, setVin] = useState<string | null>(null)
@@ -1600,15 +1601,18 @@ function WalkView() {
   // PDI role, not here. Completed queues stay listed so the station can still read
   // its own progress ("17/17 · เหลือ 0"), same as the Driver's delivery-run cards.
   const gateInQueues = useMemo(() => {
-    // completed queues drop off the live Ops-Scan list (they've filed under their day)
-    const real = queues.filter(q => isPreGateInQueue(q) && !isQueueComplete(q))
+    // completed queues drop off the live Ops-Scan list (they've filed under their
+    // day), and so do lots the admin has archived — an old arrival lot with one
+    // car that never showed up (289/290) used to sit on the station board for
+    // ever with no way for anyone to clear it.
+    const real = queues.filter(q => isPreGateInQueue(q) && !isQueueComplete(q) && !opsClosed[q.id])
     if (!uncoveredPreGateIn.length) return real
     const virtual: WorkQueue = {
       id: '__uncovered_pregatein', name: '(รอ Gate-in · ยังไม่มีคิวงาน)', createdAt: 0,
       items: uncoveredPreGateIn.map(r => ({ vin: r.vin, addedAt: 0, done: false })),
     }
     return [...real, virtual]
-  }, [queues, uncoveredPreGateIn])
+  }, [queues, uncoveredPreGateIn, opsClosed])
   // gateInQueues (not queues) — the selected card may be the virtual uncovered one
   const selectedQueue = selectedQueueId ? gateInQueues.find(q => q.id === selectedQueueId) ?? null : null
   // NG ⟺ the gate-in walk-around recorded damage on this car (what the operator
