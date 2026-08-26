@@ -785,8 +785,15 @@ export async function upsertOpsQueue(q: WorkQueue): Promise<void> {
 
 export async function deleteOpsQueue(id: string): Promise<void> {
   if (!isConfigured()) return
-  const { error } = await supabase.from('ops_queues').delete().eq('id', id)
-  if (error) console.error('[db] deleteOpsQueue', error)
+  // Retry, then THROW — same reason as upsertOpsQueue. A delete that fails but
+  // reports success leaves the row in the cloud, and the next 'ops' sync pulls
+  // it straight back: the queue the admin just deleted reappears on every
+  // phone. The caller keeps a tombstone so it stays gone until the row is.
+  await withRetry(async () => {
+    const res = await supabase.from('ops_queues').delete().eq('id', id)
+    if (res.error) console.error('[db] deleteOpsQueue', res.error)
+    return res
+  })
 }
 
 export async function clearOpsQueues(): Promise<void> {

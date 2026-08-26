@@ -186,6 +186,15 @@ interface OpsState {
    *  keeps showing every day until finished + closed. Synced via app_config
    *  ('ops_closed_queues') so no table migration is needed. */
   closed: Record<string, { at: number; by?: string }>
+  /** Tombstones for DELETED queues — id → when. A deleted queue used to come
+   *  straight back: the cloud row delete could fail (or simply lose the race
+   *  against a refetch), and every pull re-adopted the row. Worse, a phone that
+   *  still had the queue in its own localStorage re-uploaded it the next time
+   *  it booted to an empty cloud. A tombstone outlives all of that — the id is
+   *  filtered out of every pull, never re-seeded, and the cloud row is deleted
+   *  again if it turns out to still be there. Synced via app_config
+   *  ('ops_deleted_queues'), same as `closed`, so no table migration is needed. */
+  deleted: Record<string, number>
   closeQueue: (id: string, by?: string) => void
   reopenQueue: (id: string) => void
   createQueue: (name: string, by?: string, site?: string) => string
@@ -249,6 +258,16 @@ interface OpsState {
  */
 const pendingPush = new Map<string, WorkQueue>()
 
+/** Tombstones stop being useful once the row is long gone everywhere — drop the
+ *  old ones so the synced config blob can't grow without bound. */
+const TOMBSTONE_TTL = 120 * 24 * 3600_000 // 120 days
+function pruneTombstones(t: Record<string, number>): Record<string, number> {
+  const cutoff = Date.now() - TOMBSTONE_TTL
+  const out: Record<string, number> = {}
+  for (const [id, at] of Object.entries(t)) if (at > cutoff) out[id] = at
+  return out
+}
+
 /** Re-apply unconfirmed local writes over a freshly fetched cloud list. */
 function applyPending(cloud: WorkQueue[]): WorkQueue[] {
   if (!pendingPush.size) return cloud
@@ -294,6 +313,7 @@ export const useOps = create<OpsState>()(
     (set, get) => ({
       queues: [],
       closed: {},
+      deleted: {},
 
       closeQueue: (id, by) => {
         const closed = { ...get().closed, [id]: { at: Date.now(), by } }
@@ -371,8 +391,15 @@ export const useOps = create<OpsState>()(
 
       removeQueue: (id) => {
         pendingPush.delete(id) // deleted — never re-apply it over a later pull
-        set((s) => ({ queues: s.queues.filter((q) => q.id !== id) }))
-        db.deleteOpsQueue(id).then(() => sendSync('ops')).catch((e) => console.error('[db] removeQueue', e))
+        // tombstone FIRST, and keep it whether or not the cloud delete lands:
+        // it is what stops the row coming back on the next pull (see `deleted`)
+        const deleted = pruneTombstones({ ...get().deleted, [id]: Date.now() })
+        set((s) => ({ deleted, queues: s.queues.filter((q) => q.id !== id) }))
+        db.saveAppConfig('ops_deleted_queues', deleted).catch((e) => console.error('[db] tombstone', e))
+        db.deleteOpsQueue(id).then(() => sendSync('ops')).catch((e) => {
+          console.error('[db] removeQueue', e)
+          useYard.getState().toast('err', 'ลบคิวงานขึ้น cloud ไม่สำเร็จ — คิวจะถูกลบซ้ำอัตโนมัติเมื่อเชื่อมต่อได้')
+        })
       },
 
       renameQueue: (id, name) => {
@@ -503,7 +530,10 @@ export const useOps = create<OpsState>()(
         if (!sid) return
         const gone = get().queues.filter((q) => !q.site || q.site === sid).map((q) => q.id)
         for (const id of gone) pendingPush.delete(id) // deleted — don't re-apply
-        set((s) => ({ queues: s.queues.filter((q) => q.site && q.site !== sid) }))
+        const now = Date.now()
+        const deleted = pruneTombstones({ ...get().deleted, ...Object.fromEntries(gone.map((id) => [id, now])) })
+        set((s) => ({ deleted, queues: s.queues.filter((q) => q.site && q.site !== sid) }))
+        db.saveAppConfig('ops_deleted_queues', deleted).catch((e) => console.error('[db] tombstone', e))
         Promise.all(gone.map((id) => db.deleteOpsQueue(id)))
           .then(() => sendSync('ops'))
           .catch((e) => console.error('[db] clearQueues', e))
@@ -657,18 +687,33 @@ export const useOps = create<OpsState>()(
         db.fetchAppConfig<Record<string, { at: number; by?: string }>>('ops_closed_queues')
           .then((c) => { if (c && typeof c === 'object') set({ closed: c }) })
           .catch(() => {})
+        // tombstones must be in hand BEFORE adopting the cloud list, or a
+        // deleted queue flashes back on screen for this whole round trip
+        const remoteTombs = await db.fetchAppConfig<Record<string, number>>('ops_deleted_queues').catch(() => null)
+        const tombs = pruneTombstones({ ...get().deleted, ...(remoteTombs && typeof remoteTombs === 'object' ? remoteTombs : {}) })
+        set({ deleted: tombs })
+
         const fetched = await db.fetchOpsQueues()
         if (fetched === null) return // table missing / offline — keep local state
         // unconfirmed local writes win over the cloud copy — see pendingPush
-        const cloud = applyPending(sanitizeQueues(fetched))
+        const all = applyPending(sanitizeQueues(fetched))
+        const cloud = all.filter((q) => !tombs[q.id])
+        // a tombstoned row still in the cloud means an earlier delete never
+        // landed (timeout / offline) — finish the job instead of fighting it
+        // every sync from here on
+        for (const q of all) if (tombs[q.id]) db.deleteOpsQueue(q.id).catch((e) => console.error('[db] re-delete', e))
+
         if (cloud.length) set({ queues: cloud })
         else if (authoritative) set({ queues: [] }) // e.g. another device cleared all
         else {
-          // first run: cloud empty → seed it from this device's local queues
-          const local = get().queues
+          // first run: cloud empty → seed it from this device's local queues.
+          // NEVER re-seed a tombstoned one: a phone that still had the deleted
+          // queue in its localStorage used to upload it straight back.
+          const local = get().queues.filter((q) => !tombs[q.id])
           // best-effort seed — upsertOpsQueue now throws, and one failed queue
           // must not abort the rest (or reject this pull)
           if (local.length) await Promise.all(local.map((q) => db.upsertOpsQueue(q).catch((e) => console.error('[db] seed queue', e))))
+          if (local.length !== get().queues.length) set({ queues: local })
         }
       },
     }),
@@ -682,9 +727,14 @@ export const useOps = create<OpsState>()(
       // one name:null / items:null entry crashed every queue screen
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<OpsState>
+        const deleted = p.deleted && typeof p.deleted === 'object' ? pruneTombstones(p.deleted) : {}
         return {
-          ...current, ...p, queues: sanitizeQueues(p.queues),
+          ...current, ...p,
+          // drop a deleted queue on boot too — the persisted copy is exactly
+          // what used to bring it back before the cloud pull had a chance
+          queues: sanitizeQueues(p.queues).filter((q) => !deleted[q.id]),
           closed: p.closed && typeof p.closed === 'object' ? p.closed : {},
+          deleted,
         }
       },
     },
