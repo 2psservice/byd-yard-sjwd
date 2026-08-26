@@ -766,17 +766,21 @@ export async function upsertOpsQueue(q: WorkQueue): Promise<void> {
     items: q.items, updated_at: new Date().toISOString(),
     type: q.type ?? null, kind: q.kind ?? null,
   }
-  const { error } = await supabase.from('ops_queues').upsert(row, { onConflict: 'id' })
-  if (error) {
+  // Retry, then THROW — never swallow. A failed write reported as success is
+  // worse than no write: the next 'ops' sync replaces local queues with the
+  // cloud copy, so the change the operator just made silently rolls back on
+  // screen (a VIN moved to another lot "bounces" home a second later). The
+  // caller holds the change until this resolves, and warns if it never does.
+  let stripped = false
+  await withRetry(async () => {
+    const { type: _t, kind: _k, ...bare } = row
+    const res = await supabase.from('ops_queues').upsert(stripped ? bare : row, { onConflict: 'id' })
     // type/kind columns may not be migrated yet (supabase-ops-queue-type.sql) —
-    // retry without them so the queue itself still syncs.
-    if (isMissingColumn(error)) {
-      const { type: _t, kind: _k, ...rest } = row
-      const { error: e2 } = await supabase.from('ops_queues').upsert(rest, { onConflict: 'id' })
-      if (!e2) return
-    }
-    console.error('[db] upsertOpsQueue', error)
-  }
+    // drop them so the retry still syncs the queue itself
+    if (res.error && isMissingColumn(res.error)) stripped = true
+    if (res.error) console.error('[db] upsertOpsQueue', res.error)
+    return res
+  })
 }
 
 export async function deleteOpsQueue(id: string): Promise<void> {
