@@ -116,7 +116,9 @@ export default function StationSheet({ unit, row, activeProc, onSaved, stationTi
     if (albumRef.current) albumRef.current.value = ''
   }
 
-  const addNg = () => setNgList(l => [...l, { id: `ng${++ngSeq}`, position: '', defect: '', note: '', photos: [], heavy: true, status: 'Waiting Repair' }])
+  // heavy:false — most NGs the yard records are plain NG; HEAVY NG is the
+  // deliberate escalation, same default as the shared +ADD DEFECT form
+  const addNg = () => setNgList(l => [...l, { id: `ng${++ngSeq}`, position: '', defect: '', note: '', photos: [], heavy: false, status: 'Waiting Repair' }])
   const setNg = (id: string, patch: Partial<NgEntry>) =>
     setNgList(l => l.map(e => (e.id === id ? { ...e, ...patch } : e)))
 
