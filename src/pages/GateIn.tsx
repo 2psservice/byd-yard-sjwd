@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ScanLine, LogOut, ChevronDown, ChevronRight, CheckCircle2, Clock, Calendar, X, ClipboardList, ListChecks, Pencil } from 'lucide-react'
+import { ScanLine, LogOut, ChevronDown, ChevronRight, CheckCircle2, Clock, Calendar, X, ClipboardList, ListChecks, Pencil, Archive, ArchiveRestore } from 'lucide-react'
 import { useYard, useUnits } from '../store/useYard'
 import { PageHead, cx } from '../components/ui'
 import { useTracking, useTrackingRows } from '../store/useTracking'
@@ -81,11 +81,13 @@ function queueDateKey(q: WorkQueue): string {
  *    a finished queue drops off — unless its own date is today (today's work).
  *  - A past date: the queue is filed under its own date, done or not.
  *  Applies to every queue (Pre Gate-in, Grouping-to-Dealer, Ops Scan). */
-function queueOnDate(q: WorkQueue, filterDate: string | null): boolean {
+function queueOnDate(q: WorkQueue, filterDate: string | null, closed: boolean): boolean {
   const qKey = queueDateKey(q)
   const complete = isQueueComplete(q)
   const today = todayKey()
-  if (filterDate == null || filterDate === today) return !complete || qKey === today
+  // an archived lot leaves the LIVE board but is still there on its own day, so
+  // closing is reversible and nothing is lost from the record
+  if (filterDate == null || filterDate === today) return !closed && (!complete || qKey === today)
   return qKey === filterDate
 }
 
@@ -323,6 +325,12 @@ function QueueName({ q, onExpand }: { q: WorkQueue; onExpand: () => void }) {
 //    as YardOps: name · done/total · waiting VIN list. Scoped to the active site. ──
 function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
   const all = useActiveQueues()
+  const closed = useOps((s) => s.closed) // archived lots leave the live board
+  const closeQueue = useOps((s) => s.closeQueue)
+  const reopenQueue = useOps((s) => s.reopenQueue)
+  const currentUser = useYard((s) => s.currentUser)
+  const toast = useYard((s) => s.toast)
+  const isClosed = (id: string) => !!closed[id]
   const currentSite = useYard((s) => s.currentSite)
   const rows = useTrackingRows()
   const [openId, setOpenId] = useState<string | null>(null)
@@ -339,8 +347,8 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
     return m
   }, [rows])
   const queues = useMemo(
-    () => all.filter((q) => isPreGateInQueue(q) && (!q.site || q.site === currentSite) && queueOnDate(q, filterDate)),
-    [all, currentSite, filterDate],
+    () => all.filter((q) => isPreGateInQueue(q) && (!q.site || q.site === currentSite) && queueOnDate(q, filterDate, !!closed[q.id])),
+    [all, currentSite, filterDate, closed],
   )
   // ── safety net: a Pre Gate-in car this board doesn't cover with any queue ──
   // "(yard · date · N)" queues are built once at import time; a device that
@@ -399,12 +407,37 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
                       {done}/{total} เสร็จ{complete ? '' : ` · รอ Gate-in ${pending.length} คัน`}
                     </button>
                   </div>
-                  <button className="flex items-center gap-2 shrink-0" onClick={() => setOpenId(open ? null : q.id)}>
-                    <span className="badge tabular" style={complete
-                      ? { background: 'rgba(22,163,74,0.12)', color: '#16a34a' }
-                      : { background: '#fef9c3', color: '#854d0e' }}>{done}/{total}</span>
-                    {open ? <ChevronDown size={14} style={{ color: 'var(--muted)' }} /> : <ChevronRight size={14} style={{ color: 'var(--muted)' }} />}
-                  </button>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {/* archive: an old lot whose last car never turned up (289/290)
+                        had no way off the boards — this files it away, and it is
+                        still there under its own date if it needs reopening */}
+                    {q.id !== '__uncovered_pregatein' && (
+                      isClosed(q.id) ? (
+                        <button className="btn btn-ghost px-2 py-1 text-[11px]" style={{ color: '#16a34a' }}
+                          title="เปิดคิวงานนี้อีกครั้ง"
+                          onClick={(e) => { e.stopPropagation(); reopenQueue(q.id); toast('ok', `เปิดคิวงาน "${q.name}" อีกครั้ง`) }}>
+                          <ArchiveRestore size={13} /> เปิดอีกครั้ง
+                        </button>
+                      ) : (
+                        <button className="btn btn-ghost px-2 py-1" style={{ color: 'var(--muted)' }}
+                          title="เก็บคิวงานนี้เข้าคลัง (ออกจากบอร์ดหน้างาน)"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            if (!window.confirm(`เก็บคิวงาน "${q.name}" เข้าคลัง?\n\nคิวจะหายจากบอร์ด Gate In และหน้าสแกนของหน้างาน — เปิดกลับได้จากวันที่ของคิวนี้`)) return
+                            closeQueue(q.id, currentUser)
+                            toast('ok', `เก็บคิวงาน "${q.name}" เข้าคลังแล้ว`)
+                          }}>
+                          <Archive size={13} />
+                        </button>
+                      )
+                    )}
+                    <button className="flex items-center gap-2" onClick={() => setOpenId(open ? null : q.id)}>
+                      <span className="badge tabular" style={complete
+                        ? { background: 'rgba(22,163,74,0.12)', color: '#16a34a' }
+                        : { background: '#fef9c3', color: '#854d0e' }}>{done}/{total}</span>
+                      {open ? <ChevronDown size={14} style={{ color: 'var(--muted)' }} /> : <ChevronRight size={14} style={{ color: 'var(--muted)' }} />}
+                    </button>
+                  </div>
                 </div>
                 <button className="h-1.5 rounded-full overflow-hidden mt-2 block w-full" style={{ background: 'var(--chip)' }}
                   onClick={() => setOpenId(open ? null : q.id)}>
@@ -455,13 +488,14 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
 // Scoped to the active site.
 function SeqQueues({ filterDate }: { filterDate: string | null }) {
   const all = useActiveQueues()
+  const closed = useOps((s) => s.closed)
   const currentSite = useYard((s) => s.currentSite)
   const sites = useYard((s) => s.sites)
   const allUnits = useUnits()
   const allRows = useTrackingRows()
   const queues = useMemo(
-    () => all.filter((q) => isSequenceQueue(q) && (!q.site || q.site === currentSite) && queueOnDate(q, filterDate)),
-    [all, currentSite, filterDate],
+    () => all.filter((q) => isSequenceQueue(q) && (!q.site || q.site === currentSite) && queueOnDate(q, filterDate, !!closed[q.id])),
+    [all, currentSite, filterDate, closed],
   )
   const units = useMemo(
     () => (currentSite ? allUnits.filter((u) => !u.site || u.site === currentSite) : allUnits),
