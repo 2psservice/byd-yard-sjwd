@@ -201,6 +201,9 @@ interface OpsState {
   renameQueue: (id: string, name: string) => void
   addVins: (id: string, vins: string[]) => { added: number; dup: number }
   removeVin: (id: string, vin: string) => void
+  /** Move one VIN from one Gate-in lot to another, carrying its record (when it
+   *  was gated in, by whom) with it. Returns false if the move can't be made. */
+  moveVin: (fromId: string, toId: string, vin: string) => boolean
   /** Drop these VINs from EVERY queue — the car was deleted from the system, so
    *  no station should keep asking for it. Returns how many items were removed. */
   purgeVins: (vins: string[]) => number
@@ -368,6 +371,35 @@ export const useOps = create<OpsState>()(
       removeVin: (id, vin) => {
         set((s) => ({ queues: s.queues.map((q) => (q.id === id ? { ...q, items: q.items.filter((i) => i.vin !== vin) } : q)) }))
         pushQueue(get, id)
+      },
+
+      // A car planned onto the wrong arrival lot (the truck it actually came on
+      // differs from the one the import file said) used to need remove-then-add
+      // by hand, which threw away when/who gated it in. This carries the whole
+      // item across in ONE state update, then pushes BOTH queues — a half-push
+      // would leave the VIN duplicated or lost on the other devices.
+      moveVin: (fromId, toId, vin) => {
+        if (fromId === toId) return false
+        const s0 = get()
+        const from = s0.queues.find((q) => q.id === fromId)
+        const to = s0.queues.find((q) => q.id === toId)
+        const item = from?.items.find((i) => i.vin === vin)
+        if (!from || !to || !item) return false
+        set((s) => ({
+          queues: s.queues.map((q) => {
+            if (q.id === fromId) return { ...q, items: q.items.filter((i) => i.vin !== vin) }
+            if (q.id === toId) {
+              // already listed there (a double-import overlap) → keep the target's
+              // own copy rather than showing the VIN twice in one lot
+              if (q.items.some((i) => i.vin === vin)) return q
+              return { ...q, items: [...q.items, { ...item }] }
+            }
+            return q
+          }),
+        }))
+        pushQueue(get, fromId)
+        pushQueue(get, toId)
+        return true
       },
 
       // A car deleted from the system (transport cancelled, never arrived) used
