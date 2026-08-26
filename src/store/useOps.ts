@@ -234,17 +234,59 @@ interface OpsState {
   loadFromCloud: (authoritative?: boolean) => Promise<void>
 }
 
+/**
+ * Queues whose cloud write is still in flight (or has failed and is being
+ * retried) — id → the exact copy this device is trying to save.
+ *
+ * Every 'ops' sync replaces the whole queue list with the cloud copy, and the
+ * cloud does not have an unconfirmed write yet. Without this, a change made on
+ * screen jumps back to its old value a second later: the operator moves a VIN
+ * to another lot, some other device (or this one) broadcasts, the pull lands
+ * before the upsert does, and the move is undone. Pulls now re-apply whatever
+ * is in here on top of the cloud copy, so a pending change survives until the
+ * write is actually confirmed — or until it is given up on and rolled back
+ * with an error the operator can see.
+ */
+const pendingPush = new Map<string, WorkQueue>()
+
+/** Re-apply unconfirmed local writes over a freshly fetched cloud list. */
+function applyPending(cloud: WorkQueue[]): WorkQueue[] {
+  if (!pendingPush.size) return cloud
+  const out = cloud.map((q) => pendingPush.get(q.id) ?? q)
+  const have = new Set(out.map((q) => q.id))
+  for (const [id, q] of pendingPush) if (!have.has(id)) out.push(q) // brand-new queue
+  return out
+}
+
+/**
+ * Push queues to the cloud, then tell every client to refetch — ONE broadcast,
+ * after ALL of them land. Broadcasting per queue is what corrupted a move
+ * between two lots: the first upsert's broadcast triggered a refetch while the
+ * second queue was still only local, so everyone pulled a half-applied move.
+ */
+function pushQueues(get: () => OpsState, ids: string[]) {
+  const qs = ids.map((id) => get().queues.find((x) => x.id === id)).filter((q): q is WorkQueue => !!q)
+  if (!qs.length) return
+  for (const q of qs) pendingPush.set(q.id, q)
+  Promise.all(qs.map((q) => db.upsertOpsQueue(q))).then(
+    () => {
+      // only clear entries this push owns — a newer edit may have replaced them
+      for (const q of qs) if (pendingPush.get(q.id) === q) pendingPush.delete(q.id)
+      sendSync('ops')
+    },
+    (e) => {
+      console.error('[db] pushQueues', e)
+      for (const q of qs) if (pendingPush.get(q.id) === q) pendingPush.delete(q.id)
+      // NOT just a log: with the write given up on, the next sync rolls the
+      // change back on screen — the operator must know it didn't save.
+      useYard.getState().toast('err', `บันทึกคิว "${qs[0].name ?? ''}" ขึ้น cloud ไม่สำเร็จ — กรุณาลองใหม่`)
+    },
+  )
+}
+
 /** Push one queue to the cloud + tell other clients to refetch (fire-and-forget). */
 function pushQueue(get: () => OpsState, id: string) {
-  const q = get().queues.find((x) => x.id === id)
-  if (!q) return
-  db.upsertOpsQueue(q).then(() => sendSync('ops')).catch((e) => {
-    console.error('[db] pushQueue', e)
-    // NOT just a log: the next 'ops' broadcast replaces local queues with the
-    // cloud copy, so a queue that failed to upload quietly disappears — the
-    // operator must know the save didn't take.
-    useYard.getState().toast('err', `บันทึกคิว "${q.name ?? ''}" ขึ้น cloud ไม่สำเร็จ — กรุณาลองใหม่`)
-  })
+  pushQueues(get, [id])
 }
 
 export const useOps = create<OpsState>()(
@@ -328,6 +370,7 @@ export const useOps = create<OpsState>()(
       },
 
       removeQueue: (id) => {
+        pendingPush.delete(id) // deleted — never re-apply it over a later pull
         set((s) => ({ queues: s.queues.filter((q) => q.id !== id) }))
         db.deleteOpsQueue(id).then(() => sendSync('ops')).catch((e) => console.error('[db] removeQueue', e))
       },
@@ -397,8 +440,9 @@ export const useOps = create<OpsState>()(
             return q
           }),
         }))
-        pushQueue(get, fromId)
-        pushQueue(get, toId)
+        // ONE push for both lots: a per-queue broadcast let everyone refetch a
+        // half-applied move, and the VIN bounced back to where it started
+        pushQueues(get, [fromId, toId])
         return true
       },
 
@@ -458,6 +502,7 @@ export const useOps = create<OpsState>()(
         const sid = useYard.getState().currentSite
         if (!sid) return
         const gone = get().queues.filter((q) => !q.site || q.site === sid).map((q) => q.id)
+        for (const id of gone) pendingPush.delete(id) // deleted — don't re-apply
         set((s) => ({ queues: s.queues.filter((q) => q.site && q.site !== sid) }))
         Promise.all(gone.map((id) => db.deleteOpsQueue(id)))
           .then(() => sendSync('ops'))
@@ -614,13 +659,16 @@ export const useOps = create<OpsState>()(
           .catch(() => {})
         const fetched = await db.fetchOpsQueues()
         if (fetched === null) return // table missing / offline — keep local state
-        const cloud = sanitizeQueues(fetched)
+        // unconfirmed local writes win over the cloud copy — see pendingPush
+        const cloud = applyPending(sanitizeQueues(fetched))
         if (cloud.length) set({ queues: cloud })
         else if (authoritative) set({ queues: [] }) // e.g. another device cleared all
         else {
           // first run: cloud empty → seed it from this device's local queues
           const local = get().queues
-          if (local.length) await Promise.all(local.map((q) => db.upsertOpsQueue(q)))
+          // best-effort seed — upsertOpsQueue now throws, and one failed queue
+          // must not abort the rest (or reject this pull)
+          if (local.length) await Promise.all(local.map((q) => db.upsertOpsQueue(q).catch((e) => console.error('[db] seed queue', e))))
         }
       },
     }),
