@@ -168,13 +168,18 @@ export default function App() {
   // paints its cars from the local cache before any network answer
   useEffect(() => { loadFromIdb(); useYard.getState().loadUnitsFromIdb() }, [loadFromIdb])
 
-  // ── a gated-out car must not keep holding a parking slot ──────────────────
+  // ── a gated-out car must not keep counting as "still in the yard" ─────────
   // Cars leave through several paths (ops-scan + 09:30 flush, Co-Inspection
-  // import, restored gate-out history) and only the ops-scan path released its
-  // slot — the rest stayed painted into their lane, blocking the row. Sweep on
-  // boot and every minute (the flush is clock-driven, no data change fires it):
-  // any positioned unit whose sheet derives Gate-out is marked departed — the
-  // slot frees, the lane closes up, and the tracking row's history stays.
+  // import, restored gate-out history) and only the ops-scan path marked its
+  // unit DEPARTED. Sweep on boot and every minute (the flush is clock-driven,
+  // no data change fires it): any unit whose sheet derives Gate-out is marked
+  // departed — its slot frees, the lane closes up, the tracking history stays.
+  //
+  // Deliberately NOT limited to positioned units any more: a car that gated out
+  // through the sheet without ever holding a slot stayed status='PARKED'
+  // forever, and those built up to 12,000+ phantom "in yard" rows at NYB —
+  // every device's placement pull dragged all of them down (16 pages instead
+  // of ~3) on every sync, a big slice of the database overload.
   useEffect(() => {
     if (!loggedInUserId) return
     const sweep = () => {
@@ -183,20 +188,29 @@ export default function App() {
       const gone: string[] = []
       for (const vin in units) {
         const u = units[vin]
-        if (u.block == null && u.row == null && u.slot == null) continue
+        const positioned = u.block != null || u.row != null || u.slot != null
+        if (u.status === 'DEPARTED' && !positioned) continue // already fully released
         const r = rows[vin]
         if (r && deriveCarStatus(r.cells) === 'Gate-out') gone.push(vin)
       }
       if (gone.length) {
+        // positioned cars first — freeing a blocked lane matters NOW, clearing
+        // a slot-less history row can wait for a later pass
+        gone.sort((a, b) => Number(units[b].block != null) - Number(units[a].block != null))
+        // cap each pass: the first sweep after this fix meets a 12k backlog,
+        // and departing all of it at once from every open device would itself
+        // be the kind of write burst this is meant to end. ~400 a minute per
+        // device drains the backlog within the hour, idempotently.
+        const batch = gone.slice(0, 400)
         // snapshot each car's last slot before markDepartedMany clears it — this
         // path (unlike the ops-scan gate-out) never ran doGateOut, so it never
         // got its own snapshot; without this a reprinted Grouping / find-car
         // sheet would show "ไม่พบ" for every car this sweep releases
-        for (const vin of gone) {
+        for (const vin of batch) {
           const loc = yardLocCode(units[vin])
           if (loc) useTracking.getState().updateCell(vin, LAST_LOCATION_KEY, loc)
         }
-        useYard.getState().markDepartedMany(gone)
+        useYard.getState().markDepartedMany(batch)
       }
 
       // ── model heal: the sheet's รุ่น is the truth — a unit created from an
