@@ -4,6 +4,7 @@
  * Call patterns: fire-and-forget for mutations, await for initial data load.
  */
 import { supabase, isConfigured } from './supabase'
+import { sendSync } from './syncBus'
 import type { AppUser, Block, Damage, Site, Trailer, Unit } from '../types'
 import type { DbDamage, DbTrailer, DbUnit, DbUnitWithDamages } from './database.types'
 import type { TrackRow } from './excelTracking'
@@ -261,13 +262,20 @@ export async function fetchUnitPlacements(siteId?: string | null, onPage?: (unit
   if (!isConfigured()) return []
   const PAGE = 1000
   const out: Unit[] = []
-  for (let from = 0; ; from += PAGE) {
+  // KEYSET pagination (vin > last seen), not OFFSET. This sweep runs every few
+  // minutes on every device, and with OFFSET the database re-walks and throws
+  // away everything before each page — on a 15k-car site the last page alone
+  // discards 15,000 index entries, every sweep, per device. vin is the unique
+  // primary key, so "after the last vin" lands each page in O(page) instead.
+  let after = ''
+  for (;;) {
     let q = supabase.from('units').select(PLACEMENT_SELECT).neq('status', 'DEPARTED')
     if (siteId) q = (q as any).eq('site_id', siteId)
-    const { data, error } = await (q as any).order('vin').range(from, from + PAGE - 1)
+    if (after) q = (q as any).gt('vin', after)
+    const { data, error } = await (q as any).order('vin').limit(PAGE)
     if (error) { console.error('[db] fetchUnitPlacements', error); throw error }
     const batch = ((data ?? []) as DbUnit[]).map((r) => parseUnitRow(r))
-    if (batch.length) { out.push(...batch); onPage?.(batch) }
+    if (batch.length) { out.push(...batch); onPage?.(batch); after = batch[batch.length - 1].vin }
     if (batch.length < PAGE) break
   }
   return out
@@ -334,7 +342,18 @@ export async function fetchAllUnits(
   if (onPlacements) {
     fetchUnitPlacements(siteId, onPlacements).catch((e) => console.error('[db] fetchAllUnits placements', e))
   }
-  const pages = await Promise.all(Array.from({ length: pageCount }, (_, p) => fetchPage(p)))
+  // at most 4 heavy pages in flight: every page is a units×damages join whose
+  // rows carry base64 photos, and firing all ~30 of them at once (a 15k-car
+  // site) was 30 simultaneous multi-MB joins on a 2-vCPU database — the load
+  // burst behind the afternoon statement-timeout storms. 4-wide keeps the pull
+  // fast while leaving the database room to serve everyone else.
+  const CONC = 4
+  const pages: Unit[][] = []
+  for (let p0 = 0; p0 < pageCount; p0 += CONC) {
+    const batch = await Promise.all(
+      Array.from({ length: Math.min(CONC, pageCount - p0) }, (_, i) => fetchPage(p0 + i)))
+    pages.push(...batch)
+  }
   return pages.flat()
 }
 
@@ -499,22 +518,31 @@ export async function insertDamage(vin: string, d: Damage): Promise<void> {
     // its response was lost (flaky yard network). The retry queue re-sends
     // until it sees a success — a duplicate IS that success, so report it as
     // one instead of erroring forever on a defect that is safely stored.
-    if (isDuplicateKey(error)) return
+    if (isDuplicateKey(error)) { sendSync('dmg', { vins: [vin] }); return }
     // optional columns (remark / area_th / item_th) may not be migrated yet —
     // retry without them so the damage still saves (extra fields stay on this
     // device until the columns exist).
     if (isMissingColumn(error)) {
       const { error: e2 } = await supabase.from('damages').insert(stripOptionalDamageCols(row))
-      if (!e2 || isDuplicateKey(e2)) return
+      if (!e2 || isDuplicateKey(e2)) { sendSync('dmg', { vins: [vin] }); return }
     }
     console.error('[db] insertDamage', vin, error)
     throw error
   }
+  // announce the VIN out-of-band: a photo-bearing damage row is too big for the
+  // realtime row stream (its event body arrives stripped, with no vin), and the
+  // old fallback — every device re-pulling the ENTIRE site with photos — is what
+  // was saturating the database each time a station saved a defect.
+  sendSync('dmg', { vins: [vin] })
 }
 
 export async function patchDamage(
   id: string,
   patch: Partial<Damage>,
+  /** the damage's car — pass it when the patch carries photos, so other
+   *  devices can be told WHICH car to refresh (the photo payload itself is too
+   *  big for the realtime row stream, whose event arrives body-stripped). */
+  vin?: string,
 ): Promise<void> {
   if (!isConfigured()) return
   const row: Partial<DbDamage> = {}
@@ -543,6 +571,11 @@ export async function patchDamage(
   if ('remark'         in patch) row.remark         = patch.remark ?? null
   if ('areaTh'         in patch) row.area_th        = patch.areaTh ?? null
   if ('itemTh'         in patch) row.item_th        = patch.itemTh ?? null
+  // photo-bearing patches are the ones whose realtime event arrives stripped —
+  // announce the vin so receivers refetch just this car instead of everything
+  const announce = () => {
+    if (vin && ('photo' in patch || 'photos' in patch)) sendSync('dmg', { vins: [vin] })
+  }
   const { error } = await supabase.from('damages').update(row).eq('id', id)
   if (error) {
     // optional columns may not be migrated yet — retry without them so the rest
@@ -553,11 +586,13 @@ export async function patchDamage(
       // "succeed" while saving nothing; report the failure instead
       if (Object.keys(stripped).length) {
         const { error: e2 } = await supabase.from('damages').update(stripped).eq('id', id)
-        if (!e2) return
+        if (!e2) { announce(); return }
       }
     }
     console.error('[db] patchDamage', id, error)
+    return
   }
+  announce()
 }
 
 export async function deleteDamage(id: string): Promise<void> {
@@ -814,6 +849,12 @@ export async function upsertDamages(items: { vin: string; d: Damage }[], onProgr
   // on rows that happened to share a chunk with a row that had them.
   const rows = items.map(({ vin, d }) => ({ remark: null, area_th: null, item_th: null, ...damageToRow(vin, d) }))
   await bulkUpsert('damages', rows, 500, 'id', 5, stripOptionalDamageCols, onProgress)
+  // small interactive batches (admin edit / manual add) announce their VINs so
+  // other devices refresh just those cars. A file import of thousands does NOT —
+  // its receivers converge through their own site pull, and a broadcast that big
+  // would make every device fetch thousands of cars one list at a time.
+  const vins = [...new Set(items.map((i) => i.vin))]
+  if (vins.length <= 50) sendSync('dmg', { vins })
 }
 
 // ── tracking rows (master vehicle list — flexible JSONB columns) ────────────
