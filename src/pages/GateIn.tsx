@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { ScanLine, LogOut, ChevronDown, ChevronRight, CheckCircle2, Clock, Calendar, X, ClipboardList, ListChecks, Pencil, Archive, ArchiveRestore } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { ScanLine, LogOut, ChevronDown, ChevronRight, CheckCircle2, Clock, Calendar, X, ClipboardList, ListChecks, Pencil, Archive, ArchiveRestore, MoveRight } from 'lucide-react'
 import { useYard, useUnits } from '../store/useYard'
 import { PageHead, cx } from '../components/ui'
 import { useTracking, useTrackingRows } from '../store/useTracking'
@@ -321,6 +321,87 @@ function QueueName({ q, onExpand }: { q: WorkQueue; onExpand: () => void }) {
   )
 }
 
+/**
+ * "Move this VIN to another lot" — right-click (or long-press on a phone) a car
+ * in a Pre Gate-in lot and pick where it really belongs.
+ *
+ * Arrival lots come from the import file, and the file is written before the
+ * trucks leave: a car that ends up on the next truck instead sits in the wrong
+ * lot, and the gate operator either can't find it or ticks it off a lot it never
+ * came on. Only Gate-in lots offer this — a PDI/PM/FINAL car carries station
+ * state (stage, inspector, result) that means nothing in another station's queue.
+ */
+function MoveVinModal({ vin, from, targets, onClose }: {
+  vin: string
+  from: WorkQueue
+  targets: WorkQueue[]
+  onClose: () => void
+}) {
+  const moveVin = useOps((s) => s.moveVin)
+  const addVins = useOps((s) => s.addVins)
+  const toast = useYard((s) => s.toast)
+  const virtualFrom = from.id === '__uncovered_pregatein'
+
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [onClose])
+
+  const move = (to: WorkQueue) => {
+    // the "(รอ Gate-in · ยังไม่มีคิวงาน)" card is synthesized, not a queue —
+    // there is nothing to remove the car FROM, only a lot to add it to
+    const okMove = virtualFrom ? addVins(to.id, [vin]).added > 0 : moveVin(from.id, to.id, vin)
+    if (okMove) toast('ok', `ย้าย ${vin} ไปคิวงาน "${to.name}" แล้ว`)
+    else toast('err', 'ย้ายไม่สำเร็จ — เลขวินนี้อยู่ในคิวงานปลายทางอยู่แล้ว')
+    onClose()
+  }
+
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.32)', backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)' }}
+      onClick={onClose}>
+      <div className="pop w-full overflow-hidden flex flex-col"
+        style={{ maxWidth: 420, borderRadius: 18, background: 'var(--panel)', border: '0.5px solid rgba(0,0,0,0.10)' }}
+        onClick={(e) => e.stopPropagation()}>
+        <div className="px-4 pt-4 pb-3 flex items-start gap-2">
+          <MoveRight size={16} className="mt-0.5 shrink-0" style={{ color: 'var(--brand)' }} />
+          <div className="min-w-0 flex-1">
+            <div className="text-[13px] font-bold">ย้ายเลขวินไปคิวงานอื่น</div>
+            <div className="vin text-[12px] mt-1 truncate">{vin}</div>
+            <div className="text-[11px] mt-0.5 truncate" style={{ color: 'var(--muted)' }}>จาก: {from.name}</div>
+          </div>
+          <button className="w-7 h-7 rounded-full flex items-center justify-center shrink-0"
+            style={{ background: 'var(--chip)', color: 'var(--muted)' }} onClick={onClose} title="ปิด">
+            <X size={14} />
+          </button>
+        </div>
+        <div className="divider mx-4" />
+        <div className="px-3 py-3 overflow-auto" style={{ maxHeight: '52vh' }}>
+          {targets.length === 0 ? (
+            <div className="text-[12px] px-2 py-3 text-center" style={{ color: 'var(--muted)' }}>
+              ไม่มีคิวงาน Gate-in อื่นให้ย้ายไป
+            </div>
+          ) : (
+            <div className="flex flex-col gap-1.5">
+              {targets.map((t) => {
+                const { done, total } = queueProgress(t)
+                return (
+                  <button key={t.id} className="btn btn-ghost w-full justify-between px-3 py-2.5 text-left"
+                    onClick={() => move(t)}>
+                    <span className="text-[12.5px] font-bold truncate" style={{ color: 'var(--brand)' }}>{t.name}</span>
+                    <span className="badge tabular shrink-0">{done}/{total}</span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Pre Gate-in work queues (the "(yard · date · N)" import batches) — same view
 //    as YardOps: name · done/total · waiting VIN list. Scoped to the active site. ──
 function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
@@ -334,6 +415,8 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
   const currentSite = useYard((s) => s.currentSite)
   const rows = useTrackingRows()
   const [openId, setOpenId] = useState<string | null>(null)
+  const [moving, setMoving] = useState<{ fromId: string; vin: string } | null>(null)
+  const longPress = useRef<number | null>(null)
   const modelByVin = useMemo(() => {
     const m = new Map<string, string>()
     for (const r of rows) m.set(r.vin, r.cells['Model name'] || r.cells['Model'] || '')
@@ -382,7 +465,13 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
     items: uncovered.map((r) => ({ vin: r.vin, addedAt: 0, done: false })),
   } : null
   const renderQueues = virtual ? [...queues, virtual] : queues
+  const movingFrom = moving ? renderQueues.find((q) => q.id === moving.fromId) ?? null : null
   return (
+    <>
+    {movingFrom && moving && (
+      <MoveVinModal vin={moving.vin} from={movingFrom} onClose={() => setMoving(null)}
+        targets={queues.filter((t) => t.id !== moving.fromId)} />
+    )}
     <div className="panel overflow-hidden">
       <div className="px-4 py-2.5 border-b hairline flex items-center gap-2">
         <ClipboardList size={14} style={{ color: 'var(--brand)' }} />
@@ -451,9 +540,29 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
                       <CheckCircle2 size={13} /> เข้าครบแล้ว
                     </div>
                   )}
+                  {/* the move is invisible otherwise — say it once, at the top of
+                      the list, and only when there is somewhere to move to */}
+                  {queues.some((t) => t.id !== q.id) && (
+                    <div className="px-4 py-1.5 text-[10.5px] flex items-center gap-1" style={{ color: 'var(--faint)' }}>
+                      <MoveRight size={11} /> คลิ๊กขวา (หรือกดค้าง) ที่เลขวิน เพื่อย้ายไปคิวงานอื่น
+                    </div>
+                  )}
                   {/* every car — pending first, each Gate-in'd car shows when + who */}
                   {[...q.items].sort((a, b) => Number(a.done) - Number(b.done)).map((item) => (
-                    <div key={item.vin} className="flex items-center gap-3 px-4 py-2.5">
+                    // right-click (desktop) / long-press (phone) → move this car
+                    // to another arrival lot. preventDefault keeps the browser's
+                    // own menu — and the long-press text selection — out of the way.
+                    <div key={item.vin} className="flex items-center gap-3 px-4 py-2.5 select-none"
+                      title="คลิ๊กขวา (หรือกดค้าง) เพื่อย้ายไปคิวงานอื่น"
+                      onContextMenu={(e) => { e.preventDefault(); setMoving({ fromId: q.id, vin: item.vin }) }}
+                      onTouchStart={() => {
+                        // Android/iOS fire `contextmenu` on long-press, but not on
+                        // every browser — this timer is the fallback, and opening
+                        // twice is harmless (same VIN, same target state).
+                        longPress.current = window.setTimeout(() => setMoving({ fromId: q.id, vin: item.vin }), 550)
+                      }}
+                      onTouchEnd={() => { if (longPress.current) window.clearTimeout(longPress.current) }}
+                      onTouchMove={() => { if (longPress.current) window.clearTimeout(longPress.current) }}>
                       <div className="w-2 h-2 rounded-full shrink-0" style={{ background: item.done ? '#22c55e' : '#f6d365' }} />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
@@ -478,6 +587,7 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
         })}
       </div>
     </div>
+    </>
   )
 }
 
