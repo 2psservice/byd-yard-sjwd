@@ -1347,7 +1347,9 @@ function DamageForm({ onSaveAll, onCancel, vin }: {
   const [rows, setRows] = useState<DmgRow[]>([mkRow()])
   const [busyRid, setBusyRid] = useState<string | null>(null)
   const [armed, setArmed] = useState<string | null>(null) // rid whose delete is armed (2-tap guard)
-  const [heavy, setHeavy] = useState(true) // NG / HEAVY NG choice (HEAVY NG default, as before)
+  // NG / HEAVY NG choice — NG is the default because that is what most defects
+  // recorded on the field actually are; HEAVY NG is the deliberate escalation
+  const [heavy, setHeavy] = useState(false)
   const [status, setStatus] = useState<string>('Waiting Repair') // repair status saved with the defects
   // ── VIN-label photo (Export Label), one per car ──
   const trackHasRow = useTracking(s => !!(vin && s.rows[vin]))
