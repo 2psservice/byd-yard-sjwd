@@ -1080,9 +1080,6 @@ onSync('status', (p: RowsPayload) => {
 const STATUS_RESYNC_MS = 60_000
 if (typeof window !== 'undefined') {
   const resync = () => {
-    // a hidden tab shows no one anything — skip its minute tick; the
-    // visibilitychange listener below re-syncs the moment it comes back
-    if (document.visibilityState === 'hidden') return
     const s = useTracking.getState()
     if (!s.loaded || !useYard.getState().loggedInUserId) return
     s.syncCloud().catch(() => {})

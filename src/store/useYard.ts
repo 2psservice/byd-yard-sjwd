@@ -56,6 +56,17 @@ let unitsChannel: RealtimeChannel | null = null
 let unitsHadDrop = false
 const unitTs = new Map<string, number>()
 
+// A damage row that carries base64 photos can exceed Supabase Realtime's
+// max_record_bytes; the server then delivers the change WITHOUT the record
+// body (no vin), so other devices silently never learn about that damage
+// until a full reload. When we see such a truncated damage event we schedule
+// one debounced re-pull of the active site's units so nothing is lost.
+let damageRefetchTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleDamageRefetch(run: () => void) {
+  if (damageRefetchTimer) clearTimeout(damageRefetchTimer)
+  damageRefetchTimer = setTimeout(() => { damageRefetchTimer = null; run() }, 1500)
+}
+
 // How many times loadFromSupabase has failed in a row, and the pending retry.
 // Module scope so concurrent callers share one backoff and one timer instead of
 // each starting its own retry loop against an already-struggling database.
@@ -875,10 +886,7 @@ export const useYard = create<YardState>()(
           const u = s.units[vin]
           if (!u) return s
           const gone = u.damages.find((x) => x.id === id)
-          // tell other devices WHICH car lost a defect — the realtime DELETE
-          // event may arrive key-less, and the old fallback for that case
-          // (re-pull the whole site) is exactly the load storm this replaces
-          db.deleteDamage(id).then(() => sendSync('dmg', { vins: [vin] })).catch((e) => console.error('[db] removeDamage', e))
+          db.deleteDamage(id).catch((e) => console.error('[db] removeDamage', e))
           // permanent audit line in the admin Event tab (survives the delete)
           if (gone) {
             const what = gone.item || gone.note || gone.type || 'Defect'
@@ -973,7 +981,7 @@ export const useYard = create<YardState>()(
         set((s) => {
           const u = s.units[vin]
           if (!u) return s
-          db.patchDamage(id, patch, vin).catch((e) => console.error('[db] updateDamage', e))
+          db.patchDamage(id, patch).catch((e) => console.error('[db] updateDamage', e))
           return { units: { ...s.units, [vin]: { ...u, damages: u.damages.map((x) => x.id === id ? { ...x, ...patch } : x) } } }
         }),
 
@@ -1614,11 +1622,22 @@ export const useYard = create<YardState>()(
               if (payload.eventType === 'DELETE') {
                 const id = (payload.old as { id?: string })?.id
                 if (!id) {
-                  // key-less DELETE payload — the deleting device announces the
-                  // car on the 'dmg' broadcast (see removeDamage), and this
-                  // client refreshes JUST that car there. The old fallback —
-                  // re-pulling the ENTIRE site with photos on every device —
-                  // was a major source of the database timeout storms.
+                  // key-only/truncated DELETE payload — refetch this site's units so
+                  // the removal still lands here (mirror of the INSERT/UPDATE path;
+                  // otherwise the deleted defect lingered and could be re-uploaded)
+                  scheduleDamageRefetch(() => {
+                    const siteId = get().currentSite
+                    if (!siteId) return
+                    db.fetchAllUnits(siteId).then((cloud) => {
+                      if (!cloud.length) return
+                      set((s) => {
+                        const merged: Record<string, Unit> = { ...s.units }
+                        // never let the cloud copy erase a defect still queued locally
+                        for (const u of cloud) merged[u.vin] = attachPendingDamages(s.pendingDamages, u)
+                        return { units: merged }
+                      })
+                    }).catch((e) => console.error('[db] damage delete refetch', e))
+                  })
                   return
                 }
                 set((s) => {
@@ -1634,13 +1653,21 @@ export const useYard = create<YardState>()(
               const r = payload.new as DbDamage
               if (!r?.vin) {
                 // truncated INSERT/UPDATE (base64 photos > realtime max) — the
-                // record body was dropped, so this event can't even say WHICH
-                // car changed. The writer announces the VIN on the 'dmg'
-                // broadcast instead (insertDamage / patchDamage / upsertDamages)
-                // and the onSync('dmg') receiver below refreshes just that car.
-                // The old fallback — every device re-pulling the ENTIRE site
-                // with photos per defect saved — was the single biggest load
-                // storm on the database (the afternoon 57014 timeout floods).
+                // record body was dropped. Re-pull this site's units so the new
+                // damage (and its photos, straight from the DB) still shows here.
+                scheduleDamageRefetch(() => {
+                  const siteId = get().currentSite
+                  if (!siteId) return
+                  db.fetchAllUnits(siteId).then((cloud) => {
+                    if (!cloud.length) return
+                    set((s) => {
+                      const merged: Record<string, Unit> = { ...s.units }
+                      // never let the cloud copy erase a defect still queued locally
+                      for (const u of cloud) merged[u.vin] = attachPendingDamages(s.pendingDamages, u)
+                      return { units: merged }
+                    })
+                  }).catch((e) => console.error('[db] damage refetch', e))
+                })
                 return
               }
               const dmg = db.rowToDamage(r)
@@ -1708,6 +1735,7 @@ export const useYard = create<YardState>()(
 
       unsubscribeRealtime: () => {
         if (unitsChannel) { supabase.removeChannel(unitsChannel); unitsChannel = null; unitTs.clear() }
+        if (damageRefetchTimer) { clearTimeout(damageRefetchTimer); damageRefetchTimer = null } // don't refetch after logout/site switch
         set({ unitsRealtimeConnected: false })
       },
 
@@ -2065,10 +2093,6 @@ useYard.subscribe((s, prev) => {
 const PLACEMENT_RESYNC_MS = 3 * 60_000
 if (typeof window !== 'undefined') {
   const resync = () => {
-    // a backgrounded tab is nobody's screen — its 16-page sweep every 3 minutes
-    // was pure database load with no one looking. The visibilitychange listener
-    // below re-syncs the moment the tab comes back, so nothing is missed.
-    if (document.visibilityState === 'hidden') return
     const s = useYard.getState()
     if (!s.loggedInUserId || !s.currentSite || !s.unitsCloudDone) return
     s.refreshPlacements().catch(() => {})
@@ -2097,22 +2121,6 @@ onSync('trailers', async (p: { siteId?: string }) => {
 onSync('policies', (p: { policies?: ParkingPolicy[] }) => {
   if (Array.isArray(p?.policies) && p.policies.length) useYard.setState({ policies: p.policies })
   else useYard.getState().loadPolicies().catch(() => {})
-})
-// another device saved/edited/removed a defect whose photos are too big for the
-// realtime row stream — it names the cars here, and this client refreshes JUST
-// those (one small per-VIN fetch) instead of the old full-site re-pull.
-onSync('dmg', (p: { vins?: string[] }) => {
-  const vins = (p?.vins ?? []).filter((v) => typeof v === 'string' && v)
-  if (!vins.length || vins.length > 50) return
-  db.fetchUnitsByVins(vins).then((cloud) => {
-    if (!cloud.length) return
-    useYard.setState((s) => {
-      const units = { ...s.units }
-      // never let the cloud copy erase a defect still queued locally
-      for (const u of cloud) units[u.vin] = attachPendingDamages(s.pendingDamages, u)
-      return { units }
-    })
-  }).catch((e) => console.error('[db] dmg sync pull', e))
 })
 
 // ---------- demo GPS seeding ----------

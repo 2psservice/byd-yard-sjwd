@@ -311,41 +311,29 @@ function useCloudNotFound(retryRef: { current: (v: string) => void }): (v: strin
  *  here forever). See lib/unitFocus for the full story. */
 const fetchUnitFallback = refreshUnitFocus
 
-// A saved defect (from the add-Defect form) always carries ≥1 photo — a damage
-// with NEITHER `photo` NOR `photos` on screen is usually the IndexedDB
-// boot-cache stub (photos are stripped before persisting there to keep it
-// small) that hasn't yet been replaced by the real cloud fetch.
-//
-// EXCEPT file-imported defects: Defect-Yard / Defect-Factory / Whale rows come
-// from an Excel sheet and legitimately never have a photo. Treating them as
-// "stub, go re-fetch" put every device that focused such a car into an
-// INFINITE fetch loop — each per-VIN cloud fetch returned the same photo-less
-// rows, replaced the unit object, re-fired the effect, fetched again, forever,
-// at network speed. That loop was a top source of the database's timeout storm.
-const IMPORTED_DEFECT_SOURCES = new Set(['yardDefect', 'factoryDefect', 'whaleDefect'])
-const hasPhotolessDamage = (u: Unit) =>
-  u.damages.some((d) => !d.photo && !d.photos?.length && !IMPORTED_DEFECT_SOURCES.has(d.source ?? ''))
-/** VINs already given their one heal attempt this session. NOT cleared on a
- *  completed fetch: if the cloud copy itself has no photos, fetching again
- *  can never produce a different answer — retrying IS the infinite loop.
- *  Only a fetch that FAILED (network) may try again on a later focus. */
-const vinsPhotoHealTried = new Set<string>()
+// A saved defect always carries ≥1 photo (the add-Defect form requires one
+// before Save is even enabled) — a damage with NEITHER `photo` NOR `photos`
+// on screen is proof this unit's local copy is the IndexedDB boot-cache stub
+// (photos are stripped before persisting there to keep it small; see
+// useYard's IDB write-through) that hasn't yet been replaced by the real
+// cloud fetch. Devices whose cloud pull is still in flight showed defect
+// cards with no photo at all until something else happened to reload them.
+const hasPhotolessDamage = (u: Unit) => u.damages.some((d) => !d.photo && !d.photos?.length)
+const vinsHealingPhotos = new Set<string>()
 /** Force-refresh one VIN from the cloud even though a local copy already
  *  exists — fetchUnitFallback() above deliberately no-ops in that case, which
  *  is right for "missing entirely" but wrong for "present but a photo-less
  *  stub". Skips a car whose local copy still has an unsynced pending defect
  *  (useYard.pendingDamages) so this doesn't race and clobber it. */
 async function fetchUnitPhotoHeal(vin: string): Promise<void> {
-  if (!isConfigured() || vinsPhotoHealTried.has(vin)) return
+  if (!isConfigured() || vinsHealingPhotos.has(vin)) return
   if (Object.values(useYard.getState().pendingDamages).some((p) => p.vin === vin)) return
-  vinsPhotoHealTried.add(vin)
+  vinsHealingPhotos.add(vin)
   try {
     const [u] = await fetchUnitsByVins([vin])
     if (u) useYard.setState((s) => ({ units: { ...s.units, [u.vin]: u } }))
-  } catch (e) {
-    console.error('[db] fetchUnitPhotoHeal', e)
-    vinsPhotoHealTried.delete(vin) // transport failure — a later focus may retry
-  }
+  } catch (e) { console.error('[db] fetchUnitPhotoHeal', e) }
+  finally { vinsHealingPhotos.delete(vin) }
 }
 
 /** Resolve a typed VIN for unit-based roles (Driver / PDI / Mechanic).
