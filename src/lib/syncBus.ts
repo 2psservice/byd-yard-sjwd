@@ -16,7 +16,15 @@
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase, isConfigured } from './supabase'
 
-export type SyncEvent = 'blocks' | 'ops' | 'trailers' | 'viewdefault' | 'policies' | 'moves' | 'status'
+export type SyncEvent = 'blocks' | 'ops' | 'trailers' | 'viewdefault' | 'policies' | 'moves' | 'status' | 'dmg'
+
+/** Defect data changed for these cars — receivers refetch JUST these VINs.
+ *  Exists because a photo-bearing damage row is too big for the realtime row
+ *  stream (its event arrives with the body stripped, so the receiver cannot
+ *  even tell WHICH car changed) — the writer, who knows the VIN, announces it
+ *  here instead. Only sent for photo-bearing writes: a photo-less damage rides
+ *  the row stream intact, and announcing it too would just add requests. */
+export interface DmgPayload { vins: string[] }
 
 /** One car's new spot, as broadcast to every other open client. */
 export interface MoveMsg { vin: string; block?: string; row?: number; slot?: number; status?: string; at: number }
@@ -36,7 +44,7 @@ type Handler = (payload: any) => void
 
 let channel: RealtimeChannel | null = null
 const handlers = new Map<SyncEvent, Handler[]>()
-const EVENTS: SyncEvent[] = ['blocks', 'ops', 'trailers', 'viewdefault', 'policies', 'moves', 'status']
+const EVENTS: SyncEvent[] = ['blocks', 'ops', 'trailers', 'viewdefault', 'policies', 'moves', 'status', 'dmg']
 
 /** Register a listener (module-scope, survives channel restarts). */
 export function onSync(event: SyncEvent, h: Handler): void {
@@ -65,6 +73,10 @@ export function __deliverForTest(event: SyncEvent, payload: unknown): void {
   for (const h of handlers.get(event) ?? []) {
     try { h(payload) } catch (e) { console.error(`[syncBus] ${event} handler`, e) }
   }
+}
+// reachable from automated tests, which drive the app through the window only
+if (import.meta.env.DEV && typeof window !== 'undefined') {
+  ;(window as unknown as { __syncDeliver?: typeof __deliverForTest }).__syncDeliver = __deliverForTest
 }
 
 export function stopSyncBus(): void {
