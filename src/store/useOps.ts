@@ -10,8 +10,9 @@ import * as db from '../lib/db'
 import { onSync, sendSync } from '../lib/syncBus'
 import { useYard } from './useYard'
 import { useTracking } from './useTracking' // one-way: tracking never imports ops
-import { hasLeftGate } from '../lib/carStatus'
+import { hasLeftGate, deriveCarStatus, isGateOutStamp } from '../lib/carStatus'
 import { PM_KEYS } from '../lib/trackingColumns'
+import type { TrackRow } from '../lib/excelTracking'
 import { quotaSafeStorage } from '../lib/persistStorage'
 
 /** Process stage of one vehicle within a station queue (PDI / PM / Wash …).
@@ -1017,6 +1018,21 @@ export function useQueues(): WorkQueue[] {
 // reconciler, the queue cards and the station badges cannot drift apart again.
 
 /**
+ * Has this car passed the gate outbound at ANY point in its life — even if its
+ * status has since gone back to Pre Gate-in?
+ *
+ * Three independent traces, because no single one survives every path a car can
+ * take: the gate-out stamp the sheet carries, and the row's own audit history
+ * (which records the Car Status the gate wrote). Either is proof; a car that
+ * has genuinely never left carries neither, so it is never mistaken for one
+ * that has.
+ */
+function everLeftGate(r: TrackRow): boolean {
+  if (isGateOutStamp(r.cells['Gate Out time stamp']) || isGateOutStamp(r.cells['Gate Out Date'])) return true
+  return (r.history ?? []).some((h) => /gate\s*-?\s*out/i.test(h.to ?? ''))
+}
+
+/**
  * Queues with gated-out cars removed. A vehicle that has left the yard must
  * drop out of every ordinary queue view + count no matter how it was gated out
  * (mobile scan, Excel import, re-import). EXCEPTION: a delivery **sequence**
@@ -1029,10 +1045,23 @@ export function useActiveQueues(): WorkQueue[] {
   const rows = useTracking((s) => s.rows)
   return useMemo(() => {
     const gone = new Set<string>()
-    for (const vin in rows) if (hasLeftGate(rows[vin].cells)) gone.add(vin)
-    if (!gone.size) return queues
+    const cameBack = new Set<string>()
+    for (const vin in rows) {
+      const r = rows[vin]
+      if (hasLeftGate(r.cells)) { gone.add(vin); continue }
+      if (deriveCarStatus(r.cells) === 'Pre Gate-in' && everLeftGate(r)) cameBack.add(vin)
+    }
+    if (!gone.size && !cameBack.size) return queues
     return queues.map((q) => {
-      if (isSequenceQueue(q)) return q // sequence runs keep gated-out cars for progress
+      if (isSequenceQueue(q)) {
+        // A delivery run keeps its gated-out cars (that IS its final stage), but
+        // a car that has since come BACK — sold, returned, now Pre Gate-in again
+        // — is starting a fresh arrival, not outstanding work on a run that
+        // finished weeks ago. It was making the run count backwards (6/6 → 5/6)
+        // and the DN reappear on the gate-out board with no way to close it.
+        return q.items.some((i) => cameBack.has(i.vin))
+          ? { ...q, items: q.items.filter((i) => !cameBack.has(i.vin)) } : q
+      }
       return q.items.some((i) => gone.has(i.vin)) ? { ...q, items: q.items.filter((i) => !gone.has(i.vin)) } : q
     })
   }, [queues, rows])
