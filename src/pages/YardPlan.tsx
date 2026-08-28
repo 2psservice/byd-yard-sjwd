@@ -2,18 +2,21 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Zap, Layers, MapPin, Pencil, Eye, Plus, Trash2, RotateCw, Square, MousePointer2,
   Copy, X, Maximize2, Upload, Loader2, ImageOff, Grid3x3, ArrowLeftRight, ChevronDown,
-  Search, Printer, Download,
+  Search, Printer, Download, ChevronUp, ChevronsUpDown,
 } from 'lucide-react'
 import { useYard, useUnits, useBlocks, WCL_STAGING_BLOCK } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
-import { yardLocFull } from '../lib/groupingImport'
+import { yardLocFull, byYardLocation } from '../lib/groupingImport'
 import { isConfigured, fetchUnitsByVins } from '../lib/db'
 import { deriveCarStatus, IN_YARD_STATUSES, CAR_STATUS_META } from '../lib/carStatus'
 import { rowInSite } from '../lib/siteScope'
 import { blockTag, blockKeyOfTag } from '../lib/format'
 import { rowsToCsv, type TrackRow } from '../lib/excelTracking'
 import { matchVins, toFindListRows } from '../lib/findCar'
-import { printFindList, exportFindListXlsx, findLocationText } from '../lib/groupingPrint'
+import { printFindList, exportFindListXlsx, findLocationText, type FindListRow } from '../lib/groupingPrint'
+
+/** Which column the ใบหารถ list is ordered by (click a header to change). */
+type FindSortKey = 'vin' | 'model' | 'color' | 'location'
 import { makeT } from '../i18n'
 import { MODELS, ZONE_COLOR } from '../lib/sampleData'
 import { BlockPopup } from '../components/BlockPopup'
@@ -844,7 +847,32 @@ function FindCarPanel({ units, siteName, onClose }: { units: Unit[]; siteName: s
   const unitByVin = useMemo(() => { const m = new Map<string, Unit>(); for (const u of units) m.set(u.vin, u); return m }, [units])
 
   const { found, notFound, asked } = useMemo(() => matchVins(text, scoped), [text, scoped])
-  const findRows = useMemo(() => toFindListRows(found, (vin) => unitByVin.get(vin), siteName), [found, unitByVin, siteName])
+  const rawRows = useMemo(() => toFindListRows(found, (vin) => unitByVin.get(vin), siteName), [found, unitByVin, siteName])
+
+  // ── click a column header to re-order the sheet ──
+  // Location ascending is the default because that is the order a driver walks
+  // the yard in — and the order this sheet has always printed in. The Excel/PDF
+  // buttons export exactly what is on screen, so a different sort carries over.
+  const [sortKey, setSortKey] = useState<FindSortKey>('location')
+  const [sortDir, setSortDir] = useState<1 | -1>(1)
+  const toggleSort = (k: FindSortKey) => {
+    if (k === sortKey) setSortDir((d) => (d === 1 ? -1 : 1))
+    else { setSortKey(k); setSortDir(1) }
+  }
+  const findRows = useMemo(() => {
+    const txt = (r: FindListRow) => (sortKey === 'vin' ? r.vin : sortKey === 'model' ? r.model : r.color) || ''
+    return [...rawRows].sort((a, b) => {
+      // location has its own comparator: block letter then column number, with
+      // cars that have no spot (already gated out) sinking to the bottom —
+      // plain text order would read "N-U10" before "N-U9"
+      if (sortKey === 'location') return byYardLocation(a.location, b.location) * sortDir
+      const av = txt(a), bv = txt(b)
+      // a blank cell is not a value to rank — keep those last either way, so
+      // flipping the arrow never fills the top of the sheet with "—"
+      if (!av || !bv) return !av && !bv ? 0 : !av ? 1 : -1
+      return av.localeCompare(bv, 'th') * sortDir
+    })
+  }, [rawRows, sortKey, sortDir])
 
   // "บางเครื่องหารถเจอแต่ไม่พบตำแหน่ง อีกเครื่องพบ" — the tracking sheet
   // (matchVins' source) syncs instantly via IndexedDB on every device, but a
@@ -913,7 +941,18 @@ function FindCarPanel({ units, siteName, onClose }: { units: Unit[]; siteName: s
           ) : (
             <>
               <div className="grid items-center gap-2 px-3 py-1.5 text-[11px] font-bold" style={{ gridTemplateColumns: '30px 1fr 96px 78px 96px', color: 'var(--faint)' }}>
-                <span>No</span><span>VIN</span><span>Model</span><span>Color</span><span>Location</span>
+                <span>No</span>
+                {([['vin', 'VIN'], ['model', 'Model'], ['color', 'Color'], ['location', 'Location']] as [FindSortKey, string][])
+                  .map(([k, label]) => (
+                    <button key={k} className="flex items-center gap-1 text-left hover:underline"
+                      title={`เรียงตาม ${label}`} onClick={() => toggleSort(k)}
+                      style={{ color: sortKey === k ? 'var(--brand)' : 'inherit' }}>
+                      {label}
+                      {sortKey === k
+                        ? (sortDir === 1 ? <ChevronUp size={11} /> : <ChevronDown size={11} />)
+                        : <ChevronsUpDown size={11} style={{ opacity: 0.35 }} />}
+                    </button>
+                  ))}
               </div>
               {findRows.map((r, i) => (
                 <div key={r.vin} className="grid items-center gap-2 px-3 py-1.5 rounded-lg" style={{ gridTemplateColumns: '30px 1fr 96px 78px 96px', background: '#fff', marginBottom: 3 }}>

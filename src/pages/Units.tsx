@@ -14,7 +14,7 @@ import { printVehicleLabels } from '../lib/vehicleLabel'
 import { useYard } from '../store/useYard'
 import { useTracking, useTrackingRows, useVisibleColumns } from '../store/useTracking'
 import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, LOCATION_KEY, MAX_FILTERS, DEFAULT_FILTER_COLS, agingPmDays, cleanStorage, storageDays, isDateColumn, fmtSerialToDate, type ColGroup, type Column } from '../lib/trackingColumns'
-import { yardLocFull } from '../lib/groupingImport'
+import { yardLocFull, byYardLocation } from '../lib/groupingImport'
 import { CAR_STATUS_META, deriveCarStatus, IN_YARD_STATUSES, PARKED_STATUSES, isWaitingRepair, finalColor, vinOfStatusColor, taxStatusColor } from '../lib/carStatus'
 import { rowsToCsv, type TrackRow, type RowEvent } from '../lib/excelTracking'
 import { printFindList } from '../lib/groupingPrint'
@@ -1177,7 +1177,13 @@ function MylistView({ allRows, visCols, sel, setSel, sortKey, sortDir, toggleSor
   )
 
   const today = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' })
-  const doPdf = () => { if (findRows.length) printFindList(findRows, today) }
+  // walk-the-yard order, explicitly: printFindList prints rows as given now
+  // (so the Yard-Plan find-car sheet can follow its clicked column sort) —
+  // this screen keeps the location order it has always printed in
+  const doPdf = () => {
+    if (!findRows.length) return
+    printFindList([...findRows].sort((a, b) => byYardLocation(a.location, b.location)), today)
+  }
   // Excel-openable CSV of EXACTLY the columns open in the table (จัดการคอลัมน์),
   // in their current order — same as the main CSV button, with the computed
   // Location and Aging PM cells filled in where those columns are open
