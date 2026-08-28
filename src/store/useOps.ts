@@ -10,7 +10,7 @@ import * as db from '../lib/db'
 import { onSync, sendSync } from '../lib/syncBus'
 import { useYard } from './useYard'
 import { useTracking } from './useTracking' // one-way: tracking never imports ops
-import { hasLeftGate, deriveCarStatus, isGateOutStamp } from '../lib/carStatus'
+import { hasLeftGate, deriveCarStatus, isGateOutStamp, gateOutScanMs } from '../lib/carStatus'
 import { PM_KEYS } from '../lib/trackingColumns'
 import type { TrackRow } from '../lib/excelTracking'
 import { quotaSafeStorage } from '../lib/persistStorage'
@@ -1045,24 +1045,39 @@ export function useActiveQueues(): WorkQueue[] {
   const rows = useTracking((s) => s.rows)
   return useMemo(() => {
     const gone = new Set<string>()
-    const cameBack = new Set<string>()
+    // vin → when it last left the yard, for cars that are back at Pre Gate-in
+    const cameBack = new Map<string, number>()
     for (const vin in rows) {
       const r = rows[vin]
       if (hasLeftGate(r.cells)) { gone.add(vin); continue }
-      if (deriveCarStatus(r.cells) === 'Pre Gate-in' && everLeftGate(r)) cameBack.add(vin)
+      if (deriveCarStatus(r.cells) === 'Pre Gate-in' && everLeftGate(r)) cameBack.set(vin, gateOutScanMs(r.cells))
     }
     if (!gone.size && !cameBack.size) return queues
+    /**
+     * Is this car's part in THIS run already history?
+     *
+     * True only for a car that left the yard and has come back (sold and
+     * returned, re-imported) AND for a run that was already running before it
+     * left. Its arrival lot still listed it as scanned while the board also
+     * showed it waiting in the "(รอ Gate-in · ยังไม่มีคิวงาน)" card — the same
+     * VIN in two queues saying opposite things — and its old delivery run
+     * counted backwards (6/6 → 5/6) and could never be closed.
+     *
+     * A run created AFTER it left is the run for THIS arrival, so it stays.
+     * When the sheet does not date the gate-out, fall back to whether this run
+     * had already finished with the car.
+     */
+    const partIsHistory = (q: WorkQueue, i: QueueItem): boolean => {
+      const leftAt = cameBack.get(i.vin)
+      if (leftAt === undefined) return false
+      if (leftAt > 0) return (q.createdAt || 0) <= leftAt
+      return !!(i.done || i.gatedOut)
+    }
     return queues.map((q) => {
-      if (isSequenceQueue(q)) {
-        // A delivery run keeps its gated-out cars (that IS its final stage), but
-        // a car that has since come BACK — sold, returned, now Pre Gate-in again
-        // — is starting a fresh arrival, not outstanding work on a run that
-        // finished weeks ago. It was making the run count backwards (6/6 → 5/6)
-        // and the DN reappear on the gate-out board with no way to close it.
-        return q.items.some((i) => cameBack.has(i.vin))
-          ? { ...q, items: q.items.filter((i) => !cameBack.has(i.vin)) } : q
-      }
-      return q.items.some((i) => gone.has(i.vin)) ? { ...q, items: q.items.filter((i) => !gone.has(i.vin)) } : q
+      const drop = (i: QueueItem) => partIsHistory(q, i) || (!isSequenceQueue(q) && gone.has(i.vin))
+      // a delivery run KEEPS its gated-out cars — gate-out is its final stage and
+      // its progress must count up 1/17 → 17/17, not shrink
+      return q.items.some(drop) ? { ...q, items: q.items.filter((i) => !drop(i)) } : q
     })
   }, [queues, rows])
 }

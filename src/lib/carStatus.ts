@@ -92,7 +92,7 @@ export const GATE_OUT_FLUSH_M = 30
 
 /** epoch(ms) a Pre-Gate-out car was scanned out — from the "Gate Out Time" cell,
  *  else parsed from the "dd/mm/yyyy hh:mm" display stamp. 0 if unknown. */
-function gateOutScanMs(c: Record<string, string>): number {
+export function gateOutScanMs(c: Record<string, string>): number {
   const t = parseInt(c['Gate Out Time'] || '', 10)
   if (Number.isFinite(t) && t > 0) return t
   const m = (c['Gate Out time stamp'] || '').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2}))?/)
