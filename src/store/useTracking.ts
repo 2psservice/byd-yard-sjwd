@@ -238,6 +238,35 @@ function withHistoryEntry(r: TrackRow, key: string, value: string, columns: Colu
   return { ...r, cells, history: [...(r.history ?? []), entry].slice(-MAX_ROW_HISTORY) }
 }
 
+/** The sheet column that says which yard a car belongs to. */
+const LOCATION_YARD_KEY = 'Location yard'
+
+/**
+ * Editing a row's Location-yard MOVES the car to that yard.
+ *
+ * The Unit List, the yard plan and every station read a row's `site` tag, not
+ * its Location-yard text — so changing the cell alone left the car listed in
+ * the yard it had just left, and invisible in the one it was going to. An admin
+ * bringing a car over from 38 ไร่ had no way to make NYB2 see it at all.
+ *
+ * A moved car has not passed the NEW yard's gate yet, so it lands as Pre
+ * Gate-in and shows up on that yard's Gate-in board waiting to be scanned in.
+ * Its placement in the OLD yard is released (see useYard.moveUnitsToSite) —
+ * the car is not standing in that lane any more.
+ */
+function applyYardMove(next: TrackRow, key: string, columns: Column[], by: string): TrackRow {
+  if (key !== LOCATION_YARD_KEY) return next
+  const { sites } = useYard.getState()
+  const target = siteIdForLocation(next.cells, sites)
+  if (!target || target === next.site) return next
+  let out: TrackRow = { ...next, site: target }
+  // an explicit Car Status wins over every derived signal, so a car that gated
+  // out of its old yard reads as Pre Gate-in here without erasing its history
+  if (deriveCarStatus(out.cells) !== 'Pre Gate-in') out = withHistoryEntry(out, 'Car Status', 'Pre Gate-in', columns, by)
+  useYard.getState().moveUnitsToSite([out.vin], target)
+  return out
+}
+
 export const useTracking = create<TrackingState>()(
   persist(
     (set, get) => ({
@@ -727,7 +756,8 @@ export const useTracking = create<TrackingState>()(
         const r = get().rows[vin]
         if (!r) return
         const by = useYard.getState().currentUser
-        const next: TrackRow = { ...withHistoryEntry(r, key, value, get().columns, by), updatedAt: Date.now() }
+        const cols = get().columns
+        const next: TrackRow = { ...applyYardMove(withHistoryEntry(r, key, value, cols, by), key, cols, by), updatedAt: Date.now() }
         set({ rows: { ...get().rows, [vin]: next } })
         idbPut(next).catch(() => {})
         pushRows([next])
@@ -805,7 +835,7 @@ export const useTracking = create<TrackingState>()(
         for (const vin of vins) {
           const r = rows[vin]
           if (!r) continue
-          const next: TrackRow = { ...withHistoryEntry(r, key, value, columns, by), updatedAt: now }
+          const next: TrackRow = { ...applyYardMove(withHistoryEntry(r, key, value, columns, by), key, columns, by), updatedAt: now }
           rows[vin] = next
           changed.push(next)
         }

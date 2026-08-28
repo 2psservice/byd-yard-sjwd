@@ -228,6 +228,10 @@ interface YardState {
   assign: (vin: string, slot: { block: string; row: number; slot: number }, driver?: string, mode?: 'AUTO' | 'SEMI') => void
   confirmParked: (vin: string) => void
   resetParking: (vin: string) => void
+  /** Move cars to another yard: re-tag the unit, release the slot it held in the
+   *  old yard, and set it back to EXPECTED (waiting for the new yard's gate).
+   *  Driven by an admin editing the row's Location-yard cell. */
+  moveUnitsToSite: (vins: string[], siteId: string) => void
   /** Update Location import — bulk place cars into block/row/slot as PARKED. */
   /** Move cars. `from` (where the caller SAW the car when it decided) turns the
    *  write into a compare-and-set: the move lands only if the car is still
@@ -1007,6 +1011,28 @@ export const useYard = create<YardState>()(
           db.upsertUnit(updated).catch((e) => console.error('[db] confirmParked', e))
           return { units: { ...s.units, [vin]: updated } }
         }),
+
+      /** Hand these cars over to another yard: the unit follows its tracking row
+       *  to the new site, gives up the slot it held in the old one (it is not
+       *  standing in that lane any more — the plan must stop drawing it there),
+       *  and goes back to EXPECTED, waiting for the new yard's gate. */
+      moveUnitsToSite: (vins, siteId) => {
+        const before = get().units
+        const units = { ...before }
+        const changed: Unit[] = []
+        for (const vin of vins) {
+          const u = before[vin]
+          if (!u || u.site === siteId) continue
+          const { block, row, slot, assignedAt, drivingStartedAt, parkedAt, driver, ...rest } = u
+          void block; void row; void slot; void assignedAt; void drivingStartedAt; void parkedAt; void driver
+          const next: Unit = { ...rest, site: siteId, status: 'EXPECTED' }
+          units[vin] = next
+          changed.push(next)
+        }
+        if (!changed.length) return
+        set({ units })
+        db.upsertUnits(changed).catch((e) => console.error('[db] moveUnitsToSite', e))
+      },
 
       resetParking: (vin) => {
         const before = get().units
