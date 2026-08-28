@@ -175,9 +175,13 @@ export function findLocationText(r: FindListRow): string {
 const findListTitle = (count: number, date: string): string =>
   `ใบหารถ ${count} คัน${date ? ` · ${date}` : ''}`
 
+/** Rows print in the order they are GIVEN — the find-car screen sorts them
+ *  (click a column header) and the sheet has to come out matching what is on
+ *  screen. It used to re-sort by yard location here, which silently threw that
+ *  choice away. Callers that want the walk-the-yard order pass rows already
+ *  sorted with byYardLocation (which is still the screen's default). */
 function findListTableHtml(rows: FindListRow[]): string {
-  const sorted = [...rows].sort((a, b) => byYardLocation(a.location, b.location))
-  const body = sorted.map((r, i) => `<tr>
+  const body = rows.map((r, i) => `<tr>
     <td class="c">${i + 1}</td>
     <td class="vin">${esc(r.vin)}</td>
     <td class="c">${esc(r.model)}</td>
@@ -232,8 +236,8 @@ export async function exportFindListXlsx(rows: FindListRow[], date: string): Pro
     c.border = border
   })
 
-  const sorted = [...rows].sort((a, b) => byYardLocation(a.location, b.location))
-  sorted.forEach((r, i) => {
+  // given order wins — same reason as findListTableHtml above
+  rows.forEach((r, i) => {
     const row = ws.addRow([i + 1, r.vin, r.model, r.color, findLocationText(r) || '—', r.remark])
     row.height = 16
     row.eachCell((c: any, col: number) => {
