@@ -205,6 +205,11 @@ const COLOR_SW: Record<string, string> = {
 type SortDir = 1 | -1
 type Tab = 'grouping' | 'units' | 'mylist'
 
+/** Sheets one IR-paper print may send at once. Every VIN is its own page, and
+ *  these two screens can hold the whole yard (18k rows) — one stray click with
+ *  nothing ticked would queue a print job nobody can stop at the printer. */
+const IR_PRINT_MAX = 200
+
 // Filter bar: Unit Nbr + Grouping are pinned; every other filter is a COLUMN
 // chosen from the column manager (up to MAX_FILTERS). The config now lives in
 // the tracking store (persisted + part of the shared "default view" preset).
@@ -427,6 +432,25 @@ export function Units() {
             }}>
             <Printer size={14} /> Print Vehicle Label{sel.size ? ` (${sel.size.toLocaleString()})` : ''}
           </button>
+          {/* IR paper overlay from the Units grid — the Grouping tab can only
+              print cars that still sit in a grouping, so a car whose IR is
+              needed AFTER the fact (re-print, a grouping already cleared) had
+              nowhere to print from. Here any filtered/ticked set can, which is
+              what "พิมพ์ย้อนหลัง" needs. Same target rule as CSV / Vehicle Label:
+              the ticked cars, or the whole filtered list when nothing is ticked. */}
+          {tab === 'units' && (
+            <button className="btn py-1" title="พิมพ์เฉพาะข้อมูลลงบนกระดาษฟอร์ม IR ที่พิมพ์ไว้ล่วงหน้า (ตรงตำแหน่ง AMS 100%) — 1 แผ่นต่อ 1 คัน · เลือกรถก่อนหรือพิมพ์ตามรายการที่กรองไว้"
+              onClick={() => {
+                const targets = sel.size ? filtered.filter((r) => sel.has(r.vin)) : filtered
+                const toast = useYard.getState().toast
+                if (!targets.length) { toast('err', 'ไม่มีรถให้พิมพ์ — เลือกรถหรือปรับตัวกรองก่อน'); return }
+                if (targets.length > IR_PRINT_MAX) { toast('err', `เลือกไว้ ${targets.length.toLocaleString()} คัน — พิมพ์ได้ครั้งละไม่เกิน ${IR_PRINT_MAX} แผ่น`); return }
+                printIrPaper(targets, sites.find((s) => s.id === currentSite)?.name ?? '')
+                toast('ok', `พิมพ์กระดาษ IR ${targets.length.toLocaleString()} แผ่น`)
+              }}>
+              <Printer size={14} /> พิมพ์กระดาษ IR{sel.size ? ` (${sel.size.toLocaleString()})` : ''}
+            </button>
+          )}
           <button className="btn py-1" onClick={doExport}><Download size={14} /> CSV</button>
           <button className="btn btn-ghost p-1" title="โหลดใหม่" onClick={() => location.reload()}><RefreshCw size={14} style={{ color: 'var(--muted)' }} /></button>
           <button className={cx('btn btn-ghost p-1', colMgr && 'btn-blue')} title="คอลัมน์" onClick={() => setColMgr((v) => !v)}><Columns3 size={14} /></button>
@@ -1203,6 +1227,19 @@ function MylistView({ allRows, visCols, sel, setSel, sortKey, sortDir, toggleSor
         visCols.map((c) => ({ key: c.key, label: c.label })), out)
     } catch (e) { console.error('[mylist] csv', e); toast('err', 'ออกไฟล์ CSV ไม่สำเร็จ') }
   }
+  // IR paper overlay for a pasted VIN list — the point of printing ย้อนหลัง:
+  // paste the VINs off an old grouping / a claim and re-print their IR sheets,
+  // whatever state those cars are in now. Ticked cars, else everything found.
+  const irTargets = useMemo(() => {
+    const ticked = found.filter((r) => sel.has(r.vin))
+    return ticked.length ? ticked : found
+  }, [found, sel])
+  const doIrPaper = () => {
+    if (!irTargets.length) return
+    if (irTargets.length > IR_PRINT_MAX) { toast('err', `เลือกไว้ ${irTargets.length.toLocaleString()} คัน — พิมพ์ได้ครั้งละไม่เกิน ${IR_PRINT_MAX} แผ่น`); return }
+    printIrPaper(irTargets, siteName)
+    toast('ok', `พิมพ์กระดาษ IR ${irTargets.length.toLocaleString()} แผ่น`)
+  }
 
   return (
     <div className="flex flex-col flex-1 min-w-0 gap-2">
@@ -1220,6 +1257,10 @@ function MylistView({ allRows, visCols, sel, setSel, sortKey, sortDir, toggleSor
               <Download size={13} /> Excel (CSV)
             </button>
             <button className="btn btn-ghost py-1" disabled={!found.length} onClick={doPdf}><Printer size={13} /> ใบหารถ (PDF)</button>
+            <button className="btn btn-ghost py-1" disabled={!found.length} onClick={doIrPaper}
+              title="พิมพ์เฉพาะข้อมูลลงบนกระดาษฟอร์ม IR ที่พิมพ์ไว้ล่วงหน้า (ตรงตำแหน่ง AMS 100%) — 1 แผ่นต่อ 1 คัน · ติ๊กรถก่อนหรือพิมพ์ทุกคันที่ค้นเจอ">
+              <Printer size={13} /> พิมพ์กระดาษ IR{irTargets.length && irTargets.length !== found.length ? ` (${irTargets.length})` : ''}
+            </button>
             {text && <button className="btn btn-ghost py-1" onClick={() => setText('')}><X size={13} /> ล้าง</button>}
           </div>
         </div>
