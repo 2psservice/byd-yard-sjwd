@@ -4,6 +4,7 @@
  * Call patterns: fire-and-forget for mutations, await for initial data load.
  */
 import { supabase, isConfigured } from './supabase'
+import { sendSync } from './syncBus'
 import type { AppUser, Block, Damage, Site, Trailer, Unit } from '../types'
 import type { DbDamage, DbTrailer, DbUnit, DbUnitWithDamages } from './database.types'
 import type { TrackRow } from './excelTracking'
@@ -261,13 +262,21 @@ export async function fetchUnitPlacements(siteId?: string | null, onPage?: (unit
   if (!isConfigured()) return []
   const PAGE = 1000
   const out: Unit[] = []
-  for (let from = 0; ; from += PAGE) {
+  // KEYSET pagination (vin > last seen), not OFFSET. This sweep runs every few
+  // minutes on every device, and with OFFSET the database re-walks and throws
+  // away everything before each page — on a 15k-car site the last page alone
+  // discards 15,000 index entries, every sweep, on every device. vin is the
+  // unique primary key, so "after the last vin" lands each page in O(page).
+  // The loop is sequential either way, so this costs the station nothing.
+  let after = ''
+  for (;;) {
     let q = supabase.from('units').select(PLACEMENT_SELECT).neq('status', 'DEPARTED')
     if (siteId) q = (q as any).eq('site_id', siteId)
-    const { data, error } = await (q as any).order('vin').range(from, from + PAGE - 1)
+    if (after) q = (q as any).gt('vin', after)
+    const { data, error } = await (q as any).order('vin').limit(PAGE)
     if (error) { console.error('[db] fetchUnitPlacements', error); throw error }
     const batch = ((data ?? []) as DbUnit[]).map((r) => parseUnitRow(r))
-    if (batch.length) { out.push(...batch); onPage?.(batch) }
+    if (batch.length) { out.push(...batch); onPage?.(batch); after = batch[batch.length - 1].vin }
     if (batch.length < PAGE) break
   }
   return out
@@ -334,6 +343,12 @@ export async function fetchAllUnits(
   if (onPlacements) {
     fetchUnitPlacements(siteId, onPlacements).catch((e) => console.error('[db] fetchAllUnits placements', e))
   }
+  // ALL pages at once, on purpose. Throttling them (4 in flight) was tried to
+  // spare the database and turned the pull into 8 sequential rounds — the
+  // ops-scan station took many times longer to become usable, which is a cost
+  // the yard pays and the database doesn't. Load is reduced where it does not
+  // cost the operator time (the photo-heal loop, the per-defect full-site
+  // re-pull, keyset paging above); this burst stays parallel.
   const pages = await Promise.all(Array.from({ length: pageCount }, (_, p) => fetchPage(p)))
   return pages.flat()
 }
@@ -489,9 +504,20 @@ function stripOptionalDamageCols<T extends object>(row: T): T {
   return rest as unknown as T
 }
 
+/** Does this defect carry photos? Only those rows outgrow Supabase Realtime's
+ *  max_record_bytes, and only those need announcing on the sync bus — a
+ *  photo-less row reaches every device intact on the row stream already. */
+export const damageHasPhotos = (d: Pick<Damage, 'photo' | 'photos'>): boolean =>
+  !!(d.photo || d.photos?.length)
+
 export async function insertDamage(vin: string, d: Damage): Promise<void> {
   if (!isConfigured()) return
   const row = damageToRow(vin, d)
+  // announce the VIN out-of-band: a photo-bearing damage row is too big for the
+  // realtime row stream (its event arrives stripped, with no vin), and the old
+  // fallback — every device re-pulling the ENTIRE site WITH photos — is what
+  // saturated the database every time a station filed a defect.
+  const announce = () => { if (damageHasPhotos(d)) sendSync('dmg', { vins: [vin] }) }
   try {
     await withRetry(() => supabase.from('damages').insert(row))
   } catch (error) {
@@ -499,22 +525,27 @@ export async function insertDamage(vin: string, d: Damage): Promise<void> {
     // its response was lost (flaky yard network). The retry queue re-sends
     // until it sees a success — a duplicate IS that success, so report it as
     // one instead of erroring forever on a defect that is safely stored.
-    if (isDuplicateKey(error)) return
+    if (isDuplicateKey(error)) { announce(); return }
     // optional columns (remark / area_th / item_th) may not be migrated yet —
     // retry without them so the damage still saves (extra fields stay on this
     // device until the columns exist).
     if (isMissingColumn(error)) {
       const { error: e2 } = await supabase.from('damages').insert(stripOptionalDamageCols(row))
-      if (!e2 || isDuplicateKey(e2)) return
+      if (!e2 || isDuplicateKey(e2)) { announce(); return }
     }
     console.error('[db] insertDamage', vin, error)
     throw error
   }
+  announce()
 }
 
 export async function patchDamage(
   id: string,
   patch: Partial<Damage>,
+  /** the damage's car — pass it when the patch may carry photos, so other
+   *  devices can be told WHICH car to refresh (the photo payload itself is too
+   *  big for the realtime row stream, whose event arrives body-stripped). */
+  vin?: string,
 ): Promise<void> {
   if (!isConfigured()) return
   const row: Partial<DbDamage> = {}
@@ -543,6 +574,11 @@ export async function patchDamage(
   if ('remark'         in patch) row.remark         = patch.remark ?? null
   if ('areaTh'         in patch) row.area_th        = patch.areaTh ?? null
   if ('itemTh'         in patch) row.item_th        = patch.itemTh ?? null
+  // a patch that touches photos is the one whose realtime event arrives
+  // stripped — announce the vin so receivers refetch just this car
+  const announce = () => {
+    if (vin && ('photo' in patch || 'photos' in patch)) sendSync('dmg', { vins: [vin] })
+  }
   const { error } = await supabase.from('damages').update(row).eq('id', id)
   if (error) {
     // optional columns may not be migrated yet — retry without them so the rest
@@ -553,11 +589,13 @@ export async function patchDamage(
       // "succeed" while saving nothing; report the failure instead
       if (Object.keys(stripped).length) {
         const { error: e2 } = await supabase.from('damages').update(stripped).eq('id', id)
-        if (!e2) return
+        if (!e2) { announce(); return }
       }
     }
     console.error('[db] patchDamage', id, error)
+    return
   }
+  announce()
 }
 
 export async function deleteDamage(id: string): Promise<void> {
@@ -814,6 +852,12 @@ export async function upsertDamages(items: { vin: string; d: Damage }[], onProgr
   // on rows that happened to share a chunk with a row that had them.
   const rows = items.map(({ vin, d }) => ({ remark: null, area_th: null, item_th: null, ...damageToRow(vin, d) }))
   await bulkUpsert('damages', rows, 500, 'id', 5, stripOptionalDamageCols, onProgress)
+  // small interactive batches (admin edit / manual add) whose rows carry photos
+  // announce their VINs, so other devices refresh just those cars. A file import
+  // of thousands does NOT — its receivers converge through their own site pull,
+  // and a broadcast that big would have every device fetch thousands of cars.
+  const vins = [...new Set(items.filter(({ d }) => damageHasPhotos(d)).map((i) => i.vin))]
+  if (vins.length && vins.length <= 50) sendSync('dmg', { vins })
 }
 
 // ── tracking rows (master vehicle list — flexible JSONB columns) ────────────
