@@ -250,14 +250,6 @@ interface YardState {
     from?: { block?: string; row?: number; slot?: number }
   }[]) => number
   autoParkAll: () => number
-  /** Auto-park every listed VIN into the WCL staging block that doesn't
-   *  already have a real block/row/slot — leaves already-positioned units
-   *  untouched. Used to backfill legacy "Gate-in" cars onto the same WCL
-   *  placement a fresh gate-in now gets. Returns how many were placed.
-   *  @param siteId park against THIS site's WCL block/occupancy instead of
-   *  the currently-selected site — the caller must pre-group vins by site,
-   *  since a car can only be positioned using its own yard's block layout. */
-  parkUnpositionedAtWcl: (vins: string[], siteId?: string) => number
   setPolicy: (model: string, patch: Partial<ParkingPolicy>) => void
   loadPolicies: () => Promise<void>
   // --- yard layout editor ---
@@ -771,34 +763,6 @@ export const useYard = create<YardState>()(
           db.upsertUnit(updated).catch((e) => console.error('[db] gateIn', e))
           return { units: { ...s.units, [vin]: updated } }
         }),
-
-      parkUnpositionedAtWcl: (vins, siteId) => {
-        const s = get()
-        const site = siteId ?? s.currentSite
-        const blocks = curBlocks({ blocksBySite: s.blocksBySite, currentSite: site })
-        // simulated occupancy grows as each car is placed, so two cars in the
-        // same batch land on DIFFERENT WCL slots instead of both claiming slot 1
-        let occ = Object.values(s.units).filter((x) => !x.site || x.site === site)
-        const now = Date.now()
-        const changed: Unit[] = []
-        for (const vin of vins) {
-          const u = s.units[vin]
-          if (!u || (u.block && u.row && u.slot)) continue // already positioned — leave it alone
-          const slot = nextFreeSlotInBlock(WCL_STAGING_BLOCK, blocks, occ)
-          if (!slot) continue
-          const updated: Unit = { ...u, block: slot.block, row: slot.row, slot: slot.slot, status: 'PARKED', parkedAt: u.parkedAt ?? now }
-          changed.push(updated)
-          occ = [...occ, updated]
-        }
-        if (!changed.length) return 0
-        set((st) => {
-          const units = { ...st.units }
-          for (const u of changed) units[u.vin] = u
-          return { units }
-        })
-        db.upsertUnits(changed).catch((e) => console.error('[db] parkUnpositionedAtWcl', e))
-        return changed.length
-      },
 
       setInspected: (vin, v) =>
         set((s) => {
