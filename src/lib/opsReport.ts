@@ -36,6 +36,17 @@ export interface ListRow {
 export interface DefectRowOut {
   no: number; vin: string; position: string; defect: string; date: string
   status: string; lot: string; remark: string
+  // The office's defect sheet carries more than the 8 columns the Excel export
+  // mirrors — the PDI board shows the full set. Every one of these is already
+  // recorded by the field (the Defect picker) or the tracking sheet; nothing
+  // here is a new thing anyone has to type twice.
+  model: string          // "DOLPHIN"
+  from: string           // tracking 'From' — where the car came in from
+  stockStatus: string    // tracking 'Stock of Status'
+  categoryNG: string     // NG / HEAVY NG
+  categoryRepair: string // Re paint / Re Dent / Part …
+  incharge: string       // SJWD / BYD
+  repairDate: string     // when it was actually repaired ('' while open)
 }
 export interface TimeMatrix {
   title: string
@@ -204,8 +215,8 @@ export function buildList(ctx: ReportCtx, id: string): ListRow[] {
 // ── defect builders — defects the stations recorded on the day, scoped to the
 //    cars that went through that station's queues (FC vs PM) ─────────────────
 
-export function buildDefects(ctx: ReportCtx, id: 'fcdefect' | 'pmdefect'): DefectRowOut[] {
-  const type = id === 'fcdefect' ? 'FINAL' : 'PM'
+export function buildDefects(ctx: ReportCtx, id: 'fcdefect' | 'pmdefect' | 'pdidefect'): DefectRowOut[] {
+  const type = id === 'fcdefect' ? 'FINAL' : id === 'pdidefect' ? 'PDI' : 'PM'
   const stationVins = new Set<string>()
   for (const q of typeQueues(ctx, type)) for (const i of q.items) stationVins.add(i.vin)
   const lots = lotMap(ctx)
@@ -224,6 +235,13 @@ export function buildDefects(ctx: ReportCtx, id: 'fcdefect' | 'pmdefect'): Defec
         status: d.statusRepair || 'Waiting Repair',
         lot: c['LOT'] || lots.get(u.vin) || '',
         remark: d.note || d.remark || '',
+        model: u.modelName || c['Model name'] || c['Model'] || '',
+        from: c['From'] || '',
+        stockStatus: c['Stock of Status'] || '',
+        categoryNG: String(d.categoryNG ?? ''),
+        categoryRepair: d.categoryRepair ?? '',
+        incharge: d.incharge ?? '',
+        repairDate: d.repairDate ? fmtDay(dayKeyOfTs(d.repairDate)) : '',
       })
     }
   }
@@ -232,9 +250,11 @@ export function buildDefects(ctx: ReportCtx, id: 'fcdefect' | 'pmdefect'): Defec
 
 // ── เช็คเวลา matrix — realtime counts per break period ──────────────────────
 
-export function buildTimeMatrix(ctx: ReportCtx, id: 'fctime' | 'pmtime'): TimeMatrix {
-  const type = id === 'fctime' ? 'FINAL' : 'PM'
-  const title = id === 'fctime' ? `Final check (FC) ${ctx.siteLabel}` : `Preventive Maintenance (PM) ${ctx.siteLabel}`
+export function buildTimeMatrix(ctx: ReportCtx, id: 'fctime' | 'pmtime' | 'pditime'): TimeMatrix {
+  const type = id === 'fctime' ? 'FINAL' : id === 'pditime' ? 'PDI' : 'PM'
+  const title = id === 'fctime' ? `Final check (FC) ${ctx.siteLabel}`
+    : id === 'pditime' ? `PDI ${ctx.siteLabel}`
+    : `Preventive Maintenance (PM) ${ctx.siteLabel}`
   const rows = rowMap(ctx)
   // Plan = every car in the day's queues of this type (checked or not); when a
   // queue spans days, count queues created that day, else any queue with a
