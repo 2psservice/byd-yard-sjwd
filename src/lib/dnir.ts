@@ -294,10 +294,19 @@ export const buildIrHtml = (rows: TrackRow[], siteName?: string): string =>
 /** Delivery Note (DN) — one manifest per grouping (a DN *is* one trip, so cars
  *  from several groupings must never share a sheet). Long trips continue onto
  *  extra sheets with the sequence running on. */
-export const buildDnHtml = (rows: TrackRow[]): string => {
+export const buildDnHtml = (rows: TrackRow[], groupOf?: (vin: string) => string): string => {
   const byGroup = new Map<string, TrackRow[]>()
   for (const r of rows) {
-    const g = cell(r, 'Grouping  Number') || '—'
+    // The caller's own grouping wins. The Grouping page already knows which run
+    // each car belongs to (that IS the plan it is printing), while the tracking
+    // cell is a separate copy that can be blank or spelled another way — and a
+    // DN whose "Grouping :" line reads "—" is useless to the driver holding it.
+    // Header spelling is read loosely for the same reason: the source sheets
+    // carry "Grouping  Number" (two spaces), "Groupping Number" and plain
+    // "Grouping" depending on who exported them.
+    const g = (groupOf?.(r.vin) || '').trim()
+      || cell(r, 'Grouping  Number', 'Grouping Number', 'Groupping Number', 'Groupping  Number', 'Grouping')
+      || '—'
     const list = byGroup.get(g)
     if (list) list.push(r); else byGroup.set(g, [r])
   }
@@ -388,6 +397,8 @@ function printHtml(html: string): void {
 /** Print the Inspector Report (IR) — one A4 page per VIN. */
 export const printIr = (rows: TrackRow[], siteName?: string): void => { if (rows.length) printHtml(buildIrHtml(rows, siteName)) }
 /** Print the Delivery Note (DN) — one manifest for the selected VINs. */
-export const printDn = (rows: TrackRow[]): void => { if (rows.length) printHtml(buildDnHtml(rows)) }
+export const printDn = (rows: TrackRow[], groupOf?: (vin: string) => string): void => {
+  if (rows.length) printHtml(buildDnHtml(rows, groupOf))
+}
 /** Print the IR paper overlay (data only) onto pre-printed IR forms. */
 export const printIrPaper = (rows: TrackRow[], siteName?: string): void => { if (rows.length) printHtml(buildIrPaperHtml(rows, siteName)) }
