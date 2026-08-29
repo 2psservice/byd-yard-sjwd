@@ -1579,6 +1579,7 @@ function WalkView() {
   const { blockWith, modal: gateModal } = useNotGatedIn()
   const queues = useSiteQueues()
   const opsClosed = useOps(s => s.closed) // admin-archived lots leave this board
+  const dismissedPreGateIn = useOps(s => s.dismissed) // cars the office says never came
   const sites = useYard(s => s.sites)
   const currentSite = useYard(s => s.currentSite)
   const [vin, setVin] = useState<string | null>(null)
@@ -1613,8 +1614,11 @@ function WalkView() {
     // produces, and the station had no way to know the car was waiting.
     const queuedVins = new Set<string>()
     for (const q of queues) if (isPreGateInQueue(q)) for (const i of q.items) if (!gateInArrived(i)) queuedVins.add(i.vin)
-    return trackingRows.filter(r => !queuedVins.has(r.vin) && deriveCarStatus(r.cells) === 'Pre Gate-in')
-  }, [queues, trackingRows])
+    // …minus the cars the office took off the gate's board by hand ("ไม่ได้มา").
+    // The two screens have to agree, or the station keeps asking for a car the
+    // admin board already cleared.
+    return trackingRows.filter(r => !queuedVins.has(r.vin) && !dismissedPreGateIn[r.vin] && deriveCarStatus(r.cells) === 'Pre Gate-in')
+  }, [queues, trackingRows, dismissedPreGateIn])
   // Pre Gate-in queues "(M-D-N)" — process queues (PDI / PM / Wash) live under the
   // PDI role, not here. Completed queues stay listed so the station can still read
   // its own progress ("17/17 · เหลือ 0"), same as the Driver's delivery-run cards.
@@ -5254,6 +5258,7 @@ export function YardOps() {
   // pending-work count per station menu — the iOS-style red badge on each tile
   const queues = useSiteQueues()
   const trackingRows = useSiteRows()
+  const dismissedPreGateIn = useOps(s => s.dismissed)
   const menuBadges = useMemo(() => {
     const n: Partial<Record<RoleKey, number>> = {}
     const add = (k: RoleKey, v: number) => { if (v > 0) n[k] = (n[k] ?? 0) + v }
@@ -5285,9 +5290,10 @@ export function YardOps() {
     // In/Out board): a Pre Gate-in row with no queue at all must still count,
     // or this badge undercounts against both the in-station list and the
     // Dashboard's sitewide Pre Gate-in tally
-    add('walk', trackingRows.filter(r => !queuedPreGateInVins.has(r.vin) && deriveCarStatus(r.cells) === 'Pre Gate-in').length)
+    add('walk', trackingRows.filter(r => !queuedPreGateInVins.has(r.vin) && !dismissedPreGateIn[r.vin]
+      && deriveCarStatus(r.cells) === 'Pre Gate-in').length)
     return n
-  }, [queues, trackingRows])
+  }, [queues, trackingRows, dismissedPreGateIn])
 
   const activeRole = ROLES.find(r => r.key === role)
 

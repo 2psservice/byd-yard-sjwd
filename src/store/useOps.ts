@@ -196,6 +196,27 @@ interface OpsState {
    *  again if it turns out to still be there. Synced via app_config
    *  ('ops_deleted_queues'), same as `closed`, so no table migration is needed. */
   deleted: Record<string, number>
+  /**
+   * รถที่ถูก "เอาออกจากกระดานประตู" ด้วยมือ — vin → เวลาที่เอาออก
+   *
+   * การ์ด "(รอ Gate-in · ยังไม่มีคิวงาน)" ถูกสร้างสดจากชีท: รถทุกคันที่สถานะ
+   * เป็น Pre Gate-in และไม่มีคิวงานไหนคุมอยู่ จะถูกรวบมาไว้ในการ์ดนี้เสมอ
+   * ผลข้างเคียงคือ "เอารถออกจากคิวงาน" ไม่เคยได้ผลจริง — พอเอาออกจากล็อต
+   * รถก็หลุดไปโผล่ที่การ์ดนี้แทน หน้างานจึงเห็นว่าเอารถออกไม่ได้สักที
+   *
+   * บันทึกนี้คือคำสั่งของหน้างานว่า "คันนี้ไม่ได้มา อย่าเอามาขึ้นประตูอีก"
+   * ไม่แตะสถานะในชีทเลย และไม่ปิดกั้นอะไร — ถ้ารถโผล่มาจริง สแกนเลขวินที่
+   * สถานี Gate-in ก็รับเข้าได้ตามปกติ (สถานีค้นจากชีท ไม่ได้ค้นจากคิวงาน)
+   *
+   * ล้างตัวเองเมื่อ: รถถูกใส่กลับเข้าคิวงานใด ๆ หรือสถานะไม่ใช่ Pre Gate-in
+   * อีกต่อไป (เข้าลาน / ออกจากลาน) — รอบการมาถึงครั้งใหม่จึงเริ่มจากศูนย์เสมอ
+   * ซิงค์ผ่าน app_config ('ops_dismissed_pregatein') เหมือน closed/deleted
+   */
+  dismissed: Record<string, number>
+  /** เอารถออกจากกระดานประตู (ไม่แตะชีท) */
+  dismissPreGateIn: (vins: string[]) => void
+  /** ยกเลิกการเอาออก — เรียกเองอัตโนมัติเมื่อรถกลับเข้าคิวงาน */
+  undismissPreGateIn: (vins: string[]) => void
   closeQueue: (id: string, by?: string) => void
   reopenQueue: (id: string) => void
   createQueue: (name: string, by?: string, site?: string) => string
@@ -315,6 +336,32 @@ export const useOps = create<OpsState>()(
       queues: [],
       closed: {},
       deleted: {},
+      dismissed: {},
+
+      dismissPreGateIn: (vins) => {
+        const next = { ...get().dismissed }
+        const now = Date.now()
+        let changed = false
+        for (const raw of vins) {
+          const v = (raw || '').trim().toUpperCase()
+          if (!v || next[v]) continue
+          next[v] = now
+          changed = true
+        }
+        if (!changed) return
+        set({ dismissed: next })
+        db.saveAppConfig('ops_dismissed_pregatein', next).then(() => sendSync('ops')).catch(() => {})
+      },
+
+      undismissPreGateIn: (vins) => {
+        const cur = get().dismissed
+        const hit = vins.map((v) => (v || '').trim().toUpperCase()).filter((v) => v && cur[v])
+        if (!hit.length) return
+        const next = { ...cur }
+        for (const v of hit) delete next[v]
+        set({ dismissed: next })
+        db.saveAppConfig('ops_dismissed_pregatein', next).then(() => sendSync('ops')).catch(() => {})
+      },
 
       closeQueue: (id, by) => {
         const closed = { ...get().closed, [id]: { at: Date.now(), by } }
@@ -369,6 +416,8 @@ export const useOps = create<OpsState>()(
           }
         })
         pushQueue(get, id) // single push, WITH items → no empty-then-full race
+        // ไฟล์ชุดใหม่พารถกลับเข้าคิวงาน = รอบการมาถึงครั้งใหม่ ล้างที่เคยเอาออก
+        get().undismissPreGateIn(vins)
         return id
       },
 
@@ -436,6 +485,8 @@ export const useOps = create<OpsState>()(
           }),
         }))
         pushQueue(get, id)
+        // ใส่กลับเข้าคิวงานแล้ว = ยกเลิก "เอาออกจากกระดานประตู" ของคันนั้น
+        get().undismissPreGateIn(vins)
         return { added, dup }
       },
 
@@ -688,6 +739,10 @@ export const useOps = create<OpsState>()(
         db.fetchAppConfig<Record<string, { at: number; by?: string }>>('ops_closed_queues')
           .then((c) => { if (c && typeof c === 'object') set({ closed: c }) })
           .catch(() => {})
+        // เช่นเดียวกัน: รถที่หน้างานเอาออกจากกระดานประตู — cloud เป็นตัวจริง
+        db.fetchAppConfig<Record<string, number>>('ops_dismissed_pregatein')
+          .then((d) => { if (d && typeof d === 'object') set({ dismissed: d }) })
+          .catch(() => {})
         // tombstones must be in hand BEFORE adopting the cloud list, or a
         // deleted queue flashes back on screen for this whole round trip
         const remoteTombs = await db.fetchAppConfig<Record<string, number>>('ops_deleted_queues').catch(() => null)
@@ -735,6 +790,7 @@ export const useOps = create<OpsState>()(
           // what used to bring it back before the cloud pull had a chance
           queues: sanitizeQueues(p.queues).filter((q) => !deleted[q.id]),
           closed: p.closed && typeof p.closed === 'object' ? p.closed : {},
+          dismissed: p.dismissed && typeof p.dismissed === 'object' ? p.dismissed : {},
           deleted,
         }
       },
@@ -999,6 +1055,16 @@ function reconcileGateOuts() {
     dirty.push(q.id)
     return { ...q, items }
   })
+  // ── ล้าง "เอาออกจากกระดานประตู" ที่หมดอายุแล้ว ────────────────────────────
+  // บันทึกนี้ผูกกับรอบการมาถึงรอบนี้เท่านั้น พอรถไม่ได้เป็น Pre Gate-in แล้ว
+  // (เข้าลานจริง / ออกจากลาน / ถูกลบทิ้ง) บันทึกก็หมดหน้าที่ ต้องล้างทิ้ง
+  // ไม่งั้นรอบหน้าที่รถกลับมารอที่ประตูอีก มันจะถูกซ่อนค้างไปตลอด — ธงค้าง
+  // แบบเดียวกับที่ทำให้คิวงานเพี้ยนมาแล้ว
+  const dis = useOps.getState().dismissed
+  if (useTracking.getState().loaded) {
+    const stale = Object.keys(dis).filter((v) => !stillWaiting.has(v))
+    if (stale.length) useOps.getState().undismissPreGateIn(stale)
+  }
   if (!dirty.length) return
   useOps.setState({ queues: next })
   for (const id of dirty) pushQueue(useOps.getState, id)

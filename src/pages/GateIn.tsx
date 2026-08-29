@@ -417,18 +417,34 @@ function MoveVinModal({ vin, from, targets, onClose }: {
  * the same matcher the Unit-List paste box uses). A VIN the sheet has never
  * heard of is refused: adding it would put a bare number on the gate's screen
  * with no model, colour or lot behind it.
+ *
+ * The "(รอ Gate-in · ยังไม่มีคิวงาน)" card is editable here too, and taking a
+ * car out of it is the ONLY thing that really clears the gate's board: that
+ * card is rebuilt from the sheet on every render, so a car removed from a lot
+ * simply reappeared inside it — from the gate's side, removal never worked.
+ * Removing from either place now records the operator's "คันนี้ไม่ได้มา" so the
+ * safety net stops resurrecting it. Nothing in the sheet is touched, and the
+ * Gate-in station searches the sheet (not the queues), so a car that turns up
+ * after all still scans in normally.
  */
-function EditQueueVinsModal({ q, rows, modelByVin, onClose }: {
+function EditQueueVinsModal({ q, rows, modelByVin, dismissedRows, onClose }: {
   q: WorkQueue
   rows: TrackRow[]
   modelByVin: Map<string, string>
+  /** cars taken off the board earlier — listed so the removal can be undone */
+  dismissedRows: TrackRow[]
   onClose: () => void
 }) {
   const addVins = useOps((s) => s.addVins)
   const removeVin = useOps((s) => s.removeVin)
+  const dismissPreGateIn = useOps((s) => s.dismissPreGateIn)
+  const undismissPreGateIn = useOps((s) => s.undismissPreGateIn)
   const toast = useYard((s) => s.toast)
   const [text, setText] = useState('')
-  // live queue copy — the modal must show the list it is editing, not a snapshot
+  const virtual = q.id === '__uncovered_pregatein'
+  // live queue copy — the modal must show the list it is editing, not a snapshot.
+  // the virtual card has no stored queue: its live copy is the prop, which the
+  // board rebuilds on every dismissal.
   const live = useOps((s) => s.queues.find((x) => x.id === q.id)) ?? q
 
   useEffect(() => {
@@ -450,9 +466,19 @@ function EditQueueVinsModal({ q, rows, modelByVin, onClose }: {
   }
 
   const doRemove = (vin: string, done: boolean) => {
+    const waiting = deriveCarStatus(rows.find((r) => r.vin === vin)?.cells ?? {}) === 'Pre Gate-in'
+    if (virtual) {
+      if (!window.confirm(`${vin}\n\nเอารถคันนี้ออกจากกระดานประตู?\n\n· สถานะในชีทไม่เปลี่ยน — แค่ไม่ต้องรอที่ประตูอีก\n· ถ้ารถมาจริง สแกนเลขวินที่สถานี Gate-in รับเข้าได้ตามปกติ`)) return
+      dismissPreGateIn([vin])
+      toast('ok', `เอา ${vin} ออกจากกระดานประตูแล้ว`)
+      return
+    }
     // a car the gate already scanned in is real history — make that deliberate
     if (done && !window.confirm(`${vin}\n\nคันนี้ Gate-in เข้าลานไปแล้ว\nเอาออกจากคิวงานนี้จริงหรือไม่?`)) return
     removeVin(live.id, vin)
+    // …and keep it off the board. Without this the car falls straight into the
+    // "(รอ Gate-in · ยังไม่มีคิวงาน)" safety net and the removal looks undone.
+    if (waiting && isPreGateInQueue(live)) dismissPreGateIn([vin])
     toast('ok', `เอา ${vin} ออกจากคิวงานแล้ว`)
   }
 
@@ -467,7 +493,7 @@ function EditQueueVinsModal({ q, rows, modelByVin, onClose }: {
         <div className="px-4 pt-4 pb-3 flex items-start gap-2">
           <ListChecks size={16} className="mt-0.5 shrink-0" style={{ color: 'var(--brand)' }} />
           <div className="min-w-0 flex-1">
-            <div className="text-[13px] font-bold">แก้ไขรายชื่อรถในคิวงาน</div>
+            <div className="text-[13px] font-bold">{virtual ? 'แก้ไขรถที่รออยู่หน้าประตู' : 'แก้ไขรายชื่อรถในคิวงาน'}</div>
             <div className="text-[12px] mt-0.5 truncate" style={{ color: 'var(--muted)' }}>{live.name}</div>
           </div>
           <button className="w-7 h-7 rounded-full flex items-center justify-center shrink-0"
@@ -476,19 +502,32 @@ function EditQueueVinsModal({ q, rows, modelByVin, onClose }: {
           </button>
         </div>
         <div className="divider mx-4" />
-        <div className="px-4 py-3">
-          <div className="text-[11.5px] font-semibold mb-1.5" style={{ color: 'var(--muted)' }}>
-            เพิ่มรถเข้าคิวงาน — วาง/พิมพ์เลขวินเต็ม หรือเลขท้าย (หลายคันได้ ขึ้นบรรทัดใหม่)
+        {virtual ? (
+          // this card is built from the sheet, not stored — there is no list to
+          // add a car INTO. Naming it (the pencil on the card) is what turns it
+          // into a real lot; here you can only take cars off the gate's board.
+          <div className="px-4 py-3 text-[11.5px] leading-relaxed" style={{ color: 'var(--muted)' }}>
+            รถชุดนี้ยังไม่มีคิวงาน — กดถังขยะเพื่อเอารถที่ <b>ไม่ได้มา</b> ออกจากกระดานประตู
+            <div className="mt-1" style={{ color: 'var(--faint)' }}>
+              สถานะในชีทไม่เปลี่ยน · ถ้ารถมาจริง สแกนที่สถานี Gate-in รับเข้าได้ตามปกติ ·
+              อยากทำเป็นคิวงานจริง กดรูปดินสอที่ชื่อการ์ดเพื่อตั้งชื่อ
+            </div>
           </div>
-          <textarea className="input" style={{ minHeight: 64, fontFamily: 'JetBrains Mono, monospace', fontSize: 12 }}
-            placeholder={'LC0CE4CB1TG024182\n024182'} value={text} onChange={(e) => setText(e.target.value)} />
-          <button className="btn btn-primary w-full mt-2 py-2 text-[12.5px]" disabled={!text.trim()} onClick={doAdd}>
-            <ListPlus size={14} /> เพิ่มเข้าคิวงาน
-          </button>
-        </div>
+        ) : (
+          <div className="px-4 py-3">
+            <div className="text-[11.5px] font-semibold mb-1.5" style={{ color: 'var(--muted)' }}>
+              เพิ่มรถเข้าคิวงาน — วาง/พิมพ์เลขวินเต็ม หรือเลขท้าย (หลายคันได้ ขึ้นบรรทัดใหม่)
+            </div>
+            <textarea className="input" style={{ minHeight: 64, fontFamily: 'JetBrains Mono, monospace', fontSize: 12 }}
+              placeholder={'LC0CE4CB1TG024182\n024182'} value={text} onChange={(e) => setText(e.target.value)} />
+            <button className="btn btn-primary w-full mt-2 py-2 text-[12.5px]" disabled={!text.trim()} onClick={doAdd}>
+              <ListPlus size={14} /> เพิ่มเข้าคิวงาน
+            </button>
+          </div>
+        )}
         <div className="divider mx-4" />
         <div className="px-4 pt-2.5 pb-1 text-[11.5px] font-semibold flex items-center gap-1.5" style={{ color: 'var(--muted)' }}>
-          รถในคิวงานนี้ <span className="badge tabular">{items.length}</span>
+          {virtual ? 'รถที่รออยู่หน้าประตู' : 'รถในคิวงานนี้'} <span className="badge tabular">{items.length}</span>
         </div>
         <div className="px-2 pb-3 overflow-auto divide-y" style={{ maxHeight: '38vh' }}>
           {items.length === 0 ? (
@@ -503,12 +542,39 @@ function EditQueueVinsModal({ q, rows, modelByVin, onClose }: {
                 </div>
               </div>
               <button className="btn btn-ghost px-2 py-1 shrink-0" style={{ color: '#dc2626' }}
-                title="เอารถคันนี้ออกจากคิวงาน" onClick={() => doRemove(i.vin, i.done)}>
+                title={virtual ? 'เอารถคันนี้ออกจากกระดานประตู' : 'เอารถคันนี้ออกจากคิวงาน'}
+                onClick={() => doRemove(i.vin, i.done)}>
                 <Trash2 size={13} />
               </button>
             </div>
           ))}
         </div>
+        {/* undo: a car taken off the board is still Pre Gate-in in the sheet, so
+            it must stay findable — otherwise the only way back is a re-import */}
+        {(virtual || isPreGateInQueue(live)) && dismissedRows.length > 0 && (
+          <>
+            <div className="divider mx-4" />
+            <div className="px-4 pt-2.5 pb-1 text-[11.5px] font-semibold flex items-center gap-1.5" style={{ color: 'var(--muted)' }}>
+              เอาออกจากกระดานประตูแล้ว <span className="badge tabular">{dismissedRows.length}</span>
+            </div>
+            <div className="px-2 pb-3 overflow-auto divide-y" style={{ maxHeight: '22vh' }}>
+              {dismissedRows.map((r) => (
+                <div key={r.vin} className="flex items-center gap-2.5 px-2 py-2">
+                  <div className="w-2 h-2 rounded-full shrink-0" style={{ background: 'var(--faint)' }} />
+                  <div className="min-w-0 flex-1">
+                    <div className="vin text-[12px] truncate" style={{ color: 'var(--muted)' }}>{r.vin}</div>
+                    <div className="text-[10.5px] truncate" style={{ color: 'var(--faint)' }}>{modelByVin.get(r.vin) || '—'}</div>
+                  </div>
+                  <button className="btn btn-ghost px-2 py-1 text-[11px] shrink-0" style={{ color: 'var(--brand)' }}
+                    title="เอากลับขึ้นกระดานประตู"
+                    onClick={() => { undismissPreGateIn([r.vin]); toast('ok', `เอา ${r.vin} กลับขึ้นกระดานประตูแล้ว`) }}>
+                    <ArchiveRestore size={13} /> เอากลับ
+                  </button>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
       </div>
     </div>
   )
@@ -558,6 +624,11 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
   // the Unit List does. Live-board only — a past date is asking "what happened
   // that day", not "what's uncovered right now".
   const isToday = filterDate == null || filterDate === todayKey()
+  // cars the gate has taken off this board by hand ("คันนี้ไม่ได้มา"). Without
+  // this the safety net below rebuilt them from the sheet on every render, so
+  // removing a car from a lot only moved it into the virtual card — the reason
+  // the board looked un-editable from the yard's side.
+  const dismissed = useOps((s) => s.dismissed)
   const uncovered = useMemo(() => {
     if (!isToday) return [] as TrackRow[]
     // a car is "covered" only while it still has an OPEN item — a done item in a
@@ -570,10 +641,16 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
       for (const i of q.items) if (!gateInArrived(i)) queuedVins.add(i.vin)
     }
     return rows.filter((r) => rowInSite(r, currentSite, useYard.getState().sites)
-      && !queuedVins.has(r.vin) && deriveCarStatus(r.cells) === 'Pre Gate-in')
-  }, [all, rows, currentSite, isToday])
-  if (queues.length === 0 && uncovered.length === 0) return null
-  const virtual: WorkQueue | null = uncovered.length ? {
+      && !queuedVins.has(r.vin) && !dismissed[r.vin] && deriveCarStatus(r.cells) === 'Pre Gate-in')
+  }, [all, rows, currentSite, isToday, dismissed])
+  // the other side of that filter — what was taken off, so it can be put back
+  const dismissedRows = useMemo(() => rows.filter((r) => dismissed[r.vin]
+    && rowInSite(r, currentSite, useYard.getState().sites)
+    && deriveCarStatus(r.cells) === 'Pre Gate-in'), [rows, currentSite, dismissed])
+  if (queues.length === 0 && uncovered.length === 0 && dismissedRows.length === 0) return null
+  // the card also stays when every waiting car has been taken off the board and
+  // there is no lot left — otherwise the "เอากลับ" list would be unreachable
+  const virtual: WorkQueue | null = uncovered.length || (queues.length === 0 && dismissedRows.length) ? {
     id: '__uncovered_pregatein', name: '(รอ Gate-in · ยังไม่มีคิวงาน)', createdAt: 0,
     items: uncovered.map((r) => ({ vin: r.vin, addedAt: 0, done: false })),
   } : null
@@ -586,8 +663,11 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
         targets={queues.filter((t) => t.id !== moving.fromId)} />
     )}
     {editingVins && (() => {
-      const q = queues.find((x) => x.id === editingVins)
-      return q ? <EditQueueVinsModal q={q} rows={rows} modelByVin={modelByVin} onClose={() => setEditingVins(null)} /> : null
+      // renderQueues, not queues — the "(รอ Gate-in · ยังไม่มีคิวงาน)" card is
+      // editable too, and it only exists in the rendered list
+      const q = renderQueues.find((x) => x.id === editingVins)
+      return q ? <EditQueueVinsModal q={q} rows={rows} modelByVin={modelByVin}
+        dismissedRows={dismissedRows} onClose={() => setEditingVins(null)} /> : null
     })()}
     <div className="panel overflow-hidden">
       <div className="px-4 py-2.5 border-b hairline flex items-center gap-2">
@@ -624,9 +704,14 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
                         import file exactly — a car cancelled, one added late,
                         one listed on the wrong lot. Without this a car that was
                         never coming kept the lot below 100% forever. */}
-                    {q.id !== '__uncovered_pregatein' && !isClosed(q.id) && (
+                    {/* the virtual "(รอ Gate-in · ยังไม่มีคิวงาน)" card gets it
+                        too — it is where every removed car lands, so without an
+                        edit button here nothing could ever leave the board */}
+                    {!isClosed(q.id) && (
                       <button className="btn btn-ghost px-2 py-1" style={{ color: 'var(--muted)' }}
-                        title="แก้ไขรายชื่อรถในคิวงาน — เพิ่ม/เอาเลขวินออก"
+                        title={q.id === '__uncovered_pregatein'
+                          ? 'แก้ไขรถที่รออยู่หน้าประตู — เอารถที่ไม่ได้มาออก'
+                          : 'แก้ไขรายชื่อรถในคิวงาน — เพิ่ม/เอาเลขวินออก'}
                         onClick={(e) => { e.stopPropagation(); setEditingVins(q.id) }}>
                         <ListChecks size={13} />
                       </button>
