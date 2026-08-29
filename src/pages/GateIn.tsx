@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ScanLine, LogOut, ChevronDown, ChevronRight, CheckCircle2, Clock, Calendar, X, ClipboardList, ListChecks, Pencil, Archive, ArchiveRestore, MoveRight } from 'lucide-react'
+import { ScanLine, LogOut, ChevronDown, ChevronRight, CheckCircle2, Clock, Calendar, X, ClipboardList, ListChecks, ListPlus, Trash2, Pencil, Archive, ArchiveRestore, MoveRight } from 'lucide-react'
 import { useYard, useUnits } from '../store/useYard'
 import { PageHead, cx } from '../components/ui'
 import { useTracking, useTrackingRows } from '../store/useTracking'
@@ -10,6 +10,7 @@ import { rowInSite } from '../lib/siteScope'
 import { MONTH_ABBR, parseLooseDate, dateKey, todayKey, fmtDateTh, gateInDateKey, gateOutDateKey } from '../lib/dayKey'
 import { SeqQueuePicker } from '../components/SeqQueueList'
 import type { TrackRow } from '../lib/excelTracking'
+import { matchVins } from '../lib/findCar'
 
 // keep re-export so UnitDetail.tsx can still import it from here
 export { zoneLabel } from '../components/CarDiagramMultiView'
@@ -402,6 +403,117 @@ function MoveVinModal({ vin, from, targets, onClose }: {
   )
 }
 
+/**
+ * Edit which cars a lot holds — take a VIN out, or paste VINs in.
+ *
+ * An import batch is a snapshot of one file, and the truck that actually turns
+ * up rarely matches it exactly: a car is cancelled, another is added at the
+ * last minute, one was listed on the wrong lot. Until now the only repair was
+ * moving a car between lots (right-click) — nothing could remove a car that was
+ * never coming, so the lot could never reach 100% and sat on the gate's board
+ * forever, or add one that turned up unlisted.
+ *
+ * Pasted VINs are resolved against the tracking sheet (full VIN or ท้าย ≥3 —
+ * the same matcher the Unit-List paste box uses). A VIN the sheet has never
+ * heard of is refused: adding it would put a bare number on the gate's screen
+ * with no model, colour or lot behind it.
+ */
+function EditQueueVinsModal({ q, rows, modelByVin, onClose }: {
+  q: WorkQueue
+  rows: TrackRow[]
+  modelByVin: Map<string, string>
+  onClose: () => void
+}) {
+  const addVins = useOps((s) => s.addVins)
+  const removeVin = useOps((s) => s.removeVin)
+  const toast = useYard((s) => s.toast)
+  const [text, setText] = useState('')
+  // live queue copy — the modal must show the list it is editing, not a snapshot
+  const live = useOps((s) => s.queues.find((x) => x.id === q.id)) ?? q
+
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [onClose])
+
+  const doAdd = () => {
+    const { found, notFound } = matchVins(text, rows)
+    if (!found.length) {
+      toast('err', notFound.length ? `ไม่พบเลขวิน: ${notFound.slice(0, 5).join(', ')}` : 'ยังไม่ได้ใส่เลขวิน')
+      return
+    }
+    const { added, dup } = addVins(live.id, found.map((r) => r.vin))
+    const parts = [added ? `เพิ่ม ${added} คัน` : '', dup ? `มีอยู่แล้ว ${dup}` : '', notFound.length ? `ไม่พบ ${notFound.length}` : '']
+    toast(added ? 'ok' : 'info', parts.filter(Boolean).join(' · '))
+    if (added) setText('')
+  }
+
+  const doRemove = (vin: string, done: boolean) => {
+    // a car the gate already scanned in is real history — make that deliberate
+    if (done && !window.confirm(`${vin}\n\nคันนี้ Gate-in เข้าลานไปแล้ว\nเอาออกจากคิวงานนี้จริงหรือไม่?`)) return
+    removeVin(live.id, vin)
+    toast('ok', `เอา ${vin} ออกจากคิวงานแล้ว`)
+  }
+
+  const items = [...live.items].sort((a, b) => Number(a.done) - Number(b.done))
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.32)', backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)' }}
+      onClick={onClose}>
+      <div className="pop w-full overflow-hidden flex flex-col"
+        style={{ maxWidth: 520, borderRadius: 18, background: 'var(--panel)', border: '0.5px solid rgba(0,0,0,0.10)' }}
+        onClick={(e) => e.stopPropagation()}>
+        <div className="px-4 pt-4 pb-3 flex items-start gap-2">
+          <ListChecks size={16} className="mt-0.5 shrink-0" style={{ color: 'var(--brand)' }} />
+          <div className="min-w-0 flex-1">
+            <div className="text-[13px] font-bold">แก้ไขรายชื่อรถในคิวงาน</div>
+            <div className="text-[12px] mt-0.5 truncate" style={{ color: 'var(--muted)' }}>{live.name}</div>
+          </div>
+          <button className="w-7 h-7 rounded-full flex items-center justify-center shrink-0"
+            style={{ background: 'var(--chip)', color: 'var(--muted)' }} onClick={onClose} title="ปิด">
+            <X size={14} />
+          </button>
+        </div>
+        <div className="divider mx-4" />
+        <div className="px-4 py-3">
+          <div className="text-[11.5px] font-semibold mb-1.5" style={{ color: 'var(--muted)' }}>
+            เพิ่มรถเข้าคิวงาน — วาง/พิมพ์เลขวินเต็ม หรือเลขท้าย (หลายคันได้ ขึ้นบรรทัดใหม่)
+          </div>
+          <textarea className="input" style={{ minHeight: 64, fontFamily: 'JetBrains Mono, monospace', fontSize: 12 }}
+            placeholder={'LC0CE4CB1TG024182\n024182'} value={text} onChange={(e) => setText(e.target.value)} />
+          <button className="btn btn-primary w-full mt-2 py-2 text-[12.5px]" disabled={!text.trim()} onClick={doAdd}>
+            <ListPlus size={14} /> เพิ่มเข้าคิวงาน
+          </button>
+        </div>
+        <div className="divider mx-4" />
+        <div className="px-4 pt-2.5 pb-1 text-[11.5px] font-semibold flex items-center gap-1.5" style={{ color: 'var(--muted)' }}>
+          รถในคิวงานนี้ <span className="badge tabular">{items.length}</span>
+        </div>
+        <div className="px-2 pb-3 overflow-auto divide-y" style={{ maxHeight: '38vh' }}>
+          {items.length === 0 ? (
+            <div className="text-[12px] px-2 py-4 text-center" style={{ color: 'var(--muted)' }}>ยังไม่มีรถในคิวงานนี้</div>
+          ) : items.map((i) => (
+            <div key={i.vin} className="flex items-center gap-2.5 px-2 py-2">
+              <div className="w-2 h-2 rounded-full shrink-0" style={{ background: i.done ? '#22c55e' : '#f6d365' }} />
+              <div className="min-w-0 flex-1">
+                <div className="vin text-[12px] truncate">{i.vin}</div>
+                <div className="text-[10.5px] truncate" style={{ color: 'var(--faint)' }}>
+                  {modelByVin.get(i.vin) || '—'}{i.done ? ' · Gate-in แล้ว' : ''}
+                </div>
+              </div>
+              <button className="btn btn-ghost px-2 py-1 shrink-0" style={{ color: '#dc2626' }}
+                title="เอารถคันนี้ออกจากคิวงาน" onClick={() => doRemove(i.vin, i.done)}>
+                <Trash2 size={13} />
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Pre Gate-in work queues (the "(yard · date · N)" import batches) — same view
 //    as YardOps: name · done/total · waiting VIN list. Scoped to the active site. ──
 function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
@@ -416,6 +528,7 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
   const rows = useTrackingRows()
   const [openId, setOpenId] = useState<string | null>(null)
   const [moving, setMoving] = useState<{ fromId: string; vin: string } | null>(null)
+  const [editingVins, setEditingVins] = useState<string | null>(null)
   const longPress = useRef<number | null>(null)
   const modelByVin = useMemo(() => {
     const m = new Map<string, string>()
@@ -472,6 +585,10 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
       <MoveVinModal vin={moving.vin} from={movingFrom} onClose={() => setMoving(null)}
         targets={queues.filter((t) => t.id !== moving.fromId)} />
     )}
+    {editingVins && (() => {
+      const q = queues.find((x) => x.id === editingVins)
+      return q ? <EditQueueVinsModal q={q} rows={rows} modelByVin={modelByVin} onClose={() => setEditingVins(null)} /> : null
+    })()}
     <div className="panel overflow-hidden">
       <div className="px-4 py-2.5 border-b hairline flex items-center gap-2">
         <ClipboardList size={14} style={{ color: 'var(--brand)' }} />
@@ -500,6 +617,17 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
                     {/* archive: an old lot whose last car never turned up (289/290)
                         had no way off the boards — this files it away, and it is
                         still there under its own date if it needs reopening */}
+                    {/* edit the lot's car list: a truck rarely matches its
+                        import file exactly — a car cancelled, one added late,
+                        one listed on the wrong lot. Without this a car that was
+                        never coming kept the lot below 100% forever. */}
+                    {q.id !== '__uncovered_pregatein' && !isClosed(q.id) && (
+                      <button className="btn btn-ghost px-2 py-1" style={{ color: 'var(--muted)' }}
+                        title="แก้ไขรายชื่อรถในคิวงาน — เพิ่ม/เอาเลขวินออก"
+                        onClick={(e) => { e.stopPropagation(); setEditingVins(q.id) }}>
+                        <ListChecks size={13} />
+                      </button>
+                    )}
                     {q.id !== '__uncovered_pregatein' && (
                       isClosed(q.id) ? (
                         <button className="btn btn-ghost px-2 py-1 text-[11px]" style={{ color: '#16a34a' }}
