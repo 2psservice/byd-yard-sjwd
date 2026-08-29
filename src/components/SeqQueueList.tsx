@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react'
 import { ListChecks, ChevronLeft, Clock } from 'lucide-react'
-import { seqStageOf } from '../store/useOps'
-import { hasLeftGate } from '../lib/carStatus'
+import { seqStageOf, seqCarGone } from '../store/useOps'
 import { yardLocCode, byYardLocation } from '../lib/groupingImport'
 import type { WorkQueue, QueueItem } from '../store/useOps'
 import type { Unit } from '../types'
@@ -32,15 +31,11 @@ export function SeqQueuePicker({ queues, units, trackingRows, queuedLabel }: {
   const [openId, setOpenId] = useState<string | null>(null)
   // a car counts as gated-out by its LIVE status — so cars gated out any way
   // (sequence flow, plain gate-out, import) show "gate out" and count toward
-  // progress, even if the queue item's own flag was never set. Shares
-  // hasLeftGate with the reconciler + station badges: this card reading its own
-  // looser rule is exactly why it showed 30/30 while the badge still said 29.
-  const goneVins = useMemo(() => {
-    const s = new Set<string>()
-    for (const r of trackingRows) if (hasLeftGate(r.cells)) s.add(r.vin)
-    return s
-  }, [trackingRows])
-  const isGone = (i: QueueItem) => i.gatedOut === true || goneVins.has(i.vin)
+  // progress, even if the queue item's own flag was never set. THE SAME rule
+  // decides whether the whole run is finished (seqCarGone → isQueueComplete):
+  // while this card had its own looser copy, a run could read "เหลือ 0" here
+  // and still count as unfinished, so it never left the board.
+  const isGone = (i: QueueItem) => seqCarGone(i)
   const openSeq = openId ? queues.find((q) => q.id === openId) ?? null : null
   const seqCars = useMemo(() => {
     if (!openSeq) return [] as { vin: string; model: string; color: string; grouping: string; location: string; lane: string; stage: string; done: boolean; ts?: number; tsLabel?: string; by?: string }[]
@@ -67,7 +62,7 @@ export function SeqQueuePicker({ queues, units, trackingRows, queuedLabel }: {
         by: step.by,
       }
     }).sort((a, b) => byYardLocation(a.location, b.location))
-  }, [openSeq, units, trackingRows, goneVins]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [openSeq, units, trackingRows]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!queues.length) return null
   return (
