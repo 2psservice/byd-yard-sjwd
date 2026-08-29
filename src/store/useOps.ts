@@ -1277,14 +1277,39 @@ export function stationProgress(q: WorkQueue) {
   return { total, done, remaining: total - done }
 }
 
+/**
+ * Has this delivery-run car finished its gate work?
+ *
+ * Read from the LIVE sheet status first, exactly like gateInArrived does for
+ * arrivals. The item's own `gatedOut`/`done` flag is written by whichever device
+ * handled the car, and a device that gates a car out by another path (plain
+ * Gate-out screen, an import) never sets it — so the run card, which has always
+ * read the live status, showed "62/62 คัน · เหลือ 0" while the flags said
+ * otherwise and the run stayed on the board with nothing left to do.
+ */
+export function seqCarGone(i: QueueItem): boolean {
+  if (i.gatedOut || i.done) return true
+  const cells = useTracking.getState().rows[i.vin]?.cells
+  return !!cells && hasLeftGate(cells)
+}
+
 /** A queue is "complete" once every car in it is done (gated-in / gated-out).
  *  Complete queues drop off the live views and file under their creation day. */
 export function isQueueComplete(q: WorkQueue): boolean {
-  if (!q.items.length) return false
+  // An EMPTY delivery run / arrival lot is FINISHED, not "0% done". Both are
+  // created with their cars in one go (the DN import, the arrival file), so
+  // empty means the cars left it afterwards — delivered, or taken out by hand.
+  // Reading that as unfinished is what left "0/0 คัน · เหลือ 0" cards sitting
+  // on the Gate-out board for ever with no work in them and no way off.
+  // Station queues (PM / PDI / …) are exempt: those really are built empty and
+  // filled by hand, and must not vanish between the two steps.
+  if (!q.items.length) return isSequenceQueue(q) || isPreGateInQueue(q)
   // A Pre Gate-in lot is finished when its CARS are all in, not when the tick
   // flag says so — the flag is written back and forth between devices, which
   // made a finished lot flicker on and off the boards (see queueProgress).
   if (isPreGateInQueue(q)) { const { total, done } = queueProgress(q); return done >= total }
+  // …and a delivery run when its cars have all LEFT, by the same reasoning
+  if (isSequenceQueue(q)) return q.items.every(seqCarGone)
   return q.items.every((i) => i.done)
 }
 
