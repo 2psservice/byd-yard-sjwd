@@ -27,6 +27,7 @@ import { YardOps } from './pages/YardOps'
 import { Tracking } from './pages/Tracking'
 import { Operation } from './pages/Operation'
 import { PmPlan } from './pages/PmPlan'
+import { PdiBoard } from './pages/PdiBoard'
 import { Damages } from './pages/Damages'
 import { Grouping } from './pages/Grouping'
 import { Settings } from './pages/Settings'
@@ -306,6 +307,7 @@ export default function App() {
     tracking: <Tracking />,
     operation: <Operation />,
     pm: <PmPlan />,
+    pdi: <PdiBoard />,
     damages:   <Damages />,
     grouping:  <Grouping />,
     settings: <Settings />,
