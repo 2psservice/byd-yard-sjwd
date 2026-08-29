@@ -14,7 +14,7 @@ import {
 import { useYard, useUnits, useTrips, useBlocks, attachPendingDamages } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { isDamaged, deriveCarStatus, hasLeftGate, IN_YARD_STATUSES, CAR_STATUS_META } from '../lib/carStatus'
-import { useOps, useActiveQueues, activeProcess, stageOf, isSequenceQueue, isPreGateInQueue, seqStageOf, isQueueComplete, isStationWorkComplete, queueTypeOf, stampStationDate, stationProgress, drivingNow } from '../store/useOps'
+import { useOps, useActiveQueues, activeProcess, stageOf, isSequenceQueue, isPreGateInQueue, seqStageOf, isQueueComplete, isStationWorkComplete, queueTypeOf, stampStationDate, stationProgress, drivingNow, gateInArrived, gateInPendingItems } from '../store/useOps'
 import type { WorkQueue, QueueItem, QueueType, QueueStage } from '../store/useOps'
 import { CarTopView } from '../components/CarTopView'
 import { LogoMark } from '../components/Logo'
@@ -1612,7 +1612,7 @@ function WalkView() {
     // all. That is exactly what an admin flipping Car Status back to Pre Gate-in
     // produces, and the station had no way to know the car was waiting.
     const queuedVins = new Set<string>()
-    for (const q of queues) if (isPreGateInQueue(q)) for (const i of q.items) if (!i.done) queuedVins.add(i.vin)
+    for (const q of queues) if (isPreGateInQueue(q)) for (const i of q.items) if (!gateInArrived(i)) queuedVins.add(i.vin)
     return trackingRows.filter(r => !queuedVins.has(r.vin) && deriveCarStatus(r.cells) === 'Pre Gate-in')
   }, [queues, trackingRows])
   // Pre Gate-in queues "(M-D-N)" — process queues (PDI / PM / Wash) live under the
@@ -1654,7 +1654,7 @@ function WalkView() {
         color: row?.cells['Color'] ?? u?.color ?? '—',
         grouping: row?.cells['Grouping  Number'] || '—',
         location: yardLocCode(u) || '—',
-        done: i.done,
+        done: gateInArrived(i),
         ng: ngVins.has(i.vin),
         doneAt: i.doneAt ?? (gitCell ? parseInt(gitCell) || undefined : undefined),
         doneBy: i.doneBy ?? row?.cells['Gate In Inspector'] ?? '',
@@ -1858,8 +1858,9 @@ function WalkView() {
           </div>
           {gateInQueues.map(q => {
             const total = q.items.length
-            const done  = q.items.filter(i => i.done).length
-            const ng    = q.items.filter(i => i.done && ngVins.has(i.vin)).length
+            // นับจาก "สถานะรถ" ไม่ใช่ธงติ๊ก — กฎเดียวกับกระดานแอดมิน
+            const done  = q.items.filter(gateInArrived).length
+            const ng    = q.items.filter(i => gateInArrived(i) && ngVins.has(i.vin)).length
             const isOpen = q.id === selectedQueueId
             return (
               <div key={q.id} className="panel overflow-hidden">
@@ -5258,7 +5259,7 @@ export function YardOps() {
     const add = (k: RoleKey, v: number) => { if (v > 0) n[k] = (n[k] ?? 0) + v }
     // only OPEN items count as covered — same rule as the station's own list
     const queuedPreGateInVins = new Set<string>()
-    for (const q of queues) if (isPreGateInQueue(q)) for (const i of q.items) if (!i.done) queuedPreGateInVins.add(i.vin)
+    for (const q of queues) if (isPreGateInQueue(q)) for (const i of q.items) if (!gateInArrived(i)) queuedPreGateInVins.add(i.vin)
     for (const q of queues) {
       if (isQueueComplete(q)) continue
       if (isSequenceQueue(q)) {
@@ -5268,7 +5269,7 @@ export function YardOps() {
         add('driver', q.items.filter(i => !i.done && !i.atLaneAt).length)
         continue
       }
-      if (isPreGateInQueue(q)) { add('walk', q.items.filter(i => !i.done).length); continue }
+      if (isPreGateInQueue(q)) { add('walk', gateInPendingItems(q).length); continue }
       const t = queueTypeOf(q)
       // the station's own count: cars whose check hasn't been recorded yet
       const unchecked = q.items.filter(i => !i.done && stageOf(i) !== 'checked').length

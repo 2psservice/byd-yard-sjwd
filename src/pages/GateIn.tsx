@@ -3,7 +3,7 @@ import { ScanLine, LogOut, ChevronDown, ChevronRight, CheckCircle2, Clock, Calen
 import { useYard, useUnits } from '../store/useYard'
 import { PageHead, cx } from '../components/ui'
 import { useTracking, useTrackingRows } from '../store/useTracking'
-import { useActiveQueues, useOps, queueProgress, isSequenceQueue, isQueueComplete, isPreGateInQueue } from '../store/useOps'
+import { useActiveQueues, useOps, queueProgress, isSequenceQueue, isQueueComplete, isPreGateInQueue, gateInArrived, gateInPendingItems } from '../store/useOps'
 import type { WorkQueue } from '../store/useOps'
 import { deriveCarStatus, CAR_STATUS_META } from '../lib/carStatus'
 import { rowInSite } from '../lib/siteScope'
@@ -567,7 +567,7 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
     const queuedVins = new Set<string>()
     for (const q of all) {
       if (!isPreGateInQueue(q) || (q.site && q.site !== currentSite)) continue
-      for (const i of q.items) if (!i.done) queuedVins.add(i.vin)
+      for (const i of q.items) if (!gateInArrived(i)) queuedVins.add(i.vin)
     }
     return rows.filter((r) => rowInSite(r, currentSite, useYard.getState().sites)
       && !queuedVins.has(r.vin) && deriveCarStatus(r.cells) === 'Pre Gate-in')
@@ -598,7 +598,10 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
       <div className="divide-y">
         {renderQueues.map((q) => {
           const { done, total } = queueProgress(q)
-          const pending = q.items.filter((i) => !i.done)
+          // "เสร็จ" นับจากสถานะรถ (queueProgress) แต่ "รอ" เคยนับจากธงติ๊ก —
+          // การ์ดเดียวกันจึงอ่านได้ว่า "410/545 เสร็จ · รอ Gate-in 1 คัน"
+          // ซึ่งขัดกันเอง ให้ทั้งสองเลขมาจากกฎเดียวกัน
+          const pending = isPreGateInQueue(q) ? gateInPendingItems(q) : q.items.filter((i) => !i.done)
           const open = openId === q.id
           const pct = total ? Math.round((done / total) * 100) : 0
           const complete = pending.length === 0
@@ -676,7 +679,8 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
                     </div>
                   )}
                   {/* every car — pending first, each Gate-in'd car shows when + who */}
-                  {[...q.items].sort((a, b) => Number(a.done) - Number(b.done)).map((item) => (
+                  {[...q.items].map((i) => ({ ...i, done: gateInArrived(i) }))
+                    .sort((a, b) => Number(a.done) - Number(b.done)).map((item) => (
                     // right-click (desktop) / long-press (phone) → move this car
                     // to another arrival lot. preventDefault keeps the browser's
                     // own menu — and the long-press text selection — out of the way.

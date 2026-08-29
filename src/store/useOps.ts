@@ -1143,6 +1143,27 @@ export function hasArrived(cells: Record<string, string>): boolean {
   return !!cs && cs.toLowerCase() !== 'pre gate-in'
 }
 
+/**
+ * Has this arrival-lot car actually come through the gate?
+ *
+ * Read from the CAR'S OWN status, never the item's tick flag. The flag is
+ * written by whichever device reconciles first and can be written back by
+ * another whose copy of the sheet is a minute behind, so the same lot read
+ * 544/545 on the ops-scan station and 410/545 on the admin board — the station
+ * counted flags, the board counted cars. The car's status cannot flap, and it
+ * is the source the Dashboard headline already uses. A VIN with no sheet row
+ * falls back to the flag; there is nothing else to read.
+ */
+export function gateInArrived(i: QueueItem): boolean {
+  const cells = useTracking.getState().rows[i.vin]?.cells
+  return cells ? hasArrived(cells) : i.done
+}
+
+/** The cars of a Pre Gate-in lot still waiting at the gate (same rule). */
+export function gateInPendingItems(q: WorkQueue): QueueItem[] {
+  return q.items.filter((i) => !gateInArrived(i))
+}
+
 export function queueProgress(q: WorkQueue) {
   const total = q.items.length
   // ── Pre Gate-in lots count the CARS, not the tick flag ──
