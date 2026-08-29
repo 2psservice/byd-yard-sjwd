@@ -1592,8 +1592,6 @@ function WalkView() {
   const [editRemark, setEditRemark] = useState('')
   const [doneUnit, setDoneUnit] = useState<{ vin: string; modelName: string; color: string; colorHex?: string; inspector: string; gateInAt: number } | null>(null)
   const [lightbox, setLightbox] = useState<{ photos: string[]; index: number } | null>(null)
-  // mandatory damage check at gate-in — must pick OK or NG before confirming
-  const [dmgResult, setDmgResult] = useState<'OK' | 'NG' | null>(null)
   // The gate now verifies the CAR against the sheet before it verifies its
   // condition: the model and the colour standing in front of the operator have
   // to be the ones the system expects. A mismatch means the paperwork and the
@@ -1605,7 +1603,7 @@ function WalkView() {
 
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
   // reset every check per scanned car
-  useEffect(() => { setDmgResult(null); setModelOk(null); setColorOk(null) }, [trackingVin])
+  useEffect(() => { setModelOk(null); setColorOk(null) }, [trackingVin])
 
   // safety net: a Pre Gate-in car this station doesn't cover with any queue —
   // same fix as the admin Gate In/Out board's virtual card (PR #263). A device
@@ -2064,54 +2062,24 @@ function WalkView() {
                       </div>
                     </div>
                   )}
-                  {/* required OK / NG */}
-                  <div>
-                    <div className="text-[11.5px] font-semibold mb-1.5 flex items-center gap-1.5">
-                      <AlertTriangle size={13} style={{ color: 'var(--st-damage)' }} /> ตรวจสภาพรถ (บังคับเลือก)
-                      {!verified && <span className="font-normal" style={{ color: 'var(--faint)' }}>— ยืนยันรุ่นและสีก่อน</span>}
-                    </div>
-                    <div className="grid grid-cols-2 gap-2" style={verified ? undefined : { opacity: 0.45, pointerEvents: 'none' }}>
-                      <button onClick={() => setDmgResult('NG')} disabled={!verified}
-                        className="py-3 rounded-2xl text-[15px] font-bold transition active:scale-95"
-                        style={dmgResult === 'NG' ? { background: '#dc2626', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>
-                        NG
-                      </button>
-                      <button onClick={() => setDmgResult('OK')} disabled={!verified}
-                        className="py-3 rounded-2xl text-[15px] font-bold transition active:scale-95"
-                        style={dmgResult === 'OK' ? { background: '#16a34a', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>
-                        OK
-                      </button>
-                    </div>
-                  </div>
-
-                  {verified && dmgResult === 'NG' ? (
-                    // NG → ต้องใส่ตำแหน่ง + แผล ก่อนถึงจะ Gate In ได้
-                    <DamageForm
-                      key={trackRow.vin}
-                      vin={trackRow.vin}
-                      onSaveAll={damages => {
-                        const valid = damages.filter(d => (d.area ?? '').trim())
-                        if (!valid.length) { toast('err', 'กรุณาใส่ตำแหน่ง Defect อย่างน้อย 1 จุด'); return }
-                        doTrackingGateIn(valid)
-                      }}
-                      onCancel={() => setDmgResult(null)}
-                    />
-                  ) : (
-                    <button
-                      onClick={() => doTrackingGateIn()}
-                      disabled={!verified || dmgResult !== 'OK'}
-                      className="w-full h-14 rounded-2xl text-[16px] font-bold flex items-center justify-center gap-2 active:scale-95 transition-all"
-                      style={verified && dmgResult === 'OK'
-                        ? { background: '#16a34a', color: '#fff', boxShadow: '0 8px 24px -6px #16a34a80' }
-                        : { background: 'var(--chip)', color: 'var(--faint)', cursor: 'not-allowed' }}>
-                      <CheckCircle2 size={20} /> {
-                        mismatch.length ? 'Gate-in ไม่ได้ — ข้อมูลไม่ตรง'
-                          : !verified ? 'ยืนยันรุ่นและสีก่อน'
-                          : dmgResult === 'OK' ? 'Confirm Gate in'
-                          : 'เลือก OK / NG ก่อน'
-                      }
-                    </button>
-                  )}
+                  {/* the gate now checks the car against the sheet and nothing
+                      else: verify รุ่น, verify สี, confirm. The walk-around
+                      damage step was taken out at the yard's request — defects
+                      are recorded at the อัพเดท Defect station instead, so the
+                      gate is not also a inspection queue. */}
+                  <button
+                    onClick={() => doTrackingGateIn()}
+                    disabled={!verified}
+                    className="w-full h-14 rounded-2xl text-[16px] font-bold flex items-center justify-center gap-2 active:scale-95 transition-all"
+                    style={verified
+                      ? { background: '#16a34a', color: '#fff', boxShadow: '0 8px 24px -6px #16a34a80' }
+                      : { background: 'var(--chip)', color: 'var(--faint)', cursor: 'not-allowed' }}>
+                    <CheckCircle2 size={20} /> {
+                      mismatch.length ? 'Gate-in ไม่ได้ — ข้อมูลไม่ตรง'
+                        : !verified ? 'ยืนยันรุ่นและสีก่อน'
+                        : 'Confirm Gate in'
+                    }
+                  </button>
                   {/* back out of this car entirely — wrong scan, or the car is
                       being sent back to the office instead of into the yard */}
                   <button onClick={() => setTrackingVin(null)}
