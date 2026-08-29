@@ -1293,17 +1293,20 @@ export function seqCarGone(i: QueueItem): boolean {
   return !!cells && hasLeftGate(cells)
 }
 
+/**
+ * A queue holding no cars at all — a delivery run whose cars have all been
+ * delivered, an arrival lot emptied by hand, or a station queue not filled in
+ * yet. It is NOT "complete" (see below): the admin boards keep showing it as
+ * the day's record, which is what the office asked for. The field stations are
+ * work lists, so they hide it instead — a "0/0 คัน · เหลือ 0" card there is
+ * nothing anyone can scan.
+ */
+export const isEmptyQueue = (q: WorkQueue): boolean => q.items.length === 0
+
 /** A queue is "complete" once every car in it is done (gated-in / gated-out).
  *  Complete queues drop off the live views and file under their creation day. */
 export function isQueueComplete(q: WorkQueue): boolean {
-  // An EMPTY delivery run / arrival lot is FINISHED, not "0% done". Both are
-  // created with their cars in one go (the DN import, the arrival file), so
-  // empty means the cars left it afterwards — delivered, or taken out by hand.
-  // Reading that as unfinished is what left "0/0 คัน · เหลือ 0" cards sitting
-  // on the Gate-out board for ever with no work in them and no way off.
-  // Station queues (PM / PDI / …) are exempt: those really are built empty and
-  // filled by hand, and must not vanish between the two steps.
-  if (!q.items.length) return isSequenceQueue(q) || isPreGateInQueue(q)
+  if (!q.items.length) return false
   // A Pre Gate-in lot is finished when its CARS are all in, not when the tick
   // flag says so — the flag is written back and forth between devices, which
   // made a finished lot flicker on and off the boards (see queueProgress).

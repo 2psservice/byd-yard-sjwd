@@ -14,7 +14,7 @@ import {
 import { useYard, useUnits, useTrips, useBlocks, attachPendingDamages } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { isDamaged, deriveCarStatus, hasLeftGate, IN_YARD_STATUSES, CAR_STATUS_META } from '../lib/carStatus'
-import { useOps, useActiveQueues, activeProcess, stageOf, isSequenceQueue, isPreGateInQueue, seqStageOf, isQueueComplete, isStationWorkComplete, queueTypeOf, stampStationDate, stationProgress, drivingNow, gateInArrived, gateInPendingItems } from '../store/useOps'
+import { useOps, useActiveQueues, activeProcess, stageOf, isSequenceQueue, isPreGateInQueue, seqStageOf, isQueueComplete, isEmptyQueue, isStationWorkComplete, queueTypeOf, stampStationDate, stationProgress, drivingNow, gateInArrived, gateInPendingItems } from '../store/useOps'
 import type { WorkQueue, QueueItem, QueueType, QueueStage } from '../store/useOps'
 import { CarTopView } from '../components/CarTopView'
 import { LogoMark } from '../components/Logo'
@@ -1627,7 +1627,7 @@ function WalkView() {
     // day), and so do lots the admin has archived — an old arrival lot with one
     // car that never showed up (289/290) used to sit on the station board for
     // ever with no way for anyone to clear it.
-    const real = queues.filter(q => isPreGateInQueue(q) && !isQueueComplete(q) && !opsClosed[q.id])
+    const real = queues.filter(q => isPreGateInQueue(q) && !isEmptyQueue(q) && !isQueueComplete(q) && !opsClosed[q.id])
     if (!uncoveredPreGateIn.length) return real
     const virtual: WorkQueue = {
       id: '__uncovered_pregatein', name: '(รอ Gate-in · ยังไม่มีคิวงาน)', createdAt: 0,
@@ -2430,14 +2430,14 @@ function DriverView() {
   }
 
   // ── delivery-sequence queues visible to the driver (browse + progress) ──
-  const seqQueues = useMemo(() => queues.filter(q => isSequenceQueue(q) && !isQueueComplete(q)), [queues])
+  const seqQueues = useMemo(() => queues.filter(q => isSequenceQueue(q) && !isEmptyQueue(q) && !isQueueComplete(q)), [queues])
   // the driver moves cars for EVERY station, so they see all work queues
   // (PDI / PM / FINAL CHECK / งานพิเศษ) — unlike the stations, which are
   // strictly scoped to their own type.
   const allWorkQueues = useMemo(
     // finished station work (every car done or checked) leaves the driver's
     // browser too — a "เหลือ 0" queue only blocked the screen
-    () => queues.filter(q => !isSequenceQueue(q) && !isPreGateInQueue(q) && !isQueueComplete(q) && !isStationWorkComplete(q)),
+    () => queues.filter(q => !isSequenceQueue(q) && !isPreGateInQueue(q) && !isEmptyQueue(q) && !isQueueComplete(q) && !isStationWorkComplete(q)),
     [queues],
   )
 
@@ -3108,7 +3108,7 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
   // while some cars still wait for the drive back to a slot ("เหลือ 0" cards).
   // A just-created queue with no cars yet IS shown (it used to vanish, so an
   // operator who had just created it thought the queue never arrived).
-  const procQueues = useMemo(() => queues.filter(q => !isPreGateInQueue(q) && !isQueueComplete(q) && !isStationWorkComplete(q)), [queues])
+  const procQueues = useMemo(() => queues.filter(q => !isPreGateInQueue(q) && !isEmptyQueue(q) && !isQueueComplete(q) && !isStationWorkComplete(q)), [queues])
   // scan should resolve against the queue(s) already on screen first — a
   // handful of VINs, not the whole site's units/tracking rows — so it's
   // instant for the common case (the car being worked is in this station's
@@ -3431,7 +3431,7 @@ function MechanicView() {
   // was assigned to fix today; scanning a car still opens its NG list directly.
   const repairQueues = useMemo(
     () => allQueues.filter(q => {
-      if (isSequenceQueue(q) || isPreGateInQueue(q) || isQueueComplete(q)) return false
+      if (isSequenceQueue(q) || isPreGateInQueue(q) || isEmptyQueue(q) || isQueueComplete(q)) return false
       const t = queueTypeOf(q)
       return t === 'REPAIR' || t === 'SPECIAL'
     }),
@@ -3561,7 +3561,7 @@ function GateOutView() {
 
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
 
-  const seqQueues = useMemo(() => queues.filter(q => isSequenceQueue(q) && !isQueueComplete(q)), [queues])
+  const seqQueues = useMemo(() => queues.filter(q => isSequenceQueue(q) && !isEmptyQueue(q) && !isQueueComplete(q)), [queues])
   const row = vin ? (trackingRows.find(r => r.vin === vin) ?? null) : null
   const seqHit = useMemo(() => findSeqItem(vin, queues), [vin, queues])
   // where the car actually stands, so the gate can go fetch it — the yard name
