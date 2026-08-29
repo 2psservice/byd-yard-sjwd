@@ -1594,9 +1594,18 @@ function WalkView() {
   const [lightbox, setLightbox] = useState<{ photos: string[]; index: number } | null>(null)
   // mandatory damage check at gate-in — must pick OK or NG before confirming
   const [dmgResult, setDmgResult] = useState<'OK' | 'NG' | null>(null)
+  // The gate now verifies the CAR against the sheet before it verifies its
+  // condition: the model and the colour standing in front of the operator have
+  // to be the ones the system expects. A mismatch means the paperwork and the
+  // metal disagree — letting the car in anyway writes the wrong model into the
+  // yard (and the parking policy is keyed by model), so the gate holds it until
+  // the office corrects the data.
+  const [modelOk, setModelOk] = useState<'OK' | 'NG' | null>(null)
+  const [colorOk, setColorOk] = useState<'OK' | 'NG' | null>(null)
 
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
-  useEffect(() => { setDmgResult(null) }, [trackingVin]) // reset the check per scanned car
+  // reset every check per scanned car
+  useEffect(() => { setDmgResult(null); setModelOk(null); setColorOk(null) }, [trackingVin])
 
   // safety net: a Pre Gate-in car this station doesn't cover with any queue —
   // same fix as the admin Gate In/Out board's virtual card (PR #263). A device
@@ -1927,6 +1936,26 @@ function WalkView() {
       {/* tracking row (imported from Excel) gate-in card */}
       {trackRow && !unit && (() => {
         const damaged = isDamaged(trackRow.cells)
+        // OK / NG straight beside the field it is judging — the operator reads
+        // "ATTO 1" off the screen, looks at the car, and answers on that line.
+        const isPre = (trackRow.cells['Car Status'] ?? 'Pre Gate-in') === 'Pre Gate-in'
+        const MatchPick = ({ value, onPick, what }: {
+          value: 'OK' | 'NG' | null; onPick: (v: 'OK' | 'NG') => void; what: string
+        }) => (
+          <div className="flex gap-1 shrink-0">
+            {(['OK', 'NG'] as const).map((v) => (
+              <button key={v} onClick={() => onPick(v)} title={`${what} ${v === 'OK' ? 'ตรงกับในระบบ' : 'ไม่ตรงกับในระบบ'}`}
+                className="px-2.5 py-1 rounded-lg text-[11.5px] font-bold transition active:scale-95"
+                style={value === v
+                  ? { background: v === 'OK' ? '#16a34a' : '#dc2626', color: '#fff' }
+                  : { background: 'var(--chip)', color: 'var(--muted)' }}>
+                {v}
+              </button>
+            ))}
+          </div>
+        )
+        const mismatch = [modelOk === 'NG' && 'รุ่นรถ', colorOk === 'NG' && 'สีรถ'].filter(Boolean) as string[]
+        const verified = modelOk === 'OK' && colorOk === 'OK'
         return (
           <div className="panel overflow-hidden fade-up">
             {/* ── row 1: status badge + VIN ── */}
@@ -1947,22 +1976,28 @@ function WalkView() {
               </div>
               {/* info stack */}
               <div className="flex-1 min-w-0 space-y-2 text-[12px]">
-                <div>
-                  <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>Model</div>
-                  <div className="font-bold leading-tight">{trackRow.cells['Model name'] ?? trackRow.cells['Model'] ?? '—'}</div>
+                <div className="flex items-end gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>Model</div>
+                    <div className="font-bold leading-tight">{trackRow.cells['Model name'] ?? trackRow.cells['Model'] ?? '—'}</div>
+                  </div>
+                  {isPre && <MatchPick value={modelOk} onPick={setModelOk} what="รุ่นรถ" />}
                 </div>
                 <div>
                   <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>Sub-Model</div>
                   <div className="font-semibold leading-tight truncate">{trackRow.cells['Sub-Model'] ?? trackRow.cells['SubModel'] ?? '—'}</div>
                 </div>
-                <div>
-                  <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>Color</div>
-                  {(() => { const col = trackRow.cells['Color'] ?? ''; const sw = colorSwatch(col); return (
-                    <div className="font-semibold truncate flex items-center gap-1.5">
-                      {sw && <span className="rounded-full shrink-0" style={{ width: 11, height: 11, background: sw, border: '1px solid rgba(0,0,0,0.15)' }} />}
-                      {col || '—'}
-                    </div>
-                  ) })()}
+                <div className="flex items-end gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>Color</div>
+                    {(() => { const col = trackRow.cells['Color'] ?? ''; const sw = colorSwatch(col); return (
+                      <div className="font-semibold truncate flex items-center gap-1.5">
+                        {sw && <span className="rounded-full shrink-0" style={{ width: 11, height: 11, background: sw, border: '1px solid rgba(0,0,0,0.15)' }} />}
+                        {col || '—'}
+                      </div>
+                    ) })()}
+                  </div>
+                  {isPre && <MatchPick value={colorOk} onPick={setColorOk} what="สีรถ" />}
                 </div>
                 <div>
                   <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>Company</div>
@@ -2013,20 +2048,35 @@ function WalkView() {
 
             {/* ── row 4: mandatory damage check + gate-in ── */}
             <div className="px-4 pb-4">
-              {(trackRow.cells['Car Status'] ?? 'Pre Gate-in') === 'Pre Gate-in' ? (
+              {isPre ? (
                 <div className="space-y-3">
+                  {/* the car itself must match the sheet before anything else —
+                      a wrong model or colour is a data problem the office fixes,
+                      not something the gate can wave through */}
+                  {mismatch.length > 0 && (
+                    <div className="rounded-2xl p-3 text-[12.5px] font-semibold leading-relaxed"
+                      style={{ background: 'rgba(220,38,38,0.09)', color: '#b91c1c', border: '1px solid rgba(220,38,38,0.25)' }}>
+                      <div className="flex items-center gap-1.5 text-[13px]">
+                        <AlertTriangle size={15} /> หยุด — {mismatch.join(' และ ')}ไม่ตรงกับในระบบ
+                      </div>
+                      <div className="mt-1 font-normal">
+                        Gate-in ไม่ได้จนกว่าข้อมูลจะตรง · แจ้งออฟฟิศแก้ข้อมูลรถคันนี้ แล้วสแกนใหม่อีกครั้ง
+                      </div>
+                    </div>
+                  )}
                   {/* required OK / NG */}
                   <div>
                     <div className="text-[11.5px] font-semibold mb-1.5 flex items-center gap-1.5">
                       <AlertTriangle size={13} style={{ color: 'var(--st-damage)' }} /> ตรวจสภาพรถ (บังคับเลือก)
+                      {!verified && <span className="font-normal" style={{ color: 'var(--faint)' }}>— ยืนยันรุ่นและสีก่อน</span>}
                     </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <button onClick={() => setDmgResult('NG')}
+                    <div className="grid grid-cols-2 gap-2" style={verified ? undefined : { opacity: 0.45, pointerEvents: 'none' }}>
+                      <button onClick={() => setDmgResult('NG')} disabled={!verified}
                         className="py-3 rounded-2xl text-[15px] font-bold transition active:scale-95"
                         style={dmgResult === 'NG' ? { background: '#dc2626', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>
                         NG
                       </button>
-                      <button onClick={() => setDmgResult('OK')}
+                      <button onClick={() => setDmgResult('OK')} disabled={!verified}
                         className="py-3 rounded-2xl text-[15px] font-bold transition active:scale-95"
                         style={dmgResult === 'OK' ? { background: '#16a34a', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>
                         OK
@@ -2034,7 +2084,7 @@ function WalkView() {
                     </div>
                   </div>
 
-                  {dmgResult === 'NG' ? (
+                  {verified && dmgResult === 'NG' ? (
                     // NG → ต้องใส่ตำแหน่ง + แผล ก่อนถึงจะ Gate In ได้
                     <DamageForm
                       key={trackRow.vin}
@@ -2049,14 +2099,26 @@ function WalkView() {
                   ) : (
                     <button
                       onClick={() => doTrackingGateIn()}
-                      disabled={dmgResult !== 'OK'}
+                      disabled={!verified || dmgResult !== 'OK'}
                       className="w-full h-14 rounded-2xl text-[16px] font-bold flex items-center justify-center gap-2 active:scale-95 transition-all"
-                      style={dmgResult === 'OK'
+                      style={verified && dmgResult === 'OK'
                         ? { background: '#16a34a', color: '#fff', boxShadow: '0 8px 24px -6px #16a34a80' }
                         : { background: 'var(--chip)', color: 'var(--faint)', cursor: 'not-allowed' }}>
-                      <CheckCircle2 size={20} /> {dmgResult === 'OK' ? 'ยืนยัน (Gate In)' : 'เลือก OK / NG ก่อน'}
+                      <CheckCircle2 size={20} /> {
+                        mismatch.length ? 'Gate-in ไม่ได้ — ข้อมูลไม่ตรง'
+                          : !verified ? 'ยืนยันรุ่นและสีก่อน'
+                          : dmgResult === 'OK' ? 'Confirm Gate in'
+                          : 'เลือก OK / NG ก่อน'
+                      }
                     </button>
                   )}
+                  {/* back out of this car entirely — wrong scan, or the car is
+                      being sent back to the office instead of into the yard */}
+                  <button onClick={() => setTrackingVin(null)}
+                    className="w-full py-2.5 rounded-2xl text-[13px] font-semibold active:scale-95 transition"
+                    style={{ background: 'var(--chip)', color: 'var(--muted)' }}>
+                    ยกเลิก
+                  </button>
                 </div>
               ) : (() => {
                 // already gated-in — show the confirmation banner AND this car's Defect list
