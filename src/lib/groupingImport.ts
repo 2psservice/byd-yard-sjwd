@@ -15,6 +15,11 @@ export interface GroupingParseRow {
   deliveryLocation: string // dealer
   grouping: string        // "ATL260706-001"
   receiveDate: string     // วันที่ในการเข้ารับ (as shown), optional
+  /** หมายเหตุ — whatever the planner wrote against this car ("TEST", a hold, a
+   *  swap note). It is the one column the office fills in by hand, so it has to
+   *  survive the import and reach the printed ใบ Grouping / ใบหารถ the yard
+   *  actually walks with. Empty when the sheet has no such column. */
+  remark: string
 }
 
 export interface GroupingParseResult {
@@ -151,6 +156,7 @@ export async function parseGroupingWorkbook(file: File, siteName: string, sheetO
   const deliveryI = idx('deliverylocation', 'delivery')
   const groupI = idx('grouppingnumber', 'groupingnumber', 'grouping')
   const dateI = idx('วันที่ในการเข้ารับ', 'วันที่รับ', 'date')
+  const remarkI = idx('หมายเหตุ', 'remark', 'remarks', 'note', 'notes')
 
   const rows: GroupingParseRow[] = []
   let skipNoGrouping = 0
@@ -176,6 +182,10 @@ export async function parseGroupingWorkbook(file: File, siteName: string, sheetO
       deliveryLocation: deliveryI >= 0 ? String(row[deliveryI] ?? '').trim() : '',
       grouping,
       receiveDate: dateI >= 0 ? String(row[dateI] ?? '').trim() : '',
+      // the หมายเหตุ column is often merged down a whole group, like the
+      // Grouping Number — but unlike it, a blank there means "nothing to say
+      // about this car", so it is read per row and never carried down.
+      remark: remarkI >= 0 ? String(row[remarkI] ?? '').trim() : '',
     })
   }
   if (!rows.length) throw new Error(`sheet "${sheetName}" ไม่พบแถวข้อมูล VIN`)

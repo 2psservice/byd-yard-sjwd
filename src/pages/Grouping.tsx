@@ -102,7 +102,8 @@ export function Grouping() {
         return {
           no: i + 1, vin: r.vin, modelName: r.modelName, model: r.model, color: r.color,
           deliveryLocation: r.deliveryLocation, grouping: r.grouping, groupUnit: unitCount.get(r.grouping) ?? 0,
-          yardLocation: loc, laneLoad: laneOf.get(r.grouping) ?? '', receiveDate: r.receiveDate || res.headerDate, remark: '',
+          yardLocation: loc, laneLoad: laneOf.get(r.grouping) ?? '', receiveDate: r.receiveDate || res.headerDate,
+          remark: r.remark,
         }
       })
 
@@ -231,7 +232,10 @@ export function Grouping() {
         // reprinting a run days later can outlive the car's stay in the yard —
         // the live unit is gone by then, so fall back to its last-known slot
         yardLocation: yardLocCode(unitByVin.get(i.vin)) || String(r?.cells[LAST_LOCATION_KEY] ?? ''),
-        laneLoad: i.laneLoad ?? '', receiveDate: '', remark: '',
+        // the หมายเหตุ rides on the run's own item, so a reprint days later
+        // still carries what the planner wrote — the tracking sheet is never
+        // touched (its หมายเหตุ column is the PM note, a different thing)
+        laneLoad: i.laneLoad ?? '', receiveDate: '', remark: i.remark ?? '',
       }
     })
     const m: GroupPrintMeta = {
@@ -336,7 +340,7 @@ export function Grouping() {
     try {
       // the grouping code travels with the item: the run keeps following it, so a
       // car whose number is cleared later drops out and a car stamped with it joins
-      const items = sheetRows.map((r) => ({ vin: r.vin, laneLoad: r.laneLoad, dest: r.deliveryLocation, group: r.grouping }))
+      const items = sheetRows.map((r) => ({ vin: r.vin, laneLoad: r.laneLoad, dest: r.deliveryLocation, group: r.grouping, remark: r.remark }))
       const id = createSequence(name, currentUser, items)
       if (!id) { toast('err', 'สร้างลำดับงานไม่สำเร็จ — ชื่อคิวว่าง'); return }
       toast('ok', `สร้างลำดับงาน "${name}" · ${items.length} คัน — ไปที่ Operation / Yard Ops ได้เลย`)

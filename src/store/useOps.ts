@@ -59,6 +59,9 @@ export interface QueueItem {
   // ── delivery sequence (Grouping to Dealer) ──
   laneLoad?: string        // loading-lane target, from the grouping Lane load (e.g. "O1")
   dest?: string            // delivery / dealer location
+  /** หมายเหตุ from the grouping plan — what the office wrote against this car.
+   *  Kept on the item so a reprint of the run still carries it. */
+  remark?: string
   /** Grouping code this car was imported under ("ATL260803-071"). Records which
    *  codes the run covers, so a car re-stamped with one joins it even after the
    *  last car of that group was taken out. Absent on pre-existing queues. */
@@ -249,7 +252,7 @@ interface OpsState {
   recordCheck: (id: string, vin: string, result: 'OK' | 'NG', by?: string) => void
   returnToSlot: (id: string, vin: string, by?: string) => void
   // ── delivery sequence (Grouping to Dealer) ──
-  createSequence: (name: string, by: string, items: { vin: string; laneLoad?: string; dest?: string; group?: string }[]) => string
+  createSequence: (name: string, by: string, items: { vin: string; laneLoad?: string; dest?: string; group?: string; remark?: string }[]) => string
   markAtWash: (id: string, vin: string, by?: string) => void        // driver scan #1
   markAtLane: (id: string, vin: string, by?: string) => void        // driver scan #2
   confirmSeqGateOut: (id: string, vin: string, by?: string) => void // gate-out confirmed
@@ -653,9 +656,9 @@ export const useOps = create<OpsState>()(
         const site = useYard.getState().currentSite ?? undefined
         const now = Date.now()
         const rows: QueueItem[] = items
-          .map((it) => ({ vin: it.vin.trim().toUpperCase(), laneLoad: it.laneLoad, dest: it.dest, group: it.group?.trim().toUpperCase() || undefined }))
+          .map((it) => ({ vin: it.vin.trim().toUpperCase(), laneLoad: it.laneLoad, dest: it.dest, group: it.group?.trim().toUpperCase() || undefined, remark: it.remark?.trim() || undefined }))
           .filter((it) => it.vin)
-          .map((it) => ({ vin: it.vin, addedAt: now, done: false, laneLoad: it.laneLoad, dest: it.dest, group: it.group }))
+          .map((it) => ({ vin: it.vin, addedAt: now, done: false, laneLoad: it.laneLoad, dest: it.dest, group: it.group, remark: it.remark }))
         const existing = get().queues.find((q) => (q.name ?? '').toLowerCase() === n.toLowerCase())
         if (existing) {
           // re-uploading the same sequence: replace its items, keep the id
