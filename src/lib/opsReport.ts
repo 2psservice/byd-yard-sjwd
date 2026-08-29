@@ -8,6 +8,26 @@ import type { TrackRow } from './excelTracking'
 import type { Unit } from '../types'
 import { isSequenceQueue, queueTypeOf, type WorkQueue, type QueueItem } from '../store/useOps'
 import { PM_KEYS } from './trackingColumns'
+import { FINAL_CHECK_TABS } from './finalCheckList'
+
+/**
+ * A "Control Stock Sheet" tick is a STOCK COUNT, not a body defect.
+ *
+ * The station sheet writes every checklist NG as a damage so the record is
+ * kept, and the Control Stock Sheet tab counts what shipped WITH the car —
+ * the owner's manual, the plate frame, the boot tray. A missing manual is
+ * something to chase, but it is not a defect on the car, and listing those
+ * ticks alongside รอยขีด / บุบ / สีพอง drowned the real findings: 36 rows on
+ * the board where the yard could see only a handful of actual defects.
+ *
+ * The records are NOT deleted — they stay on the car as PDI history (Unit
+ * List → "NG ที่บันทึกจากสถานี"), they simply stop counting as defects. The
+ * tab label is read from the sheet definition so renaming the tab there can
+ * never silently un-filter them.
+ */
+const STOCK_SHEET_LABEL = FINAL_CHECK_TABS.find((t) => t.key === 'stock')?.label ?? 'Control Stock Sheet'
+export const isStockSheetEntry = (d: { item?: string }): boolean =>
+  (d.item ?? '').trim().startsWith(STOCK_SHEET_LABEL)
 
 export type MenuKind = 'stock' | 'list' | 'defect' | 'time'
 export interface ReportMenu { id: string; label: string; kind: MenuKind }
@@ -226,6 +246,7 @@ export function buildDefects(ctx: ReportCtx, id: 'fcdefect' | 'pmdefect' | 'pdid
     if (!stationVins.has(u.vin)) continue
     for (const d of u.damages) {
       if (dayKeyOfTs(d.at) !== ctx.day) continue
+      if (isStockSheetEntry(d)) continue // stock count, not a defect — see above
       const c = rows.get(u.vin)?.cells ?? {}
       out.push({
         no: out.length + 1, vin: u.vin,
