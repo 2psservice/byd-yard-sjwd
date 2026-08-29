@@ -294,6 +294,14 @@ export function Grouping() {
   const printTrackRows = useMemo(
     () => printSheetRows.map((r) => rowByVin.get(r.vin)).filter((r): r is TrackRow => !!r),
     [printSheetRows, rowByVin])
+  // what the SHEET says each car's grouping is — the DN prints this rather than
+  // re-reading the tracking cell, so the number on the paper always matches the
+  // number in the table the operator just looked at
+  const groupOfVin = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const r of printSheetRows) if (r.grouping) m.set(r.vin, r.grouping)
+    return (vin: string) => m.get(vin) ?? ''
+  }, [printSheetRows])
   const trackRowsOrWarn = (): TrackRow[] => {
     const missing = printSheetRows.length - printTrackRows.length
     if (missing > 0) toast('err', `ไม่พบข้อมูล ${missing} คันในระบบ — พิมพ์เฉพาะคันที่พบ`)
@@ -430,7 +438,7 @@ export function Grouping() {
               </button>
             </span>
           )}
-          <button className="btn" onClick={() => printDn(trackRowsOrWarn())} disabled={!printTrackRows.length}
+          <button className="btn" onClick={() => printDn(trackRowsOrWarn(), groupOfVin)} disabled={!printTrackRows.length}
             title="พิมพ์ใบส่งมอบรถ (Delivery Note) — 1 ใบ ต่อ 1 Grouping · พิมพ์เฉพาะคันที่ติ๊ก (ไม่ติ๊ก = ทั้งใบ)">
             <FileText size={15} /> พิมพ์ DN ({printCount})
           </button>
