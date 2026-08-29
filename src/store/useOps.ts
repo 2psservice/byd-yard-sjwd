@@ -1045,14 +1045,16 @@ export function useActiveQueues(): WorkQueue[] {
   const rows = useTracking((s) => s.rows)
   return useMemo(() => {
     const gone = new Set<string>()
-    // vin → when it last left the yard, for cars that are back at Pre Gate-in
-    const cameBack = new Map<string, number>()
+    const waiting = new Set<string>()          // อยู่ที่ Pre Gate-in ตอนนี้
+    const leftAtOf = new Map<string, number>() // vin → เวลาที่ออกจากลานครั้งล่าสุด (0 = ไม่รู้)
     for (const vin in rows) {
       const r = rows[vin]
       if (hasLeftGate(r.cells)) { gone.add(vin); continue }
-      if (deriveCarStatus(r.cells) === 'Pre Gate-in' && everLeftGate(r)) cameBack.set(vin, gateOutScanMs(r.cells))
+      if (deriveCarStatus(r.cells) !== 'Pre Gate-in') continue
+      waiting.add(vin)
+      if (everLeftGate(r)) leftAtOf.set(vin, gateOutScanMs(r.cells))
     }
-    if (!gone.size && !cameBack.size) return queues
+    if (!gone.size && !waiting.size) return queues
     /**
      * Is this car's part in THIS run already history?
      *
@@ -1066,12 +1068,22 @@ export function useActiveQueues(): WorkQueue[] {
      * A run created AFTER it left is the run for THIS arrival, so it stays.
      * When the sheet does not date the gate-out, fall back to whether this run
      * had already finished with the car.
+     *
+     * The run's OWN record comes first: an item flagged `gatedOut` is this run
+     * watching the car leave, and that outranks anything the sheet still says —
+     * the sheet's gate-out stamp can be cleared or overwritten when the car is
+     * re-imported for its next arrival, and then nothing in the row remembers
+     * the trip. That left the car ticked "scanned" inside its old arrival lot
+     * while its status read Pre Gate-in, so the ops-scan station showed it as
+     * already gated in and the gate could not scan it back into the yard.
      */
     const partIsHistory = (q: WorkQueue, i: QueueItem): boolean => {
-      const leftAt = cameBack.get(i.vin)
-      if (leftAt === undefined) return false
+      if (!waiting.has(i.vin)) return false
+      if (i.gatedOut) return true
+      const leftAt = leftAtOf.get(i.vin)
+      if (leftAt === undefined) return false   // ไม่เคยออกจากลาน → ไม่ใช่รถกลับเข้ามาใหม่
       if (leftAt > 0) return (q.createdAt || 0) <= leftAt
-      return !!(i.done || i.gatedOut)
+      return !!i.done
     }
     return queues.map((q) => {
       const drop = (i: QueueItem) => partIsHistory(q, i) || (!isSequenceQueue(q) && gone.has(i.vin))
