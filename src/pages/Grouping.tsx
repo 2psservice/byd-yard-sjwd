@@ -319,6 +319,32 @@ export function Grouping() {
     })))
   }, [sheetRows])
 
+  // ── แก้ไขรายชื่อรถในกลุ่ม: กดดินสอ → ขึ้นปุ่ม − แดงหน้าทุกแถว ───────────────
+  // Taking a car out of a group is EXACTLY "clear its Grouping Number", the same
+  // edit an admin makes by hand on the Unit page — so it goes through the very
+  // same path: clear the cell, and the delivery run follows the number (that is
+  // already how a run gains and loses cars). The queue item is also dropped here
+  // and now rather than waiting for the reconciler's next pass, so the screen
+  // and the field station agree immediately.
+  const [editingVins, setEditingVins] = useState(false)
+  const removeFromGroup = (r: GroupPrintRow) => {
+    if (!window.confirm(
+      `${r.vin}\n\nเอารถคันนี้ออกจาก Grouping ${r.grouping || '(ไม่มีเลข)'} ?\n\n` +
+      `· ลบเลข Grouping ของรถคันนี้ (เหมือนลบที่หน้า Unit)\n` +
+      `· คิวงานส่งออกจะเอารถออกให้ทันที\n` +
+      `· ใส่เลข Grouping ใหม่เมื่อไหร่ รถก็เข้ากลุ่มใหม่เอง`)) return
+    if (rowByVin.has(r.vin)) bulkUpdate([r.vin], 'Grouping  Number', '')
+    // drop it from every delivery run holding it — a car belongs to one run, and
+    // with its number cleared no run can pull it back in
+    const { queues: qs, removeVin } = useOps.getState()
+    for (const q of qs) if (q.kind === 'sequence' && q.items.some((i) => i.vin === r.vin)) removeVin(q.id, r.vin)
+    // the import snapshot is this device's own copy — the queue-built sheet
+    // updates itself the moment the item above is gone
+    setRows((prev) => (prev ? prev.filter((x) => x.vin !== r.vin) : prev))
+    setSelVins((prev) => { const n = new Set(prev); n.delete(r.vin); return n })
+    toast('ok', `เอา ${r.vin} ออกจาก ${r.grouping || 'กลุ่ม'} แล้ว`)
+  }
+
   const saveLaneLoads = () => {
     if (!hasLaneEdits) return
     const updates: Record<string, string> = {}
@@ -380,6 +406,11 @@ export function Grouping() {
               title={fromQueue ? 'คิวงานของแผนนี้ถูกสร้างไว้แล้ว — จัดการได้ที่รายการคิวด้านล่าง' : undefined}
               style={canPrint && !fromQueue ? { background: '#16a34a', color: '#fff', borderColor: 'transparent' } : undefined}>
               <ListChecks size={15} /> Create Sequence
+            </button>
+            <button className="btn" disabled={!canPrint} onClick={() => setEditingVins((v) => !v)}
+              title="แก้ไขรายชื่อรถในกลุ่ม — กดแล้วจะมีปุ่ม − แดงหน้าทุกแถว สำหรับเอารถออกจาก Grouping"
+              style={editingVins ? { background: '#dc2626', color: '#fff', borderColor: 'transparent' } : undefined}>
+              {editingVins ? <><X size={15} /> เสร็จสิ้น</> : <><Pencil size={15} /> แก้ไขรายชื่อรถ</>}
             </button>
             <DayPicker days={dayCounts} value={dayFilter} onChange={setSelDay} />
           </div>
@@ -496,6 +527,10 @@ export function Grouping() {
                     title="ติ๊กทั้งหมด / ล้างทั้งหมด — คันที่ติ๊กคือคันที่ปุ่ม พิมพ์ DN / IR จะพิมพ์">
                     <input type="checkbox" checked={allSelected} onChange={toggleAll} style={{ width: 14, height: 14, cursor: 'pointer' }} />
                   </th>
+                  {editingVins && (
+                    <th style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 5px', textAlign: 'center', fontSize: 11, color: '#111' }}
+                      title="กด − เพื่อเอารถออกจาก Grouping">เอาออก</th>
+                  )}
                   {['No', 'Vin', 'Model', 'Color', 'Delivery Location', 'Groupping Number', 'Grouping (Unit)', 'Location', 'Lane load', 'วันที่ในการเข้ารับ', 'หมายเหตุ'].map((h) => (
                     <th key={h} className="whitespace-nowrap"
                       style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 6px', fontWeight: 700, fontSize: 11, color: '#111', textAlign: 'center' }}>
@@ -514,6 +549,13 @@ export function Grouping() {
                       <td style={td({ textAlign: 'center', padding: '3px 5px' })}>
                         <input type="checkbox" checked={on} onChange={() => toggleVin(r.vin)} style={{ width: 14, height: 14, cursor: 'pointer' }} />
                       </td>
+                      {editingVins && (
+                        <td style={td({ textAlign: 'center', padding: '2px 4px' })}>
+                          <button onClick={() => removeFromGroup(r)} title={`เอา ${r.vin} ออกจาก Grouping ${r.grouping}`}
+                            style={{ width: 20, height: 20, borderRadius: 999, background: '#dc2626', color: '#fff',
+                              border: 0, cursor: 'pointer', fontWeight: 900, fontSize: 15, lineHeight: '18px' }}>−</button>
+                        </td>
+                      )}
                       <td style={td({ textAlign: 'center' })} className="tabular">{n}</td>
                       <td style={td()} className="vin whitespace-nowrap font-semibold">{r.vin}</td>
                       <td style={td({ textAlign: 'center' })} className="whitespace-nowrap">{r.model}</td>
@@ -557,7 +599,7 @@ export function Grouping() {
               </tbody>
               <tfoot>
                 <tr>
-                  <td colSpan={7} style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 6px', fontWeight: 700, textAlign: 'center' }}>Total</td>
+                  <td colSpan={editingVins ? 8 : 7} style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 6px', fontWeight: 700, textAlign: 'center' }}>Total</td>
                   <td style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 6px', fontWeight: 700, textAlign: 'center' }} className="tabular">{sheetMeta.totalUnits}</td>
                   <td style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 6px', fontWeight: 700, textAlign: 'center' }}>Cars.</td>
                   <td colSpan={3} style={{ background: '#ffff00', border: '1px solid #000' }} />
