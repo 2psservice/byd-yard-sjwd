@@ -123,13 +123,26 @@ export function Grouping() {
       // onto another DN), must lose the stale tag too. Left alone it would keep
       // showing in a group it already left, with a dealer destination that's no
       // longer real either — and no queue would ever drop it on its own.
+      //
+      // A car that simply MOVED between two groups of this same file is not
+      // that case, and used to be wiped by it: the sweep read `trackingRows`,
+      // the snapshot this render closed over, so it still saw the car's OLD
+      // group. The car was stamped with its new number a few lines above, then
+      // matched the old group here and had that number cleared again. The
+      // Grouping table still showed the new group (it is built from the file),
+      // while scan-DN — which reads the tracking cell — could not find the car
+      // at all: "หน้า grouping มี 3 คัน แต่ scan DN มี 2 คัน".
+      // Read the LIVE rows, and never clear a car this very file just placed.
+      const placedNow = new Set<string>()
+      for (const vins of byGroup.values()) for (const v of vins) placedNow.add(v)
+      const liveRowsNow = Object.values(useTracking.getState().rows)
       const clearVins: string[] = []
       for (const [g, nowIn] of byGroup) {
         const keep = new Set(nowIn)
-        for (const r of trackingRows) {
+        for (const r of liveRowsNow) {
           if (r.site !== currentSite) continue
           if ((r.cells['Grouping  Number'] ?? '').trim() !== g) continue
-          if (!keep.has(r.vin)) clearVins.push(r.vin)
+          if (!keep.has(r.vin) && !placedNow.has(r.vin)) clearVins.push(r.vin)
         }
       }
       if (clearVins.length) {
