@@ -223,8 +223,29 @@ export function buildList(ctx: ReportCtx, id: string): ListRow[] {
     }
   } else if (id === 'pdi' || id === 'fc' || id === 'pm') {
     const type = id === 'pdi' ? 'PDI' : id === 'fc' ? 'FINAL' : 'PM'
-    for (const i of checkedItems(ctx, type))
+    const seen = new Set<string>()
+    for (const i of checkedItems(ctx, type)) {
+      seen.add(i.vin)
       push(i.vin, { date: fmtTime(itemTs(i)), remark: i.result === 'NG' ? 'NG' : '' })
+    }
+    // …plus every car the SHEET says was done today that no queue item covers.
+    //
+    // The list used to count ONLY cars sitting in a PDI queue, so the day's
+    // total silently dropped any car the station recorded outside one — a car
+    // scanned straight at the station, or one whose queue was archived after
+    // the work was done. The office reads this page as "ยอดที่ทำทั้งหมด", and a
+    // total that quietly omits finished work is worse than no total at all.
+    // The PDI date on the sheet IS the record of the work, so it counts too.
+    // One row per car: a car with both a queue tick and a sheet date is one
+    // car, and the queue tick wins because it carries the real clock time.
+    if (type === 'PDI') {
+      for (const r of ctx.rows) {
+        if (seen.has(r.vin)) continue
+        if (!PDI_KEYS.some((k) => cellOnDay(r.cells[k], ctx.day))) continue
+        seen.add(r.vin)
+        push(r.vin)
+      }
+    }
   } else if (id === 'washpm') {
     for (const i of checkedItems(ctx, 'WASH', (n) => /pm/i.test(n)))
       push(i.vin, { date: fmtTime(itemTs(i)) })
