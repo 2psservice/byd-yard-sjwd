@@ -1729,13 +1729,37 @@ function WalkView() {
     return true
   }
 
+  /**
+   * Is the SHEET saying this car is waiting at the gate right now?
+   *
+   * A car that has been through this yard before keeps its yard-unit record
+   * after it leaves (markDeparted only marks it DEPARTED and frees the slot).
+   * When such a car comes back and the sheet is set to Pre Gate-in again, the
+   * scan used to match that leftover unit first and open the YARD card — which,
+   * for a DEPARTED unit, shows "รถเข้าลานแล้ว" and offers no Gate-in button at
+   * all, so the gate simply could not take the car in. The sheet is the truth
+   * about where a car stands; a stale unit row is not.
+   */
+  const sheetSaysPreGateIn = (vin: string): boolean => {
+    const r = trackingRows.find(x => x.vin === vin)
+    return !!r && deriveCarStatus(r.cells) === 'Pre Gate-in'
+  }
+  /** Open the arrival card for a car the sheet says is still waiting. */
+  const openWaiting = (vin: string) => { setVin(null); setShowDmg(false); setTrackingVin(vin) }
+
   const onScanRef = useRef<(v: string) => void>(() => {})
   const scanNotFound = useCloudNotFound(onScanRef)
   const onScan = (v: string) => {
     setTrackingVin(null)
-    // 1. exact yard unit
+    // 1. exact yard unit — unless the sheet says the car is waiting to come IN,
+    //    in which case this is a returning car and the arrival card is the one
+    //    that can actually gate it in
     let u = units.find(x => x.vin === v)
-    if (u) { if (blockIfAlreadyGated(u)) return; setVin(u.vin); setShowDmg(false); return }
+    if (u) {
+      if (sheetSaysPreGateIn(u.vin)) { openWaiting(u.vin); return }
+      if (blockIfAlreadyGated(u)) return
+      setVin(u.vin); setShowDmg(false); return
+    }
     setVin(null)
     // 2. exact tracking row
     const et = trackingRows.find(r => r.vin === v)
@@ -1743,7 +1767,11 @@ function WalkView() {
     // 3. suffix match (≤ 8 chars) — yard units first, then tracking
     if (v.length <= 8) {
       const unitHits = units.filter(x => x.vin.toUpperCase().endsWith(v))
-      if (unitHits.length === 1) { if (blockIfAlreadyGated(unitHits[0])) return; setVin(unitHits[0].vin); setShowDmg(false); return }
+      if (unitHits.length === 1) {
+        if (sheetSaysPreGateIn(unitHits[0].vin)) { openWaiting(unitHits[0].vin); return }
+        if (blockIfAlreadyGated(unitHits[0])) return
+        setVin(unitHits[0].vin); setShowDmg(false); return
+      }
       if (unitHits.length > 1) { toast('err', `พบ ${unitHits.length} คัน ที่ลงท้าย ${v} — กรอกให้ยาวขึ้น`); return }
       const trackHits = trackingRows.filter(r => r.vin.endsWith(v))
       if (trackHits.length === 1) { setTrackingVin(trackHits[0].vin); return }
@@ -1895,7 +1923,7 @@ function WalkView() {
                 {isOpen && (
                   <div className="border-t hairline max-h-[65vh] overflow-y-auto divide-y" style={{ borderColor: 'var(--line)' }}>
                     {queueCars.map(c => (
-                      <button key={c.vin} onClick={() => setTrackingVin(c.vin)}
+                      <button key={c.vin} onClick={() => openWaiting(c.vin)}
                         className="w-full px-4 py-2.5 flex items-center gap-3 text-left transition active:bg-chip"
                         style={c.done ? { opacity: 0.62 } : undefined}>
                         <div className="min-w-0 flex-1">
