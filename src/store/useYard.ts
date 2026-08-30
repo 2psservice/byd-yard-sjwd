@@ -746,12 +746,25 @@ export const useYard = create<YardState>()(
           // cars, and another yard's WCL block (same name) would otherwise
           // look occupied by cars that were never anywhere near this one
           const siteUnits = Object.values(s.units).filter((x) => !x.site || x.site === s.currentSite)
-          const slot = u.status === 'EXPECTED' ? nextFreeSlotInBlock(WCL_STAGING_BLOCK, curBlocks(s), siteUnits) : null
+          // A car coming back after a gate-out is a FRESH arrival, exactly like
+          // one that never left: its unit is DEPARTED (markDeparted freed the
+          // slot but kept the record), and only 'EXPECTED' used to earn a
+          // staging slot — so a returning car passed the gate on the sheet
+          // while its yard record stayed DEPARTED with no place at all. It
+          // showed nowhere on the plan and no driver could move it.
+          const arriving = u.status === 'EXPECTED' || u.status === 'DEPARTED'
+          const slot = arriving ? nextFreeSlotInBlock(WCL_STAGING_BLOCK, curBlocks(s), siteUnits) : null
           const updated: Unit = {
             ...u,
-            status: slot ? 'PARKED' : (u.status === 'EXPECTED' ? 'GATE_IN' : u.status),
+            status: slot ? 'PARKED' : (arriving ? 'GATE_IN' : u.status),
             ...(slot ? { block: slot.block, row: slot.row, slot: slot.slot, parkedAt: now } : {}),
-            gateInAt: u.gateInAt ?? now, gateInBy: s.currentUser, inspected: true, site: s.currentSite ?? u.site,
+            // the previous stay's driver hand-off must not follow the car back
+            // in — it would show as already assigned to someone who is long done
+            ...(u.status === 'DEPARTED'
+              ? { driver: undefined, assignedAt: undefined, drivingStartedAt: undefined, gateInAt: now }
+              : {}),
+            gateInAt: u.status === 'DEPARTED' ? now : (u.gateInAt ?? now),
+            gateInBy: s.currentUser, inspected: true, site: s.currentSite ?? u.site,
           }
           db.upsertUnit(updated).catch((e) => console.error('[db] gateIn', e))
           return { units: { ...s.units, [vin]: updated } }
