@@ -178,6 +178,33 @@ function checkedItems(ctx: ReportCtx, type: 'PDI' | 'FINAL' | 'PM' | 'WASH', nam
 
 const fmtTime = (ts?: number) => ts ? `${fmtDay(dayKeyOfTs(ts))} ${new Date(ts).toTimeString().slice(0, 5)}` : ''
 
+/**
+ * Every car a station recorded on the day — the ONE list the PDI table and the
+ * PDI shift matrix both count from, so the two can never disagree again (the
+ * table read 103 while the matrix read 39).
+ *
+ * `clock` is the time the FIELD actually recorded, and only that: recordCheck
+ * stamps `checkedAt` when an operator saves OK/NG at the station. `doneAt` is
+ * not a clock — the reconciler back-fills it from a date cell on the sheet, at
+ * local midnight, which printed as a real-looking "00:00" and dropped every
+ * such car into P1. A car known only from a sheet date has no time, and says so.
+ */
+interface StationDone { vin: string; clock?: number; result?: 'OK' | 'NG' }
+function stationDone(ctx: ReportCtx, type: 'PDI' | 'FINAL' | 'PM'): StationDone[] {
+  const out = new Map<string, StationDone>()
+  for (const i of checkedItems(ctx, type))
+    out.set(i.vin, { vin: i.vin, clock: i.checkedAt, result: i.result })
+  // …plus every car the SHEET says was done today that no queue item covers
+  // (scanned straight at the station, or its queue archived after the work).
+  if (type === 'PDI') {
+    for (const r of ctx.rows) {
+      if (out.has(r.vin)) continue
+      if (PDI_KEYS.some((k) => cellOnDay(r.cells[k], ctx.day))) out.set(r.vin, { vin: r.vin })
+    }
+  }
+  return [...out.values()]
+}
+
 // ── list builders ───────────────────────────────────────────────────────────
 
 export function buildList(ctx: ReportCtx, id: string): ListRow[] {
@@ -223,29 +250,10 @@ export function buildList(ctx: ReportCtx, id: string): ListRow[] {
     }
   } else if (id === 'pdi' || id === 'fc' || id === 'pm') {
     const type = id === 'pdi' ? 'PDI' : id === 'fc' ? 'FINAL' : 'PM'
-    const seen = new Set<string>()
-    for (const i of checkedItems(ctx, type)) {
-      seen.add(i.vin)
-      push(i.vin, { date: fmtTime(itemTs(i)), remark: i.result === 'NG' ? 'NG' : '' })
-    }
-    // …plus every car the SHEET says was done today that no queue item covers.
-    //
-    // The list used to count ONLY cars sitting in a PDI queue, so the day's
-    // total silently dropped any car the station recorded outside one — a car
-    // scanned straight at the station, or one whose queue was archived after
-    // the work was done. The office reads this page as "ยอดที่ทำทั้งหมด", and a
-    // total that quietly omits finished work is worse than no total at all.
-    // The PDI date on the sheet IS the record of the work, so it counts too.
-    // One row per car: a car with both a queue tick and a sheet date is one
-    // car, and the queue tick wins because it carries the real clock time.
-    if (type === 'PDI') {
-      for (const r of ctx.rows) {
-        if (seen.has(r.vin)) continue
-        if (!PDI_KEYS.some((k) => cellOnDay(r.cells[k], ctx.day))) continue
-        seen.add(r.vin)
-        push(r.vin)
-      }
-    }
+    // date + time when the field recorded one; date alone when it did not —
+    // never a fabricated 00:00
+    for (const d of stationDone(ctx, type))
+      push(d.vin, { date: d.clock ? fmtTime(d.clock) : fmtDay(ctx.day), remark: d.result === 'NG' ? 'NG' : '' })
   } else if (id === 'washpm') {
     for (const i of checkedItems(ctx, 'WASH', (n) => /pm/i.test(n)))
       push(i.vin, { date: fmtTime(itemTs(i)) })
@@ -310,19 +318,25 @@ export function buildTimeMatrix(ctx: ReportCtx, id: 'fctime' | 'pmtime' | 'pditi
   for (const m of MODEL_ROWS) byModel.set(m, { total: 0, p: [0, 0, 0, 0, 0] })
   const ok = [0, 0, 0, 0, 0]; const ng = [0, 0, 0, 0, 0]
   let okTotal = 0, ngTotal = 0, total = 0
-  for (const i of checkedItems(ctx, type)) {
-    const ts = itemTs(i)!
-    const p = periodOf(ts)
+  for (const i of stationDone(ctx, type)) {
+    // a car with no recorded time is still work that was done — it counts in
+    // Volume and Total, it just has no shift to sit in
+    const p = i.clock !== undefined ? periodOf(i.clock) : null
     const c = rows.get(i.vin)?.cells ?? {}
     const label = (c['Model'] || c['Model name'] || '').toUpperCase().replace(/^BYD\s*/, '').replace(/^DENZA\s*/, '').trim()
+    // spacing in the sheet is not consistent ("ATTO3" vs "ATTO 3") and used to
+    // split one model across two rows of this table
+    const flat = label.replace(/\s+/g, '')
+    const squash = (m: string) => m.replace(/\s+/g, '')
     // longest match wins — "SEAL 5" must land on SEAL 5, not SEAL
-    const key = MODEL_ROWS.filter((m) => label.startsWith(m)).sort((a, b) => b.length - a.length)[0]
-      ?? MODEL_ROWS.filter((m) => label.includes(m)).sort((a, b) => b.length - a.length)[0]
+    const key = MODEL_ROWS.filter((m) => flat.startsWith(squash(m))).sort((a, b) => b.length - a.length)[0]
+      ?? MODEL_ROWS.filter((m) => flat.includes(squash(m))).sort((a, b) => b.length - a.length)[0]
       ?? (label || '—')
     if (!byModel.has(key)) byModel.set(key, { total: 0, p: [0, 0, 0, 0, 0] })
     const slot = byModel.get(key)!
-    slot.total++; slot.p[p]++; total++
-    if (i.result === 'NG') { ng[p]++; ngTotal++ } else { ok[p]++; okTotal++ }
+    slot.total++; total++
+    if (p !== null) slot.p[p]++
+    if (i.result === 'NG') { ngTotal++; if (p !== null) ng[p]++ } else { okTotal++; if (p !== null) ok[p]++ }
   }
   return {
     title, plan,
