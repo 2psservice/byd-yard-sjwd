@@ -126,7 +126,31 @@ export interface ReportCtx {
   units: Unit[]              // site-scoped units (damages live here)
   queues: WorkQueue[]        // site-scoped work queues
   day: string                // 'YYYY-MM-DD'
+  /** A DATE RANGE, oldest first, when the office is looking at more than one
+   *  day ("ช่วงวันที่"). Absent = just `day`. Every rule below stays a
+   *  single-day rule; the range is applied by running each day and merging
+   *  (see buildListRange / buildDefectsRange / buildTimeMatrixRange), so a
+   *  range can never quietly count a day differently from the day view. */
+  days?: string[]
   siteLabel: string
+}
+
+/** The days this report covers — the range when there is one, else the day. */
+export const reportDays = (ctx: ReportCtx): string[] =>
+  ctx.days && ctx.days.length ? ctx.days : [ctx.day]
+
+/** Every day from `a` to `b` inclusive, oldest first (either order in). */
+export function daysInRange(a: string, b: string): string[] {
+  const lo = a <= b ? a : b, hi = a <= b ? b : a
+  const out: string[] = []
+  const d = new Date(`${lo}T00:00:00`)
+  const end = new Date(`${hi}T00:00:00`)
+  if (isNaN(d.getTime()) || isNaN(end.getTime())) return [b]
+  // a year's worth is already far more than the office ever prints
+  for (let i = 0; d <= end && i < 400; i++, d.setDate(d.getDate() + 1)) {
+    out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`)
+  }
+  return out
 }
 
 function rowMap(ctx: ReportCtx) { return new Map(ctx.rows.map((r) => [r.vin, r])) }
@@ -382,6 +406,52 @@ export function buildTimeMatrix(ctx: ReportCtx, id: 'fctime' | 'pmtime' | 'pditi
 
 // ── Excel export — mirrors the office's Report_operation workbook ───────────
 
+// ── date range — one day's rules, run over every day and merged ─────────────
+// The office asked to look at a stretch of days at once ("ช่วงวันที่"). Rather
+// than teach every rule about ranges — and risk a range counting a day
+// differently from the day view — each day is built exactly as it is built on
+// its own, then the results are put end to end. One day in, and these behave
+// identically to the single-day builders.
+
+export function buildListRange(ctx: ReportCtx, id: string): ListRow[] {
+  const days = reportDays(ctx)
+  if (days.length === 1) return buildList({ ...ctx, day: days[0] }, id)
+  const out: ListRow[] = []
+  for (const day of days) out.push(...buildList({ ...ctx, day }, id))
+  return out.map((r, i) => ({ ...r, no: i + 1 }))
+}
+
+export function buildDefectsRange(ctx: ReportCtx, id: 'fcdefect' | 'pmdefect' | 'pdidefect'): DefectRowOut[] {
+  const days = reportDays(ctx)
+  if (days.length === 1) return buildDefects({ ...ctx, day: days[0] }, id)
+  const out: DefectRowOut[] = []
+  for (const day of days) out.push(...buildDefects({ ...ctx, day }, id))
+  return out.map((r, i) => ({ ...r, no: i + 1 }))
+}
+
+export function buildTimeMatrixRange(ctx: ReportCtx, id: 'fctime' | 'pmtime' | 'pditime'): TimeMatrix {
+  const days = reportDays(ctx)
+  if (days.length === 1) return buildTimeMatrix({ ...ctx, day: days[0] }, id)
+  const parts = days.map((day) => buildTimeMatrix({ ...ctx, day }, id))
+  const sum5 = (pick: (m: TimeMatrix) => number[]) =>
+    parts.reduce((acc, m) => acc.map((n, i) => n + (pick(m)[i] ?? 0)), [0, 0, 0, 0, 0])
+  // one row per model across the whole range, in first-seen order
+  const models = new Map<string, { name: string; total: number; p: number[] }>()
+  for (const m of parts) for (const mr of m.models) {
+    const cur = models.get(mr.name)
+    if (!cur) models.set(mr.name, { name: mr.name, total: mr.total, p: [...mr.p] })
+    else { cur.total += mr.total; cur.p = cur.p.map((n, i) => n + (mr.p[i] ?? 0)) }
+  }
+  return {
+    title: parts[0].title,
+    plan: parts.reduce((n, m) => n + m.plan, 0),
+    models: [...models.values()],
+    ok: sum5((m) => m.ok), okTotal: parts.reduce((n, m) => n + m.okTotal, 0),
+    ng: sum5((m) => m.ng), ngTotal: parts.reduce((n, m) => n + m.ngTotal, 0),
+    total: parts.reduce((n, m) => n + m.total, 0),
+  }
+}
+
 const LIST_SHEETS: { id: string; sheet: string }[] = [
   { id: 'gatein', sheet: 'Gate-IN' }, { id: 'gateout', sheet: 'Gate-OUT' },
   { id: 'pdiout', sheet: 'PDI-OUT' }, { id: 'washsale', sheet: 'Wash for Sales' },
@@ -485,13 +555,17 @@ export async function exportOpsReport(ctx: ReportCtx) {
   const { addListSheet, addDefectSheet, addTimeSheet } = sheetWriters(wb)
 
   for (const s of LIST_SHEETS) {
-    const rows = buildList(ctx, s.id)
+    const rows = buildListRange(ctx, s.id)
     addListSheet(`${s.sheet}(${ctx.siteLabel})`.slice(0, 31), rows, s.id === 'pdiout' || s.id === 'hold' ? 'Group No' : 'LOT\nM-D-lot')
-    if (s.id === 'fc') { addDefectSheet('FC(Defect)', buildDefects(ctx, 'fcdefect')); addTimeSheet('เช็คเวลาFC', buildTimeMatrix(ctx, 'fctime')) }
-    if (s.id === 'pm') { addDefectSheet('PM(Defect)', buildDefects(ctx, 'pmdefect')); addTimeSheet('เช็คเวลาPM', buildTimeMatrix(ctx, 'pmtime')) }
+    if (s.id === 'fc') { addDefectSheet('FC(Defect)', buildDefectsRange(ctx, 'fcdefect')); addTimeSheet('เช็คเวลาFC', buildTimeMatrixRange(ctx, 'fctime')) }
+    if (s.id === 'pm') { addDefectSheet('PM(Defect)', buildDefectsRange(ctx, 'pmdefect')); addTimeSheet('เช็คเวลาPM', buildTimeMatrixRange(ctx, 'pmtime')) }
   }
 
-  await downloadWorkbook(wb, `Report_operation_${ctx.siteLabel.replace(/[^\w]+/g, '')}_${ctx.day}.xlsx`)
+  // the file says WHICH days it covers — a range file named after one day
+  // would be filed under the wrong date the moment it left the office
+  const days = reportDays(ctx)
+  const span = days.length > 1 ? `${days[0]}_to_${days[days.length - 1]}` : ctx.day
+  await downloadWorkbook(wb, `Report_operation_${ctx.siteLabel.replace(/[^\w]+/g, '')}_${span}.xlsx`)
 }
 
 /**
@@ -511,9 +585,9 @@ export async function exportStationReport(ctx: ReportCtx, kind: 'PDI' | 'PM') {
   const { addListSheet, addWideDefectSheet, addTimeSheet } = sheetWriters(wb)
   const id = kind === 'PDI' ? 'pdi' : 'pm'
 
-  addListSheet(`${kind}(${ctx.siteLabel})`.slice(0, 31), buildList(ctx, id))
-  addWideDefectSheet(`${kind}(Defect)`, buildDefects(ctx, `${id}defect` as 'pdidefect' | 'pmdefect'))
-  addTimeSheet(`ตาราง ${kind}`, buildTimeMatrix(ctx, `${id}time` as 'pditime' | 'pmtime'))
+  addListSheet(`${kind}(${ctx.siteLabel})`.slice(0, 31), buildListRange(ctx, id))
+  addWideDefectSheet(`${kind}(Defect)`, buildDefectsRange(ctx, `${id}defect` as 'pdidefect' | 'pmdefect'))
+  addTimeSheet(`ตาราง ${kind}`, buildTimeMatrixRange(ctx, `${id}time` as 'pditime' | 'pmtime'))
 
   await downloadWorkbook(wb, `${kind}_${ctx.siteLabel.replace(/[^\w]+/g, '')}_${ctx.day}.xlsx`)
 }
