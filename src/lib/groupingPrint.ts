@@ -49,19 +49,35 @@ tr.grp-alt td { background: #fff3d6; }
 .note { text-align: center; font-size: 9px; margin-top: 4px; }
 `
 /**
- * Find-car sheet: only 7 columns on a PORTRAIT page, so it is typeset 1:1 against
- * the approved printout — title 18.24pt / body 14.24pt, measured straight out of
- * that PDF (A4 portrait, 595.32 × 841.92 pt). The shared 9px/14px above is sized
- * for the 11-column LANDSCAPE dealer sheet; reused here it filled barely half the
- * page and was unreadable at arm's length, which is no good for a driver walking
- * the yard with the sheet in hand. Overrides come last so they win on specificity.
+ * Find-car sheet: few columns on a PORTRAIT page, so it is typeset 1:1 against
+ * the approved printout (Plan PM 20 RAI) — every number below is measured out of
+ * that PDF's content stream, not guessed:
+ *
+ *   page     A4 portrait 595.2 × 841.68 pt, content 13.44 … 577.56 (564.12 wide)
+ *   title    19.32 pt, band 35.76 pt tall
+ *   header   10.56 pt on the yellow band, 42.96 pt tall
+ *   row      31.20 pt tall (baselines 729.94 · 698.74 · 667.51 … = 31.2 apart)
+ *   Vin      14.16 pt   ·   No 17.64 pt (the number the driver reads first)
+ *
+ * The shared 9px/14px above is sized for the 11-column LANDSCAPE dealer sheet;
+ * reused here it filled barely half the page and was unreadable at arm's length,
+ * which is no good for a driver walking the yard with the sheet in hand. The
+ * earlier pass (18.24/14.24 pt, 2 px padding) got the type right but left the
+ * rows less than two-thirds of the reference's height, so the sheet still read
+ * cramped. Overrides come last so they win on specificity.
  */
-const CSS_PORTRAIT = CSS.replace('A4 landscape', 'A4 portrait') + `
+const CSS_PORTRAIT = CSS.replace('A4 landscape', 'A4 portrait')
+  .replace('margin: 8mm', 'margin: 12.5pt 15pt') + `
 body, th, td { font-family: 'Aptos Narrow','Aptos','Arial Narrow','Sarabun','Noto Sans Thai',Tahoma,sans-serif; }
-.title { font-size: 18.24pt; margin: 0 0 10px; }
-th, td { font-size: 14.24pt; padding: 2px 6px; }
-td.vin { font-family: 'Aptos Narrow','Aptos','Arial Narrow','Consolas',monospace; font-size: 14.24pt; letter-spacing: 0; }
-.note { font-size: 14.24pt; }
+.title { font-size: 19.32pt; height: 35.76pt; line-height: 35.76pt; margin: 0 0 4pt; }
+th { font-size: 10.56pt; height: 42.96pt; padding: 2pt 6pt;
+  font-family: 'Aptos SemiBold','Aptos','Sarabun','Noto Sans Thai',Tahoma,sans-serif; }
+td { font-size: 14.16pt; height: 31.2pt; padding: 0 6pt; }
+/* the row number is read first, from a walking distance — biggest type on the sheet */
+td.no { font-size: 17.64pt; font-weight: 600;
+  font-family: 'Aptos SemiBold','Aptos','Sarabun','Noto Sans Thai',Tahoma,sans-serif; }
+td.vin { font-family: 'Aptos Narrow','Aptos','Arial Narrow','Consolas',monospace; font-size: 14.16pt; letter-spacing: 0; }
+.note { font-size: 14.16pt; }
 `
 
 const htmlDoc = (title: string, body: string, css: string): string =>
@@ -130,7 +146,7 @@ export function buildFindCarHtml(rows: GroupPrintRow[], meta: GroupPrintMeta): s
   // unprefixed for sorting and for the landscape dealer sheet
   const locOf = (l: string) => (l && meta.locPrefix ? `${meta.locPrefix}-${l}` : l)
   const body = sorted.map((r, i) => `<tr>
-    <td class="c">${i + 1}</td>
+    <td class="c no">${i + 1}</td>
     <td class="vin">${esc(r.vin)}</td>
     <td class="c">${esc(r.model)}</td>
     <td class="c">${esc(r.color)}</td>
@@ -182,7 +198,7 @@ const findListTitle = (count: number, date: string): string =>
  *  sorted with byYardLocation (which is still the screen's default). */
 function findListTableHtml(rows: FindListRow[]): string {
   const body = rows.map((r, i) => `<tr>
-    <td class="c">${i + 1}</td>
+    <td class="c no">${i + 1}</td>
     <td class="vin">${esc(r.vin)}</td>
     <td class="c">${esc(r.model)}</td>
     <td class="c">${esc(r.color)}</td>
