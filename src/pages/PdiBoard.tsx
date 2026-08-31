@@ -11,14 +11,14 @@
  * calculation, not two.
  */
 import { useMemo, useState } from 'react'
-import { ClipboardCheck } from 'lucide-react'
+import { ClipboardCheck, Download } from 'lucide-react'
 import { useYard, useUnits } from '../store/useYard'
 import { useTrackingRows } from '../store/useTracking'
 import { useOps } from '../store/useOps'
 import { rowInSite } from '../lib/siteScope'
 import { PageHead, cx } from '../components/ui'
 import { DayPicker, dayKeyOf } from './Grouping'
-import { TIME_PERIODS, buildList, buildDefects, buildTimeMatrix, dayKeyOfTs, type ReportCtx } from '../lib/opsReport'
+import { TIME_PERIODS, buildList, buildDefects, buildTimeMatrix, dayKeyOfTs, exportPdiReport, type ReportCtx } from '../lib/opsReport'
 
 // column rules as well as row rules — 13 columns of defects run together
 // without them, and the shift matrix (tab 3) has always been fully ruled.
@@ -40,8 +40,10 @@ export function PdiBoard() {
   const allRows = useTrackingRows()
   const units = useUnits()
   const queues = useOps((s) => s.queues)
+  const toast = useYard((s) => s.toast)
   const [tab, setTab] = useState<Tab>('list')
   const [day, setDay] = useState<string | 'all'>(dayKeyOf(new Date()))
+  const [exporting, setExporting] = useState(false)
 
   const site = sites.find((s) => s.id === currentSite)
   const siteLabel = useMemo(() => {
@@ -74,6 +76,19 @@ export function PdiBoard() {
   const matrix = useMemo(() => (tab === 'time' ? buildTimeMatrix(ctx, 'pditime') : null), [ctx, tab])
   const dayLabel = ctx.day.split('-').reverse().join('/')
 
+  // One workbook, one sheet per tab — the office sends the PDI day on its own,
+  // so it should not have to dig the PDI sheets out of the 12-sheet operation
+  // report. Always all three tabs, whichever one is open: they are one day's
+  // record and get sent together.
+  const doExport = async () => {
+    setExporting(true)
+    try {
+      await exportPdiReport(ctx)
+      toast('ok', `ออกไฟล์ PDI (${dayLabel}) แล้ว`)
+    } catch (e) { console.error('[pdi] export', e); toast('err', 'ออกไฟล์ไม่สำเร็จ ลองใหม่อีกครั้ง') }
+    finally { setExporting(false) }
+  }
+
   return (
     <div>
       <PageHead
@@ -83,7 +98,13 @@ export function PdiBoard() {
         sub={lang === 'th'
           ? `ตาราง PDI ประจำวัน — ขึ้นเองจากที่หน้างานบันทึก ไม่ต้องคีย์ซ้ำ${site?.name ? ` — ${site.name}` : ''}`
           : `Daily PDI tables, built live from what the stations record${site?.name ? ` — ${site.name}` : ''}`}
-        right={<DayPicker days={dayCounts} value={day} onChange={setDay} />}
+        right={<div className="flex items-center gap-2">
+          <DayPicker days={dayCounts} value={day} onChange={setDay} />
+          <button className="btn btn-primary px-3 py-1.5 text-[12.5px]" onClick={doExport} disabled={exporting}
+            title="ออกไฟล์ Excel ของวันนี้ — 3 ชีท: PDI · PDI DEFECT · ตาราง PDI">
+            <Download size={14} /> {exporting ? 'กำลังสร้างไฟล์…' : 'Export Excel'}
+          </button>
+        </div>}
       />
 
       <div className="flex flex-wrap gap-1.5 mb-3">
