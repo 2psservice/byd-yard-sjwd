@@ -339,7 +339,7 @@ function MoveVinModal({ vin, from, targets, onClose }: {
   onClose: () => void
 }) {
   const moveVin = useOps((s) => s.moveVin)
-  const addVins = useOps((s) => s.addVins)
+  const reviveVin = useOps((s) => s.reviveVin)
   const toast = useYard((s) => s.toast)
   const virtualFrom = from.id === '__uncovered_pregatein'
 
@@ -351,10 +351,15 @@ function MoveVinModal({ vin, from, targets, onClose }: {
 
   const move = (to: WorkQueue) => {
     // the "(รอ Gate-in · ยังไม่มีคิวงาน)" card is synthesized, not a queue —
-    // there is nothing to remove the car FROM, only a lot to add it to
-    const okMove = virtualFrom ? addVins(to.id, [vin]).added > 0 : moveVin(from.id, to.id, vin)
+    // there is nothing to remove the car FROM, only a lot to put it on. Use
+    // reviveVin, not addVins: a car only reaches this card when no lot covers
+    // it, so a lot that still lists the VIN is holding a finished record from
+    // an earlier trip (it went to a show / a dealer and came back). addVins
+    // read that record and refused the move as a duplicate, which left the car
+    // stuck — the board said "no lot", the move said "already on one".
+    const okMove = virtualFrom ? reviveVin(to.id, vin) : moveVin(from.id, to.id, vin)
     if (okMove) toast('ok', `ย้าย ${vin} ไปคิวงาน "${to.name}" แล้ว`)
-    else toast('err', 'ย้ายไม่สำเร็จ — เลขวินนี้อยู่ในคิวงานปลายทางอยู่แล้ว')
+    else toast('err', 'ย้ายไม่สำเร็จ — ไม่พบคิวงานปลายทาง')
     onClose()
   }
 
@@ -436,6 +441,7 @@ function EditQueueVinsModal({ q, rows, modelByVin, dismissedRows, onClose }: {
   onClose: () => void
 }) {
   const addVins = useOps((s) => s.addVins)
+  const reviveVin = useOps((s) => s.reviveVin)
   const removeVin = useOps((s) => s.removeVin)
   const dismissPreGateIn = useOps((s) => s.dismissPreGateIn)
   const undismissPreGateIn = useOps((s) => s.undismissPreGateIn)
@@ -459,7 +465,17 @@ function EditQueueVinsModal({ q, rows, modelByVin, dismissedRows, onClose }: {
       toast('err', notFound.length ? `ไม่พบเลขวิน: ${notFound.slice(0, 5).join(', ')}` : 'ยังไม่ได้ใส่เลขวิน')
       return
     }
-    const { added, dup } = addVins(live.id, found.map((r) => r.vin))
+    // a car WAITING at the gate right now cannot already be a finished arrival
+    // on this lot — if the lot still lists it, that record is from an earlier
+    // trip (the car left and came back). Re-arm those instead of reporting
+    // "มีอยู่แล้ว" and doing nothing, which is what made a returning car
+    // impossible to put back on its lot.
+    const stale = found.filter((r) => deriveCarStatus(r.cells) === 'Pre Gate-in'
+      && live.items.some((i) => i.vin === r.vin))
+    for (const r of stale) reviveVin(live.id, r.vin)
+    const res = addVins(live.id, found.filter((r) => !stale.includes(r)).map((r) => r.vin))
+    const added = res.added + stale.length
+    const dup = res.dup
     const parts = [added ? `เพิ่ม ${added} คัน` : '', dup ? `มีอยู่แล้ว ${dup}` : '', notFound.length ? `ไม่พบ ${notFound.length}` : '']
     toast(added ? 'ok' : 'info', parts.filter(Boolean).join(' · '))
     if (added) setText('')
