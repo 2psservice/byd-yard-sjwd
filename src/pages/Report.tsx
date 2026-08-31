@@ -7,85 +7,26 @@ import { rowInSite } from '../lib/siteScope'
 import { PageHead, cx } from '../components/ui'
 import { DailyStockReport } from '../components/DailyStockReport'
 import { DayPicker, dayKeyOf } from './Grouping'
-import type { TrackRow } from '../lib/excelTracking'
-import { appendMasterSheets } from '../lib/masterSheets'
 import {
-  REPORT_MENUS, TIME_PERIODS, buildList, buildDefects, buildTimeMatrix, exportOpsReport,
-  dayKeyOfTs, type ReportCtx,
+  REPORT_MENUS, TIME_PERIODS, buildListRange, buildDefectsRange, buildTimeMatrixRange,
+  exportOpsReport, daysInRange, dayKeyOfTs, type ReportCtx,
 } from '../lib/opsReport'
 
 export function Report() {
   const lang = useYard((s) => s.lang)
-  const sites = useYard((s) => s.sites)
-  const currentSite = useYard((s) => s.currentSite)
-  const toast = useYard((s) => s.toast)
-  const units = useUnits()
-  const allRows = useTrackingRows()
-  const allYards = false // master export always covers the current yard now
-  const [exporting, setExporting] = useState(false)
-
-  const siteName = sites.find((s) => s.id === currentSite)?.name ?? '—'
-
-  const scopedRows = useMemo<TrackRow[]>(() => {
-    const rows = allYards || !currentSite ? allRows : allRows.filter((r) => rowInSite(r, currentSite, sites))
-    return [...rows].sort((a, b) => a.vin.localeCompare(b.vin))
-  }, [allRows, allYards, currentSite, sites])
-
-  const scopedUnits = useMemo(
-    () => (allYards || !currentSite ? units : units.filter((u) => !u.site || u.site === currentSite)),
-    [units, allYards, currentSite],
-  )
-
-  const doExport = async () => {
-    if (!scopedRows.length && !scopedUnits.length) { toast('info', 'ยังไม่มีข้อมูลให้ออกรายงาน'); return }
-    setExporting(true)
-    try {
-      // exceljs (not SheetJS) — the free SheetJS build can't write fonts/fills,
-      // and this export reproduces the master file's formatting exactly.
-      const XJS: any = await import('exceljs')
-      const ExcelJS = XJS.default ?? XJS
-      const wb = new ExcelJS.Workbook()
-      wb.creator = 'SJWD Yard Control'
-      appendMasterSheets(wb, scopedRows, scopedUnits)
-
-      const d = new Date()
-      const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-      const scopeTag = allYards ? 'All-Yards' : siteName.replace(/[^\w]+/g, '-')
-      const buf = await wb.xlsx.writeBuffer()
-      const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `SJWD-Report-${scopeTag}-${stamp}.xlsx`
-      a.click()
-      URL.revokeObjectURL(url)
-      toast('ok', `ออกรายงานแล้ว — ${scopedRows.length.toLocaleString()} คัน`)
-    } catch (e) {
-      console.error('[report] export', e)
-      toast('err', 'ออกรายงานไม่สำเร็จ ลองใหม่อีกครั้ง')
-    } finally {
-      setExporting(false)
-    }
-  }
 
   return (
     <div>
       <PageHead
         title={lang === 'th' ? 'รายงาน (Report)' : 'Report'}
         sub={lang === 'th'
-          ? 'รายงานประจำวัน (ดูย้อนหลังได้ทุกวัน) และรายงาน Excel รูปแบบเดียวกับไฟล์ master 100%'
-          : 'Daily stock report for any past date, plus the Excel export mirroring the master workbook'}
-        right={
-          <button className="btn btn-primary px-4 py-2.5 text-[13.5px]" onClick={doExport} disabled={exporting}>
-            <Download size={16} className="mr-1.5" />
-            {exporting ? (lang === 'th' ? 'กำลังสร้างไฟล์…' : 'Building…') : (lang === 'th' ? 'ออกรายงาน Excel' : 'Export Excel')}
-          </button>
-        }
+          ? 'รายงานประจำวัน — เลือกดูวันเดียวหรือเป็นช่วงวันที่ก็ได้'
+          : 'Daily stock report — one day or a date range'}
       />
 
       {/* ── operation report (ส่งทุกเบรค) — 14 เมนู realtime จากหน้างาน ──
-          เมนูแรกคือ Daily report stock (คอมโพเนนต์เดิม) · ปุ่มมุมขวาบนยังออก
-          ไฟล์ master (Tracking Status + Defect sheets) ได้เหมือนเดิม */}
+          เมนูแรกคือ Daily report stock (คอมโพเนนต์เดิม) · ไฟล์ Excel ออกจาก
+          ปุ่มในแถบเมนูนั้น ซึ่งเคารพวันที่/ช่วงวันที่ที่เลือกไว้ */}
       <OpsReportSection />
     </div>
   )
@@ -102,6 +43,8 @@ function OpsReportSection() {
   const queues = useOps((s) => s.queues)
   const [menu, setMenu] = useState('stock')
   const [day, setDay] = useState<string | 'all'>(dayKeyOf(new Date()))
+  // "ช่วงวันที่": the FIRST day of the range. 'all' = no range, just `day`.
+  const [from, setFrom] = useState<string | 'all'>('all')
   const [exporting, setExporting] = useState(false)
 
   const site = sites.find((s) => s.id === currentSite)
@@ -113,13 +56,19 @@ function OpsReportSection() {
     return site?.code || site?.name || 'Yard'
   }, [site])
 
+  const theDay = day === 'all' ? dayKeyOf(new Date()) : day
+  const range = useMemo(
+    () => (from === 'all' || from === theDay ? undefined : daysInRange(from, theDay)),
+    [from, theDay],
+  )
   const ctx = useMemo<ReportCtx>(() => ({
     rows: currentSite ? allRows.filter((r) => rowInSite(r, currentSite, sites)) : allRows,
     units: currentSite ? units.filter((u) => !u.site || u.site === currentSite) : units,
     queues: queues.filter((q) => !currentSite || !q.site || q.site === currentSite),
-    day: day === 'all' ? dayKeyOf(new Date()) : day,
+    day: theDay,
+    days: range,
     siteLabel,
-  }), [allRows, units, queues, currentSite, sites, day, siteLabel])
+  }), [allRows, units, queues, currentSite, sites, theDay, range, siteLabel])
 
   // calendar marks: days that have queue activity or gate scans
   const dayCounts = useMemo(() => {
@@ -133,9 +82,9 @@ function OpsReportSection() {
   }, [ctx.queues])
 
   const active = REPORT_MENUS.find((m) => m.id === menu) ?? REPORT_MENUS[0]
-  const listRows = useMemo(() => (active.kind === 'list' ? buildList(ctx, active.id) : []), [ctx, active])
-  const defRows = useMemo(() => (active.kind === 'defect' ? buildDefects(ctx, active.id as 'fcdefect' | 'pmdefect') : null), [ctx, active])
-  const matrix = useMemo(() => (active.kind === 'time' ? buildTimeMatrix(ctx, active.id as 'fctime' | 'pmtime') : null), [ctx, active])
+  const listRows = useMemo(() => (active.kind === 'list' ? buildListRange(ctx, active.id) : []), [ctx, active])
+  const defRows = useMemo(() => (active.kind === 'defect' ? buildDefectsRange(ctx, active.id as 'fcdefect' | 'pmdefect') : null), [ctx, active])
+  const matrix = useMemo(() => (active.kind === 'time' ? buildTimeMatrixRange(ctx, active.id as 'fctime' | 'pmtime') : null), [ctx, active])
 
   const doExport = async () => {
     setExporting(true)
@@ -155,8 +104,19 @@ function OpsReportSection() {
         <div className="text-[12px] font-bold uppercase tracking-wider flex items-center gap-1.5" style={{ color: 'var(--muted)' }}>
           <ClipboardList size={14} /> รายงาน Operation ({siteLabel}) · ส่งทุกเบรค — นับ realtime จากที่หน้างานบันทึก
         </div>
+        {/* one day, or a stretch of days — the "from" picker is empty until the
+            office wants a range, so the everyday case stays a single click */}
         <div className="flex items-center gap-2">
+          <DayPicker days={dayCounts} value={from} onChange={setFrom}
+            allText="ดูวันเดียว (ไม่กำหนดช่วง)"
+            hint="ตั้งวันเริ่มต้นเพื่อดูเป็นช่วงวันที่ — ว่างไว้คือดูวันเดียว" />
+          <span className="text-[12px] shrink-0" style={{ color: range ? 'var(--muted)' : 'var(--faint)' }}>ถึง</span>
           <DayPicker days={dayCounts} value={day} onChange={setDay} />
+          {range && (
+            <span className="badge shrink-0" style={{ background: 'rgba(37,99,235,0.1)', color: 'var(--brand)' }}>
+              {range.length} วัน
+            </span>
+          )}
           <button className="btn btn-primary px-3 py-1.5 text-[12.5px]" onClick={doExport} disabled={exporting}>
             <Download size={14} /> {exporting ? 'กำลังสร้างไฟล์…' : 'Export Excel (ทุกเมนู)'}
           </button>

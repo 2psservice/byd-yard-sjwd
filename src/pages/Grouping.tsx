@@ -644,10 +644,15 @@ export function Grouping() {
 
 /** Calendar button (top-right): days that have delivery runs show RED; picking
  *  one shows only that day's runs below, so the list never grows unbounded. */
-export function DayPicker({ days, value, onChange }: {
+export function DayPicker({ days, value, onChange, allText, hint }: {
   days: Map<string, number>
   value: string | 'all'
   onChange: (v: string | 'all') => void
+  /** What 'all' means here. The Report page uses a SECOND picker as the start
+   *  of a date range, where "no value" means "just the one day", not "every
+   *  day" — so the button and its clear option have to say that instead. */
+  allText?: string
+  hint?: string
 }) {
   const [open, setOpen] = useState(false)
   const base = value !== 'all' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T00:00:00`) : new Date()
@@ -656,12 +661,12 @@ export function DayPicker({ days, value, onChange }: {
   const nDays = new Date(ym.y, ym.m + 1, 0).getDate()
   const startDow = first.getDay() // 0 = Sunday
   const todayKey = dayKeyOf(new Date())
-  const label = value === 'all' ? 'ทุกวัน' : value.split('-').reverse().join('/')
+  const label = value === 'all' ? (allText ?? 'ทุกวัน') : value.split('-').reverse().join('/')
   const cells: (number | null)[] = [...Array(startDow).fill(null), ...Array.from({ length: nDays }, (_, i) => i + 1)]
   return (
     <div className="relative">
       <button className="btn" onClick={() => setOpen((v) => !v)}
-        title="เลือกวันที่ — วันที่มีคิวงานส่งมอบเป็นสีแดง รายการคิวด้านล่างแสดงเฉพาะวันที่เลือก">
+        title={hint ?? 'เลือกวันที่ — วันที่มีคิวงานส่งมอบเป็นสีแดง รายการคิวด้านล่างแสดงเฉพาะวันที่เลือก'}>
         <CalendarDays size={15} /> {label}
       </button>
       {open && (
@@ -702,7 +707,7 @@ export function DayPicker({ days, value, onChange }: {
             <button className="btn w-full mt-2 py-1.5 text-[12px]"
               style={value === 'all' ? { background: 'var(--brand)', color: '#fff', borderColor: 'transparent' } : undefined}
               onClick={() => { onChange('all'); setOpen(false) }}>
-              แสดงทุกวัน ({[...days.values()].reduce((a, b) => a + b, 0)} คิว)
+              {allText ?? `แสดงทุกวัน (${[...days.values()].reduce((a, b) => a + b, 0)} คิว)`}
             </button>
           </div>
         </>
