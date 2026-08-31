@@ -470,14 +470,17 @@ export function Units() {
           {/* Vehicle Label sticker — one page per selected car, matched to the
               reference PDF (QR + Code-128 of the VIN). Falls back to the whole
               filtered list when nothing is ticked, same rule as CSV export. */}
-          <button className="btn btn-blue py-1" title="พิมพ์ป้ายติดรถ (QR + บาร์โค้ดเลขวิน) — 1 แผ่นต่อ 1 คัน · เลือกรถก่อนหรือพิมพ์ตามรายการที่กรองไว้"
+          <button className="btn btn-blue py-1" title="พิมพ์ป้ายติดรถ (QR + บาร์โค้ดเลขวิน) — 1 แผ่นต่อ 1 คัน · เรียงตามเลข 6 ตัวท้ายจากน้อยไปมาก · ไม่จำกัดจำนวน · เลือกรถก่อนหรือพิมพ์ตามรายการที่กรองไว้"
             onClick={() => {
               const targets = sel.size ? filtered.filter((r) => sel.has(r.vin)) : filtered
               const toast = useYard.getState().toast
               if (!targets.length) { toast('err', 'ไม่มีรถให้พิมพ์ — เลือกรถหรือปรับตัวกรองก่อน'); return }
-              if (targets.length > 200) { toast('err', `เลือกไว้ ${targets.length.toLocaleString()} คัน — พิมพ์ได้ครั้งละไม่เกิน 200 แผ่น`); return }
-              printVehicleLabels(targets)
-              toast('ok', `พิมพ์ป้ายติดรถ ${targets.length.toLocaleString()} แผ่น`)
+              // no cap: a whole yard's worth of stickers is a normal day's work.
+              // Building the pages (a QR + a barcode each) blocks the tab, so say
+              // so FIRST and let the toast paint before the work starts —
+              // otherwise a big batch looks like the button did nothing.
+              toast('ok', `กำลังเตรียมป้ายติดรถ ${targets.length.toLocaleString()} แผ่น — เรียงตามเลข 6 ตัวท้าย`)
+              setTimeout(() => printVehicleLabels(targets), 30)
             }}>
             <Printer size={14} /> Print Vehicle Label{sel.size ? ` (${sel.size.toLocaleString()})` : ''}
           </button>

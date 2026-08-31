@@ -220,9 +220,31 @@ function labelSection(r: TrackRow): string {
   </section>`
 }
 
+/**
+ * Print order: the VIN's LAST 6 CHARACTERS, ascending.
+ *
+ * The stack of stickers comes off the printer and is walked down a row of cars,
+ * and the yard reads a car by its last 6 ("034892") — not by the whole VIN and
+ * not by whatever order the grid happened to be filtered in. Sorting here, not
+ * at the button, means every route to a label print comes out in the same order.
+ *
+ * Compared as fixed-width text, which for the all-digit serials BYD uses is the
+ * same as counting up; a VIN with a letter in the last 6 still lands somewhere
+ * stable instead of NaN. Ties fall back to the full VIN.
+ */
+const labelSerial = (vin: string) => vin.trim().toUpperCase().slice(-6)
+export function sortVehicleLabelRows(rows: TrackRow[]): TrackRow[] {
+  return [...rows].sort((a, b) => {
+    const sa = labelSerial(a.vin), sb = labelSerial(b.vin)
+    if (sa !== sb) return sa < sb ? -1 : 1
+    return a.vin < b.vin ? -1 : a.vin > b.vin ? 1 : 0
+  })
+}
+
 export function buildVehicleLabelHtml(rows: TrackRow[]): string {
   // 286.9 × 119.6 pt page · text colon column at 86 pt · QR (230,10) 42 pt ·
   // barcode (8.45, 72.875) 270 × 40 pt — all lifted from the reference PDF
+  const ordered = sortVehicleLabelRows(rows)
   return `<!doctype html><html><head><meta charset="utf-8"><title>Vehicle Label</title><style>
     @page { size: 286.9pt 119.6pt; margin: 0; }
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -238,7 +260,7 @@ export function buildVehicleLabelHtml(rows: TrackRow[]): string {
     .qr { position: absolute; left: 230pt; top: 10pt; width: 42pt; height: 42pt; }
     .bar { position: absolute; left: 8.45pt; top: 72.875pt; width: 270pt; height: 40pt; }
     .bar svg { width: 100%; height: 100%; display: block; }
-  </style></head><body>${rows.map(labelSection).join('')}</body></html>`
+  </style></head><body>${ordered.map(labelSection).join('')}</body></html>`
 }
 
 /** Print one sticker page per row — 1 car or 10, same layout on every sheet. */
