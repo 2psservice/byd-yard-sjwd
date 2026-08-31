@@ -287,7 +287,7 @@ export function buildList(ctx: ReportCtx, id: string): ListRow[] {
       push(d.vin, {
         date: d.clock ? fmtTime(d.clock) : fmtDay(ctx.day),
         remark: d.result === 'NG' ? 'NG' : '',
-        ...(id === 'pdi' ? { lot: d.lot ?? '' } : {}),
+        ...(id === 'pdi' || id === 'pm' ? { lot: d.lot ?? '' } : {}),
       })
   } else if (id === 'washpm') {
     for (const i of checkedItems(ctx, 'WASH', (n) => /pm/i.test(n)))
@@ -495,25 +495,27 @@ export async function exportOpsReport(ctx: ReportCtx) {
 }
 
 /**
- * The PDI page's own workbook — one sheet per tab, exactly what is on screen.
+ * One station board's own workbook — one sheet per tab, exactly what is on
+ * screen. PDI and PM share it, as they share the board itself.
  *
- * The operation report carries a PDI list too, but as one sheet inside a
- * 12-sheet workbook and with the 8-column defect summary. The yard sends the
- * PDI day on its own, so it gets its own file: the list, the full 13-column
- * defect sheet the office's form uses, and the P1–P5 shift table.
+ * The operation report carries these lists too, but each as one sheet inside a
+ * 13-sheet workbook and with the 8-column defect summary. The yard sends a
+ * station's day on its own, so it gets its own file: the list, the full
+ * 13-column defect sheet the office's form uses, and the P1–P5 shift table.
  */
-export async function exportPdiReport(ctx: ReportCtx) {
+export async function exportStationReport(ctx: ReportCtx, kind: 'PDI' | 'PM') {
   const XJS: any = await import('exceljs')
   const ExcelJS = XJS.default ?? XJS
   const wb = new ExcelJS.Workbook()
   wb.creator = 'SJWD Yard Control'
   const { addListSheet, addWideDefectSheet, addTimeSheet } = sheetWriters(wb)
+  const id = kind === 'PDI' ? 'pdi' : 'pm'
 
-  addListSheet(`PDI(${ctx.siteLabel})`.slice(0, 31), buildList(ctx, 'pdi'))
-  addWideDefectSheet('PDI(Defect)', buildDefects(ctx, 'pdidefect'))
-  addTimeSheet('ตาราง PDI', buildTimeMatrix(ctx, 'pditime'))
+  addListSheet(`${kind}(${ctx.siteLabel})`.slice(0, 31), buildList(ctx, id))
+  addWideDefectSheet(`${kind}(Defect)`, buildDefects(ctx, `${id}defect` as 'pdidefect' | 'pmdefect'))
+  addTimeSheet(`ตาราง ${kind}`, buildTimeMatrix(ctx, `${id}time` as 'pditime' | 'pmtime'))
 
-  await downloadWorkbook(wb, `PDI_${ctx.siteLabel.replace(/[^\w]+/g, '')}_${ctx.day}.xlsx`)
+  await downloadWorkbook(wb, `${kind}_${ctx.siteLabel.replace(/[^\w]+/g, '')}_${ctx.day}.xlsx`)
 }
 
 const pctStr = (n: number, total: number) => (total ? `${Math.round((n / total) * 100)}%` : '0%')
