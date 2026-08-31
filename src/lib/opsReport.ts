@@ -390,11 +390,22 @@ const LIST_SHEETS: { id: string; sheet: string }[] = [
   { id: 'pm', sheet: 'PM' },
 ]
 
-export async function exportOpsReport(ctx: ReportCtx) {
-  const XJS: any = await import('exceljs')
-  const ExcelJS = XJS.default ?? XJS
-  const wb = new ExcelJS.Workbook()
-  wb.creator = 'SJWD Yard Control'
+/** Save a finished workbook to the user's machine. */
+async function downloadWorkbook(wb: any, filename: string) {
+  const buf = await wb.xlsx.writeBuffer()
+  const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+/** The sheet writers, shared by every Excel export so one workbook cannot end
+ *  up styled differently from another (borders, Tahoma 10, grey headers). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function sheetWriters(wb: any) {
   const border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } }
   const fill = (argb: string) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb } })
   const font = { name: 'Tahoma', size: 10 }
@@ -447,6 +458,32 @@ export async function exportOpsReport(ctx: ReportCtx) {
     const totRow = ws.addRow(['Total', m.total]); bAll(totRow, { bold: true, fillC: 'FFFFFF00' })
   }
 
+  /** The office's WIDE defect sheet — the 13 columns the PDI board shows,
+   *  not the 8-column summary the operation report carries. */
+  const addWideDefectSheet = (name: string, rows: DefectRowOut[]) => {
+    const ws = wb.addWorksheet(name)
+    ws.columns = [{ width: 6 }, { width: 21 }, { width: 13 }, { width: 14 }, { width: 16 }, { width: 14 },
+      { width: 17 }, { width: 12 }, { width: 13 }, { width: 22 }, { width: 30 }, { width: 15 }, { width: 13 }]
+    const hr = ws.addRow(['No', 'Vin', 'Model', 'From', 'Stock of Status', 'Category NG',
+      'Category (Repair)', 'Incharge', 'Date', 'Position', 'Defect', 'Status Repair', 'Repair Date'])
+    hr.eachCell((cell: any) => { cell.font = { ...font, bold: true }; cell.border = border; cell.fill = fill('FFD9D9D9'); cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true } })
+    for (const r of rows) {
+      const row = ws.addRow([r.no, r.vin, r.model, r.from, r.stockStatus, r.categoryNG,
+        r.categoryRepair, r.incharge, r.date, r.position, r.defect, r.status, r.repairDate])
+      row.eachCell({ includeEmpty: true }, (cell: any, col: number) => { if (col <= 13) { cell.font = font; cell.border = border } })
+    }
+  }
+
+  return { addListSheet, addDefectSheet, addWideDefectSheet, addTimeSheet }
+}
+
+export async function exportOpsReport(ctx: ReportCtx) {
+  const XJS: any = await import('exceljs')
+  const ExcelJS = XJS.default ?? XJS
+  const wb = new ExcelJS.Workbook()
+  wb.creator = 'SJWD Yard Control'
+  const { addListSheet, addDefectSheet, addTimeSheet } = sheetWriters(wb)
+
   for (const s of LIST_SHEETS) {
     const rows = buildList(ctx, s.id)
     addListSheet(`${s.sheet}(${ctx.siteLabel})`.slice(0, 31), rows, s.id === 'pdiout' || s.id === 'hold' ? 'Group No' : 'LOT\nM-D-lot')
@@ -454,14 +491,29 @@ export async function exportOpsReport(ctx: ReportCtx) {
     if (s.id === 'pm') { addDefectSheet('PM(Defect)', buildDefects(ctx, 'pmdefect')); addTimeSheet('เช็คเวลาPM', buildTimeMatrix(ctx, 'pmtime')) }
   }
 
-  const buf = await wb.xlsx.writeBuffer()
-  const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `Report_operation_${ctx.siteLabel.replace(/[^\w]+/g, '')}_${ctx.day}.xlsx`
-  a.click()
-  URL.revokeObjectURL(url)
+  await downloadWorkbook(wb, `Report_operation_${ctx.siteLabel.replace(/[^\w]+/g, '')}_${ctx.day}.xlsx`)
+}
+
+/**
+ * The PDI page's own workbook — one sheet per tab, exactly what is on screen.
+ *
+ * The operation report carries a PDI list too, but as one sheet inside a
+ * 12-sheet workbook and with the 8-column defect summary. The yard sends the
+ * PDI day on its own, so it gets its own file: the list, the full 13-column
+ * defect sheet the office's form uses, and the P1–P5 shift table.
+ */
+export async function exportPdiReport(ctx: ReportCtx) {
+  const XJS: any = await import('exceljs')
+  const ExcelJS = XJS.default ?? XJS
+  const wb = new ExcelJS.Workbook()
+  wb.creator = 'SJWD Yard Control'
+  const { addListSheet, addWideDefectSheet, addTimeSheet } = sheetWriters(wb)
+
+  addListSheet(`PDI(${ctx.siteLabel})`.slice(0, 31), buildList(ctx, 'pdi'))
+  addWideDefectSheet('PDI(Defect)', buildDefects(ctx, 'pdidefect'))
+  addTimeSheet('ตาราง PDI', buildTimeMatrix(ctx, 'pditime'))
+
+  await downloadWorkbook(wb, `PDI_${ctx.siteLabel.replace(/[^\w]+/g, '')}_${ctx.day}.xlsx`)
 }
 
 const pctStr = (n: number, total: number) => (total ? `${Math.round((n / total) * 100)}%` : '0%')
