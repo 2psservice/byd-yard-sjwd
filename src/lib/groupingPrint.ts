@@ -7,6 +7,7 @@
  */
 
 import { byYardLocation } from './groupingImport'
+import { borrowDocTitle, fileStamp } from './printDoc'
 
 export interface GroupPrintRow {
   no: number
@@ -219,7 +220,8 @@ export function buildFindListHtml(rows: FindListRow[], date: string): string {
 }
 
 export const printFindList = (rows: FindListRow[], date: string): void => {
-  if (rows.length) printHtml(buildFindListHtml(rows, date))
+  // "ใบหารถ 15 คัน 31 AUG26.pdf" — a folder of saved sheets says what each one is
+  if (rows.length) printHtml(buildFindListHtml(rows, date), `ใบหารถ ${rows.length} คัน ${fileStamp(date)}`)
 }
 
 /** Export the ใบหารถ list as a styled .xlsx (yellow header like the master sheets). */
@@ -401,7 +403,7 @@ export async function exportFindCarXlsx(rows: GroupPrintRow[], meta: GroupPrintM
 }
 
 /** Render HTML in a hidden iframe, wait a beat, then open the print dialog. */
-function printHtml(html: string): void {
+function printHtml(html: string, fileName?: string): void {
   const iframe = document.createElement('iframe')
   iframe.setAttribute('aria-hidden', 'true')
   iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden'
@@ -410,11 +412,17 @@ function printHtml(html: string): void {
   if (!idoc) { iframe.remove(); return }
   idoc.open(); idoc.write(html); idoc.close()
   const fire = () => {
+    // the saved PDF is named after the PAGE's title, not this iframe's
+    if (fileName) borrowDocTitle(fileName, iframe.contentWindow)
     try { iframe.contentWindow?.focus(); iframe.contentWindow?.print() } catch { /* noop */ }
     setTimeout(() => iframe.remove(), 1500)
   }
   setTimeout(fire, 300)
 }
 
-export const printGrouping = (rows: GroupPrintRow[], meta: GroupPrintMeta): void => { if (rows.length) printHtml(buildGroupingHtml(rows, meta)) }
-export const printFindCar = (rows: GroupPrintRow[], meta: GroupPrintMeta): void => { if (rows.length) printHtml(buildFindCarHtml(rows, meta)) }
+export const printGrouping = (rows: GroupPrintRow[], meta: GroupPrintMeta): void => {
+  if (rows.length) printHtml(buildGroupingHtml(rows, meta), `Grouping to Dealer ${meta.totalUnits} คัน ${fileStamp(meta.date)}`)
+}
+export const printFindCar = (rows: GroupPrintRow[], meta: GroupPrintMeta): void => {
+  if (rows.length) printHtml(buildFindCarHtml(rows, meta), `ใบหารถ ${rows.length} คัน ${fileStamp(meta.date)}`)
+}

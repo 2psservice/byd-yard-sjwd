@@ -7,6 +7,7 @@
 import type { Damage, Unit } from '../types'
 import { partLabel, defectLabel } from './damageLabel'
 import { VIN_PHOTO_CELL } from './trackingColumns'
+import { borrowDocTitle, fileStamp } from './printDoc'
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 /** timestamp → "5-Jun-26" — the date shape the Defect sheets use (round-trips on re-import). */
@@ -382,6 +383,8 @@ export function printDefectReport(sheets: { spec: DefectSheetSpec; rows: DefectE
   if (!idoc) { iframe.remove(); return }
   idoc.open(); idoc.write(html); idoc.close()
   setTimeout(() => {
+    // the saved PDF is named after the PAGE's title, not this iframe's
+    borrowDocTitle(`${docTitle} ${fileStamp()}`, iframe.contentWindow)
     try { iframe.contentWindow?.focus(); iframe.contentWindow?.print() } catch { /* noop */ }
     setTimeout(() => iframe.remove(), 1500)
   }, 300)
