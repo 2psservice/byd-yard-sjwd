@@ -405,6 +405,25 @@ export function Units() {
     return { ok, wait }
   }, [rows])
 
+  // ── what the toolbar acts on: the list THIS TAB shows ──────────────────────
+  // Units / Grouping show `filtered`; Units Mylist shows the pasted VIN list,
+  // which is a different set of cars entirely (it deliberately reaches cars
+  // this yard's list no longer carries). The toolbar read `filtered` on every
+  // tab, so a paste of 263 cars with 6 ticked printed nothing at all — the
+  // ticked VINs were not in the Units tab's 1-row filtered list, and the button
+  // reported "ไม่มีรถให้พิมพ์".
+  const mylistText = useUnitsView((s) => s.mylistText)
+  const tabRows = useMemo(
+    () => (tab === 'mylist' ? matchVins(mylistText, allRows).found : filtered),
+    [tab, mylistText, allRows, filtered],
+  )
+  // ticked cars win; nothing ticked (or nothing ticked ON THIS TAB) = the list
+  // on screen. Same rule the Mylist's own IR button already prints by.
+  const printTargets = useMemo(() => {
+    const ticked = tabRows.filter((r) => sel.has(r.vin))
+    return ticked.length ? ticked : tabRows
+  }, [tabRows, sel])
+
   const clearFilters = () => { patchView({ q: '', fGroup: '', colFilters: {} }); setUnitPreset(null); setUnitVinFilter(null) }
   const anyFilter = !!q || !!fGroup || !!unitPreset || !!unitVinFilter
     || activeFilterCols.some((k) => colFilters[k] && colFilters[k] !== 'ALL')
@@ -412,8 +431,8 @@ export function Units() {
   const doExport = () => {
     // inject the computed Location cell so the CSV column isn't blank
     const out = visCols.some((c) => c.key === LOCATION_KEY)
-      ? filtered.map((r) => ({ ...r, cells: { ...r.cells, [LOCATION_KEY]: locOf(r) } }))
-      : filtered
+      ? tabRows.map((r) => ({ ...r, cells: { ...r.cells, [LOCATION_KEY]: locOf(r) } }))
+      : tabRows
     rowsToCsv(`SJWD_tracking_${Date.now()}.csv`, visCols.map((c) => ({ key: c.key, label: c.label })), out)
   }
 
@@ -456,7 +475,7 @@ export function Units() {
             <b style={{ color: 'var(--text)' }}>{rows.length.toLocaleString()}</b> total
             <span className="mx-1">·</span><b style={{ color: 'var(--st-yard)' }}>{counts.ok.toLocaleString()}</b> OK
             <span className="mx-1">·</span><b style={{ color: 'var(--st-pending)' }}>{counts.wait.toLocaleString()}</b> Waiting
-            <span className="mx-1">·</span><b style={{ color: 'var(--brand)' }}>{filtered.length.toLocaleString()}</b> shown
+            <span className="mx-1">·</span><b style={{ color: 'var(--brand)' }}>{tabRows.length.toLocaleString()}</b> shown
           </div>
           {outsideShown > 0 && (
             <span className="badge shrink-0" title="ค้นเจอจากเลขวิน แต่รถไม่ได้อยู่ในรายการของลานนี้ (เช่น Gate-out ไปแล้ว หรืออยู่ลานอื่น)"
@@ -470,9 +489,9 @@ export function Units() {
           {/* Vehicle Label sticker — one page per selected car, matched to the
               reference PDF (QR + Code-128 of the VIN). Falls back to the whole
               filtered list when nothing is ticked, same rule as CSV export. */}
-          <button className="btn btn-blue py-1" title="พิมพ์ป้ายติดรถ (QR + บาร์โค้ดเลขวิน) — 1 แผ่นต่อ 1 คัน · เรียงตามเลข 6 ตัวท้ายจากน้อยไปมาก · ไม่จำกัดจำนวน · เลือกรถก่อนหรือพิมพ์ตามรายการที่กรองไว้"
+          <button className="btn btn-blue py-1" title="พิมพ์ป้ายติดรถ (QR + บาร์โค้ดเลขวิน) — 1 แผ่นต่อ 1 คัน · เรียงตามเลข 6 ตัวท้ายจากน้อยไปมาก · ไม่จำกัดจำนวน · ติ๊กรถก่อนหรือพิมพ์ตามรายการที่เห็นอยู่"
             onClick={() => {
-              const targets = sel.size ? filtered.filter((r) => sel.has(r.vin)) : filtered
+              const targets = printTargets
               const toast = useYard.getState().toast
               if (!targets.length) { toast('err', 'ไม่มีรถให้พิมพ์ — เลือกรถหรือปรับตัวกรองก่อน'); return }
               // no cap: a whole yard's worth of stickers is a normal day's work.
@@ -482,7 +501,10 @@ export function Units() {
               toast('ok', `กำลังเตรียมป้ายติดรถ ${targets.length.toLocaleString()} แผ่น — เรียงตามเลข 6 ตัวท้าย`)
               setTimeout(() => printVehicleLabels(targets), 30)
             }}>
-            <Printer size={14} /> Print Vehicle Label{sel.size ? ` (${sel.size.toLocaleString()})` : ''}
+            {/* the count is what will ACTUALLY print, not how many ticks exist
+                somewhere — a tick on another tab used to be counted here and
+                then printed nothing */}
+            <Printer size={14} /> Print Vehicle Label ({printTargets.length.toLocaleString()})
           </button>
           {/* IR paper overlay from the Units grid — the Grouping tab can only
               print cars that still sit in a grouping, so a car whose IR is
@@ -493,14 +515,14 @@ export function Units() {
           {tab === 'units' && (
             <button className="btn py-1" title="พิมพ์เฉพาะข้อมูลลงบนกระดาษฟอร์ม IR ที่พิมพ์ไว้ล่วงหน้า (ตรงตำแหน่ง AMS 100%) — 1 แผ่นต่อ 1 คัน · เลือกรถก่อนหรือพิมพ์ตามรายการที่กรองไว้"
               onClick={() => {
-                const targets = sel.size ? filtered.filter((r) => sel.has(r.vin)) : filtered
+                const targets = printTargets
                 const toast = useYard.getState().toast
                 if (!targets.length) { toast('err', 'ไม่มีรถให้พิมพ์ — เลือกรถหรือปรับตัวกรองก่อน'); return }
                 if (targets.length > IR_PRINT_MAX) { toast('err', `เลือกไว้ ${targets.length.toLocaleString()} คัน — พิมพ์ได้ครั้งละไม่เกิน ${IR_PRINT_MAX} แผ่น`); return }
                 printIrPaper(targets, sites.find((s) => s.id === currentSite)?.name ?? '')
                 toast('ok', `พิมพ์กระดาษ IR ${targets.length.toLocaleString()} แผ่น`)
               }}>
-              <Printer size={14} /> พิมพ์กระดาษ IR{sel.size ? ` (${sel.size.toLocaleString()})` : ''}
+              <Printer size={14} /> พิมพ์กระดาษ IR ({printTargets.length.toLocaleString()})
             </button>
           )}
           <button className="btn py-1" onClick={doExport}><Download size={14} /> CSV</button>
