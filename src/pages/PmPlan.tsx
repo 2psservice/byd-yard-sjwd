@@ -20,16 +20,27 @@
  * every interval after — 30 days everywhere except Auto Tran 38 Rai (90).
  */
 import { useMemo, useState } from 'react'
-import { CalendarClock, Send, Table2, ClipboardList, Search } from 'lucide-react'
+import { CalendarClock, Send, Table2, ClipboardList, Search, Download } from 'lucide-react'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { useYard } from '../store/useYard'
 import { parseCellDate, lastPmDate, PM_KEYS } from '../lib/trackingColumns'
 import { deriveCarStatus } from '../lib/carStatus'
 import { siteIdForLocation } from '../lib/siteScope'
-import { PageHead } from '../components/ui'
+import { PageHead, cx } from '../components/ui'
+import { DayPicker, dayKeyOf } from './Grouping'
+import { StationTables, useStationCtx, type StationTab } from '../components/StationTables'
+import { exportStationReport } from '../lib/opsReport'
 import type { TrackRow } from '../lib/excelTracking'
 
 const DAY_MS = 86_400_000
+
+/** The page's five tabs: the station's daily tables, then the plan + register. */
+type PmTab = StationTab | 'plan' | 'status'
+const DAY_TABS: { id: StationTab; label: string }[] = [
+  { id: 'list', label: 'PM' },
+  { id: 'defect', label: 'PM DEFECT' },
+  { id: 'time', label: 'ตาราง PM' },
+]
 
 /** Short yard label to match the operations sheet (ระยอง / soi 5 / 38 ไร่ / …). */
 function shortSite(name: string): string {
@@ -94,7 +105,12 @@ export function PmPlan() {
   const setCurrentSite = useYard((s) => s.setCurrentSite)
   const setUnitVinFilter = useYard((s) => s.setUnitVinFilter)
 
-  const [tab, setTab] = useState<'plan' | 'status'>('plan')
+  // 1–3 are the station's daily tables (same three the PDI board shows);
+  // 4–5 are this page's own monthly plan grid and per-VIN register.
+  const [tab, setTab] = useState<PmTab>('list')
+  const [day, setDay] = useState<string | 'all'>(dayKeyOf(new Date()))
+  const [exporting, setExporting] = useState(false)
+  const { ctx, dayCounts, dayLabel } = useStationCtx(day)
   const [ym, setYm] = useState<string>(ymNow)
   // which yard to show — the active site by default, or every yard
   const [siteSel, setSiteSel] = useState<string>(() => currentSite ?? 'all')
@@ -274,6 +290,17 @@ export function PmPlan() {
   const shownStatus = status.list.slice(0, SHOW_CAP)
   const pmCols = PM_KEYS.slice(0, status.maxPm)
 
+  const isDayTab = tab === 'list' || tab === 'defect' || tab === 'time'
+  // one workbook for the day's three tables, same as the PDI board
+  const doExport = async () => {
+    setExporting(true)
+    try {
+      await exportStationReport(ctx, 'PM')
+      toast('ok', `ออกไฟล์ PM (${dayLabel}) แล้ว`)
+    } catch (e) { console.error('[pm] export', e); toast('err', 'ออกไฟล์ไม่สำเร็จ ลองใหม่อีกครั้ง') }
+    finally { setExporting(false) }
+  }
+
   return (
     <div className="max-w-[1400px] mx-auto">
       <div className="panel p-4 mb-4 flex items-center gap-3 flex-wrap">
@@ -291,6 +318,16 @@ export function PmPlan() {
             {siteList.map((r) => <option key={r.id} value={r.id}>{r.short}</option>)}
           </select>
         </label>
+        {/* the daily tables pick a DAY; the plan grid picks a MONTH */}
+        {isDayTab && (
+          <>
+            <DayPicker days={dayCounts} value={day} onChange={setDay} />
+            <button className="btn btn-primary px-3 py-2 text-[12.5px]" onClick={doExport} disabled={exporting}
+              title="ออกไฟล์ Excel ของวันนี้ — 3 ชีท: PM · PM DEFECT · ตาราง PM">
+              <Download size={14} /> {exporting ? 'กำลังสร้างไฟล์…' : 'Export Excel'}
+            </button>
+          </>
+        )}
         {tab === 'plan' && (
           <label className="flex items-center gap-2 px-3 py-2 rounded-xl" style={{ background: 'var(--chip)' }}>
             <span className="text-[12.5px] font-semibold" style={{ color: 'var(--muted)' }}>เดือน:</span>
@@ -304,21 +341,27 @@ export function PmPlan() {
         )}
       </div>
 
-      {/* ── the workbook's two sheets as two tabs ── */}
-      <div className="flex items-center gap-1.5 mb-3">
+      {/* ── 1–3 the station's daily tables · 4 the plan grid · 5 the register ── */}
+      <div className="flex items-center gap-1.5 mb-3 flex-wrap">
+        {DAY_TABS.map((t, i) => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+            className={cx('btn px-3 py-2 text-[13px] font-bold', tab === t.id && 'btn-primary')}>
+            {i + 1}. {t.label}
+          </button>
+        ))}
         <button onClick={() => setTab('plan')}
           className="btn px-4 py-2 text-[13px] font-bold flex items-center gap-1.5"
           style={tab === 'plan'
             ? { background: 'var(--brand)', color: '#fff', border: 'none' }
             : { background: 'var(--chip)', color: 'var(--muted)', border: '1px solid var(--line)' }}>
-          <Table2 size={14} /> PM-{thMonth}
+          <Table2 size={14} /> 4. ตารางแผน PM · {thMonth}
         </button>
         <button onClick={() => setTab('status')}
           className="btn px-4 py-2 text-[13px] font-bold flex items-center gap-1.5"
           style={tab === 'status'
             ? { background: 'var(--brand)', color: '#fff', border: 'none' }
             : { background: 'var(--chip)', color: 'var(--muted)', border: '1px solid var(--line)' }}>
-          <ClipboardList size={14} /> PM Status
+          <ClipboardList size={14} /> 5. PM STATUS
           <span className="badge text-[11px]" style={tab === 'status'
             ? { background: 'rgba(255,255,255,0.22)', color: '#fff' }
             : { background: 'var(--panel)', color: 'var(--muted)' }}>{status.list.length.toLocaleString()}</span>
@@ -329,6 +372,8 @@ export function PmPlan() {
           </span>
         )}
       </div>
+
+      {isDayTab && <StationTables ctx={ctx} tab={tab} kind="PM" />}
 
       {tab === 'plan' && (
         <>
