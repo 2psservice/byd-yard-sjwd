@@ -202,6 +202,52 @@ function qrSvg(text: string): string {
 // ── the label page — geometry from the reference PDF ─────────────────────────
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
+/**
+ * How wide a value may be before it reaches the QR.
+ *
+ * The value starts at 87.2 pt (the 84 pt colon column + 3.2 pt gap) and the QR
+ * begins at 230 pt; 4 pt of air keeps ink off its quiet zone.
+ */
+const VALUE_MAX_PT = 230 - 84 - 3.2 - 4
+const VALUE_PT = 10
+const VALUE_MIN_PT = 5.5
+
+/**
+ * Shrink any value that would run under the QR — measured IN the label
+ * document, at print time.
+ *
+ * The reference sticker's model names are short; a real one — "BYD ATTO 3
+ * (410KM-PREMIUM)" — runs to 235.7 pt at 10 pt and the QR is painted straight
+ * over its tail, so the printed label reads "…(410KM-PREMIUM" with the closing
+ * bracket (and on longer names, whole words) missing.
+ *
+ * Measured here rather than when the HTML is built, because the two documents
+ * do not resolve the font the same way: the app has Roboto as a webfont, this
+ * page has only what the machine has installed, so a width computed in the app
+ * under-reads and the text still overflowed. Reading it where it is actually
+ * laid out cannot be wrong.
+ *
+ * Batched — every width first, then every write, then one correction pass for
+ * rounding — so 263 labels do not force 263 separate reflows. Everything else
+ * stays exactly where the reference PDF puts it; only a value that would
+ * otherwise be swallowed gets smaller.
+ */
+const FIT_SCRIPT = `<script>(function(){try{
+  var MAXPT=${VALUE_MAX_PT}, BASE=${VALUE_PT}, MIN=${VALUE_MIN_PT}, MAX=MAXPT*96/72;
+  var els=[].slice.call(document.querySelectorAll('.vl'));
+  var w=els.map(function(e){return e.getBoundingClientRect().width});
+  var over=[];
+  els.forEach(function(e,i){
+    if(w[i]<=MAX) return;
+    var s=Math.max(MIN,Math.floor(BASE*MAX/w[i]*10)/10);
+    e.style.fontSize=s+'pt'; over.push([e,s]);
+  });
+  over.forEach(function(x){
+    var e=x[0], s=x[1];
+    while(s>MIN&&e.getBoundingClientRect().width>MAX){s=Math.round((s-0.2)*10)/10;e.style.fontSize=s+'pt'}
+  });
+}catch(err){}})();<\/script>`
+
 function labelSection(r: TrackRow): string {
   const c = r.cells
   const model = (c['Model name'] || c['Model'] || '—').trim()
@@ -260,7 +306,7 @@ export function buildVehicleLabelHtml(rows: TrackRow[]): string {
     .qr { position: absolute; left: 230pt; top: 10pt; width: 42pt; height: 42pt; }
     .bar { position: absolute; left: 8.45pt; top: 72.875pt; width: 270pt; height: 40pt; }
     .bar svg { width: 100%; height: 100%; display: block; }
-  </style></head><body>${ordered.map(labelSection).join('')}</body></html>`
+  </style></head><body>${ordered.map(labelSection).join('')}${FIT_SCRIPT}</body></html>`
 }
 
 /** Print one sticker page per row — 1 car or 10, same layout on every sheet. */
@@ -275,8 +321,29 @@ export function printVehicleLabels(rows: TrackRow[]): void {
   const idoc = iframe.contentWindow?.document
   if (!idoc) { iframe.remove(); return }
   idoc.open(); idoc.write(html); idoc.close()
-  setTimeout(() => {
-    try { iframe.contentWindow?.focus(); iframe.contentWindow?.print() } catch { /* noop */ }
-    setTimeout(() => iframe.remove(), 1500)
-  }, 150)
+  // ── hold the document until the print job has actually taken it ──
+  // 263 stickers is 263 pages of SVG: a fixed 150 ms was not always enough for
+  // the layout to finish before print(), and tearing the iframe down 1.5 s
+  // later pulled the document out from under a preview that was still building
+  // pages — the browser's PDF (and the printer) then ran short of the count on
+  // screen. Print when the document says it is ready, and let go only when the
+  // job is done.
+  const win = iframe.contentWindow
+  let gone = false
+  const drop = () => { if (gone) return; gone = true; setTimeout(() => iframe.remove(), 500) }
+  win?.addEventListener?.('afterprint', drop)
+  // Safari / older Chrome never fire afterprint on an iframe — the print
+  // media query flipping back off says the same thing
+  const mql = win?.matchMedia?.('print')
+  mql?.addEventListener?.('change', (e) => { if (!e.matches) drop() })
+  const go = () => {
+    // one more frame so the last page is laid out, not just parsed
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      try { win?.focus(); win?.print() } catch { /* noop */ }
+      // last resort: never leak the iframe if no print event ever arrives
+      setTimeout(drop, 10 * 60 * 1000)
+    }))
+  }
+  if (idoc.readyState === 'complete') go()
+  else win?.addEventListener?.('load', go, { once: true })
 }
