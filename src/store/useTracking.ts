@@ -119,7 +119,11 @@ interface TrackingState {
   importFile: (file: File) => Promise<ParseResult>
   commitImport: (res: ParseResult) => void
   commitCoInspection: (res: ParseResult) => { updated: number; added: number; skipped: number; gateOut: number; moved: number }
-  updateCell: (vin: string, key: string, value: string) => void
+  /** Set a cell and log it. `src: 'scan'` marks the write as a FIELD STATION
+   *  action (ops-scan), which is what lets a report tell a real recording apart
+   *  from an import or an office edit — the only thing that may be printed as
+   *  "the time the yard recorded this". */
+  updateCell: (vin: string, key: string, value: string, src?: 'scan') => void
   /** Set a cell WITHOUT writing a history line — for system/media cells (e.g. the
    *  per-car "Vin Photo" label shot) whose value may be a huge data-URL that must
    *  never be copied into the row's Event history. */
@@ -229,12 +233,12 @@ const MAX_ROW_HISTORY = 100
 // how close together two Location moves on the SAME car by the SAME actor
 // have to land to count as one physical cascade rather than two real moves
 const LOCATION_BURST_MS = 90_000
-function withHistoryEntry(r: TrackRow, key: string, value: string, columns: Column[], by: string): TrackRow {
+function withHistoryEntry(r: TrackRow, key: string, value: string, columns: Column[], by: string, src?: 'scan'): TrackRow {
   const from = r.cells[key] ?? ''
   const cells = { ...r.cells, [key]: value }
   if (from === value) return { ...r, cells } // unchanged value — still write, skip the log entry
   const label = columns.find((c) => c.key === key)?.label ?? key
-  const entry: RowEvent = { at: Date.now(), by, field: label, from, to: value }
+  const entry: RowEvent = { at: Date.now(), by, field: label, from, to: value, ...(src ? { src } : {}) }
   return { ...r, cells, history: [...(r.history ?? []), entry].slice(-MAX_ROW_HISTORY) }
 }
 
@@ -752,12 +756,12 @@ export const useTracking = create<TrackingState>()(
         return { updated, added, skipped, gateOut, moved }
       },
 
-      updateCell: (vin, key, value) => {
+      updateCell: (vin, key, value, src) => {
         const r = get().rows[vin]
         if (!r) return
         const by = useYard.getState().currentUser
         const cols = get().columns
-        const next: TrackRow = { ...applyYardMove(withHistoryEntry(r, key, value, cols, by), key, cols, by), updatedAt: Date.now() }
+        const next: TrackRow = { ...applyYardMove(withHistoryEntry(r, key, value, cols, by, src), key, cols, by), updatedAt: Date.now() }
         set({ rows: { ...get().rows, [vin]: next } })
         idbPut(next).catch(() => {})
         pushRows([next])
