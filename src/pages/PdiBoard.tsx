@@ -20,8 +20,11 @@ import { PageHead, cx } from '../components/ui'
 import { DayPicker, dayKeyOf } from './Grouping'
 import { TIME_PERIODS, buildList, buildDefects, buildTimeMatrix, dayKeyOfTs, type ReportCtx } from '../lib/opsReport'
 
-const th = 'px-3 py-2 text-left font-semibold whitespace-nowrap'
-const td = 'px-3 py-1.5 whitespace-nowrap'
+// column rules as well as row rules — 13 columns of defects run together
+// without them, and the shift matrix (tab 3) has always been fully ruled.
+// last:border-r-0 keeps the outer edge clean, incl. the empty-state colSpan row.
+const th = 'px-3 py-2 text-left font-semibold whitespace-nowrap border-r hairline last:border-r-0'
+const td = 'px-3 py-1.5 whitespace-nowrap border-r hairline last:border-r-0'
 
 type Tab = 'list' | 'defect' | 'time'
 const TABS: { id: Tab; label: string }[] = [
