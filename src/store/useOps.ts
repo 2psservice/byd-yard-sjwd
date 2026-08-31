@@ -235,6 +235,16 @@ interface OpsState {
   renameQueue: (id: string, name: string) => void
   addVins: (id: string, vins: string[]) => { added: number; dup: number }
   removeVin: (id: string, vin: string) => void
+  /** Put a car back on this lot as WAITING, whether or not the lot still holds
+   *  an old record of it. A car that left the yard (motor show, a dealer that
+   *  sent it back) and came back to Pre Gate-in leaves its finished record
+   *  behind in the lot it originally arrived on; that record is history and the
+   *  boards hide it, so the car shows as having no lot at all — while `addVins`
+   *  reads the raw lot, finds the VIN, and refuses the move as a duplicate.
+   *  This clears the old record's station/gate state and re-dates it to now, so
+   *  the lot lists the car once, waiting, for the trip it is on today.
+   *  Returns false only when the lot itself is gone. */
+  reviveVin: (id: string, vin: string) => boolean
   /** Move one VIN from one Gate-in lot to another, carrying its record (when it
    *  was gated in, by whom) with it. Returns false if the move can't be made. */
   moveVin: (fromId: string, toId: string, vin: string) => boolean
@@ -491,6 +501,28 @@ export const useOps = create<OpsState>()(
         // ใส่กลับเข้าคิวงานแล้ว = ยกเลิก "เอาออกจากกระดานประตู" ของคันนั้น
         get().undismissPreGateIn(vins)
         return { added, dup }
+      },
+
+      reviveVin: (id, vin) => {
+        const v = vin.trim().toUpperCase()
+        if (!v || !get().queues.some((q) => q.id === id)) return false
+        set((s) => ({
+          queues: s.queues.map((q) => {
+            if (q.id !== id) return q
+            const old = q.items.find((i) => i.vin === v)
+            // keep only what belongs to the LOT (its plan), never the old trip's
+            // ticks, times or people — those are what made the car look done
+            const fresh: QueueItem = { vin: v, addedAt: Date.now(), done: false }
+            if (old?.laneLoad) fresh.laneLoad = old.laneLoad
+            if (old?.dest) fresh.dest = old.dest
+            if (old?.group) fresh.group = old.group
+            if (old?.remark) fresh.remark = old.remark
+            return { ...q, items: old ? q.items.map((i) => (i.vin === v ? fresh : i)) : [...q.items, fresh] }
+          }),
+        }))
+        pushQueue(get, id)
+        get().undismissPreGateIn([v])
+        return true
       },
 
       removeVin: (id, vin) => {
@@ -1134,7 +1166,11 @@ export function useActiveQueues(): WorkQueue[] {
      * VIN in two queues saying opposite things — and its old delivery run
      * counted backwards (6/6 → 5/6) and could never be closed.
      *
-     * A run created AFTER it left is the run for THIS arrival, so it stays.
+     * A run created AFTER it left is the run for THIS arrival, so it stays —
+     * and so does a car PUT ON the run after it left, which is how the office
+     * files a returning car back onto an old lot (right-click → ย้ายไปคิวงาน).
+     * The item's own date is what says which trip it belongs to; the lot's
+     * creation date only speaks for the cars that came with it.
      * When the sheet does not date the gate-out, fall back to whether this run
      * had already finished with the car.
      *
@@ -1151,7 +1187,7 @@ export function useActiveQueues(): WorkQueue[] {
       if (i.gatedOut) return true
       const leftAt = leftAtOf.get(i.vin)
       if (leftAt === undefined) return false   // ไม่เคยออกจากลาน → ไม่ใช่รถกลับเข้ามาใหม่
-      if (leftAt > 0) return (q.createdAt || 0) <= leftAt
+      if (leftAt > 0) return Math.max(q.createdAt || 0, i.addedAt || 0) <= leftAt
       return !!i.done
     }
     return queues.map((q) => {
