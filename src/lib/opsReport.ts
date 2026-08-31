@@ -163,14 +163,17 @@ function typeQueues(ctx: ReportCtx, type: 'PDI' | 'FINAL' | 'PM' | 'WASH'): Work
     !isSequenceQueue(q) && !(q.name ?? '').trim().startsWith('(') && queueTypeOf(q) === type)
 }
 
-/** Checked/done items of a queue type on the day, deduped by vin (latest wins). */
+/** Checked/done items of a queue type on the day, deduped by vin (latest wins).
+ *  Each item carries the NAME of the queue it was recorded under — that name is
+ *  what the yard calls the batch ("repdi 22 คัน") and what the reports label
+ *  the work with. */
 function checkedItems(ctx: ReportCtx, type: 'PDI' | 'FINAL' | 'PM' | 'WASH', nameFilter?: (n: string) => boolean) {
-  const out = new Map<string, QueueItem>()
+  const out = new Map<string, QueueItem & { queueName: string }>()
   for (const q of typeQueues(ctx, type)) {
     if (nameFilter && !nameFilter(q.name ?? '')) continue
     for (const i of q.items) if (itemOnDay(i, ctx.day)) {
       const prev = out.get(i.vin)
-      if (!prev || (itemTs(i) ?? 0) > (itemTs(prev) ?? 0)) out.set(i.vin, i)
+      if (!prev || (itemTs(i) ?? 0) > (itemTs(prev) ?? 0)) out.set(i.vin, { ...i, queueName: (q.name ?? '').trim() })
     }
   }
   return [...out.values()].sort((a, b) => (itemTs(a) ?? 0) - (itemTs(b) ?? 0))
@@ -189,7 +192,7 @@ const fmtTime = (ts?: number) => ts ? `${fmtDay(dayKeyOfTs(ts))} ${new Date(ts).
  * local midnight, which printed as a real-looking "00:00" and dropped every
  * such car into P1. A car known only from a sheet date has no time, and says so.
  */
-interface StationDone { vin: string; clock?: number; result?: 'OK' | 'NG' }
+interface StationDone { vin: string; clock?: number; result?: 'OK' | 'NG'; lot?: string }
 
 /**
  * When the station itself wrote this car's PDI date — the row's own audit line.
@@ -215,7 +218,7 @@ function scanStampAt(r: TrackRow, day: string): number | undefined {
 function stationDone(ctx: ReportCtx, type: 'PDI' | 'FINAL' | 'PM'): StationDone[] {
   const out = new Map<string, StationDone>()
   for (const i of checkedItems(ctx, type))
-    out.set(i.vin, { vin: i.vin, clock: i.checkedAt, result: i.result })
+    out.set(i.vin, { vin: i.vin, clock: i.checkedAt, result: i.result, lot: i.queueName })
   // …plus every car the SHEET says was done today that no queue item covers
   // (scanned straight at the station, or its queue archived after the work).
   if (type === 'PDI') {
@@ -275,8 +278,17 @@ export function buildList(ctx: ReportCtx, id: string): ListRow[] {
     const type = id === 'pdi' ? 'PDI' : id === 'fc' ? 'FINAL' : 'PM'
     // date + time when the field recorded one; date alone when it did not —
     // never a fabricated 00:00
+    // LOT M-D-lot = the WORK QUEUE this car was recorded under ("repdi 22 คัน"),
+    // which is how the yard names a batch. It used to print the sheet's own LOT
+    // cell (26A217) — a shipping lot from the import file that says nothing
+    // about the day's PDI work. A car with no queue behind it has no batch to
+    // name, so it stays blank rather than borrowing an unrelated number.
     for (const d of stationDone(ctx, type))
-      push(d.vin, { date: d.clock ? fmtTime(d.clock) : fmtDay(ctx.day), remark: d.result === 'NG' ? 'NG' : '' })
+      push(d.vin, {
+        date: d.clock ? fmtTime(d.clock) : fmtDay(ctx.day),
+        remark: d.result === 'NG' ? 'NG' : '',
+        ...(id === 'pdi' ? { lot: d.lot ?? '' } : {}),
+      })
   } else if (id === 'washpm') {
     for (const i of checkedItems(ctx, 'WASH', (n) => /pm/i.test(n)))
       push(i.vin, { date: fmtTime(itemTs(i)) })
