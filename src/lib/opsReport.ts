@@ -190,6 +190,28 @@ const fmtTime = (ts?: number) => ts ? `${fmtDay(dayKeyOfTs(ts))} ${new Date(ts).
  * such car into P1. A car known only from a sheet date has no time, and says so.
  */
 interface StationDone { vin: string; clock?: number; result?: 'OK' | 'NG' }
+
+/**
+ * When the station itself wrote this car's PDI date — the row's own audit line.
+ *
+ * A car scanned at the PDI station with NO queue item behind it does not go
+ * through recordCheck, so there is no `checkedAt` to read; the save stamps the
+ * PDI date ladder on the sheet instead, and the list printed a bare date while
+ * the car beside it (which happened to be in a lot) showed a time. The stamp's
+ * own audit entry carries the moment it was written, and `src: 'scan'` marks it
+ * as a FIELD write — an import writes no history at all and an office cell edit
+ * carries no `src`, so neither can be mistaken for the yard recording the work.
+ */
+function scanStampAt(r: TrackRow, day: string): number | undefined {
+  let at: number | undefined
+  for (const h of r.history ?? []) {
+    if (h.src !== 'scan' || !/pdi/i.test(h.field ?? '')) continue
+    if (!cellOnDay(h.to, day)) continue
+    if (at === undefined || h.at > at) at = h.at
+  }
+  return at
+}
+
 function stationDone(ctx: ReportCtx, type: 'PDI' | 'FINAL' | 'PM'): StationDone[] {
   const out = new Map<string, StationDone>()
   for (const i of checkedItems(ctx, type))
@@ -199,7 +221,8 @@ function stationDone(ctx: ReportCtx, type: 'PDI' | 'FINAL' | 'PM'): StationDone[
   if (type === 'PDI') {
     for (const r of ctx.rows) {
       if (out.has(r.vin)) continue
-      if (PDI_KEYS.some((k) => cellOnDay(r.cells[k], ctx.day))) out.set(r.vin, { vin: r.vin })
+      if (PDI_KEYS.some((k) => cellOnDay(r.cells[k], ctx.day)))
+        out.set(r.vin, { vin: r.vin, clock: scanStampAt(r, ctx.day) })
     }
   }
   return [...out.values()]

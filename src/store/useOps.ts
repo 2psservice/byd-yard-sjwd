@@ -149,13 +149,16 @@ export function stampStationDate(vin: string, type: QueueType): boolean {
         return false // latest stamp is already today → same inspection re-saved
     }
     if (!slot) return false // all slots already used
-    tr.updateCell(vin, slot, d)
+    // 'scan' — this only ever runs from a station save, and the entry's `at` is
+    // then the only record of WHEN the yard did the work for a car with no
+    // queue item to hold a checkedAt (see stationDone in opsReport)
+    tr.updateCell(vin, slot, d, 'scan')
     return true
   }
   if (type === 'PM') return ladder(PM_KEYS)
   if (type === 'PDI') return ladder(PDI_KEYS) // 1st PDI → "PDI"; each redo → next RE-PDI slot
   // FINAL — stamp the done-date into "Final check date"
-  tr.updateCell(vin, 'Final check date', d)
+  tr.updateCell(vin, 'Final check date', d, 'scan')
   return true
 }
 
