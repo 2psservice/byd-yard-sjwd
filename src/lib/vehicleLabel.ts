@@ -11,6 +11,7 @@
  */
 import type { TrackRow } from './excelTracking'
 import { code128Svg } from './dnir'
+import { borrowDocTitle, fileStamp } from './printDoc'
 
 // ── QR encoder — byte mode, error-correction L, no dependencies ──────────────
 // A 17-character VIN fills a version-1 (21×21) symbol at level L exactly —
@@ -339,6 +340,8 @@ export function printVehicleLabels(rows: TrackRow[]): void {
   const go = () => {
     // one more frame so the last page is laid out, not just parsed
     requestAnimationFrame(() => requestAnimationFrame(() => {
+      // the saved PDF is named after the PAGE's title, not this iframe's
+      borrowDocTitle(`ป้ายติดรถ ${rows.length} ใบ ${fileStamp()}`, win)
       try { win?.focus(); win?.print() } catch { /* noop */ }
       // last resort: never leak the iframe if no print event ever arrives
       setTimeout(drop, 10 * 60 * 1000)

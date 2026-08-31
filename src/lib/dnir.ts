@@ -6,6 +6,7 @@
  *  • DN (Delivery Note) — AMS trip manifest with Code-128 VIN barcodes.
  */
 import type { TrackRow } from './excelTracking'
+import { borrowDocTitle, fileStamp } from './printDoc'
 
 const esc = (s: string) => (s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 const cell = (r: TrackRow, ...keys: string[]): string => {
@@ -353,7 +354,7 @@ function fontData(): Promise<[string, string]> {
 }
 
 /** Render HTML in a hidden iframe, wait for images + fonts, then print. */
-function printHtml(html: string): void {
+function printHtml(html: string, fileName?: string): void {
   void (async () => {
     let doc = html
     try {
@@ -373,6 +374,8 @@ function printHtml(html: string): void {
     let done = false
     const fire = () => {
       if (done) return; done = true
+      // the saved PDF is named after the PAGE's title, not this iframe's
+      if (fileName) borrowDocTitle(fileName, iframe.contentWindow)
       try { iframe.contentWindow?.focus(); iframe.contentWindow?.print() } catch { /* noop */ }
       setTimeout(() => iframe.remove(), 1500)
     }
@@ -395,10 +398,14 @@ function printHtml(html: string): void {
 }
 
 /** Print the Inspector Report (IR) — one A4 page per VIN. */
-export const printIr = (rows: TrackRow[], siteName?: string): void => { if (rows.length) printHtml(buildIrHtml(rows, siteName)) }
+export const printIr = (rows: TrackRow[], siteName?: string): void => {
+  if (rows.length) printHtml(buildIrHtml(rows, siteName), `ใบ IR ${rows.length} คัน ${fileStamp()}`)
+}
 /** Print the Delivery Note (DN) — one manifest for the selected VINs. */
 export const printDn = (rows: TrackRow[], groupOf?: (vin: string) => string): void => {
-  if (rows.length) printHtml(buildDnHtml(rows, groupOf))
+  if (rows.length) printHtml(buildDnHtml(rows, groupOf), `ใบ DN ${rows.length} คัน ${fileStamp()}`)
 }
 /** Print the IR paper overlay (data only) onto pre-printed IR forms. */
-export const printIrPaper = (rows: TrackRow[], siteName?: string): void => { if (rows.length) printHtml(buildIrPaperHtml(rows, siteName)) }
+export const printIrPaper = (rows: TrackRow[], siteName?: string): void => {
+  if (rows.length) printHtml(buildIrPaperHtml(rows, siteName), `กระดาษ IR ${rows.length} คัน ${fileStamp()}`)
+}
