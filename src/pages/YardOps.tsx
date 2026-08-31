@@ -1982,6 +1982,14 @@ function WalkView() {
         )
         const mismatch = [modelOk === 'NG' && 'รุ่นรถ', colorOk === 'NG' && 'สีรถ'].filter(Boolean) as string[]
         const verified = modelOk === 'OK' && colorOk === 'OK'
+        // ── which arrival lot did this car come on? ──
+        // The gate scans a VIN and gets a car, but the work is organised by lot
+        // ("BIG MOTOR SALE 23 U") — the operator has to know which group the car
+        // in front of them belongs to without going back to the lot list. Cars
+        // still waiting come first; a car with no lot says so, because that is
+        // the case the office has to fix.
+        const lots = queues.filter(q => isPreGateInQueue(q) && q.items.some(i => i.vin === trackRow.vin))
+        const lotName = (lots.find(q => q.items.some(i => i.vin === trackRow.vin && !gateInArrived(i))) ?? lots[0])?.name ?? null
         return (
           <div className="panel overflow-hidden fade-up">
             {/* ── row 1: status badge + VIN ── */}
@@ -1991,6 +1999,24 @@ function WalkView() {
                 {trackRow.cells['Car Status'] ?? 'Pre Gate-in'}
               </span>
               <span className="vin text-[13px] font-bold flex-1 min-w-0 truncate">{trackRow.vin}</span>
+            </div>
+
+            {/* ── row 1b: the arrival lot this car belongs to ── */}
+            <div className="mx-4 mb-3 flex items-center gap-2 rounded-2xl px-3.5 py-2"
+              style={lotName
+                ? { background: 'rgba(37,99,235,0.07)', border: '1px solid rgba(37,99,235,0.14)' }
+                : { background: 'var(--chip)', border: '1px solid transparent' }}>
+              <ClipboardList size={13} style={{ color: lotName ? '#2563eb' : 'var(--muted)', flexShrink: 0 }} />
+              <span className="text-[10.5px] shrink-0" style={{ color: 'var(--muted)' }}>คิวงาน</span>
+              <span className="text-[12.5px] font-bold flex-1 min-w-0 truncate"
+                style={{ color: lotName ? '#1d4ed8' : 'var(--muted)' }}>
+                {lotName ?? 'ยังไม่มีคิวงาน'}
+              </span>
+              {lots.length > 1 && (
+                <span className="badge shrink-0" style={{ fontSize: 10, background: 'rgba(37,99,235,0.12)', color: '#1d4ed8' }}>
+                  +{lots.length - 1}
+                </span>
+              )}
             </div>
 
             {/* ── row 2: car image LEFT + info RIGHT ── */}
