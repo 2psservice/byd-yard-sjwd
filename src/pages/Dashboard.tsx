@@ -9,7 +9,7 @@ import { deriveCarStatus, CAR_STATUS_META, CAR_STATUS_ORDER, PARKED_STATUSES, is
 import { rowInSite } from '../lib/siteScope'
 import { pct, pos, timeAgo } from '../lib/format'
 import { defectLabel } from '../lib/damageLabel'
-import { useOps, isPreGateInQueue, isQueueComplete, queueProgress } from '../store/useOps'
+import { useOps, isPreGateInQueue, isQueueComplete, queueProgress, gateInArrived } from '../store/useOps'
 import { PageHead, ProgressBar, Stat } from '../components/ui'
 import { YardSummary } from '../components/YardSummary'
 import { STATUS_META } from '../lib/format'
@@ -175,6 +175,7 @@ export function Dashboard() {
   const allTrackingRows = useTrackingRows()
   const opsQueues = useOps((st) => st.queues)
   const opsClosed = useOps((st) => st.closed) // admin-archived lots leave the card
+  const dismissedPreGateIn = useOps((st) => st.dismissed) // cars the gate took off the board
   const loadFromIdb = useTracking((st) => st.loadFromIdb)
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
   // per-yard separation: the whole dashboard reflects only the active site
@@ -282,13 +283,22 @@ export function Dashboard() {
     // cars waiting at the gate that no open lot covers — the same safety net the
     // station and the board keep, so the card can't show fewer waiting cars
     // than the Unit List does (see the "(รอ Gate-in · ยังไม่มีคิวงาน)" card there)
+    // A car is covered while its lot still has it OPEN, and "open" is read from
+    // the CAR'S OWN status (gateInArrived), never the item's tick flag. The flag
+    // is written by whichever device reconciles first and can be written back by
+    // another whose copy of the sheet is a minute behind: a stale tick on a car
+    // the sheet still calls Pre Gate-in made this card invent a lot — the board
+    // showed 3 lots and no loose cars while this card showed a 4th line reading
+    // "0/2". Same rule the Gate In/Out board and the gate station count by, so
+    // the three cannot disagree. Cars the gate took off the board by hand
+    // ("ไม่ได้มา") drop out here too, for the same reason.
     const covered = new Set<string>()
-    for (const q of mine) for (const i of q.items) if (!i.done) covered.add(i.vin)
+    for (const q of mine) for (const i of q.items) if (!gateInArrived(i)) covered.add(i.vin)
     const loose = trackingRows.filter(r =>
-      !covered.has(r.vin) && deriveCarStatus(r.cells) === 'Pre Gate-in').length
+      !covered.has(r.vin) && !dismissedPreGateIn[r.vin] && deriveCarStatus(r.cells) === 'Pre Gate-in').length
     if (loose) lots.push({ id: '__uncovered', name: '(รอ Gate-in · ยังไม่มีคิวงาน)', arrived: 0, total: loose })
     return lots.sort((a, b) => b.total - a.total)
-  }, [opsQueues, opsClosed, currentSite, trackingRows])
+  }, [opsQueues, opsClosed, currentSite, trackingRows, dismissedPreGateIn])
 
   const events = useMemo(() => {
     type Ev = { ts: number; vin: string; kind: string; text: string; color: string }
