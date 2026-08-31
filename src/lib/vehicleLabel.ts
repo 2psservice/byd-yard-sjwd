@@ -341,7 +341,7 @@ export function printVehicleLabels(rows: TrackRow[]): void {
     // one more frame so the last page is laid out, not just parsed
     requestAnimationFrame(() => requestAnimationFrame(() => {
       // the saved PDF is named after the PAGE's title, not this iframe's
-      borrowDocTitle(`ป้ายติดรถ ${rows.length} ใบ ${fileStamp()}`, win)
+      borrowDocTitle(`Vinlable ${rows.length} ใบ ${fileStamp()}`, win)
       try { win?.focus(); win?.print() } catch { /* noop */ }
       // last resort: never leak the iframe if no print event ever arrives
       setTimeout(drop, 10 * 60 * 1000)
