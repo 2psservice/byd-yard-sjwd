@@ -16,6 +16,7 @@ import { matchModel } from './lib/sampleData'
 import { isPhone } from './lib/device'
 import { Dashboard } from './pages/Dashboard'
 import { ImportPage } from './pages/ImportPage'
+import { useMasterDefect } from './store/useMasterDefect'
 import { Report } from './pages/Report'
 import { Report2ps } from './pages/Report2ps'
 import { GateIn } from './pages/GateIn'
@@ -119,6 +120,7 @@ export default function App() {
     // a brief beat; it also lifts as soon as trackingLoaded flips (local-first).
     loadFromSupabase().catch((e) => console.error('[App] background units load', e))
     useOps.getState().loadFromCloud().catch((e) => console.error('[App] ops queues load', e))
+    useMasterDefect.getState().loadFromCloud().catch((e) => console.error('[App] master defect list load', e))
     useYard.getState().loadPolicies().catch((e) => console.error('[App] parking policies load', e))
     const t = setTimeout(() => { if (!cancelled) setBooting(false) }, 600)
     return () => { cancelled = true; clearTimeout(t) }

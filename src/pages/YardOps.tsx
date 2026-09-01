@@ -21,7 +21,8 @@ import { LogoMark } from '../components/Logo'
 import { DrivingScreen } from '../components/DrivingScreen'
 import { LiveTrackingMap } from '../components/LiveTrackingMap'
 import { ALL_ZONES, zoneLabel } from '../components/CarDiagramMultiView'
-import { MASTER_PARTS, MASTER_DEFECTS, resolvePart, resolveDefect } from '../lib/masterDefect'
+import { resolvePart, resolveDefect } from '../lib/masterDefect'
+import { useMasterDefect, liveParts, liveDefects } from '../store/useMasterDefect'
 import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirst, REPAIR_STATUSES, canonRepairStatus } from '../lib/damageLabel'
 import { candidates } from '../lib/parkingEngine'
 import { slotToLatLng } from '../lib/geo'
@@ -126,8 +127,8 @@ function findSeqItem(vin: string | null, queues: WorkQueue[]): { queue: WorkQueu
 
 // ── damage config: bilingual master lists (Part + Defect) from the master Excel ──
 // Field staff type Thai (English shown alongside); we store BOTH languages.
-const POSITION_OPTS = MASTER_PARTS   // { id, en, th }
-const TYPES = MASTER_DEFECTS         // { id, en, th }
+// The master lists are admin-editable, so read them at USE time — a module-level
+// copy would freeze whatever the app booted with.
 
 // Repair-status ladder for a Defect — "ปลด" no longer deletes, it moves status.
 // Shared with the admin pickers (lib/damageLabel) so both stay in step.
@@ -1258,8 +1259,8 @@ const fmtDateTime = (ts: number) => {
 type DmgRow = { rid: string; area: string; detail: string; remark: string; severity: 'minor' | 'major'; photos: string[] }
 
 // Maps display text → stored ID (for known entries)
-const TYPE_TEXT_MAP = Object.fromEntries(TYPES.map(t => [t.th, t.id]))
-const AREA_TEXT_MAP = Object.fromEntries(POSITION_OPTS.map(p => [p.th, p.id]))
+const typeTextMap = () => Object.fromEntries(liveDefects().map((t) => [t.th, t.id]))
+const areaTextMap = () => Object.fromEntries(liveParts().map((p) => [p.th, p.id]))
 
 const mkRow = (): DmgRow => ({
   rid: `r${Date.now()}${Math.random().toString(36).slice(2)}`,
@@ -1361,6 +1362,8 @@ function DamageForm({ onSaveAll, onCancel, vin }: {
 }) {
   const { toast } = useYard()
   const [rows, setRows] = useState<DmgRow[]>([mkRow()])
+  const masterParts = useMasterDefect((s) => s.parts)
+  const masterDefects = useMasterDefect((s) => s.defects)
   const [busyRid, setBusyRid] = useState<string | null>(null)
   const [armed, setArmed] = useState<string | null>(null) // rid whose delete is armed (2-tap guard)
   // NG / HEAVY NG choice — NG is the default because that is what most defects
@@ -1461,9 +1464,9 @@ function DamageForm({ onSaveAll, onCancel, vin }: {
         {rows.map(row => (
           <div key={row.rid} className="space-y-1.5 pb-1.5 border-b hairline last:border-b-0">
             <div className="grid gap-1.5 items-start" style={{ gridTemplateColumns: '1fr 1fr 32px' }}>
-              <MasterCombo options={POSITION_OPTS} placeholder="ตำแหน่ง…"
+              <MasterCombo options={masterParts} placeholder="ตำแหน่ง…"
                 value={row.area} onChange={v => upd(row.rid, 'area', v)} />
-              <MasterCombo options={TYPES} placeholder="รายละเอียด…"
+              <MasterCombo options={masterDefects} placeholder="รายละเอียด…"
                 value={row.detail} onChange={v => upd(row.rid, 'detail', v)} />
 
               {/* delete guard: first tap arms (pencil → trash), second tap deletes */}
@@ -1570,6 +1573,8 @@ function DamageForm({ onSaveAll, onCancel, vin }: {
 // ── walk view ─────────────────────────────────────────────────────────────────
 function WalkView() {
   const units = useSiteUnits()
+  const masterParts = useMasterDefect((s) => s.parts)
+  const masterDefects = useMasterDefect((s) => s.defects)
   const allUnits = useUnits() // global (all sites) — for pulling a car's Defect list even if its unit lives in another site
   const { gateIn, importUnits, addDamage, updateDamage, markTrailerArrived, toast, currentUser } = useYard()
   const trackingRows = useSiteRows()
@@ -2250,11 +2255,11 @@ function WalkView() {
                     <div className="grid gap-1.5" style={{ gridTemplateColumns: '1fr 1fr' }}>
                       <div>
                         <div className="text-[10px] font-bold mb-1" style={{ color: 'var(--muted)' }}>Position</div>
-                        <MasterCombo options={POSITION_OPTS} placeholder="ตำแหน่ง…" value={editArea} onChange={setEditArea} />
+                        <MasterCombo options={masterParts} placeholder="ตำแหน่ง…" value={editArea} onChange={setEditArea} />
                       </div>
                       <div>
                         <div className="text-[10px] font-bold mb-1" style={{ color: 'var(--muted)' }}>Defect/NG</div>
-                        <MasterCombo options={TYPES} placeholder="รายละเอียด…" value={editDetail} onChange={setEditDetail} />
+                        <MasterCombo options={masterDefects} placeholder="รายละเอียด…" value={editDetail} onChange={setEditDetail} />
                       </div>
                     </div>
                     <div>

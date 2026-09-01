@@ -13,8 +13,9 @@ import { coInspectionAccepts, rowInSite, siteForRow } from '../lib/siteScope'
 import { deriveCarStatus, hasLeftGate } from '../lib/carStatus'
 import { pos, blockKeyOfTag, blockTag, resolveBlockByName } from '../lib/format'
 import { yardLocFull } from '../lib/groupingImport'
+import { MasterDefectAdmin } from '../components/MasterDefectAdmin'
 import type { Block, Unit } from '../types'
-import { PageHead } from '../components/ui'
+import { PageHead, cx } from '../components/ui'
 
 /** group key for a row's date — Pre Gate-in files date by "Gate In Date",
  *  transfer files by "moving date" (empty → "(ไม่ระบุ)") */
@@ -107,6 +108,7 @@ function buildLocPlan(
 }
 
 export function ImportPage() {
+  const [tab, setTab] = useState<'import' | 'master'>('import')
   const { loadSample, clearAll, toast, importDefects, updateLocations } = useYard()
   const blocksBySite = useYard((s) => s.blocksBySite)
   const sites = useYard((s) => s.sites)
@@ -382,9 +384,26 @@ export function ImportPage() {
 
   return (
     <div className="max-w-[1100px] mx-auto">
-      <PageHead title="นำเข้าข้อมูล" sub="อัปโหลดไฟล์ Excel (Vin list / Yard-to-Yard transfer) ที่มีคอลัมน์ Vin — ดาวน์โหลดเทมเพลตด้านขวาเพื่อดูคอลัมน์ที่รองรับ" />
+      <PageHead
+        title={tab === 'import' ? 'นำเข้าข้อมูล' : 'Master Defect List'}
+        sub={tab === 'import'
+          ? 'อัปโหลดไฟล์ Excel (Vin list / Yard-to-Yard transfer) ที่มีคอลัมน์ Vin — ดาวน์โหลดเทมเพลตด้านขวาเพื่อดูคอลัมน์ที่รองรับ'
+          : 'รายการ Part และ Defect สองภาษา ที่ทุกหน้าจอใช้เลือกตอนบันทึก Defect — แอดมินเพิ่ม/แก้ไขได้เอง'} />
 
-      <div className="grid lg:grid-cols-5 gap-4">
+      {/* two jobs, one page: bringing data IN, and the master lists that data
+          is recorded against */}
+      <div className="flex flex-wrap gap-1.5 mb-3">
+        {([['import', 'นำเข้าข้อมูล'], ['master', 'Master Defect List']] as const).map(([id, label], i) => (
+          <button key={id} onClick={() => setTab(id)}
+            className={cx('btn px-3 py-1.5 text-[12.5px]', tab === id && 'btn-primary')}>
+            {i + 1}. {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'master' && <MasterDefectAdmin />}
+
+      <div className={tab === 'import' ? 'grid lg:grid-cols-5 gap-4' : 'hidden'}>
         <div className="lg:col-span-3">
           {/* Pre Gate-in import (per-yard Vin List Inventory) */}
           <div className="panel overflow-hidden fade-up">
