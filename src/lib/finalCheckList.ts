@@ -92,3 +92,21 @@ export const FINAL_CHECK_TABS: CheckTab[] = [
     ],
   },
 ]
+
+/**
+ * A "Control Stock Sheet" tick is a STOCK COUNT, not a body defect.
+ *
+ * The station sheet writes every checklist NG as a damage so the record is
+ * kept, and this tab counts what shipped WITH the car — the owner's manual, the
+ * warranty book, the plate frame, the boot tray. A missing manual is something
+ * to chase, but it is not a defect on the car, and listing those ticks
+ * alongside รอยขีด / บุบ / สีพอง drowns the real findings.
+ *
+ * The records are NOT deleted — they stay on the car in its Event timeline as
+ * PDI history; they simply stop counting, and stop being listed, as defects.
+ * The tab label is read from the definition above so renaming the tab there can
+ * never silently un-filter them.
+ */
+const STOCK_SHEET_LABEL = FINAL_CHECK_TABS.find((t) => t.key === 'stock')?.label ?? 'Control Stock Sheet'
+export const isStockSheetEntry = (d: { item?: string }): boolean =>
+  (d.item ?? '').trim().startsWith(STOCK_SHEET_LABEL)
