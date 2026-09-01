@@ -71,8 +71,12 @@ export function MasterDefectAdmin() {
     toast('ok', 'คืนค่าเริ่มต้นแล้ว')
   }
 
-  const EditRow = ({ id }: { id?: string }) => (
-    <tr style={{ background: 'rgba(37,99,235,0.06)', borderTop: '2px solid var(--brand)' }}>
+  // A plain function, NOT a nested component: declaring a component inside the
+  // render body gives it a new identity on every keystroke, so React throws the
+  // row away and builds a new one — the caret jumps out of the Thai box and
+  // autoFocus drags it back to English, making it impossible to type a word.
+  const editRow = (id?: string) => (
+    <tr key={id ?? '__new__'} style={{ background: 'rgba(37,99,235,0.06)', borderTop: '2px solid var(--brand)' }}>
       <td className={cx(td, 'font-bold')} style={{ color: 'var(--brand)' }}>{id ? '' : 'ใหม่'}</td>
       <td className="px-1 py-1.5 border-r hairline">
         <input className="input w-full" autoFocus placeholder="English" value={form.en}
@@ -150,12 +154,12 @@ export function MasterDefectAdmin() {
             <th className={th} style={{ width: 96 }}></th>
           </tr></thead>
           <tbody className="divide-y" style={{ borderColor: 'var(--line)' }}>
-            {adding && <EditRow />}
+            {adding && editRow()}
             {shown.length === 0 && !adding && (
               <tr><td colSpan={4} className="text-center py-8" style={{ color: 'var(--faint)' }}>— ไม่พบรายการที่ค้นหา —</td></tr>
             )}
             {shown.map((e, i) =>
-              editingId === e.id ? <EditRow key={e.id} id={e.id} /> : (
+              editingId === e.id ? editRow(e.id) : (
                 <tr key={e.id}>
                   <td className={cx(td, 'tabular')} style={{ color: 'var(--faint)' }}>{i + 1}</td>
                   <td className={td}>{e.en || <span style={{ color: 'var(--faint)' }}>—</span>}</td>
