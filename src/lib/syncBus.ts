@@ -16,7 +16,7 @@
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase, isConfigured } from './supabase'
 
-export type SyncEvent = 'blocks' | 'ops' | 'trailers' | 'viewdefault' | 'policies' | 'moves' | 'status' | 'dmg'
+export type SyncEvent = 'blocks' | 'ops' | 'trailers' | 'viewdefault' | 'policies' | 'moves' | 'status' | 'dmg' | 'master'
 
 /** Defect data changed for these cars — receivers refetch JUST these VINs.
  *  Exists because a photo-bearing damage row is too big for the realtime row
@@ -44,7 +44,7 @@ type Handler = (payload: any) => void
 
 let channel: RealtimeChannel | null = null
 const handlers = new Map<SyncEvent, Handler[]>()
-const EVENTS: SyncEvent[] = ['blocks', 'ops', 'trailers', 'viewdefault', 'policies', 'moves', 'status', 'dmg']
+const EVENTS: SyncEvent[] = ['blocks', 'ops', 'trailers', 'viewdefault', 'policies', 'moves', 'status', 'dmg', 'master']
 
 /** Register a listener (module-scope, survives channel restarts). */
 export function onSync(event: SyncEvent, h: Handler): void {

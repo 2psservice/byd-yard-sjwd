@@ -14,7 +14,8 @@ import { useTracking } from '../store/useTracking'
 import { useOps, stampStationDate } from '../store/useOps'
 import { compressImage } from '../lib/photo'
 import { CAR_STATUS_META } from '../lib/carStatus'
-import { MASTER_PARTS, MASTER_DEFECTS, resolvePart, resolveDefect } from '../lib/masterDefect'
+import { resolvePart, resolveDefect } from '../lib/masterDefect'
+import { useMasterDefect } from '../store/useMasterDefect'
 import { checkItemId, type CheckItemState, type CheckTab } from '../lib/checkSheet'
 import { MeasurementField, TirePressureField, TIRE_WHEELS, joinTirePressure } from './MeasurementField'
 import { MasterCombo } from './MasterCombo'
@@ -57,6 +58,8 @@ export default function StationSheet({ unit, row, activeProc, onSaved, stationTi
   const { updateCell } = useTracking()
   const columns = useTracking(st => st.columns)
   const { recordCheck } = useOps()
+  const masterParts = useMasterDefect((s) => s.parts)
+  const masterDefects = useMasterDefect((s) => s.defects)
 
   const [meas, setMeas] = useState<Record<string, string>>({})
   const [tab, setTab] = useState(0)
@@ -373,9 +376,9 @@ export default function StationSheet({ unit, row, activeProc, onSaved, stationTi
                   </button>
                 </div>
                 {/* same tappable dropdowns as the Gate-in walk-around Defect form */}
-                <MasterCombo options={MASTER_PARTS} placeholder="ตำแหน่ง (Position)…"
+                <MasterCombo options={masterParts} placeholder="ตำแหน่ง (Position)…"
                   value={e.position} onChange={v => setNg(e.id, { position: v })} />
-                <MasterCombo options={MASTER_DEFECTS} placeholder="ข้อบกพร่อง (Defect)…"
+                <MasterCombo options={masterDefects} placeholder="ข้อบกพร่อง (Defect)…"
                   value={e.defect} onChange={v => setNg(e.id, { defect: v })} />
                 <input value={e.note} onChange={ev => setNg(e.id, { note: ev.target.value })} placeholder="หมายเหตุ…"
                   className="w-full rounded-lg px-2.5 py-2 text-[12.5px] outline-none" style={{ background: '#fff', border: '1px solid var(--line)' }} />

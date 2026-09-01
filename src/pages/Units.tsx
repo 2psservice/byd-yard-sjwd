@@ -23,7 +23,8 @@ import { matchVins, toFindListRows } from '../lib/findCar'
 import { rowInSite } from '../lib/siteScope'
 import { zoneLabel } from '../components/CarDiagramMultiView'
 import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirst, REPAIR_STATUSES, canonRepairStatus } from '../lib/damageLabel'
-import { resolvePart, resolveDefect, MASTER_PARTS, MASTER_DEFECTS } from '../lib/masterDefect'
+import { resolvePart, resolveDefect } from '../lib/masterDefect'
+import { useMasterDefect } from '../store/useMasterDefect'
 import { refreshUnitFocus } from '../lib/unitFocus'
 import { cx, PhotoLightbox } from '../components/ui'
 import { useQueues, queueTypeOf } from '../store/useOps'
@@ -921,6 +922,8 @@ function DField({ label, children }: { label: string; children: React.ReactNode 
 
 function BulkDefectModal({ vins, onClose, onDone }: { vins: string[]; onClose: () => void; onDone: () => void }) {
   const addManualDamageBulk = useYard((s) => s.addManualDamageBulk)
+  const masterParts = useMasterDefect((s) => s.parts)
+  const masterDefects = useMasterDefect((s) => s.defects)
   const allUnits = useYard((s) => s.units)
   const toast = useYard((s) => s.toast)
   const [form, setForm] = useState(BLANK_DMG_FORM)
@@ -944,8 +947,8 @@ function BulkDefectModal({ vins, onClose, onDone }: { vins: string[]; onClose: (
     const arr = (s: Set<string>) => [...s].sort((a, b) => a.localeCompare(b))
     return {
       position: arr(S.position), defect: arr(S.defect),
-      positionPairs: masterPairs(MASTER_PARTS, S.position),
-      defectPairs: masterPairs(MASTER_DEFECTS, S.defect),
+      positionPairs: masterPairs(masterParts, S.position),
+      defectPairs: masterPairs(masterDefects, S.defect),
       catNG: arr(S.catNG), catRepair: arr(S.catRepair), incharge: arr(S.incharge), note: arr(S.note),
     }
   }, [allUnits])
@@ -1665,6 +1668,8 @@ const TIMELINE_KEYS: [string, string][] = [
 ]
 
 function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
+  const masterParts = useMasterDefect((s) => s.parts)
+  const masterDefects = useMasterDefect((s) => s.defects)
   // Pull THIS car fresh from the cloud on open (damages + their photos). This
   // panel used to draw whatever copy the browser happened to hold, so a defect
   // photographed at a station showed its picture on the station's phone (that
@@ -1719,8 +1724,8 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
     const arr = (s: Set<string>) => [...s].sort((a, b) => a.localeCompare(b))
     return {
       position: arr(S.position), defect: arr(S.defect),
-      positionPairs: masterPairs(MASTER_PARTS, S.position),
-      defectPairs: masterPairs(MASTER_DEFECTS, S.defect),
+      positionPairs: masterPairs(masterParts, S.position),
+      defectPairs: masterPairs(masterDefects, S.defect),
       catNG: arr(S.catNG), catRepair: arr(S.catRepair), incharge: arr(S.incharge), note: arr(S.note),
     }
   }, [allUnits])
