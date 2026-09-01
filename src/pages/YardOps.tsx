@@ -444,12 +444,15 @@ const fmtCheckedAt = (ts?: number): string => {
   return `${p(d.getDate())}/${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
-/** ผู้ตรวจ + วันเวลา under the ตรวจแล้ว pill — who recorded the check and when. */
-function CheckedByLine({ by, at }: { by?: string; at?: number }) {
+/** ผู้ตรวจ + วันเวลา under the ตรวจแล้ว pill — who recorded the check and when.
+ *  `tone` keeps the name the same colour as the result above it: a green name
+ *  under a red NG badge reads as "fine" at a glance, which is the one thing
+ *  this line must not say. */
+function CheckedByLine({ by, at, tone = '#16a34a' }: { by?: string; at?: number; tone?: string }) {
   if (!by && !at) return null
   return (
     <div className="text-[10px] mt-0.5 clip" style={{ color: 'var(--muted)', maxWidth: 150 }}>
-      {by && <b style={{ color: '#16a34a' }}>{by}</b>}
+      {by && <b style={{ color: tone }}>{by}</b>}
       {by && at ? ' · ' : ''}
       {fmtCheckedAt(at)}
     </div>
@@ -3210,9 +3213,14 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
   const queueUnits = useMemo(() => units.filter(u => queueVins.has(u.vin)), [units, queueVins])
   const queueRows = useMemo(() => trackingRows.filter(r => queueVins.has(r.vin)), [trackingRows, queueVins])
   const selectedQueue = selectedQueueId ? queues.find(q => q.id === selectedQueueId) ?? null : null
+  // Every car in the queue — the ones still waiting AND the ones already
+  // inspected. The finished cars used to be filtered out, so a station reading
+  // "20/263" had no way to see WHICH 20 were done, let alone how they came out;
+  // the result is the whole point of the station's work, so it belongs on the
+  // same list, marked green for OK and red for NG.
   const queueCars = useMemo(() => {
     if (!selectedQueue) return []
-    return selectedQueue.items.filter(i => !i.done).map(i => {
+    return selectedQueue.items.map(i => {
       const u = units.find(x => x.vin === i.vin)
       const row = trackingRows.find(r => r.vin === i.vin)
       return {
@@ -3223,11 +3231,20 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
         location: yardLocCode(u) || '—',
         stage: stageOf(i),
         drivingBy: drivingNow(i),
+        // same rule the card's counter uses, so the list and "20/263" agree
+        done: i.done || stageOf(i) === 'checked',
+        // ผลตรวจของสถานี — undefined when the tick came from somewhere that
+        // never inspected the car (a gate-out closure, an imported file)
+        result: i.result,
         // ผู้ตรวจ + เวลา — recorded when the station saved OK/NG
         checkedBy: i.checkedBy ?? i.doneBy,
         checkedAt: i.checkedAt ?? i.doneAt,
       }
-    }).sort((a, b) => byYardLocation(a.location, b.location))
+    }).sort((a, b) =>
+      // ยังไม่ตรวจขึ้นก่อน (นั่นคืองานที่เหลือ) เรียงตามตำแหน่งในลาน
+      // ตรวจแล้วอยู่ล่าง เรียงจากคันที่เพิ่งตรวจล่าสุด
+      Number(a.done) - Number(b.done) ||
+      (a.done ? (b.checkedAt ?? 0) - (a.checkedAt ?? 0) : byYardLocation(a.location, b.location)))
   }, [selectedQueue, units, trackingRows])
 
   const unit = vin ? units.find(u => u.vin === vin) ?? null : null
@@ -3315,6 +3332,10 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
             // the station's own progress: counted at OK/NG, not at the driver's
             // return trip (which is a different person's job)
             const { done, total, remaining } = stationProgress(q)
+            // ผลตรวจของคันที่ทำไปแล้ว — เขียว OK / แดง NG อยู่บนหัวการ์ด
+            // หน้างานจะได้รู้ทันทีโดยไม่ต้องกางรายการ
+            const ng = q.items.filter(i => i.result === 'NG').length
+            const okCount = q.items.filter(i => i.result === 'OK').length
             const isOpen = q.id === selectedQueueId
             return (
               <div key={q.id} className="panel overflow-hidden">
@@ -3328,36 +3349,62 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
                       <span className="badge text-[9.5px] font-bold" style={{ background: `${accent}1a`, color: accent }}>{queueTypeOf(q)}</span>
                       {total === 0
                         ? <span style={{ color: '#d97706' }}>ยังไม่มีรถในคิว</span>
-                        : <span><b style={{ color: 'var(--text)' }}>{done}/{total}</b> คัน · เหลือ <b style={{ color: remaining > 0 ? '#d97706' : '#16a34a' }}>{remaining}</b></span>}
+                        : <>
+                          <span><b style={{ color: 'var(--text)' }}>{done}/{total}</b> คัน · เหลือ <b style={{ color: remaining > 0 ? '#d97706' : '#16a34a' }}>{remaining}</b></span>
+                          {done > 0 && <span>· OK <b style={{ color: '#16a34a' }}>{okCount}</b> · NG <b style={{ color: 'var(--st-damage)' }}>{ng}</b></span>}
+                        </>}
                     </div>
                   </div>
                   <ChevronLeft size={16} style={{ color: 'var(--muted)', transform: isOpen ? 'rotate(90deg)' : 'rotate(-90deg)', transition: 'transform .15s' }} />
                 </button>
-                {isOpen && (queueCars.length > 0 ? (
-                  <div className="border-t hairline max-h-[65vh] overflow-y-auto divide-y" style={{ borderColor: 'var(--line)' }}>
-                    {queueCars.map(item => (
-                      <button key={item.vin} onClick={() => { setVin(item.vin); setJustOk(false) }}
-                        className="flex items-center gap-3 px-4 py-2.5 w-full text-left transition active:bg-chip">
-                        <div className="flex-1 min-w-0">
-                          <div className="vin text-[12.5px] font-bold clip">{item.vin}</div>
-                          <div className="text-[11px] mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5" style={{ color: 'var(--muted)' }}>
-                            <span>{item.model}</span><span>· {item.color}</span><span>· {item.grouping}</span>
-                          </div>
-                        </div>
-                        <div className="text-right shrink-0">
-                          <div className="tabular text-[12px] font-bold">{item.location}</div>
-                          <StagePill stage={item.stage} drivingBy={item.drivingBy} atStation="พร้อมตรวจ" />
-                          {item.stage === 'checked' && <CheckedByLine by={item.checkedBy} at={item.checkedAt} />}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                ) : total === 0 ? (
+                {isOpen && (queueCars.length === 0 ? (
                   <div className="px-4 py-3 border-t hairline text-[12px] font-semibold" style={{ color: '#d97706' }}>
                     ยังไม่มีรถในคิวนี้ — เพิ่มรถได้ที่หน้า Operation (คิวงาน)
                   </div>
                 ) : (
-                  <div className="px-4 py-3 border-t hairline text-[12px] font-semibold" style={{ color: '#16a34a' }}>✓ เสร็จครบแล้ว!</div>
+                  <div className="border-t hairline max-h-[65vh] overflow-y-auto divide-y" style={{ borderColor: 'var(--line)' }}>
+                    {remaining === 0 && (
+                      <div className="px-4 py-2.5 text-[12px] font-semibold" style={{ color: '#16a34a' }}>✓ เสร็จครบแล้ว!</div>
+                    )}
+                    {queueCars.map((item, idx) => (
+                      <div key={item.vin}>
+                        {/* เส้นคั่นก่อนคันแรกที่ตรวจแล้ว — ด้านบนคือ "งานที่เหลือ" */}
+                        {item.done && !queueCars[idx - 1]?.done && (
+                          <div className="px-4 py-1.5 text-[10.5px] font-bold uppercase tracking-wider"
+                            style={{ background: 'var(--chip)', color: 'var(--muted)' }}>
+                            ตรวจแล้ว {done} คัน
+                          </div>
+                        )}
+                        <button onClick={() => { setVin(item.vin); setJustOk(false) }}
+                          className="flex items-center gap-3 px-4 py-2.5 w-full text-left transition active:bg-chip"
+                          style={item.done ? { opacity: 0.72 } : undefined}>
+                          <div className="flex-1 min-w-0">
+                            <div className="vin text-[12.5px] font-bold clip">{item.vin}</div>
+                            <div className="text-[11px] mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5" style={{ color: 'var(--muted)' }}>
+                              <span>{item.model}</span><span>· {item.color}</span><span>· {item.grouping}</span>
+                            </div>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <div className="tabular text-[12px] font-bold">{item.location}</div>
+                            {item.done ? (
+                              <span className="badge mt-0.5 inline-block font-bold" style={{ fontSize: 10, ...(item.result === 'NG'
+                                ? { background: 'rgba(255,59,48,0.12)', color: 'var(--st-damage)' }
+                                : item.result === 'OK'
+                                  ? { background: 'rgba(22,163,74,0.12)', color: '#16a34a' }
+                                  // ติ๊กแล้วแต่ไม่มีผลตรวจ (ปิดจากทางอื่น) — บอกตามจริง
+                                  : { background: 'var(--chip)', color: 'var(--muted)' }) }}>
+                                {item.result ?? 'เสร็จแล้ว'}
+                              </span>
+                            ) : (
+                              <StagePill stage={item.stage} drivingBy={item.drivingBy} atStation="พร้อมตรวจ" />
+                            )}
+                            {item.done && <CheckedByLine by={item.checkedBy} at={item.checkedAt}
+                              tone={item.result === 'NG' ? 'var(--st-damage)' : item.result === 'OK' ? '#16a34a' : 'var(--muted)'} />}
+                          </div>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 ))}
               </div>
             )
