@@ -733,23 +733,6 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
                         <ListChecks size={13} />
                       </button>
                     )}
-                    {/* a lot carrying BOTH cars already in the yard and cars still
-                        expected reads "249/291 · รอ 42" — mid-round that is the
-                        right number, but on a lot reused for a second round the
-                        gate has to read past 249 parked cars to find the 42 that
-                        matter. One tap leaves just the cars still to come. */}
-                    {!isClosed(q.id) && q.id !== '__uncovered_pregatein' && done > 0 && pending.length > 0 && (
-                      <button className="btn btn-ghost px-2 py-1" style={{ color: 'var(--muted)' }}
-                        title={`เอา ${done} คันที่เข้าลานแล้วออกจากล็อตนี้ — เหลือแค่ ${pending.length} คันที่ยังรอ Gate-in`}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          if (!window.confirm(`เอารถ ${done} คันที่เข้าลานแล้วออกจากล็อต "${q.name}"?\n\n· เหลือเฉพาะ ${pending.length} คันที่ยังรอ Gate-in — หน้างานจะได้ไม่สับสน\n· ข้อมูลรถไม่หาย ยังอยู่ครบใน Unit List ตามเดิม`)) return
-                          const n = dropArrivedFromLot(q.id)
-                          toast('ok', `เอารถที่เข้าลานแล้ว ${n.toLocaleString()} คันออกจากล็อตแล้ว · เหลือ ${pending.length} คัน`)
-                        }}>
-                        <Eraser size={13} />
-                      </button>
-                    )}
                     {q.id !== '__uncovered_pregatein' && (
                       isClosed(q.id) ? (
                         <button className="btn btn-ghost px-2 py-1 text-[11px]" style={{ color: '#16a34a' }}
@@ -782,6 +765,31 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
                   onClick={() => setOpenId(open ? null : q.id)}>
                   <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: complete ? '#22c55e' : 'var(--brand)' }} />
                 </button>
+                {/* A lot holding BOTH cars already in the yard and cars still
+                    expected reads "249/291 · รอ 42". Mid-round that is the number
+                    the gate wants; on a lot reused for a second round the 249 are
+                    last round's, long parked, and the gate has to read past them
+                    to find the 42 that matter. Only the office knows which it is,
+                    so this offers the cleanup instead of doing it — but it says
+                    so in words on the card, because a bare icon among the other
+                    icons is exactly what a busy gate misses. */}
+                {!isClosed(q.id) && q.id !== '__uncovered_pregatein' && done > 0 && pending.length > 0 && (
+                  <button className="mt-2 w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition active:scale-[0.99]"
+                    style={{ background: 'rgba(217,119,6,0.09)', border: '1px solid rgba(217,119,6,0.25)' }}
+                    title={`เอา ${done} คันที่เข้าลานแล้วออกจากล็อตนี้ — เหลือแค่ ${pending.length} คันที่ยังรอ Gate-in`}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (!window.confirm(`เอารถ ${done.toLocaleString()} คันที่เข้าลานแล้วออกจากล็อต "${q.name}"?\n\n· เหลือเฉพาะ ${pending.length.toLocaleString()} คันที่ยังรอ Gate-in — หน้างานจะได้ไม่สับสน\n· ข้อมูลรถไม่หาย ยังอยู่ครบใน Unit List ตามเดิม`)) return
+                      const n = dropArrivedFromLot(q.id)
+                      toast('ok', `เอารถที่เข้าลานแล้ว ${n.toLocaleString()} คันออกจากล็อตแล้ว · เหลือ ${pending.length.toLocaleString()} คัน`)
+                    }}>
+                    <Eraser size={14} className="shrink-0" style={{ color: '#d97706' }} />
+                    <span className="text-[11.5px] leading-snug" style={{ color: '#854d0e' }}>
+                      ล็อตนี้เข้ามาแค่ <b>{pending.length.toLocaleString()}</b> คันใช่ไหม? —
+                      กดเพื่อเอา <b>{done.toLocaleString()}</b> คันที่เข้าลานไปแล้วออก เหลือ <b>0/{pending.length.toLocaleString()}</b>
+                    </span>
+                  </button>
+                )}
               </div>
               {open && (
                 <div className="border-t hairline max-h-[320px] overflow-y-auto divide-y">
