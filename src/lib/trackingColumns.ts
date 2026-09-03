@@ -52,6 +52,12 @@ export const VIN_PHOTO_CELL = 'Vin Photo'
 /** The 15 PM date columns, in order (PM1 … PM15). */
 export const PM_KEYS = Array.from({ length: 15 }, (_, i) => `PM${i + 1}`)
 
+/** The 9 PDI date columns, in order — the first PDI, then 8 re-inspection
+ *  rounds (a car sent back after a defect gets re-checked, same as a PM
+ *  round). Exact key spelling ("RE PDI  Date #1", two spaces) matches the
+ *  sheet column already defined in the table below. */
+export const PDI_KEYS = ['PDI', ...Array.from({ length: 8 }, (_, i) => `RE PDI  Date #${i + 1}`)]
+
 const _MONTHS: Record<string, number> = {
   jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
   jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
