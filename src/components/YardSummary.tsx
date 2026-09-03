@@ -47,13 +47,16 @@ function Pivot({ rows, cellKey, presetKey, title, caption, icon }: {
       byValue.set(value, (byValue.get(value) ?? 0) + 1)
       colTotals.set(value, (colTotals.get(value) ?? 0) + 1)
     }
-    // busiest columns / models first; the blank bucket always last
+    // busiest columns first (Final Status / Vin Of Status: a handful of
+    // values, ranking them shows what's piling up); the blank bucket always
+    // last. Models sort A→Z instead — a fixed alphabet a reader can scan by
+    // name, not one that reshuffles as counts change day to day.
     const cols = [...colTotals.entries()]
       .sort((a, b) => (a[0] === EMPTY_COL ? 1 : b[0] === EMPTY_COL ? -1 : b[1] - a[1]))
       .map(([k]) => k)
     const models = [...matrix.entries()]
       .map(([model, byValue]) => ({ model, byValue, total: [...byValue.values()].reduce((n, v) => n + v, 0) }))
-      .sort((a, b) => b.total - a.total)
+      .sort((a, b) => a.model.localeCompare(b.model))
     return { cols, models, colTotals, grand: models.reduce((n, m) => n + m.total, 0) }
   }, [rows, cellKey])
 
