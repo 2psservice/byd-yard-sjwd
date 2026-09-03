@@ -11,7 +11,7 @@
  * these boards: a number here can never disagree with the Operation report,
  * because they are one calculation, not two.
  */
-import { Fragment, useMemo } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useYard, useUnits } from '../store/useYard'
 import { useTrackingRows } from '../store/useTracking'
 import { useOps } from '../store/useOps'
@@ -19,6 +19,7 @@ import { rowInSite } from '../lib/siteScope'
 import { cx } from './ui'
 import { dayKeyOf } from '../pages/Grouping'
 import { buildList, buildDefects, buildTimeMatrix, dayKeyOfTs, type ReportCtx, type TimeMatrix } from '../lib/opsReport'
+import * as db from '../lib/db'
 
 export type StationKind = 'PDI' | 'PM'
 export type StationTab = 'list' | 'defect' | 'time'
@@ -35,10 +36,52 @@ const MODEL_COLORS = [
 ]
 const mcell = 'px-2 py-1 border hairline'
 
+/** The office's free-text note for one shift card — one row in `app_config`,
+ *  keyed by station + site + day so it never bleeds into another day's card.
+ *  Shared across devices (same store the yard capacity number uses); loads on
+ *  mount and saves on blur, same pattern as the Report page's "Max Cap." box. */
+function RemarkBox({ configId }: { configId: string }) {
+  const toast = useYard((s) => s.toast)
+  const [text, setText] = useState('')
+  const [saved, setSaved] = useState<string | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    setSaved(null)
+    setText('')
+    db.fetchAppConfig<{ text?: string }>(configId)
+      .then((v) => { if (!alive) return; const t = v?.text ?? ''; setText(t); setSaved(t) })
+      .catch((e) => { console.error('[stationRemark] load', e); if (alive) setSaved('') })
+    return () => { alive = false }
+  }, [configId])
+
+  const commit = () => {
+    if (saved === null || text === saved) return
+    const value = text
+    db.saveAppConfig(configId, { text: value, updatedAt: Date.now() })
+      .then(() => setSaved(value))
+      .catch(() => toast('err', 'บันทึก Remark ไม่สำเร็จ ลองใหม่อีกครั้ง'))
+  }
+
+  return (
+    <textarea
+      value={text}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={commit}
+      disabled={saved === null}
+      placeholder={saved === null ? 'กำลังโหลด…' : 'พิมพ์ Remark ที่นี่…'}
+      rows={2}
+      className="w-full bg-transparent outline-none resize-none text-[11.5px]"
+      style={{ fontFamily: 'inherit', color: 'var(--text)' }}
+    />
+  )
+}
+
 /** One P1–P5 shift card: per-model Actual/OK rows with a PDI/OK total box
- *  beside each, a shared Remark line, a Total PDI/Total OK footer, and a
- *  GRAND TOTAL mini-table of this month's OK count per model. */
-function TimeMatrixCard({ matrix, dayLabel }: { matrix: TimeMatrix; dayLabel: string }) {
+ *  beside each, a shared Remark line + a free-text Remark box, a Total
+ *  PDI/Total OK footer, and a GRAND TOTAL mini-table of this month's OK count
+ *  per model. */
+function TimeMatrixCard({ matrix, dayLabel, remarkId }: { matrix: TimeMatrix; dayLabel: string; remarkId: string }) {
   const dayModels = matrix.models.filter((m) => m.total > 0)
   const mtdModels = matrix.models.filter((m) => (matrix.mtdOkByModel.get(m.name) ?? 0) > 0)
   const mtdTotal = mtdModels.reduce((n, m) => n + (matrix.mtdOkByModel.get(m.name) ?? 0), 0)
@@ -84,6 +127,13 @@ function TimeMatrixCard({ matrix, dayLabel }: { matrix: TimeMatrix; dayLabel: st
           <tr>
             <td colSpan={9} className={cx(mcell, 'text-left')} style={{ background: 'var(--chip)' }}>
               <b>Remark</b> — P1 : Start 08:30 น. · P5 : Finish 00:00 น.
+            </td>
+          </tr>
+          <tr>
+            <td colSpan={9} className={cx(mcell, 'text-left')} style={{ padding: 0 }}>
+              <div className="px-2 py-1">
+                <RemarkBox configId={remarkId} />
+              </div>
             </td>
           </tr>
           <tr style={{ background: 'rgba(250,204,21,0.35)' }}>
@@ -167,10 +217,13 @@ export function useStationCtx(day: string | 'all') {
 
 export function StationTables({ ctx, tab, kind }: { ctx: ReportCtx; tab: StationTab; kind: StationKind }) {
   const id = kind === 'PDI' ? 'pdi' : 'pm'
+  const currentSite = useYard((s) => s.currentSite)
   const listRows = useMemo(() => (tab === 'list' ? buildList(ctx, id) : []), [ctx, tab, id])
   const defRows = useMemo(() => (tab === 'defect' ? buildDefects(ctx, `${id}defect` as 'pdidefect' | 'pmdefect') : []), [ctx, tab, id])
   const matrix = useMemo(() => (tab === 'time' ? buildTimeMatrix(ctx, `${id}time` as 'pditime' | 'pmtime') : null), [ctx, tab, id])
   const dayLabel = ctx.day.split('-').reverse().join('/')
+  // one saved note per station + site + day — never bleeds into another day's card
+  const remarkId = `stationRemark:${id}:${currentSite ?? 'all'}:${ctx.day}`
 
   return (
     <>
@@ -254,7 +307,7 @@ export function StationTables({ ctx, tab, kind }: { ctx: ReportCtx; tab: Station
         <div className="panel overflow-hidden">
           <div className="overflow-x-auto">
             <div className="p-3" style={{ background: 'var(--app-bg)' }}>
-              <TimeMatrixCard matrix={matrix} dayLabel={dayLabel} />
+              <TimeMatrixCard matrix={matrix} dayLabel={dayLabel} remarkId={remarkId} />
             </div>
           </div>
         </div>
