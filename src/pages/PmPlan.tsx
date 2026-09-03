@@ -179,28 +179,57 @@ export function PmPlan() {
 
     // Actual: PMs REALLY recorded on each day of this month (PM1…PM15 cells).
     // Counted across every in-scope row regardless of allocation — work that
-    // was done is work that was done.
+    // was done is work that was done. actualVins mirrors the counts so the
+    // footer's numbers can open the same Unit-List filter the grid's own
+    // day cells already do — a manager reading "Actual 7" wants those 7 VINs,
+    // not just the number.
     const actual = new Array(daysInMonth + 1).fill(0)
+    const actualVins: string[][] = Array.from({ length: daysInMonth + 1 }, () => [])
     for (const row of rows) {
       const c = row.cells
       const siteId = row.site ?? siteIdForLocation(c, sites) ?? null
       if (!inScope(siteId)) continue
       for (const k of PM_KEYS) {
         const t = parseCellDate(c[k])
-        if (t != null && t >= monthStart && t <= monthEnd) actual[new Date(t).getDate()]++
+        if (t != null && t >= monthStart && t <= monthEnd) { const d = new Date(t).getDate(); actual[d]++; actualVins[d].push(row.vin) }
       }
     }
-    return { modelRows, actual }
+    return { modelRows, actual, actualVins }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [triage, rows, sites, year, month, daysInMonth, siteSel])
 
-  const colTotals = useMemo(() => {
+  // Total row's own per-day VIN lists — the union of every model row's due
+  // cars that day, so the footer's Total cell opens the same list its column
+  // of model rows sums to (not the model, the whole day).
+  const { colTotals, totalDayVins } = useMemo(() => {
     const t = new Array(daysInMonth + 1).fill(0)
-    for (const r of plan.modelRows) for (let d = 1; d <= daysInMonth; d++) t[d] += r.cells[d]
-    return t
+    const v: string[][] = Array.from({ length: daysInMonth + 1 }, () => [])
+    for (const r of plan.modelRows) for (let d = 1; d <= daysInMonth; d++) { t[d] += r.cells[d]; if (r.dayVins[d].length) v[d].push(...r.dayVins[d]) }
+    return { colTotals: t, totalDayVins: v }
   }, [plan.modelRows, daysInMonth])
   const grand = plan.modelRows.reduce((a, r) => a + r.sum, 0)
   const actualSum = plan.actual.reduce((a: number, b: number) => a + b, 0)
+
+  // month-wide VIN sets for the footer's rightmost "Total" cell of each row —
+  // deduped, since a 30-day cadence can land a car on two different days
+  // within one month while the day cells (and the numbers above) count both
+  const dedupe = (lists: string[][]) => { const s = new Set<string>(); for (const l of lists) for (const v of l) s.add(v); return [...s] }
+  const grandVins = useMemo(() => dedupe(totalDayVins), [totalDayVins])
+  const actualMonthVins = useMemo(() => dedupe(plan.actualVins), [plan.actualVins])
+
+  // Diff = Plan − Actual, so its cars are a set difference, not a count of
+  // its own: positive means cars due that day with no PM recorded yet
+  // (ค้าง — still pending), negative means PMs recorded that day for cars
+  // not actually due (ทำเกินแผน — ahead of schedule / catch-up work).
+  const diffVins = useMemo(() => Array.from({ length: daysInMonth + 1 }, (_, d) => {
+    if (d === 0) return { pending: [] as string[], extra: [] as string[] }
+    const due = new Set(totalDayVins[d]), done = new Set(plan.actualVins[d])
+    return { pending: [...due].filter((v) => !done.has(v)), extra: [...done].filter((v) => !due.has(v)) }
+  }), [totalDayVins, plan.actualVins, daysInMonth])
+  const diffMonthVins = useMemo(() => ({
+    pending: dedupe(diffVins.map((x) => x.pending)),
+    extra: dedupe(diffVins.map((x) => x.extra)),
+  }), [diffVins])
 
   // ── tab 2: the per-VIN PM Status register ─────────────────────────────────
   const status = useMemo(() => {
@@ -263,14 +292,18 @@ export function PmPlan() {
   const days = Array.from({ length: daysInMonth }, (_, i) => i + 1)
   const isSunday = (d: number) => new Date(year, month - 1, d).getDay() === 0
 
-  // click a day-cell → open the Unit List filtered to exactly those cars
-  const openCell = (label: string, day: number, vins: string[]) => {
+  // click a number anywhere on this grid → open the Unit List filtered to
+  // exactly the cars behind it. Shared by the model rows AND the footer's
+  // Total / Actual / Diff — a manager reading any of these numbers wants the
+  // cars, not just the count.
+  const openVins = (label: string, vins: string[]) => {
     if (!vins.length) return
     if (siteSel !== 'all' && siteSel !== currentSite) setCurrentSite(siteSel) // Unit List is per-yard
     setView('units')
-    setUnitVinFilter({ label: `PM ${label} ${day}/${month}`, vins })
-    toast('ok', `กรอง ${vins.length} คัน — PM ${label} วันที่ ${day}`)
+    setUnitVinFilter({ label, vins })
+    toast('ok', `กรอง ${vins.length} คัน — ${label}`)
   }
+  const openCell = (label: string, day: number, vins: string[]) => openVins(`PM ${label} ${day}/${month}`, vins)
 
   const sendLine = () => {
     const lines = [
@@ -417,39 +450,83 @@ export function PmPlan() {
                       <td className="px-3 py-2 text-center font-black" style={{ color: 'var(--brand)', background: 'var(--brand-soft, #eef4ff)', borderBottom: '1px solid var(--line)' }}>{r.sum.toLocaleString()}</td>
                     </tr>
                   ))}
-                  {/* the sheet's three footer rows: Total (plan) · Actual · Diff */}
+                  {/* the sheet's three footer rows: Total (plan) · Actual · Diff —
+                      every number here opens the same Unit-List filter the
+                      model-row cells above already do, so a manager reading
+                      "Total 44" or "Diff. 7" gets straight to those cars
+                      instead of having to hunt them down row by row. */}
                   <tr style={{ background: 'var(--chip)' }}>
                     <td className="sticky left-0 z-10 px-3 py-2.5 font-black whitespace-nowrap" style={{ background: 'var(--chip)', color: 'var(--text)' }}>Total</td>
                     <td />
                     {days.map((d) => (
-                      <td key={d} className="px-1.5 py-2.5 text-center font-bold" style={{ color: numColor(colTotals[d], d), background: colBg(d), ...(d === todayDay ? { boxShadow: 'inset 0 0 0 2px #10b981' } : {}) }}>
+                      <td key={d} onClick={() => openVins(`PM Total ${d}/${month}`, totalDayVins[d])}
+                        className="px-1.5 py-2.5 text-center font-bold transition-colors"
+                        title={colTotals[d] ? `คลิกเพื่อดู ${colTotals[d]} คัน` : undefined}
+                        style={{ color: numColor(colTotals[d], d), background: colBg(d), cursor: colTotals[d] ? 'pointer' : 'default', ...(d === todayDay ? { boxShadow: 'inset 0 0 0 2px #10b981' } : {}) }}
+                        onMouseEnter={(e) => { if (colTotals[d]) e.currentTarget.style.background = 'rgba(37,99,235,0.12)' }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = colBg(d) ?? '' }}>
                         {colTotals[d]}
                       </td>
                     ))}
-                    <td className="px-3 py-2.5 text-center font-black text-white" style={{ background: 'var(--brand)' }}>{grand.toLocaleString()}</td>
+                    <td onClick={() => openVins(`PM Total ${thMonth}`, grandVins)}
+                      className="px-3 py-2.5 text-center font-black text-white transition-colors"
+                      title={grandVins.length ? `คลิกเพื่อดู ${grandVins.length} คัน` : undefined}
+                      style={{ background: 'var(--brand)', cursor: grandVins.length ? 'pointer' : 'default' }}>
+                      {grand.toLocaleString()}
+                    </td>
                   </tr>
                   <tr style={{ background: 'rgba(22,163,74,0.07)' }}>
                     <td className="sticky left-0 z-10 px-3 py-2.5 font-black whitespace-nowrap" style={{ background: 'rgba(22,163,74,0.10)', color: '#15803d' }}>Actual</td>
                     <td />
                     {days.map((d) => (
-                      <td key={d} className="px-1.5 py-2.5 text-center font-bold" style={{ color: plan.actual[d] ? '#15803d' : 'var(--faint)', background: colBg(d) }}>
+                      <td key={d} onClick={() => openVins(`PM Actual ${d}/${month}`, plan.actualVins[d])}
+                        className="px-1.5 py-2.5 text-center font-bold transition-colors"
+                        title={plan.actual[d] ? `คลิกเพื่อดู ${plan.actual[d]} คัน` : undefined}
+                        style={{ color: plan.actual[d] ? '#15803d' : 'var(--faint)', background: colBg(d), cursor: plan.actual[d] ? 'pointer' : 'default' }}
+                        onMouseEnter={(e) => { if (plan.actual[d]) e.currentTarget.style.background = 'rgba(37,99,235,0.12)' }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = colBg(d) ?? '' }}>
                         {plan.actual[d]}
                       </td>
                     ))}
-                    <td className="px-3 py-2.5 text-center font-black text-white" style={{ background: '#16a34a' }}>{actualSum.toLocaleString()}</td>
+                    <td onClick={() => openVins(`PM Actual ${thMonth}`, actualMonthVins)}
+                      className="px-3 py-2.5 text-center font-black text-white transition-colors"
+                      title={actualMonthVins.length ? `คลิกเพื่อดู ${actualMonthVins.length} คัน` : undefined}
+                      style={{ background: '#16a34a', cursor: actualMonthVins.length ? 'pointer' : 'default' }}>
+                      {actualSum.toLocaleString()}
+                    </td>
                   </tr>
                   <tr style={{ background: 'rgba(234,88,12,0.06)' }}>
                     <td className="sticky left-0 z-10 px-3 py-2.5 font-black whitespace-nowrap" style={{ background: 'rgba(234,88,12,0.10)', color: '#c2410c' }}>Diff.</td>
                     <td />
                     {days.map((d) => {
                       const diff = colTotals[d] - plan.actual[d]
+                      const dv = diffVins[d]
+                      const label = diff > 0 ? `PM ค้าง ${d}/${month}` : `PM ทำเกินแผน ${d}/${month}`
+                      const vins = diff > 0 ? dv.pending : diff < 0 ? dv.extra : []
                       return (
-                        <td key={d} className="px-1.5 py-2.5 text-center font-bold" style={{ color: diff > 0 ? '#c2410c' : diff < 0 ? '#15803d' : 'var(--faint)', background: colBg(d) }}>
+                        <td key={d} onClick={() => openVins(label, vins)}
+                          className="px-1.5 py-2.5 text-center font-bold transition-colors"
+                          title={vins.length ? `คลิกเพื่อดู ${vins.length} คัน — ${diff > 0 ? 'ค้าง PM' : 'ทำเกินแผน'}` : undefined}
+                          style={{ color: diff > 0 ? '#c2410c' : diff < 0 ? '#15803d' : 'var(--faint)', background: colBg(d), cursor: vins.length ? 'pointer' : 'default' }}
+                          onMouseEnter={(e) => { if (vins.length) e.currentTarget.style.background = 'rgba(37,99,235,0.12)' }}
+                          onMouseLeave={(e) => { e.currentTarget.style.background = colBg(d) ?? '' }}>
                           {diff}
                         </td>
                       )
                     })}
-                    <td className="px-3 py-2.5 text-center font-black text-white" style={{ background: '#ea580c' }}>{(grand - actualSum).toLocaleString()}</td>
+                    {(() => {
+                      const diffGrand = grand - actualSum
+                      const vins = diffGrand > 0 ? diffMonthVins.pending : diffGrand < 0 ? diffMonthVins.extra : []
+                      const label = diffGrand > 0 ? `PM ค้าง ${thMonth}` : `PM ทำเกินแผน ${thMonth}`
+                      return (
+                        <td onClick={() => openVins(label, vins)}
+                          className="px-3 py-2.5 text-center font-black text-white transition-colors"
+                          title={vins.length ? `คลิกเพื่อดู ${vins.length} คัน` : undefined}
+                          style={{ background: '#ea580c', cursor: vins.length ? 'pointer' : 'default' }}>
+                          {diffGrand.toLocaleString()}
+                        </td>
+                      )
+                    })()}
                   </tr>
                 </tbody>
               </table>
