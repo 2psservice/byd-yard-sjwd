@@ -18,7 +18,7 @@ import { useOps } from '../store/useOps'
 import { rowInSite } from '../lib/siteScope'
 import { cx } from './ui'
 import { dayKeyOf } from '../pages/Grouping'
-import { buildList, buildDefects, buildTimeMatrix, dayKeyOfTs, type ReportCtx, type TimeMatrix } from '../lib/opsReport'
+import { TIME_PERIODS, buildList, buildDefects, buildTimeMatrix, dayKeyOfTs, type ReportCtx, type TimeMatrix } from '../lib/opsReport'
 import * as db from '../lib/db'
 
 export type StationKind = 'PDI' | 'PM'
@@ -94,12 +94,17 @@ function TimeMatrixCard({ matrix, dayLabel, remarkId }: { matrix: TimeMatrix; da
       <table className="w-full text-[11.5px] text-center" style={{ borderCollapse: 'collapse' }}>
         <thead>
           <tr style={{ background: 'var(--chip)' }}>
-            <th className={cx(mcell, 'font-bold')} colSpan={2}>Model</th>
+            <th className={cx(mcell, 'font-bold')} colSpan={2} rowSpan={2}>Model</th>
             {['P1', 'P2', 'P3', 'P4', 'P5'].map((p) => (
               <th key={p} className={cx(mcell, 'font-bold')} style={{ color: '#2563eb' }}>{p}</th>
             ))}
-            <th className={cx(mcell, 'font-bold')}>PDI</th>
-            <th className={cx(mcell, 'font-bold')}>OK</th>
+            <th className={cx(mcell, 'font-bold')} rowSpan={2}>PDI</th>
+            <th className={cx(mcell, 'font-bold')} rowSpan={2}>OK</th>
+          </tr>
+          <tr style={{ background: 'var(--chip)' }}>
+            {TIME_PERIODS.map((t) => (
+              <th key={t} className={cx(mcell, 'font-medium')} style={{ color: 'var(--muted)', fontSize: 10 }}>{t}</th>
+            ))}
           </tr>
         </thead>
         <tbody>
