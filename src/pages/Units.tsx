@@ -889,7 +889,7 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
                 onContextMenu={(e) => onContextMenu(e, r.vin, idx)}>
                 <div className="gcell" style={{ width: GUTTER }} />
                 {visCols.map((c) => (
-                  <Cell key={c.key} col={c} value={c.key === 'Car Status' ? carStatus : c.key === 'No' ? fmtUpdated(r.updatedAt) : c.key === LOCATION_KEY ? locFor(r) : c.key === 'Aging PM' ? fmtAgingPm(r.cells) : c.key === 'storage Yard' ? cleanStorage(r.cells[c.key]) : isDateColumn(c.key, c.label) ? fmtSerialToDate(r.cells[c.key]) : (r.cells[c.key] ?? '')}
+                  <Cell key={c.key} col={c} value={c.key === 'Car Status' ? carStatus : c.key === 'No' ? fmtUpdated(r.updatedAt) : c.key === LOCATION_KEY ? locFor(r) : c.key === 'Aging PM' ? fmtAgingPm(r.cells) : c.key === 'storage Yard' ? fmtStorage(r.cells) : isDateColumn(c.key, c.label) ? fmtSerialToDate(r.cells[c.key]) : (r.cells[c.key] ?? '')}
                     dim={(c.key === 'Final Status' || c.key === 'Status Tax') && carStatus === 'Gate-out'} />
                 ))}
               </div>
@@ -1399,6 +1399,17 @@ function fmtUpdated(ts?: number): string {
  *  stray Excel serial (46223) the sheet formula produced. */
 function fmtAgingPm(cells: Record<string, string>): string {
   const d = agingPmDays(cells)
+  return d === '' ? '' : `${d} วัน`
+}
+
+/** "Storage" display: whole days in the yard, counted from Gate In (the
+ *  workbook's meaning — same fix already applied to the unit detail card's
+ *  STORAGE field). The raw "storage Yard" cell this column used to show is an
+ *  imported location code, blank on nearly every row — a car with no code but
+ *  a real Gate In date read "—" here while its own detail card, one tap away,
+ *  showed a day count. '' when the car has no gate-in date yet. */
+function fmtStorage(cells: Record<string, string>): string {
+  const d = storageDays(cells)
   return d === '' ? '' : `${d} วัน`
 }
 
