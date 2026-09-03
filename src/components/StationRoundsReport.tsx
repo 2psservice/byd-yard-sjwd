@@ -33,7 +33,10 @@ export function StationRoundsReport({ ctx, roundKeys, roundLabel, title, fileBas
   const columns = useTracking((s) => s.columns)
   const toast = useYard((s) => s.toast)
   const [q, setQ] = useState('')
-  const [day, setDay] = useState<string | 'all'>('all')
+  // starts on today, not "ทุกวัน" — opening the tab to thousands of rows was
+  // exactly the problem the day picker was added to solve; today's the day
+  // the office actually walked in wanting to check
+  const [day, setDay] = useState<string | 'all'>(() => dayKeyOf(new Date()))
   const [exporting, setExporting] = useState(false)
 
   // a car not yet through the gate cannot have a round recorded yet — same
