@@ -254,6 +254,9 @@ interface OpsState {
   /** Drop these VINs from EVERY queue — the car was deleted from the system, so
    *  no station should keep asking for it. Returns how many items were removed. */
   purgeVins: (vins: string[]) => number
+  /** The office re-announced these cars as expected arrivals. Any arrival lot
+   *  that has ALREADY gated them in lets them go — see the action for why. */
+  releaseArrivedFromLots: (vins: string[]) => void
   toggleDone: (id: string, vin: string, by?: string) => void
   setAllDone: (id: string, done: boolean, by?: string) => void
   clearQueues: () => void
@@ -584,6 +587,41 @@ export const useOps = create<OpsState>()(
         }))
         for (const id of touched) pushQueue(get, id)
         return removed
+      },
+
+      /**
+       * A car the office has just re-announced as an expected arrival leaves the
+       * arrival lot that already gated it in.
+       *
+       * An arrival lot is one shipment. Once its cars are in the yard it is
+       * finished and drops off the board. Setting some of those cars back to Pre
+       * Gate-in (Unit List edit, or a move to another yard) is the office saying
+       * "these are coming in AGAIN" — a new arrival, not an undo of the old one.
+       * But the lot still listed them, and the board reads arrival from the car's
+       * LIVE status, so the finished shipment re-opened and read "249/291 · รอ
+       * Gate-in 42" — a number that describes neither the old shipment (all 291
+       * did arrive) nor the new batch the gate actually has to work.
+       *
+       * Letting the lot go of them leaves the old shipment reading its own true
+       * history, and the 42 fall through to the board's "รอ Gate-in · ยังไม่มี
+       * คิวงาน" card as 0/42 — where the gate names them into their own lot.
+       * Only items the lot had already ticked in are released; a car still
+       * waiting in a live lot stays exactly where it is.
+       */
+      releaseArrivedFromLots: (vins) => {
+        const want = new Set(vins.map((v) => v.trim().toUpperCase()).filter(Boolean))
+        if (!want.size) return
+        const touched: string[] = []
+        set((s) => ({
+          queues: s.queues.map((q) => {
+            if (queueTypeOf(q) !== 'GATEIN') return q
+            const items = q.items.filter((i) => !(want.has(i.vin) && i.done))
+            if (items.length === q.items.length) return q
+            touched.push(q.id)
+            return { ...q, items }
+          }),
+        }))
+        for (const id of touched) pushQueue(get, id)
       },
 
       toggleDone: (id, vin, by) => {

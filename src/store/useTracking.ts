@@ -58,6 +58,23 @@ function purgeFromQueues(vins: string[]): void {
     .catch(() => {})
 }
 
+/** A car put back to Pre Gate-in is arriving AGAIN, so the arrival lot that
+ *  already gated it in has to let it go — otherwise that finished shipment
+ *  re-opens and the board reads "249/291" instead of showing the new batch as
+ *  its own lot. Lazy import — same reason as purgeFromQueues. */
+/** Did this edit turn a car that was already in the yard back into an expected
+ *  arrival? Only the TRANSITION counts — a car that was Pre Gate-in before the
+ *  edit and still is has not been re-announced, and its live lot keeps it. */
+const reannouncedArrival = (before: TrackRow, after: TrackRow): boolean =>
+  deriveCarStatus(after.cells) === 'Pre Gate-in' && deriveCarStatus(before.cells) !== 'Pre Gate-in'
+
+function releaseArrivalLots(vins: string[]): void {
+  if (!vins.length) return
+  import('./useOps')
+    .then((m) => m.useOps.getState().releaseArrivedFromLots(vins))
+    .catch(() => {})
+}
+
 /**
  * Clear queue items left behind by a car deleted BEFORE this ran.
  *
@@ -765,6 +782,10 @@ export const useTracking = create<TrackingState>()(
         set({ rows: { ...get().rows, [vin]: next } })
         idbPut(next).catch(() => {})
         pushRows([next])
+        // read the DERIVED status, so a yard move (which sets Pre Gate-in inside
+        // applyYardMove) releases the old yard's lot too, not just an explicit
+        // Car Status edit
+        if (reannouncedArrival(r, next)) releaseArrivalLots([vin])
       },
 
       setCellNoHistory: (vin, key, value) => {
@@ -836,16 +857,19 @@ export const useTracking = create<TrackingState>()(
         const by = useYard.getState().currentUser
         const now = Date.now()
         const changed: TrackRow[] = []
+        const reannounced: string[] = []
         for (const vin of vins) {
           const r = rows[vin]
           if (!r) continue
           const next: TrackRow = { ...applyYardMove(withHistoryEntry(r, key, value, columns, by), key, columns, by), updatedAt: now }
           rows[vin] = next
           changed.push(next)
+          if (reannouncedArrival(r, next)) reannounced.push(vin)
         }
         set({ rows })
         idbBulkPut(changed).catch(() => {})
         pushRows(changed)
+        releaseArrivalLots(reannounced)
       },
 
       addRow: (vin, cells = {}) => {
