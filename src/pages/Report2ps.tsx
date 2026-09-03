@@ -9,7 +9,7 @@ import { useYard, useUnits } from '../store/useYard'
 import { useTrackingRows } from '../store/useTracking'
 import { useActiveQueues, queueTypeOf, isSequenceQueue, type QueueType, type WorkQueue } from '../store/useOps'
 import { PageHead, Segmented } from '../components/ui'
-import { partLabel, defectLabel } from '../lib/damageLabel'
+import { partLabel, defectLabel, partBilingual, defectBilingual } from '../lib/damageLabel'
 import { stationLabelOf } from '../lib/carHistory'
 import { deriveCarStatus, IN_YARD_STATUSES } from '../lib/carStatus'
 import type { TrackRow } from '../lib/excelTracking'
@@ -33,8 +33,21 @@ function fmt(ts: number) {
 interface StationEvent { vin: string; model: string; station: string; result?: 'OK' | 'NG'; by: string; at: number }
 interface DefectEvent {
   vin: string; model: string; station: string; area: string; defect: string
+  // English versions, kept alongside the Thai-first ones above so the on-screen
+  // table (read by Thai yard staff) and the Excel export (English, per the
+  // office's ask) can each show their own language from the same event list.
+  areaEn: string; defectEn: string
   kind: 'found' | 'status'; status?: string; severity?: 'minor' | 'major'; by: string; at: number
 }
+
+/** Station labels are mostly already English ("PDI", "Gate-in", "Final Check")
+ *  except the couple recorded bilingual for Thai readability on screen — strip
+ *  those down to English-only for the export. */
+const STATION_EN: Record<string, string> = {
+  'ช่าง (Mechanic)': 'Mechanic',
+  'เพิ่มเอง (Manual)': 'Manual',
+}
+const stationEn = (label: string) => STATION_EN[label] ?? label
 
 /** One row per station the car actually completed: Gate-in (from the unit's
  *  own gate-in stamp) + every queue item this car finished (checkedAt/By —
@@ -73,9 +86,11 @@ function buildDefectEvents(units: Unit[]): DefectEvent[] {
       const station = stationLabelOf(d)
       const area = partLabel(d, 'th') || partLabel(d, 'en')
       const defect = defectLabel(d, 'th') || defectLabel(d, 'en')
-      out.push({ vin: u.vin, model: u.modelName, station, area, defect, kind: 'found', status: d.statusRepair, severity: d.severity, by: d.by, at: d.at })
+      const areaEn = partBilingual(d).en
+      const defectEn = defectBilingual(d).en
+      out.push({ vin: u.vin, model: u.modelName, station, area, defect, areaEn, defectEn, kind: 'found', status: d.statusRepair, severity: d.severity, by: d.by, at: d.at })
       for (const h of d.repairHistory ?? []) {
-        out.push({ vin: u.vin, model: u.modelName, station, area, defect, kind: 'status', status: h.status, severity: d.severity, by: h.by, at: h.at })
+        out.push({ vin: u.vin, model: u.modelName, station, area, defect, areaEn, defectEn, kind: 'status', status: h.status, severity: d.severity, by: h.by, at: h.at })
       }
     }
   }
@@ -142,8 +157,10 @@ export function Report2ps() {
       toCsv(`SJWD-StationHistory-${stamp}.csv`, ['VIN', 'Model', 'Station', 'Result', 'ผู้บันทึก', 'วันที่/เวลา'],
         filteredStation.map((e) => [e.vin, e.model, e.station, e.result ?? '', e.by, fmt(e.at)]))
     } else {
-      toCsv(`SJWD-DefectHistory-${stamp}.csv`, ['VIN', 'Model', 'Station ที่พบ', 'Zone', 'Defect', 'เหตุการณ์', 'สถานะ', 'Severity', 'ผู้บันทึก', 'วันที่/เวลา'],
-        filteredDefect.map((e) => [e.vin, e.model, e.station, e.area, e.defect, e.kind === 'found' ? 'พบ Defect' : 'เปลี่ยนสถานะ', e.status ?? '', e.severity ?? '', e.by, fmt(e.at)]))
+      // English throughout — the on-screen table stays Thai-first for yard
+      // staff, but the exported file is read outside the yard
+      toCsv(`SJWD-DefectHistory-${stamp}.csv`, ['VIN', 'Model', 'Station Found', 'Zone', 'Defect', 'Event', 'Status', 'Severity', 'Recorded By', 'Date/Time'],
+        filteredDefect.map((e) => [e.vin, e.model, stationEn(e.station), e.areaEn, e.defectEn, e.kind === 'found' ? 'Found Defect' : 'Status Change', e.status ?? '', e.severity ?? '', e.by, fmt(e.at)]))
     }
   }
 
