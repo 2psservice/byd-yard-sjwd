@@ -257,6 +257,9 @@ interface OpsState {
   /** The office re-announced these cars as expected arrivals. Any arrival lot
    *  that has ALREADY gated them in lets them go — see the action for why. */
   releaseArrivedFromLots: (vins: string[]) => void
+  /** Drop every car that has already gated in from ONE arrival lot, leaving the
+   *  cars still expected. Returns how many were removed. */
+  dropArrivedFromLot: (id: string) => number
   toggleDone: (id: string, vin: string, by?: string) => void
   setAllDone: (id: string, done: boolean, by?: string) => void
   clearQueues: () => void
@@ -622,6 +625,31 @@ export const useOps = create<OpsState>()(
           }),
         }))
         for (const id of touched) pushQueue(get, id)
+      },
+
+      /**
+       * Clear the cars already in the yard out of ONE arrival lot.
+       *
+       * The companion to releaseArrivedFromLots, for a lot that is ALREADY in
+       * that muddled state — cars re-announced before the release rule existed,
+       * or a lot the office reused for a second round. The card then reads
+       * "249/291 · รอ Gate-in 42": the 249 are last round's and long parked, and
+       * the gate has to read past them to find the 42 that matter.
+       *
+       * Deliberately a button, not automatic: mid-round, "249/291 · รอ 42" is
+       * exactly the number the gate wants (this truck, this much of it in). Only
+       * the office knows the arrived cars belong to a finished round, so only
+       * the office can say to drop them.
+       */
+      dropArrivedFromLot: (id) => {
+        const q = get().queues.find((x) => x.id === id)
+        if (!q || queueTypeOf(q) !== 'GATEIN') return 0
+        const items = q.items.filter((i) => !gateInArrived(i))
+        const removed = q.items.length - items.length
+        if (!removed) return 0
+        set((s) => ({ queues: s.queues.map((x) => (x.id === id ? { ...x, items } : x)) }))
+        pushQueue(get, id)
+        return removed
       },
 
       toggleDone: (id, vin, by) => {
