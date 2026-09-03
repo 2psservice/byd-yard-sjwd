@@ -37,9 +37,7 @@ const mcell = 'px-2 py-1 border hairline'
 
 /** One P1–P5 shift card: per-model Actual/OK rows with a PDI/OK total box
  *  beside each, a shared Remark line, a Total PDI/Total OK footer, and a
- *  GRAND TOTAL mini-table of this month's OK count per model. Rendered twice
- *  side by side (see StationTables below) — the office prints this sheet as
- *  two identical columns on one page. */
+ *  GRAND TOTAL mini-table of this month's OK count per model. */
 function TimeMatrixCard({ matrix, dayLabel }: { matrix: TimeMatrix; dayLabel: string }) {
   const dayModels = matrix.models.filter((m) => m.total > 0)
   const mtdModels = matrix.models.filter((m) => (matrix.mtdOkByModel.get(m.name) ?? 0) > 0)
@@ -251,13 +249,11 @@ export function StationTables({ ctx, tab, kind }: { ctx: ReportCtx; tab: Station
         </div>
       )}
 
-      {/* ── 3. the P1–P5 shift matrix — one card per model, printed as two
-             identical columns side by side (matches the office's print sheet) ── */}
+      {/* ── 3. the P1–P5 shift matrix — one card per model ── */}
       {tab === 'time' && matrix && (
         <div className="panel overflow-hidden">
           <div className="overflow-x-auto">
-            <div className="grid lg:grid-cols-2 gap-3 p-3 min-w-[900px]" style={{ background: 'var(--app-bg)' }}>
-              <TimeMatrixCard matrix={matrix} dayLabel={dayLabel} />
+            <div className="p-3" style={{ background: 'var(--app-bg)' }}>
               <TimeMatrixCard matrix={matrix} dayLabel={dayLabel} />
             </div>
           </div>
