@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ScanLine, LogOut, ChevronDown, ChevronRight, CheckCircle2, Clock, Calendar, X, ClipboardList, ListChecks, ListPlus, Trash2, Pencil, Archive, ArchiveRestore, MoveRight } from 'lucide-react'
+import { ScanLine, LogOut, ChevronDown, ChevronRight, CheckCircle2, Clock, Calendar, X, ClipboardList, ListChecks, ListPlus, Trash2, Pencil, Archive, ArchiveRestore, MoveRight, Eraser } from 'lucide-react'
 import { useYard, useUnits } from '../store/useYard'
 import { PageHead, cx } from '../components/ui'
 import { useTracking, useTrackingRows } from '../store/useTracking'
@@ -602,6 +602,7 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
   const all = useActiveQueues()
   const closed = useOps((s) => s.closed) // archived lots leave the live board
   const closeQueue = useOps((s) => s.closeQueue)
+  const dropArrivedFromLot = useOps((s) => s.dropArrivedFromLot)
   const reopenQueue = useOps((s) => s.reopenQueue)
   const currentUser = useYard((s) => s.currentUser)
   const toast = useYard((s) => s.toast)
@@ -730,6 +731,23 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
                           : 'แก้ไขรายชื่อรถในคิวงาน — เพิ่ม/เอาเลขวินออก'}
                         onClick={(e) => { e.stopPropagation(); setEditingVins(q.id) }}>
                         <ListChecks size={13} />
+                      </button>
+                    )}
+                    {/* a lot carrying BOTH cars already in the yard and cars still
+                        expected reads "249/291 · รอ 42" — mid-round that is the
+                        right number, but on a lot reused for a second round the
+                        gate has to read past 249 parked cars to find the 42 that
+                        matter. One tap leaves just the cars still to come. */}
+                    {!isClosed(q.id) && q.id !== '__uncovered_pregatein' && done > 0 && pending.length > 0 && (
+                      <button className="btn btn-ghost px-2 py-1" style={{ color: 'var(--muted)' }}
+                        title={`เอา ${done} คันที่เข้าลานแล้วออกจากล็อตนี้ — เหลือแค่ ${pending.length} คันที่ยังรอ Gate-in`}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          if (!window.confirm(`เอารถ ${done} คันที่เข้าลานแล้วออกจากล็อต "${q.name}"?\n\n· เหลือเฉพาะ ${pending.length} คันที่ยังรอ Gate-in — หน้างานจะได้ไม่สับสน\n· ข้อมูลรถไม่หาย ยังอยู่ครบใน Unit List ตามเดิม`)) return
+                          const n = dropArrivedFromLot(q.id)
+                          toast('ok', `เอารถที่เข้าลานแล้ว ${n.toLocaleString()} คันออกจากล็อตแล้ว · เหลือ ${pending.length} คัน`)
+                        }}>
+                        <Eraser size={13} />
                       </button>
                     )}
                     {q.id !== '__uncovered_pregatein' && (
