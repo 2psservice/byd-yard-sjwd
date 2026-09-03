@@ -56,10 +56,15 @@ export interface DefectRowOut {
 export interface TimeMatrix {
   title: string
   plan: number
-  models: { name: string; total: number; p: number[] }[]
+  models: { name: string; total: number; p: number[]; okTotal: number; okP: number[] }[]
   ok: number[]; okTotal: number
   ng: number[]; ngTotal: number
   total: number
+  /** OK count per model, summed from the 1st of the month through this day —
+   *  the "GRAND TOTAL" column the PDI shift-print shows beside the day's own
+   *  numbers, so a model with nothing done today can still read its month's
+   *  running tally instead of a bare 0. */
+  mtdOkByModel: Map<string, number>
 }
 
 export const TIME_PERIODS = ['08:30 - 10:00', '10:10 - 12:00', '13:00 - 15:00', '15:10 - 17:30', '18:00 - 20:00']
@@ -344,6 +349,39 @@ export function buildDefects(ctx: ReportCtx, id: 'fcdefect' | 'pmdefect' | 'pdid
 
 // ── เช็คเวลา matrix — realtime counts per break period ──────────────────────
 
+/** Which of the fixed MODEL_ROWS a sheet's free-text model name belongs to —
+ *  shared by the day matrix and the month-to-date tally so a car can never
+ *  land on a different row in one than the other. Spacing in the sheet is not
+ *  consistent ("ATTO3" vs "ATTO 3"); longest match wins so "SEAL 5" lands on
+ *  SEAL 5, not SEAL. */
+function resolveModelKey(cells: Record<string, string>): string {
+  const label = (cells['Model'] || cells['Model name'] || '').toUpperCase().replace(/^BYD\s*/, '').replace(/^DENZA\s*/, '').trim()
+  const flat = label.replace(/\s+/g, '')
+  const squash = (m: string) => m.replace(/\s+/g, '')
+  return MODEL_ROWS.filter((m) => flat.startsWith(squash(m))).sort((a, b) => b.length - a.length)[0]
+    ?? MODEL_ROWS.filter((m) => flat.includes(squash(m))).sort((a, b) => b.length - a.length)[0]
+    ?? (label || '—')
+}
+
+/** OK count per model, summed from the 1st of `ctx.day`'s month through
+ *  `ctx.day` itself (inclusive) — a model with nothing checked today still
+ *  shows how much it has actually gone through this month. */
+function monthToDateOkByModel(ctx: ReportCtx, type: 'PDI' | 'FINAL' | 'PM'): Map<string, number> {
+  const [y, m, d] = ctx.day.split('-').map(Number)
+  const totals = new Map<string, number>()
+  for (let day = 1; day <= d; day++) {
+    const dayKey = `${y}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+    const dayCtx = { ...ctx, day: dayKey }
+    const rows = rowMap(dayCtx)
+    for (const i of stationDone(dayCtx, type)) {
+      if (i.result === 'NG') continue
+      const key = resolveModelKey(rows.get(i.vin)?.cells ?? {})
+      totals.set(key, (totals.get(key) ?? 0) + 1)
+    }
+  }
+  return totals
+}
+
 export function buildTimeMatrix(ctx: ReportCtx, id: 'fctime' | 'pmtime' | 'pditime'): TimeMatrix {
   const type = id === 'fctime' ? 'FINAL' : id === 'pditime' ? 'PDI' : 'PM'
   const title = id === 'fctime' ? `Final check (FC) ${ctx.siteLabel}`
@@ -358,8 +396,8 @@ export function buildTimeMatrix(ctx: ReportCtx, id: 'fctime' | 'pmtime' | 'pditi
   if (!planQs.length) planQs = qs.filter((q) => q.items.some((i) => itemOnDay(i, ctx.day)))
   const plan = planQs.reduce((a, q) => a + q.items.length, 0)
 
-  const byModel = new Map<string, { total: number; p: number[] }>()
-  for (const m of MODEL_ROWS) byModel.set(m, { total: 0, p: [0, 0, 0, 0, 0] })
+  const byModel = new Map<string, { total: number; p: number[]; okTotal: number; okP: number[] }>()
+  for (const m of MODEL_ROWS) byModel.set(m, { total: 0, p: [0, 0, 0, 0, 0], okTotal: 0, okP: [0, 0, 0, 0, 0] })
   const ok = [0, 0, 0, 0, 0]; const ng = [0, 0, 0, 0, 0]
   let okTotal = 0, ngTotal = 0, total = 0
   for (const i of stationDone(ctx, type)) {
@@ -367,25 +405,21 @@ export function buildTimeMatrix(ctx: ReportCtx, id: 'fctime' | 'pmtime' | 'pditi
     // Volume and Total, it just has no shift to sit in
     const p = i.clock !== undefined ? periodOf(i.clock) : null
     const c = rows.get(i.vin)?.cells ?? {}
-    const label = (c['Model'] || c['Model name'] || '').toUpperCase().replace(/^BYD\s*/, '').replace(/^DENZA\s*/, '').trim()
-    // spacing in the sheet is not consistent ("ATTO3" vs "ATTO 3") and used to
-    // split one model across two rows of this table
-    const flat = label.replace(/\s+/g, '')
-    const squash = (m: string) => m.replace(/\s+/g, '')
-    // longest match wins — "SEAL 5" must land on SEAL 5, not SEAL
-    const key = MODEL_ROWS.filter((m) => flat.startsWith(squash(m))).sort((a, b) => b.length - a.length)[0]
-      ?? MODEL_ROWS.filter((m) => flat.includes(squash(m))).sort((a, b) => b.length - a.length)[0]
-      ?? (label || '—')
-    if (!byModel.has(key)) byModel.set(key, { total: 0, p: [0, 0, 0, 0, 0] })
+    const key = resolveModelKey(c)
+    if (!byModel.has(key)) byModel.set(key, { total: 0, p: [0, 0, 0, 0, 0], okTotal: 0, okP: [0, 0, 0, 0, 0] })
     const slot = byModel.get(key)!
     slot.total++; total++
     if (p !== null) slot.p[p]++
-    if (i.result === 'NG') { ngTotal++; if (p !== null) ng[p]++ } else { okTotal++; if (p !== null) ok[p]++ }
+    if (i.result === 'NG') { ngTotal++; if (p !== null) ng[p]++ } else {
+      okTotal++; slot.okTotal++
+      if (p !== null) { ok[p]++; slot.okP[p]++ }
+    }
   }
   return {
     title, plan,
     models: [...byModel.entries()].map(([name, v]) => ({ name, ...v })),
     ok, okTotal, ng, ngTotal, total,
+    mtdOkByModel: monthToDateOkByModel(ctx, type),
   }
 }
 
@@ -421,11 +455,14 @@ export function buildTimeMatrixRange(ctx: ReportCtx, id: 'fctime' | 'pmtime' | '
   const sum5 = (pick: (m: TimeMatrix) => number[]) =>
     parts.reduce((acc, m) => acc.map((n, i) => n + (pick(m)[i] ?? 0)), [0, 0, 0, 0, 0])
   // one row per model across the whole range, in first-seen order
-  const models = new Map<string, { name: string; total: number; p: number[] }>()
+  const models = new Map<string, { name: string; total: number; p: number[]; okTotal: number; okP: number[] }>()
   for (const m of parts) for (const mr of m.models) {
     const cur = models.get(mr.name)
-    if (!cur) models.set(mr.name, { name: mr.name, total: mr.total, p: [...mr.p] })
-    else { cur.total += mr.total; cur.p = cur.p.map((n, i) => n + (mr.p[i] ?? 0)) }
+    if (!cur) models.set(mr.name, { name: mr.name, total: mr.total, p: [...mr.p], okTotal: mr.okTotal, okP: [...mr.okP] })
+    else {
+      cur.total += mr.total; cur.p = cur.p.map((n, i) => n + (mr.p[i] ?? 0))
+      cur.okTotal += mr.okTotal; cur.okP = cur.okP.map((n, i) => n + (mr.okP[i] ?? 0))
+    }
   }
   return {
     title: parts[0].title,
@@ -434,6 +471,9 @@ export function buildTimeMatrixRange(ctx: ReportCtx, id: 'fctime' | 'pmtime' | '
     ok: sum5((m) => m.ok), okTotal: parts.reduce((n, m) => n + m.okTotal, 0),
     ng: sum5((m) => m.ng), ngTotal: parts.reduce((n, m) => n + m.ngTotal, 0),
     total: parts.reduce((n, m) => n + m.total, 0),
+    // "as of" the range's last day — mtdOkByModel is already a running total,
+    // summing it across days in the range would count the same work twice
+    mtdOkByModel: parts[parts.length - 1].mtdOkByModel,
   }
 }
 

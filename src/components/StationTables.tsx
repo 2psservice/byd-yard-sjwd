@@ -11,20 +11,124 @@
  * these boards: a number here can never disagree with the Operation report,
  * because they are one calculation, not two.
  */
-import { useMemo } from 'react'
+import { Fragment, useMemo } from 'react'
 import { useYard, useUnits } from '../store/useYard'
 import { useTrackingRows } from '../store/useTracking'
 import { useOps } from '../store/useOps'
 import { rowInSite } from '../lib/siteScope'
 import { cx } from './ui'
 import { dayKeyOf } from '../pages/Grouping'
-import { TIME_PERIODS, buildList, buildDefects, buildTimeMatrix, dayKeyOfTs, type ReportCtx } from '../lib/opsReport'
+import { buildList, buildDefects, buildTimeMatrix, dayKeyOfTs, type ReportCtx, type TimeMatrix } from '../lib/opsReport'
 
 export type StationKind = 'PDI' | 'PM'
 export type StationTab = 'list' | 'defect' | 'time'
 
 const th = 'px-3 py-2 text-left font-semibold whitespace-nowrap border-r hairline last:border-r-0'
 const td = 'px-3 py-1.5 whitespace-nowrap border-r hairline last:border-r-0'
+
+// one color band per model row on the shift card — cycles if the roster grows
+const MODEL_COLORS = [
+  { bg: '#1d4ed8', text: '#fff' }, { bg: '#059669', text: '#fff' }, { bg: '#d97706', text: '#fff' },
+  { bg: '#dc2626', text: '#fff' }, { bg: '#7c3aed', text: '#fff' }, { bg: '#0891b2', text: '#fff' },
+  { bg: '#be185d', text: '#fff' }, { bg: '#4d7c0f', text: '#fff' }, { bg: '#b45309', text: '#fff' },
+  { bg: '#1e40af', text: '#fff' }, { bg: '#9d174d', text: '#fff' },
+]
+const mcell = 'px-2 py-1 border hairline'
+
+/** One P1–P5 shift card: per-model Actual/OK rows with a PDI/OK total box
+ *  beside each, a shared Remark line, a Total PDI/Total OK footer, and a
+ *  GRAND TOTAL mini-table of this month's OK count per model. Rendered twice
+ *  side by side (see StationTables below) — the office prints this sheet as
+ *  two identical columns on one page. */
+function TimeMatrixCard({ matrix, dayLabel }: { matrix: TimeMatrix; dayLabel: string }) {
+  const dayModels = matrix.models.filter((m) => m.total > 0)
+  const mtdModels = matrix.models.filter((m) => (matrix.mtdOkByModel.get(m.name) ?? 0) > 0)
+  const mtdTotal = mtdModels.reduce((n, m) => n + (matrix.mtdOkByModel.get(m.name) ?? 0), 0)
+
+  return (
+    <div className="border hairline rounded-lg overflow-hidden" style={{ background: 'var(--panel, #fff)' }}>
+      <div className="px-3 py-1.5 text-center text-[12.5px] font-bold" style={{ background: '#000', color: '#fff' }}>
+        {matrix.title} · {dayLabel}
+      </div>
+      <table className="w-full text-[11.5px] text-center" style={{ borderCollapse: 'collapse' }}>
+        <thead>
+          <tr style={{ background: 'var(--chip)' }}>
+            <th className={cx(mcell, 'font-bold')} colSpan={2}>Model</th>
+            {['P1', 'P2', 'P3', 'P4', 'P5'].map((p) => (
+              <th key={p} className={cx(mcell, 'font-bold')} style={{ color: '#2563eb' }}>{p}</th>
+            ))}
+            <th className={cx(mcell, 'font-bold')}>PDI</th>
+            <th className={cx(mcell, 'font-bold')}>OK</th>
+          </tr>
+        </thead>
+        <tbody>
+          {dayModels.length === 0 && (
+            <tr><td colSpan={9} className="py-6" style={{ color: 'var(--faint)' }}>— ยังไม่มีรถที่บันทึกวันนี้ —</td></tr>
+          )}
+          {dayModels.map((m, idx) => {
+            const c = MODEL_COLORS[idx % MODEL_COLORS.length]
+            return (
+              <Fragment key={m.name}>
+                <tr>
+                  <td rowSpan={2} className={cx(mcell, 'text-left font-bold')} style={{ background: c.bg, color: c.text }}>{m.name}</td>
+                  <td className={cx(mcell, 'text-left font-semibold')} style={{ color: 'var(--muted)' }}>Actual</td>
+                  {m.p.map((n, i) => <td key={i} className={cx(mcell, 'tabular')}>{n || ''}</td>)}
+                  <td rowSpan={2} className={cx(mcell, 'tabular font-bold')} style={{ background: 'rgba(37,99,235,0.08)' }}>{m.total}</td>
+                  <td rowSpan={2} className={cx(mcell, 'tabular font-bold')} style={{ background: 'rgba(34,197,94,0.14)' }}>{m.okTotal}</td>
+                </tr>
+                <tr style={{ background: 'rgba(34,197,94,0.08)' }}>
+                  <td className={cx(mcell, 'text-left font-semibold')} style={{ color: 'var(--muted)' }}>OK</td>
+                  {m.okP.map((n, i) => <td key={i} className={cx(mcell, 'tabular')}>{n || ''}</td>)}
+                </tr>
+              </Fragment>
+            )
+          })}
+          <tr>
+            <td colSpan={9} className={cx(mcell, 'text-left')} style={{ background: 'var(--chip)' }}>
+              <b>Remark</b> — P1 : Start 08:30 น. · P5 : Finish 00:00 น.
+            </td>
+          </tr>
+          <tr style={{ background: 'rgba(250,204,21,0.35)' }}>
+            <td colSpan={7} className={cx(mcell, 'text-left font-bold')}>Total PDI</td>
+            <td colSpan={2} className={cx(mcell, 'tabular font-bold')}>{matrix.total}</td>
+          </tr>
+          <tr style={{ background: 'rgba(34,197,94,0.2)' }}>
+            <td colSpan={7} className={cx(mcell, 'text-left font-bold')}>Total OK</td>
+            <td colSpan={2} className={cx(mcell, 'tabular font-bold')}>{matrix.okTotal}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div className="border-t hairline">
+        <div className="px-2 py-1 text-center font-bold text-[11px]" style={{ background: '#000', color: '#fff' }}>
+          GRAND TOTAL — สะสมเดือนนี้ (OK)
+        </div>
+        {mtdModels.length === 0 ? (
+          <div className="px-3 py-3 text-center text-[11.5px]" style={{ color: 'var(--faint)' }}>— ยังไม่มีข้อมูลเดือนนี้ —</div>
+        ) : (
+          <table className="w-full text-[11px] text-center" style={{ borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ background: 'var(--chip)' }}>
+                {mtdModels.map((m) => <th key={m.name} className={cx(mcell, 'font-semibold')}>{m.name}</th>)}
+                <th className={cx(mcell, 'font-bold')}>รวม</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                {mtdModels.map((m) => (
+                  <td key={m.name} className={cx(mcell, 'tabular font-bold')} style={{ color: '#16a34a' }}>
+                    {matrix.mtdOkByModel.get(m.name) ?? 0}
+                  </td>
+                ))}
+                <td className={cx(mcell, 'tabular font-bold')}>{mtdTotal}</td>
+              </tr>
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  )
+}
 
 /** Site-scoped report context for the selected day + the calendar's day marks. */
 export function useStationCtx(day: string | 'all') {
@@ -147,74 +251,15 @@ export function StationTables({ ctx, tab, kind }: { ctx: ReportCtx; tab: Station
         </div>
       )}
 
-      {/* ── 3. the P1–P5 shift matrix ── */}
+      {/* ── 3. the P1–P5 shift matrix — one card per model, printed as two
+             identical columns side by side (matches the office's print sheet) ── */}
       {tab === 'time' && matrix && (
         <div className="panel overflow-hidden">
-          <div className="px-4 py-2 border-b hairline text-center text-[13px] font-bold" style={{ background: '#000', color: '#fff' }}>
-            {matrix.title} · {dayLabel}
-          </div>
           <div className="overflow-x-auto">
-            <table className="w-full text-[12.5px] text-center" style={{ borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ background: 'var(--chip)' }}>
-                  <th className="px-3 py-2 border hairline font-bold" rowSpan={2}>Task</th>
-                  <th className="px-3 py-2 border hairline font-bold" rowSpan={2}>Volume</th>
-                  {['P1', 'P2', 'P3', 'P4', 'P5'].map((p) => (
-                    <th key={p} className="px-3 py-1 border hairline font-bold" style={{ color: '#2563eb' }}>{p}</th>
-                  ))}
-                </tr>
-                <tr style={{ background: 'var(--chip)' }}>
-                  {TIME_PERIODS.map((t) => <th key={t} className="px-3 py-1 border hairline font-medium text-[11px]">{t}</th>)}
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td className="px-3 py-1.5 border hairline font-semibold">Plan</td>
-                  <td className="px-3 py-1.5 border hairline tabular font-bold">{matrix.plan}</td>
-                  {[0, 1, 2, 3, 4].map((i) => (
-                    <td key={i} className="px-3 py-1.5 border hairline tabular">
-                      {matrix.plan ? Math.round((matrix.plan / 5) * 10) / 10 : ''}
-                    </td>
-                  ))}
-                </tr>
-                {matrix.models.map((m) => (
-                  <tr key={m.name}>
-                    <td className="px-3 py-1.5 border hairline text-left pl-5">{m.name}</td>
-                    <td className="px-3 py-1.5 border hairline tabular">{m.total}</td>
-                    {m.p.map((n, i) => <td key={i} className="px-3 py-1.5 border hairline tabular">{n || ''}</td>)}
-                  </tr>
-                ))}
-                <tr style={{ background: 'rgba(34,197,94,0.14)' }}>
-                  <td className="px-3 py-1.5 border hairline font-bold">OK</td>
-                  <td className="px-3 py-1.5 border hairline tabular font-bold">{matrix.okTotal}</td>
-                  {matrix.ok.map((n, i) => <td key={i} className="px-3 py-1.5 border hairline tabular">{n}</td>)}
-                </tr>
-                <tr style={{ background: 'rgba(34,197,94,0.14)' }}>
-                  <td className="px-3 py-1.5 border hairline font-semibold">Ratio(OK)</td>
-                  <td className="px-3 py-1.5 border hairline tabular">{matrix.total ? Math.round((matrix.okTotal / matrix.total) * 100) : 0}%</td>
-                  {matrix.ok.map((n, i) => (
-                    <td key={i} className="px-3 py-1.5 border hairline tabular">{matrix.total ? Math.round((n / matrix.total) * 100) : 0}%</td>
-                  ))}
-                </tr>
-                <tr style={{ background: 'rgba(234,88,12,0.12)', color: '#dc2626' }}>
-                  <td className="px-3 py-1.5 border hairline font-bold">NG</td>
-                  <td className="px-3 py-1.5 border hairline tabular font-bold">{matrix.ngTotal}</td>
-                  {matrix.ng.map((n, i) => <td key={i} className="px-3 py-1.5 border hairline tabular">{n}</td>)}
-                </tr>
-                <tr style={{ background: 'rgba(234,88,12,0.12)', color: '#dc2626' }}>
-                  <td className="px-3 py-1.5 border hairline font-semibold">Ratio(NG)</td>
-                  <td className="px-3 py-1.5 border hairline tabular">{matrix.total ? Math.round((matrix.ngTotal / matrix.total) * 100) : 0}%</td>
-                  {matrix.ng.map((n, i) => (
-                    <td key={i} className="px-3 py-1.5 border hairline tabular">{matrix.total ? Math.round((n / matrix.total) * 100) : 0}%</td>
-                  ))}
-                </tr>
-                <tr style={{ background: 'rgba(250,204,21,0.35)' }}>
-                  <td className="px-3 py-1.5 border hairline font-bold">Total</td>
-                  <td className="px-3 py-1.5 border hairline tabular font-bold">{matrix.total}</td>
-                  <td className="px-3 py-1.5 border hairline" colSpan={5} />
-                </tr>
-              </tbody>
-            </table>
+            <div className="grid lg:grid-cols-2 gap-3 p-3 min-w-[900px]" style={{ background: 'var(--app-bg)' }}>
+              <TimeMatrixCard matrix={matrix} dayLabel={dayLabel} />
+              <TimeMatrixCard matrix={matrix} dayLabel={dayLabel} />
+            </div>
           </div>
         </div>
       )}
