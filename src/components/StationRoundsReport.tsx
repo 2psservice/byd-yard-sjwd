@@ -1,18 +1,24 @@
 /**
  * Rounds register table + Excel export for one station's inspection rounds
- * (PDI's "Report PDI" tab). Not day-scoped like the station's other three
- * tables — this is the full per-VIN record across every round, the same
- * shape as the PM Plan page's "PM STATUS" tab, generalized so a second
- * station (PDI here) can show its own without copying the read logic.
+ * (PDI's "Report PDI" tab). This is the full per-VIN record across every
+ * round — not tied to the station's other three tables' single work day —
+ * the same shape as the PM Plan page's "PM STATUS" tab, generalized so a
+ * second station (PDI here) can show its own without copying the read logic.
+ *
+ * Its own DayPicker (separate from the page's day-scoped tabs) narrows the
+ * row set to cars with a round recorded that day — with the full fleet's
+ * history in view by default, a specific day is the fast way to find what
+ * changed without scrolling past thousands of rows.
  */
 import { useMemo, useState } from 'react'
 import { Search, Download } from 'lucide-react'
 import { useTracking } from '../store/useTracking'
 import { useYard } from '../store/useYard'
 import { deriveCarStatus } from '../lib/carStatus'
+import { parseCellDate } from '../lib/trackingColumns'
 import { MEAS, buildRegisterRows, maxRoundCount, exportRegister } from '../lib/roundsRegister'
-import type { ReportCtx } from '../lib/opsReport'
-import { dayKeyOf } from '../pages/Grouping'
+import { dayKeyOfTs, type ReportCtx } from '../lib/opsReport'
+import { dayKeyOf, DayPicker } from '../pages/Grouping'
 
 const SHOW_CAP = 400
 
@@ -27,6 +33,7 @@ export function StationRoundsReport({ ctx, roundKeys, roundLabel, title, fileBas
   const columns = useTracking((s) => s.columns)
   const toast = useYard((s) => s.toast)
   const [q, setQ] = useState('')
+  const [day, setDay] = useState<string | 'all'>('all')
   const [exporting, setExporting] = useState(false)
 
   // a car not yet through the gate cannot have a round recorded yet — same
@@ -35,13 +42,36 @@ export function StationRoundsReport({ ctx, roundKeys, roundLabel, title, fileBas
     () => ctx.rows.filter((r) => deriveCarStatus(r.cells) !== 'Pre Gate-in'),
     [ctx.rows],
   )
+
+  // calendar marks: days that actually carry a round (PDI or any RE-PDI) —
+  // the register default-shows everything (thousands of cars), so this is
+  // how the calendar tells the office which days have something to look at
+  const dayCounts = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const r of siteRows) for (const k of roundKeys) {
+      const t = parseCellDate(r.cells[k])
+      if (t == null) continue
+      const dk = dayKeyOfTs(t)
+      m.set(dk, (m.get(dk) ?? 0) + 1)
+    }
+    return m
+  }, [siteRows, roundKeys])
+
+  const byDay = useMemo(() => {
+    if (day === 'all') return siteRows
+    return siteRows.filter((r) => roundKeys.some((k) => {
+      const t = parseCellDate(r.cells[k])
+      return t != null && dayKeyOfTs(t) === day
+    }))
+  }, [siteRows, roundKeys, day])
+
   const filtered = useMemo(() => {
     const needle = q.trim().toUpperCase()
-    if (!needle) return siteRows
-    return siteRows.filter((r) => r.vin.includes(needle)
+    if (!needle) return byDay
+    return byDay.filter((r) => r.vin.includes(needle)
       || (r.cells['Model name'] || '').toUpperCase().includes(needle)
       || (r.cells['Model'] || '').toUpperCase().includes(needle))
-  }, [siteRows, q])
+  }, [byDay, q])
   const maxRound = useMemo(() => maxRoundCount(filtered, roundKeys), [filtered, roundKeys])
   const register = useMemo(() => buildRegisterRows(filtered, roundKeys, maxRound, columns), [filtered, roundKeys, maxRound, columns])
   const shown = register.slice(0, SHOW_CAP)
@@ -66,6 +96,8 @@ export function StationRoundsReport({ ctx, roundKeys, roundLabel, title, fileBas
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="ค้นหา VIN / รุ่น…"
             className="bg-transparent outline-none text-[13px] w-full" />
         </label>
+        <DayPicker days={dayCounts} value={day} onChange={setDay}
+          hint="เลือกวันที่ — กรองเฉพาะรถที่มีรอบ PDI/RE-PDI วันนั้น" />
         <span className="text-[12px]" style={{ color: 'var(--muted)' }}>
           {register.length > SHOW_CAP
             ? `แสดง ${SHOW_CAP} จาก ${register.length.toLocaleString()} คัน — พิมพ์ค้นหาเพื่อกรอง`
@@ -130,7 +162,7 @@ export function StationRoundsReport({ ctx, roundKeys, roundLabel, title, fileBas
             ))}
             {shown.length === 0 && (
               <tr><td colSpan={6 + maxRound * (1 + MEAS.length)} className="px-4 py-8 text-center" style={{ color: 'var(--faint)' }}>
-                ไม่พบรถ{q ? `ที่ตรงกับ "${q}"` : ''}
+                ไม่พบรถ{q ? `ที่ตรงกับ "${q}"` : ''}{day !== 'all' ? ` ในวันที่ ${day.split('-').reverse().join('/')}` : ''}
               </td></tr>
             )}
           </tbody>
