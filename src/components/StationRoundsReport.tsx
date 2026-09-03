@@ -92,8 +92,12 @@ export function StationRoundsReport({ ctx, roundKeys, roundLabel, title, fileBas
   }
 
   return (
-    <div className="panel overflow-hidden">
-      <div className="px-3 py-2.5 border-b hairline flex items-center gap-2 flex-wrap">
+    <div className="space-y-2.5">
+      {/* its own card, NOT wrapped in the table's overflow-hidden panel below —
+          that clip was cutting the DayPicker's calendar dropdown off after its
+          first row of days, since an ancestor's overflow-hidden clips an
+          absolutely-positioned popup no matter its z-index */}
+      <div className="panel-solid px-3 py-2.5 flex items-center gap-2 flex-wrap">
         <label className="flex items-center gap-2 px-3 py-1.5 rounded-xl flex-1 min-w-[220px] max-w-[380px]" style={{ background: 'var(--chip)' }}>
           <Search size={14} style={{ color: 'var(--muted)' }} />
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="ค้นหา VIN / รุ่น…"
@@ -111,6 +115,7 @@ export function StationRoundsReport({ ctx, roundKeys, roundLabel, title, fileBas
           <Download size={14} /> {exporting ? 'กำลังสร้างไฟล์…' : 'Export Excel'}
         </button>
       </div>
+      <div className="panel overflow-hidden">
       <div className="overflow-x-auto">
         <table className="text-[11.5px] tabular" style={{ borderCollapse: 'collapse', minWidth: '100%' }}>
           <thead>
@@ -170,6 +175,7 @@ export function StationRoundsReport({ ctx, roundKeys, roundLabel, title, fileBas
             )}
           </tbody>
         </table>
+      </div>
       </div>
     </div>
   )
