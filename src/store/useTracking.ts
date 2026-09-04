@@ -13,6 +13,7 @@ import { onSync, sendSync, type RowMsg, type RowsPayload } from '../lib/syncBus'
 import { useYard } from './useYard'
 import { siteForRow, siteIdForLocation, coInspectionAccepts } from '../lib/siteScope'
 import { CAR_STATUS_ORDER, deriveCarStatus, isGateOutStamp } from '../lib/carStatus'
+import { isOpenDefect } from '../lib/damageLabel'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 
 // live channel (module-scoped — never persisted)
@@ -145,7 +146,11 @@ interface TrackingState {
    *  per-car "Vin Photo" label shot) whose value may be a huge data-URL that must
    *  never be copied into the row's Event history. */
   setCellNoHistory: (vin: string, key: string, value: string) => void
-  bulkUpdate: (vins: string[], key: string, value: string) => void
+  /** `by` defaults to the current user — pass it explicitly for a write a
+   *  reconciler makes on nobody's behalf (see the Vin Of Status auto-fix
+   *  below), so the Event tab attributes it honestly instead of to whoever
+   *  happens to be logged in on the device that ran the reconciler. */
+  bulkUpdate: (vins: string[], key: string, value: string, by?: string) => void
   /** Append a free-form audit entry to a row's history (no cell change) — used to
    *  log damage add/remove so the admin Event tab keeps a permanent record. */
   appendHistory: (vin: string, entry: RowEvent) => void
@@ -851,10 +856,10 @@ export const useTracking = create<TrackingState>()(
         pushRows([next])
       },
 
-      bulkUpdate: (vins, key, value) => {
+      bulkUpdate: (vins, key, value, byOverride) => {
         const rows = { ...get().rows }
         const { columns } = get()
-        const by = useYard.getState().currentUser
+        const by = byOverride ?? useYard.getState().currentUser
         const now = Date.now()
         const changed: TrackRow[] = []
         const reannounced: string[] = []
@@ -1153,6 +1158,52 @@ if (typeof window !== 'undefined') {
 // admin published a new shared default → adopt it live on every other open
 // client (version-checked inside seedViewDefault, so it only pulls when newer).
 onSync('viewdefault', () => { useTracking.getState().seedViewDefault().catch((e) => console.error('[viewdefault] sync pull', e)) })
+
+// ── Vin Of Status: NG → "FIS Waiting Allocation" once every defect is
+// cleared and the car has no allocation yet ─────────────────────────────────
+// "รอปลด" ("waiting to be released") is a manual step today — Final Status
+// gets flipped to OK-Repaired/OK-Accept once the office is satisfied, but Vin
+// Of Status is a second cell nobody circles back to update, so a car sits
+// showing NG on the Dashboard/Yard Plan long after its last defect closed.
+// This mirrors that decision live: OK-Repaired/OK-Accept OR (equivalently, in
+// case a device only updates the damage records) zero open defects means the
+// car is ready to move on — advance it out of the NG group the moment it has
+// no allocation yet to advance it further than "waiting".
+//
+// Only Vin Of Status moves; Final Status stays whatever the office set it to.
+// Only the 6 NG-group values are touched — any other Vin Of Status (already
+// further along the FIS pipeline, Hold, blank, a value outside either group)
+// is left alone, since this rule only knows how to draw one specific
+// conclusion ("no longer NG"), not to guess at everything else.
+const NG_VIN_STATUSES = new Set(['ng', 'ng(allocated)', 'heavy ng', 'heavy ng(allocated)', 'heavy ng(accident)'])
+const OK_FINAL_STATUSES = new Set(['ok-repaired', 'ok-accept'])
+const GROUPING_NUMBER_KEY = 'Grouping  Number' // header carries two spaces (see useOps.ts)
+const AUTO_VIN_STATUS_BY = 'Auto (แผลปลดครบ)' // must not start with "ระบบ"/"system" — stripSystemHistory sweeps those
+
+function defectsAllCleared(vin: string): boolean {
+  const u = useYard.getState().units[vin]
+  return !!u && !u.damages.some(isOpenDefect)
+}
+
+let vinStatusTimer: ReturnType<typeof setTimeout> | null = null
+function reconcileVinOfStatus() {
+  const { rows } = useTracking.getState()
+  const dirty: string[] = []
+  for (const vin in rows) {
+    const c = rows[vin].cells
+    if (!NG_VIN_STATUSES.has((c['Vin Of Status'] || '').trim().toLowerCase())) continue
+    if ((c['Allocation Date'] || '').trim() || (c[GROUPING_NUMBER_KEY] || '').trim()) continue // already allocated
+    const finalOk = OK_FINAL_STATUSES.has((c['Final Status'] || '').trim().toLowerCase())
+    if (finalOk || defectsAllCleared(vin)) dirty.push(vin)
+  }
+  if (dirty.length) useTracking.getState().bulkUpdate(dirty, 'Vin Of Status', 'FIS Waiting Allocation', AUTO_VIN_STATUS_BY)
+}
+function scheduleVinStatusReconcile() {
+  if (vinStatusTimer) clearTimeout(vinStatusTimer)
+  vinStatusTimer = setTimeout(reconcileVinOfStatus, 800)
+}
+useTracking.subscribe(scheduleVinStatusReconcile) // rows changed (Final Status edit, import, sync)
+useYard.subscribe(scheduleVinStatusReconcile)     // units changed (a damage's repair status changed)
 
 // memoized array of rows to avoid new-reference selector loops
 export function useTrackingRows(): TrackRow[] {
