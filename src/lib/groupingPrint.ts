@@ -50,9 +50,9 @@ tr.grp-alt td { background: #fff3d6; }
 .note { text-align: center; font-size: 9px; margin-top: 4px; }
 `
 /**
- * Find-car sheet: few columns on a PORTRAIT page, so it is typeset 1:1 against
- * the approved printout (Plan PM 20 RAI) — every number below is measured out of
- * that PDF's content stream, not guessed:
+ * Find-car sheet: few columns on a PORTRAIT page, originally typeset 1:1
+ * against the approved printout (Plan PM 20 RAI) — every number below was
+ * measured out of that PDF's content stream, not guessed:
  *
  *   page     A4 portrait 595.2 × 841.68 pt, content 13.44 … 577.56 (564.12 wide)
  *   title    19.32 pt, band 35.76 pt tall
@@ -60,25 +60,32 @@ tr.grp-alt td { background: #fff3d6; }
  *   row      31.20 pt tall (baselines 729.94 · 698.74 · 667.51 … = 31.2 apart)
  *   Vin      14.16 pt   ·   No 17.64 pt (the number the driver reads first)
  *
- * The shared 9px/14px above is sized for the 11-column LANDSCAPE dealer sheet;
- * reused here it filled barely half the page and was unreadable at arm's length,
- * which is no good for a driver walking the yard with the sheet in hand. The
- * earlier pass (18.24/14.24 pt, 2 px padding) got the type right but left the
- * rows less than two-thirds of the reference's height, so the sheet still read
- * cramped. Overrides come last so they win on specificity.
+ * That 1:1 scale only fit 23 rows per A4 portrait page (816.68pt of content
+ * height between the 12.5pt top/bottom margins, minus the title band's own
+ * height AND its margin-bottom, minus the header band, ÷ 31.2pt row height)
+ * — a lot of paper for a 60-70 car lot. Scaled every dimension down together
+ * (title/header/row/font/margins all by the same ~×0.785, so the sheet keeps
+ * the same proportions, just smaller) to fit 30 rows on one page instead: 28
+ * (title) + 3 (title margin) + 33.7 (header) + 30×24.5 (rows) = 799.7pt,
+ * comfortably inside the 816.68pt available — verified against an actual
+ * rendered PDF, not just this arithmetic (a rounding-sized overshoot here
+ * silently pushes the 30th row onto a second page). Overrides come last so
+ * they win on specificity.
  */
 const CSS_PORTRAIT = CSS.replace('A4 landscape', 'A4 portrait')
   .replace('margin: 8mm', 'margin: 12.5pt 15pt') + `
 body, th, td { font-family: 'Aptos Narrow','Aptos','Arial Narrow','Sarabun','Noto Sans Thai',Tahoma,sans-serif; }
-.title { font-size: 19.32pt; height: 35.76pt; line-height: 35.76pt; margin: 0 0 4pt; }
-th { font-size: 10.56pt; height: 42.96pt; padding: 2pt 6pt;
+.title { font-size: 15.2pt; height: 28pt; line-height: 28pt; margin: 0 0 3pt; }
+th { font-size: 8.3pt; height: 33.7pt; padding: 1.6pt 4.7pt;
   font-family: 'Aptos SemiBold','Aptos','Sarabun','Noto Sans Thai',Tahoma,sans-serif; }
-td { font-size: 14.16pt; height: 31.2pt; padding: 0 6pt; }
+td { font-size: 11.1pt; height: 24.5pt; padding: 0 4.7pt; }
 /* the row number is read first, from a walking distance — biggest type on the sheet */
-td.no { font-size: 17.64pt; font-weight: 600;
+td.no { font-size: 13.8pt; font-weight: 600;
   font-family: 'Aptos SemiBold','Aptos','Sarabun','Noto Sans Thai',Tahoma,sans-serif; }
-td.vin { font-family: 'Aptos Narrow','Aptos','Arial Narrow','Consolas',monospace; font-size: 14.16pt; letter-spacing: 0; }
-.note { font-size: 14.16pt; }
+td.vin { font-family: 'Aptos Narrow','Aptos','Arial Narrow','Consolas',monospace; font-size: 11.1pt; letter-spacing: 0; }
+/* Lane load reads at a glance same as the header band — filled the whole column, not just bold text */
+td.lane { background: #ffff00; font-weight: 700; }
+.note { font-size: 11.1pt; }
 `
 
 const htmlDoc = (title: string, body: string, css: string): string =>
@@ -152,7 +159,7 @@ export function buildFindCarHtml(rows: GroupPrintRow[], meta: GroupPrintMeta): s
     <td class="c">${esc(r.model)}</td>
     <td class="c">${esc(r.color)}</td>
     <td class="c"><b>${esc(locOf(r.yardLocation) || '—')}</b></td>
-    <td class="c">${esc(r.laneLoad)}</td>
+    <td class="c lane">${esc(r.laneLoad)}</td>
     <td>${esc(r.remark)}</td>
   </tr>`).join('')
 
