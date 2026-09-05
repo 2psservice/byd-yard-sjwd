@@ -180,12 +180,25 @@ function typeQueues(ctx: ReportCtx, type: 'PDI' | 'FINAL' | 'PM' | 'WASH'): Work
 /** Checked/done items of a queue type on the day, deduped by vin (latest wins).
  *  Each item carries the NAME of the queue it was recorded under — that name is
  *  what the yard calls the batch ("repdi 22 คัน") and what the reports label
- *  the work with. */
+ *  the work with.
+ *
+ *  `gatedOut` items are skipped outright: that flag means a car LEFT the yard
+ *  while this station's queue item still sat unchecked, and the gate-out
+ *  reconciler auto-closed it as housekeeping (see useOps.ts) — nobody actually
+ *  inspected the car, there is just no more work left to do on it. That
+ *  closure stamps `doneAt` with today's timestamp same as a real check would,
+ *  so without this guard a car that left the yard weeks ago could silently
+ *  inflate today's PM/PDI/FINAL CHECK count the moment any device noticed the
+ *  departure — exactly what happened when a single stale PM queue item closed
+ *  out and the office saw one more "checked today" car than anyone actually
+ *  checked. */
 function checkedItems(ctx: ReportCtx, type: 'PDI' | 'FINAL' | 'PM' | 'WASH', nameFilter?: (n: string) => boolean) {
   const out = new Map<string, QueueItem & { queueName: string }>()
   for (const q of typeQueues(ctx, type)) {
     if (nameFilter && !nameFilter(q.name ?? '')) continue
-    for (const i of q.items) if (itemOnDay(i, ctx.day)) {
+    for (const i of q.items) {
+      if (i.gatedOut) continue
+      if (!itemOnDay(i, ctx.day)) continue
       const prev = out.get(i.vin)
       if (!prev || (itemTs(i) ?? 0) > (itemTs(prev) ?? 0)) out.set(i.vin, { ...i, queueName: (q.name ?? '').trim() })
     }
