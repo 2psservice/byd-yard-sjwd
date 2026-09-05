@@ -3176,7 +3176,7 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
   const currentSite = useYard(s => s.currentSite)
   const { loadFromIdb } = useTracking()
   const { setInspected, removeDamage, updateRepairStatus, toast, loadFromSupabase } = useYard()
-  const { block: blockGate, modal: gateModal } = useNotGatedIn()
+  const { block: blockGate, blockWith, modal: gateModal } = useNotGatedIn()
   // pull tracking rows (IDB) AND units (cloud) on entry so a scan right after
   // opening the station finds the car instead of racing the initial load.
   useEffect(() => { loadFromIdb(); loadFromSupabase() }, [loadFromIdb, loadFromSupabase])
@@ -3285,6 +3285,25 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
     if (res.type === 'ambiguous') { toast('err', `พบ ${res.count} คัน — พิมพ์ให้ยาวขึ้น`); return }
     if (res.type === 'none') { scanNotFound(v); return }
     if (res.type === 'notGated') { blockGate(res.vin, res.model); return }
+    // a car already Gate-out has no station work left to do — a stale PM/PDI/
+    // FINAL queue item left over from before it departed must not be usable to
+    // record a check that never actually happened at this station today.
+    const row = trackingRows.find(r => r.vin === res.vin)
+    const modelOf = () => units.find(u => u.vin === res.vin)?.modelName ?? row?.cells['Model name'] ?? row?.cells['Model'] ?? ''
+    if (row && hasGoneOut(row.cells)) {
+      blockWith(res.vin, modelOf(), 'รถออกจากลานแล้ว',
+        <>รถคันนี้ <b style={{ color: '#dc2626' }}>Gate-out</b> ไปแล้ว จึงไม่มีงานสถานีให้ทำอีก</>)
+      return
+    }
+    // PM ต้องมีคิวงาน PM ที่กำลังทำงานอยู่รออยู่เท่านั้น — ห้ามสแกนอิสระแบบที่
+    // PDI/FINAL ทำได้ (สแกนแล้วประทับวันที่ลงชีทแม้ไม่มีคิว) เพราะ Plan PM ผูก
+    // กับคิวงานเสมอ รถที่ไม่อยู่ในแผนไม่ควรถูกตี OK/NG ที่สถานีนี้
+    if (types.includes('PM') && (res.type === 'ok' || res.type === 'okPending')
+        && !procQueues.some(q => q.items.some(i => i.vin === res.vin))) {
+      blockWith(res.vin, modelOf(), 'ไม่มีคิว PM',
+        <>รถคันนี้ไม่อยู่ในคิวงาน PM ที่กำลังทำงานอยู่<br />ต้องเพิ่มรถเข้าคิวงาน PM ที่หน้า Operation ก่อน จึงจะตรวจที่สถานีนี้ได้</>)
+      return
+    }
     if (res.type === 'okPending') fetchUnitFallback(res.vin) // unit not synced yet — hurry just this one car
     setVin(res.vin); setJustOk(false)
   }
