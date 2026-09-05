@@ -91,7 +91,9 @@ tbody tr:nth-child(30n) { page-break-after: always; break-after: page; }
 /* the row number is read first, from a walking distance — biggest type on the sheet */
 td.no { font-size: 13.8pt; font-weight: 600;
   font-family: 'Aptos SemiBold','Aptos','Sarabun','Noto Sans Thai',Tahoma,sans-serif; }
-td.vin { font-family: 'Aptos Narrow','Aptos','Arial Narrow','Consolas',monospace; font-size: 11.1pt; letter-spacing: 0; }
+/* bold + centered like the No column beside it, instead of plain left-aligned text */
+td.vin { font-family: 'Aptos Narrow','Aptos','Arial Narrow','Consolas',monospace; font-size: 11.1pt; letter-spacing: 0;
+  text-align: center; font-weight: 600; }
 /* Lane load reads at a glance same as the header band — filled the whole column, not just bold text */
 td.lane { background: #ffff00; font-weight: 700; }
 .note { font-size: 11.1pt; }
