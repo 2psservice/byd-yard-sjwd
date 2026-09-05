@@ -68,9 +68,16 @@ tr.grp-alt td { background: #fff3d6; }
  * the same proportions, just smaller) to fit 30 rows on one page instead: 28
  * (title) + 3 (title margin) + 33.7 (header) + 30×24.5 (rows) = 799.7pt,
  * comfortably inside the 816.68pt available — verified against an actual
- * rendered PDF, not just this arithmetic (a rounding-sized overshoot here
- * silently pushes the 30th row onto a second page). Overrides come last so
- * they win on specificity.
+ * rendered PDF, not just this arithmetic.
+ *
+ * That height math still let the printer's OWN font substitution (Aptos is
+ * rarely installed outside this dev box — the actual print/PDF driver falls
+ * back further down the font stack than whatever rendered the sizing here)
+ * squeeze a 31st row onto page 1 before overflowing, i.e. natural page-break
+ * placement isn't safe to rely on across environments. `tr:nth-child(30n)`
+ * below forces the break explicitly every 30 rows regardless of the actual
+ * rendered row height, so the page always splits 30/30/…/remainder no matter
+ * what fonts the printing machine actually has.
  */
 const CSS_PORTRAIT = CSS.replace('A4 landscape', 'A4 portrait')
   .replace('margin: 8mm', 'margin: 12.5pt 15pt') + `
@@ -79,6 +86,8 @@ body, th, td { font-family: 'Aptos Narrow','Aptos','Arial Narrow','Sarabun','Not
 th { font-size: 8.3pt; height: 33.7pt; padding: 1.6pt 4.7pt;
   font-family: 'Aptos SemiBold','Aptos','Sarabun','Noto Sans Thai',Tahoma,sans-serif; }
 td { font-size: 11.1pt; height: 24.5pt; padding: 0 4.7pt; }
+/* exactly 30 rows per printed page, regardless of actual rendered row height */
+tbody tr:nth-child(30n) { page-break-after: always; break-after: page; }
 /* the row number is read first, from a walking distance — biggest type on the sheet */
 td.no { font-size: 13.8pt; font-weight: 600;
   font-family: 'Aptos SemiBold','Aptos','Sarabun','Noto Sans Thai',Tahoma,sans-serif; }
