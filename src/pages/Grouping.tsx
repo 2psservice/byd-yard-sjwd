@@ -563,7 +563,7 @@ export function Grouping() {
               <tbody>
                 {renderRows.map(({ r, n, first, span, alt }) => {
                   const td = (extra?: React.CSSProperties): React.CSSProperties =>
-                    ({ border: '1px solid #000', padding: '3px 6px', background: alt ? '#fff3d6' : '#fff', ...extra })
+                    ({ border: '1px solid #000', padding: '3px 6px', background: alt ? '#ffff00' : '#fff', ...extra })
                   const on = selVins.has(r.vin)
                   return (
                     <tr key={r.vin} style={on ? { outline: '2px solid #2563eb55', outlineOffset: -2 } : undefined}>
