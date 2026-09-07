@@ -45,7 +45,7 @@ th, td { border: 1px solid #000; font-size: 9px; padding: 3px 4px; vertical-alig
 th { background: #ffff00; font-weight: 700; text-align: center; }
 td.c { text-align: center; }
 td.vin { font-family: 'JetBrains Mono','Consolas',monospace; font-size: 9px; letter-spacing: .2px; }
-tr.grp-alt td { background: #fff3d6; }
+tr.grp-alt td { background: #ffff00; }
 .tot td { background: #ffff00; font-weight: 700; text-align: center; }
 .note { text-align: center; font-size: 9px; margin-top: 4px; }
 `
