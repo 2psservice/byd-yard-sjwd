@@ -94,6 +94,15 @@ export const FINAL_CHECK_TABS: CheckTab[] = [
 ]
 
 /**
+ * Same two checklists (Control Stock Sheet · Additional Accessories), for
+ * Walk Around Check to run at gate-in — before PDI ever sees the car. Reads
+ * straight off FINAL_CHECK_TABS (minus Overall inspection, which is PDI/FINAL
+ * measurement work, not a gate-in stock count) so editing an item's wording
+ * or adding one there is never done twice.
+ */
+export const WALK_CHECK_TABS: CheckTab[] = FINAL_CHECK_TABS.filter((t) => t.key !== 'overall')
+
+/**
  * A "Control Stock Sheet" tick is a STOCK COUNT, not a body defect.
  *
  * The station sheet writes every checklist NG as a damage so the record is

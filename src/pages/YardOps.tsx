@@ -30,6 +30,7 @@ import { cx, PhotoLightbox } from '../components/ui'
 import { rowInSite } from '../lib/siteScope'
 import { compressImage } from '../lib/photo'
 import StationSheet from '../components/StationSheet'
+import StockAccessoryCheck from '../components/StockAccessoryCheck'
 import { MasterCombo } from '../components/MasterCombo'
 import { MeasurementField, TirePressureField, TIRE_WHEELS, joinTirePressure } from '../components/MeasurementField'
 import { FINAL_CHECK_TABS } from '../lib/finalCheckList'
@@ -4737,8 +4738,8 @@ function RelocationView() {
 
 // ── Check view ────────────────────────────────────────────────────────────────
 // ── Update Damage ─────────────────────────────────────────────────────────────
-function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', source = 'update', recentKey = 'damage', richCard = false }:
-  { accent?: string; stationName?: string; source?: DamageSource; recentKey?: string; richCard?: boolean } = {}) {
+function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', source = 'update', recentKey = 'damage', richCard = false, showStockCheck = false }:
+  { accent?: string; stationName?: string; source?: DamageSource; recentKey?: string; richCard?: boolean; showStockCheck?: boolean } = {}) {
   const units = useSiteUnits()
   const trackingRows = useSiteRows()
   const wrongSite = useWrongSiteHint()
@@ -4887,6 +4888,9 @@ function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', s
       {richCard && unit && vin ? (
         <div className="space-y-3 fade-up">
           <UnitCard unit={unit} accent={accent} />
+          {showStockCheck && (
+            <StockAccessoryCheck key={vin} vin={vin} accent={accent} station={stationName} />
+          )}
           <div>
             <div className="flex items-center justify-between mb-2">
               <span className="text-[13px] font-semibold flex items-center gap-1.5">
@@ -5531,7 +5535,7 @@ export function YardOps() {
       {role === 'walk'       && <WalkView />}
       {role === 'gateout'    && <GateOutView />}
       {role === 'updatedmg'  && <UpdateDamageView />}
-      {role === 'walkcheck'  && <UpdateDamageView accent="#0d9488" stationName="Walk Around Check" source="walkcheck" recentKey="walkcheck" richCard />}
+      {role === 'walkcheck'  && <UpdateDamageView accent="#0d9488" stationName="Walk Around Check" source="walkcheck" recentKey="walkcheck" richCard showStockCheck />}
       {role === 'driver'     && <DriverView />}
       {role === 'relocation' && <RelocationView />}
       {role === 'pdi'        && <PdiView types={['PDI']} accent="#7c3aed" title="PDI" />}
