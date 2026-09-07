@@ -77,11 +77,11 @@ function RemarkBox({ configId }: { configId: string }) {
   )
 }
 
-/** One P1–P5 shift card: per-model Actual/OK rows with a PDI/OK total box
- *  beside each, a shared Remark line + a free-text Remark box, a Total
- *  PDI/Total OK footer, and a GRAND TOTAL mini-table of this month's OK count
- *  per model. */
-function TimeMatrixCard({ matrix, dayLabel, remarkId }: { matrix: TimeMatrix; dayLabel: string; remarkId: string }) {
+/** One P1–P5 shift card: per-model Actual/OK rows with a station/OK total box
+ *  beside each (column header reads PDI or PM, matching `kind`), a shared
+ *  Remark line + a free-text Remark box, a Total station/Total OK footer, and
+ *  a GRAND TOTAL mini-table of this month's OK count per model. */
+function TimeMatrixCard({ matrix, dayLabel, remarkId, kind }: { matrix: TimeMatrix; dayLabel: string; remarkId: string; kind: StationKind }) {
   const dayModels = matrix.models.filter((m) => m.total > 0)
   const mtdModels = matrix.models.filter((m) => (matrix.mtdOkByModel.get(m.name) ?? 0) > 0)
   const mtdTotal = mtdModels.reduce((n, m) => n + (matrix.mtdOkByModel.get(m.name) ?? 0), 0)
@@ -98,7 +98,7 @@ function TimeMatrixCard({ matrix, dayLabel, remarkId }: { matrix: TimeMatrix; da
             {['P1', 'P2', 'P3', 'P4', 'P5'].map((p) => (
               <th key={p} className={cx(mcell, 'font-bold')} style={{ color: '#2563eb' }}>{p}</th>
             ))}
-            <th className={cx(mcell, 'font-bold')} rowSpan={2}>PDI</th>
+            <th className={cx(mcell, 'font-bold')} rowSpan={2}>{kind}</th>
             <th className={cx(mcell, 'font-bold')} rowSpan={2}>OK</th>
           </tr>
           <tr style={{ background: 'var(--chip)' }}>
@@ -142,7 +142,7 @@ function TimeMatrixCard({ matrix, dayLabel, remarkId }: { matrix: TimeMatrix; da
             </td>
           </tr>
           <tr style={{ background: 'rgba(250,204,21,0.35)' }}>
-            <td colSpan={7} className={cx(mcell, 'text-left font-bold')}>Total PDI</td>
+            <td colSpan={7} className={cx(mcell, 'text-left font-bold')}>Total {kind}</td>
             <td colSpan={2} className={cx(mcell, 'tabular font-bold')}>{matrix.total}</td>
           </tr>
           <tr style={{ background: 'rgba(34,197,94,0.2)' }}>
@@ -312,7 +312,7 @@ export function StationTables({ ctx, tab, kind }: { ctx: ReportCtx; tab: Station
         <div className="panel overflow-hidden">
           <div className="overflow-x-auto">
             <div className="p-3" style={{ background: 'var(--app-bg)' }}>
-              <TimeMatrixCard matrix={matrix} dayLabel={dayLabel} remarkId={remarkId} />
+              <TimeMatrixCard matrix={matrix} dayLabel={dayLabel} remarkId={remarkId} kind={kind} />
             </div>
           </div>
         </div>
