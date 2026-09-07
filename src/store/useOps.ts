@@ -989,6 +989,29 @@ function isGateInArtifact(i: QueueItem, cells: Record<string, string> | undefine
   return d.getTime() === gDay
 }
 
+/** The day THIS item actually joined its queue's current round — the queue's
+ *  own creation day, or later if the car was appended/revived into an
+ *  already-existing queue (addVins, reviveVin never touch `q.createdAt`). A
+ *  long-lived station queue keeps getting new rounds' cars pushed into it, so
+ *  "the queue was created" is not "this car's round started". */
+const ladderJoinDay = (q: WorkQueue, i: QueueItem): number => {
+  const d = new Date(Math.max(q.createdAt || 0, i.addedAt || 0)); d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+
+/**
+ * A ladder auto-close (see the `ladder` branch below) that used a date from
+ * the car's PREVIOUS round, before this item joined the queue for its CURRENT
+ * round. Only the ladder branch ever writes `doneBy: 'ไฟล์ Co-Inspection'`, so
+ * that stamp plus no real station record is the fingerprint; comparing the
+ * recorded date against THIS item's own join day (not caught until it was
+ * re-added) is what tells a stale reuse apart from a legitimate same-round one.
+ */
+function isStaleLadderClosure(q: WorkQueue, i: QueueItem): boolean {
+  if (!i.done || i.gatedOut || hasStationRecord(i) || i.doneBy !== 'ไฟล์ Co-Inspection') return false
+  return (i.doneAt ?? 0) < ladderJoinDay(q, i)
+}
+
 let reconcileTimer: ReturnType<typeof setTimeout> | null = null
 function reconcileGateOuts() {
   const rows = useTracking.getState().rows
@@ -1039,14 +1062,12 @@ function reconcileGateOuts() {
     // a PM/PDI/FINAL already recorded on the sheet (e.g. a Co-Inspection file
     // upload filled the date cell) counts as done for this queue too — but an
     // item the field/admin already ticked keeps ITS record (ระบบมาก่อนไฟล์).
-    // Only a date on/after the queue's creation day counts: an older date is
-    // last round's check, not this queue's work.
+    // Only a date on/after this ITEM joined the queue counts: an older date is
+    // last round's check, not this round's work.
     // station queues (PDI / PM / FINAL / REPAIR / SPECIAL) — their progress is
     // the station's own work, never the gate's
     const isStationQueue = !isSequenceQueue(q) && !isPreGateIn
     const ladder = isStationQueue ? LADDER_OF[queueTypeOf(q)] : undefined
-    const qd = new Date(q.createdAt || 0); qd.setHours(0, 0, 0, 0)
-    const qDay = qd.getTime()
     let changed = false
     let items = q.items.map((i) => {
       if (gone.has(i.vin) && !(i.done && i.gatedOut)) {
@@ -1078,6 +1099,14 @@ function reconcileGateOuts() {
         changed = true
         return { ...i, done: false, doneAt: undefined, doneBy: undefined, stamped: undefined, stage: undefined }
       }
+      // repair: a ladder auto-close that used a date from the car's PREVIOUS
+      // round (see isStaleLadderClosure) — un-tick it back to pending so this
+      // round's work actually has to be scanned, same "ระบบมาก่อนไฟล์" repair
+      // as the gate-in artifact above, just for the ladder's own mistake.
+      if (isStationQueue && isStaleLadderClosure(q, i)) {
+        changed = true
+        return { ...i, done: false, doneAt: undefined, doneBy: undefined, stamped: undefined }
+      }
       if (ladder && !i.done && !i.manualUndoneAt) {
         const r = rows[i.vin]
         if (r) {
@@ -1086,12 +1115,13 @@ function reconcileGateOuts() {
           // let it re-tick this queue
           const gDay = gateInDay(r.cells)
           const trustworthy = (v: number) => hasStationRecord(i) || gDay === undefined || v !== gDay
+          const joinDay = ladderJoinDay(q, i)
           let ts: number | undefined
           for (const k of ladder) { // latest recorded date on the ladder (hole-safe)
             const v = parseDayCell(r.cells[k])
             if (v !== undefined && trustworthy(v) && (ts === undefined || v > ts)) ts = v
           }
-          if (ts !== undefined && ts >= qDay) {
+          if (ts !== undefined && ts >= joinDay) {
             changed = true
             // stamped: the date already sits on the sheet — never burn another slot
             return { ...i, done: true, doneAt: ts, doneBy: i.doneBy ?? 'ไฟล์ Co-Inspection', stamped: true }
