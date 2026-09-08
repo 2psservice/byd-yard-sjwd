@@ -423,13 +423,17 @@ export interface PlacementGuard {
  * and no way for the two to interleave.
  *
  * Returns true when the move applied, false when the car had already moved on
- * (the caller re-reads and tells the operator), and true on a transport error —
- * a failed request is not evidence of a conflict, and the yard must not be told
- * a move was rejected because the wifi blinked. The ordinary sync repairs that.
+ * (the caller re-reads and tells the operator), and true (with `transportError`
+ * set) on a failed request — that is not evidence of a conflict, and the yard
+ * must not be told a move was rejected because the wifi blinked. `applied` thus
+ * stays truthy either way for a caller that only cares "was this a real
+ * conflict?", while `transportError` tells a caller that DOES need to know
+ * whether the write actually reached the cloud (updateLocations queues it for
+ * retry) that it did not.
  */
 export async function updatePlacementIfUnchanged(
   guard: PlacementGuard, next: Unit,
-): Promise<{ applied: true } | { applied: false; current: { block?: string; row?: number; slot?: number } }> {
+): Promise<{ applied: true; transportError?: true } | { applied: false; current: { block?: string; row?: number; slot?: number } }> {
   if (!isConfigured()) return { applied: true }
   const row = unitToRow(next) as Record<string, unknown>
   // an absent spot is NULL in Postgres and `= NULL` never matches, so the two
@@ -441,8 +445,8 @@ export async function updatePlacementIfUnchanged(
   }
   const { data, error } = await q.select('vin')
   // a failed request is not evidence of a conflict — the yard must not be told
-  // a move was rejected because the wifi blinked. The ordinary sync repairs it.
-  if (error) { console.error('[db] updatePlacementIfUnchanged', guard.vin, error); return { applied: true } }
+  // a move was rejected because the wifi blinked. updateLocations retries it.
+  if (error) { console.error('[db] updatePlacementIfUnchanged', guard.vin, error); return { applied: true, transportError: true } }
   if ((data ?? []).length > 0) return { applied: true }
 
   // Zero rows matched — but that has TWO causes, and only one is a conflict.
@@ -451,7 +455,7 @@ export async function updatePlacementIfUnchanged(
   // would strand the car forever. Ask which it is.
   const { data: cur, error: readErr } = await supabase
     .from('units').select('vin, block, row, slot').eq('vin', guard.vin).maybeSingle()
-  if (readErr) { console.error('[db] updatePlacementIfUnchanged read-back', guard.vin, readErr); return { applied: true } }
+  if (readErr) { console.error('[db] updatePlacementIfUnchanged read-back', guard.vin, readErr); return { applied: true, transportError: true } }
   if (!cur) { await upsertUnits([next]); return { applied: true } } // never existed → create it
   const c = cur as { block?: string | null; row?: number | null; slot?: number | null }
   return { applied: false, current: { block: c.block ?? undefined, row: c.row ?? undefined, slot: c.slot ?? undefined } }

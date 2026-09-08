@@ -216,6 +216,14 @@ interface YardState {
   /** Retry every still-unconfirmed defect write. Safe to call anytime — a no-op
    *  when the queue is empty or a flush is already in flight. */
   flushPendingDamages: () => Promise<void>
+  /** Placements whose cloud write never landed (retries exhausted — dead
+   *  network, backgrounded mid-save). Kept until flushPendingPlacements()
+   *  confirms them, so a full units re-pull (visibilitychange / online /
+   *  reconnect) doesn't silently revert this device's move back to the car's
+   *  OLD slot while its Location history line still says the move landed. */
+  pendingPlacements: Record<string, { vin: string; block?: string; row?: number; slot?: number }>
+  /** Retry every still-unconfirmed placement write. Safe to call anytime. */
+  flushPendingPlacements: () => Promise<void>
   removeDamage: (vin: string, id: string) => void
   updateDamage: (vin: string, id: string, patch: Partial<import('../types').Damage>) => void
   updateRepairStatus: (vin: string, id: string, status: string) => void
@@ -343,6 +351,39 @@ function scheduleFlushPendingDamages(get: () => { flushPendingDamages: () => Pro
     get().flushPendingDamages().finally(() => {
       // still something left (offline / retry failed again) — keep trying
       if (Object.keys(get().pendingDamages).length) scheduleFlushPendingDamages(get, Math.min(delay * 1.5, 60_000))
+    })
+  }, delay)
+}
+
+// ── pending-placement retry (self-rescheduling, backs off while offline) ───
+let pendingPlacementsTimer: ReturnType<typeof setTimeout> | null = null
+/**
+ * Re-apply this device's not-yet-synced MOVE onto a unit fetched from the
+ * cloud. Every "adopt the cloud copy wholesale" merge must pass through here:
+ * `updateLocations` sets the local slot optimistically and a Relocation save
+ * logs the move into the car's Location history the same instant — both
+ * happen whether or not the cloud write actually lands. If the write to the
+ * `units` table then fails (weak yard wifi) and only a console.error records
+ * it, a later full re-pull (tab backgrounded / reconnect / next login) adopts
+ * the cloud's still-OLD slot and the car silently slides back to it — while
+ * the history line already written keeps claiming the move succeeded,
+ * forever. Re-stamping the pending slot here is what stops that regression.
+ */
+export function attachPendingPlacement(
+  pending: Record<string, { vin: string; block?: string; row?: number; slot?: number }>, u: Unit,
+): Unit {
+  const p = pending[u.vin]
+  return p ? { ...u, block: p.block, row: p.row, slot: p.slot } : u
+}
+
+let pendingPlacementsFlushing = false
+function scheduleFlushPendingPlacements(get: () => { flushPendingPlacements: () => Promise<void>; pendingPlacements: Record<string, unknown> }, delay = 15_000) {
+  if (pendingPlacementsTimer) clearTimeout(pendingPlacementsTimer)
+  pendingPlacementsTimer = setTimeout(() => {
+    pendingPlacementsTimer = null
+    get().flushPendingPlacements().finally(() => {
+      // still something left (offline / retry failed again) — keep trying
+      if (Object.keys(get().pendingPlacements).length) scheduleFlushPendingPlacements(get, Math.min(delay * 1.5, 60_000))
     })
   }, delay)
 }
@@ -851,6 +892,33 @@ export const useYard = create<YardState>()(
         } finally { pendingDamagesFlushing = false }
       },
 
+      pendingPlacements: {},
+      flushPendingPlacements: async () => {
+        if (pendingPlacementsFlushing) return
+        const pending = get().pendingPlacements
+        const entries = Object.entries(pending)
+        if (!entries.length) return
+        pendingPlacementsFlushing = true
+        try {
+          const done: string[] = []
+          for (const [vin, p] of entries) {
+            const u = get().units[vin]
+            if (!u) { done.push(vin); continue } // car gone locally — nothing left to place
+            try {
+              await db.upsertUnits([{ ...u, block: p.block, row: p.row, slot: p.slot }])
+              done.push(vin)
+            } catch (e) { console.error('[db] flushPendingPlacements', vin, e) }
+          }
+          if (done.length) {
+            set((s) => {
+              const next = { ...s.pendingPlacements }
+              for (const vin of done) delete next[vin]
+              return { pendingPlacements: next }
+            })
+          }
+        } finally { pendingPlacementsFlushing = false }
+      },
+
       removeDamage: (vin, id) =>
         set((s) => {
           const u = s.units[vin]
@@ -1097,7 +1165,21 @@ export const useYard = create<YardState>()(
         const guarded = items.filter((it) => it.from && intentional.has(it.vin))
         const plain = [...intentional].filter((v) => !guarded.some((g) => g.vin === v))
         if (plain.length) {
-          db.upsertUnits(plain.map((v) => units[v])).catch((e) => console.error('[db] updateLocations', e))
+          db.upsertUnits(plain.map((v) => units[v])).catch((e) => {
+            console.error('[db] updateLocations', e)
+            // the optimistic move above already shows on screen, and the caller
+            // (e.g. RelocationView) already wrote a Location-history line
+            // claiming it succeeded — if this write never lands, a later full
+            // units re-pull silently reverts the car back to its OLD slot while
+            // the history line stays, permanently contradicting it. Queue it so
+            // flushPendingPlacements keeps retrying instead of losing the move.
+            set((s2) => {
+              const next = { ...s2.pendingPlacements }
+              for (const v of plain) { const u = units[v]; next[v] = { vin: v, block: u.block, row: u.row, slot: u.slot } }
+              return { pendingPlacements: next }
+            })
+            scheduleFlushPendingPlacements(get)
+          })
         }
         if (guarded.length) {
           // compare-and-set: a car somebody else moved between our read and this
@@ -1105,10 +1187,21 @@ export const useYard = create<YardState>()(
           // silently winning the race is how a car ends up back in a lane it left
           void (async () => {
             const lost: { vin: string; at: string }[] = []
+            const failed: string[] = []
             for (const it of guarded) {
               const res = await db.updatePlacementIfUnchanged({ vin: it.vin, from: it.from! }, units[it.vin])
-                .catch(() => ({ applied: true as const }))
-              if (res.applied) continue
+                .catch(() => ({ applied: true as const, transportError: true as const }))
+              if (res.applied) {
+                // "applied" here can mean a genuinely confirmed write OR a
+                // request that never reached the cloud at all (transportError)
+                // — the latter is exactly the desync that let a car's Location
+                // history say "moved" while its slot silently stayed the OLD
+                // one after the next full re-pull. Queue it the same way the
+                // plain (unguarded) path above does, instead of trusting a
+                // write we never actually confirmed.
+                if (res.transportError) failed.push(it.vin)
+                continue
+              }
               lost.push({ vin: it.vin, at: posCode(res.current) || '—' })
               // adopt what the cloud says rather than keeping our rejected guess
               set((st) => {
@@ -1116,6 +1209,14 @@ export const useYard = create<YardState>()(
                 if (!cur) return st
                 return { units: { ...st.units, [it.vin]: { ...cur, ...res.current } } }
               })
+            }
+            if (failed.length) {
+              set((s2) => {
+                const next = { ...s2.pendingPlacements }
+                for (const v of failed) { const u = units[v]; next[v] = { vin: v, block: u.block, row: u.row, slot: u.slot } }
+                return { pendingPlacements: next }
+              })
+              scheduleFlushPendingPlacements(get)
             }
             if (lost.length) {
               get().toast('err', lost.length === 1
@@ -1514,9 +1615,16 @@ export const useYard = create<YardState>()(
           arr.push(p.dmg)
           pendingByVin.set(p.vin, arr)
         }
+        // a move this device queued in pendingPlacements hasn't reached the
+        // cloud yet either — the same "adopt the cloud copy wholesale" merges
+        // that need to keep an unconfirmed defect need to keep an unconfirmed
+        // MOVE too, or the car silently slides back to its old slot while its
+        // Location history line still claims the move landed.
+        const pendingPlacementsNow = get().pendingPlacements
         const withPending = (u: Unit): Unit => {
           const extra = pendingByVin.get(u.vin)?.filter((d) => !u.damages.some((x) => x.id === d.id))
-          return extra?.length ? { ...u, damages: [...u.damages, ...extra] } : u
+          const withDmg = extra?.length ? { ...u, damages: [...u.damages, ...extra] } : u
+          return attachPendingPlacement(pendingPlacementsNow, withDmg)
         }
         // stream: paint cars into the yard plan page by page — a cold device
         // used to stare at an empty plan until the LAST page of ~2,000 cars
@@ -1534,7 +1642,7 @@ export const useYard = create<YardState>()(
           const units = { ...s.units }
           for (const u of batch) {
             const cur = units[u.vin]
-            units[u.vin] = cur ? { ...u, damages: cur.damages } : withPending(u)
+            units[u.vin] = attachPendingPlacement(pendingPlacementsNow, cur ? { ...u, damages: cur.damages } : withPending(u))
           }
           return { units }
         })
@@ -1693,8 +1801,9 @@ export const useYard = create<YardState>()(
                 if (!cloud.length) return
                 set((s) => {
                   const merged: Record<string, Unit> = { ...s.units }
-                  // never let the cloud copy erase a defect still queued locally
-                  for (const u of cloud) merged[u.vin] = attachPendingDamages(s.pendingDamages, u)
+                  // never let the cloud copy erase a defect, or revert a move,
+                  // still queued locally
+                  for (const u of cloud) merged[u.vin] = attachPendingPlacement(s.pendingPlacements, attachPendingDamages(s.pendingDamages, u))
                   return { units: merged }
                 })
               }).catch(() => {})
@@ -1929,6 +2038,10 @@ export const useYard = create<YardState>()(
         // defect that failed to sync and then got the tab closed on it is lost
         // for good instead of being retried on the next launch
         pendingDamages: s.pendingDamages,
+        // same reason, for a move: a slot save that failed to reach the cloud
+        // and then got the tab closed on it must still retry next launch, not
+        // quietly let the car settle back onto its old spot
+        pendingPlacements: s.pendingPlacements,
       }),
     },
   ),
@@ -2114,8 +2227,8 @@ onSync('dmg', (p: { vins?: string[] }) => {
     if (!cloud.length) return
     useYard.setState((s) => {
       const units = { ...s.units }
-      // never let the cloud copy erase a defect still queued locally
-      for (const u of cloud) units[u.vin] = attachPendingDamages(s.pendingDamages, u)
+      // never let the cloud copy erase a defect, or revert a move, still queued locally
+      for (const u of cloud) units[u.vin] = attachPendingPlacement(s.pendingPlacements, attachPendingDamages(s.pendingDamages, u))
       return { units }
     })
   }).catch((e) => console.error('[db] dmg sync pull', e))
