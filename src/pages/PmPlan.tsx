@@ -30,7 +30,7 @@ import { siteIdForLocation } from '../lib/siteScope'
 import { PageHead, cx } from '../components/ui'
 import { DayPicker, dayKeyOf } from './Grouping'
 import { StationTables, useStationCtx, type StationTab } from '../components/StationTables'
-import { exportStationReport } from '../lib/opsReport'
+import { exportStationReport, downloadWorkbook } from '../lib/opsReport'
 import { parsePmQueueWorkbook, pmQueueNameFromFile } from '../lib/pmQueueImport'
 import type { TrackRow } from '../lib/excelTracking'
 
@@ -237,14 +237,17 @@ export function PmPlan() {
   }), [diffVins])
 
   // ── tab 2: the per-VIN PM Status register ─────────────────────────────────
+  // ค้นหาได้ทีละหลายวิน — วางเป็นคอลัมน์จาก Excel มาได้เลย (ขึ้นบรรทัดใหม่ / คั่นด้วย
+  // , ; หรือ tab) ไม่ตัดด้วยช่องว่างเฉยๆ เพราะจะทำให้ค้นหาแบบ "ATTO 3" คำเดียวพัง
   const status = useMemo(() => {
-    const needle = q.trim().toUpperCase()
+    const needles = q.split(/[\r\n,;\t]+/).map((s) => s.trim().toUpperCase()).filter(Boolean)
     const list = triage.eligible
       .map(({ row }) => row)
-      .filter((r) => !needle
-        || r.vin.includes(needle)
-        || (r.cells['Model name'] || '').toUpperCase().includes(needle)
-        || modelOf(r.cells).toUpperCase().includes(needle))
+      .filter((r) => !needles.length
+        || needles.some((needle) =>
+          r.vin.includes(needle)
+          || (r.cells['Model name'] || '').toUpperCase().includes(needle)
+          || modelOf(r.cells).toUpperCase().includes(needle)))
       .sort((a, b) => modelOf(a.cells).localeCompare(modelOf(b.cells)) || a.vin.localeCompare(b.vin))
     // how many PM rounds actually carry a date, over the whole register —
     // that's how many PM columns the table needs (at least 1, like the sheet)
@@ -337,6 +340,62 @@ export function PmPlan() {
       toast('ok', `ออกไฟล์ PM (${dayLabel}) แล้ว`)
     } catch (e) { console.error('[pm] export', e); toast('err', 'ออกไฟล์ไม่สำเร็จ ลองใหม่อีกครั้ง') }
     finally { setExporting(false) }
+  }
+
+  // ── tab 5: export the WHOLE register (not just the SHOW_CAP-visible rows) —
+  // same columns the on-screen table shows, one PM round per group of columns
+  const [statusExporting, setStatusExporting] = useState(false)
+  const doExportStatus = async () => {
+    setStatusExporting(true)
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const XJS: any = await import('exceljs')
+      const ExcelJS = XJS.default ?? XJS
+      const wb = new ExcelJS.Workbook()
+      wb.creator = 'SJWD Yard Control'
+      const border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } }
+      const fill = (argb: string) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb } })
+      const font = { name: 'Tahoma', size: 10 }
+      const ws = wb.addWorksheet('PM STATUS')
+
+      const maxPm = status.maxPm
+      ws.columns = [
+        { width: 6 }, { width: 21 }, { width: 26 }, { width: 13 }, { width: 12 }, { width: 15 },
+        ...Array.from({ length: maxPm }, () => [{ width: 12 }, ...MEAS.map(() => ({ width: 9 }))]).flat(),
+        { width: 17 }, { width: 20 },
+      ]
+
+      const head1: (string | number)[] = ['No.', 'Vin', 'Model name', 'Model', 'Color', 'Gate In']
+      for (let gi = 0; gi < maxPm; gi++) head1.push(`PM ${gi + 1}`, ...MEAS.map(() => ''))
+      head1.push('Location', 'หมายเหตุ')
+      const head2: (string | number)[] = ['', '', '', '', '', '']
+      for (let gi = 0; gi < maxPm; gi++) head2.push('วันที่', ...MEAS.map((m) => m.head))
+      head2.push('', '')
+      const hr1 = ws.addRow(head1)
+      const hr2 = ws.addRow(head2)
+      for (let c = 1; c <= 6; c++) ws.mergeCells(1, c, 2, c)
+      let col = 7
+      for (let gi = 0; gi < maxPm; gi++) { ws.mergeCells(1, col, 1, col + MEAS.length); col += 1 + MEAS.length }
+      ws.mergeCells(1, col, 2, col); ws.mergeCells(1, col + 1, 2, col + 1)
+      for (const r of [hr1, hr2]) r.eachCell((cell: any) => {
+        cell.font = { ...font, bold: true }; cell.border = border; cell.fill = fill('FFD9D9D9')
+        cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }
+      })
+
+      for (const [i, r] of status.list.entries()) {
+        const c = r.cells
+        const rounds = roundVals(r, maxPm)
+        const line: (string | number)[] = [i + 1, r.vin, c['Model name'] || '—', modelOf(c), c['Color'] || '—', c['Gate In (Rayong yard)'] || c['Gate In Date'] || '—']
+        for (const rd of rounds) line.push(rd.date || '—', ...rd.vals.map((v) => v || '—'))
+        line.push(c['Location yard'] || '—', c['หมายเหตุ'] || c['Remark'] || '')
+        const row = ws.addRow(line)
+        row.eachCell({ includeEmpty: true }, (cell: any) => { cell.font = font; cell.border = border })
+      }
+
+      await downloadWorkbook(wb, `PM_STATUS_${new Date().toISOString().slice(0, 10)}.xlsx`)
+      toast('ok', `ออกไฟล์ PM STATUS (${status.list.length.toLocaleString()} คัน) แล้ว`)
+    } catch (e) { console.error('[pm-status] export', e); toast('err', 'ออกไฟล์ไม่สำเร็จ ลองใหม่อีกครั้ง') }
+    finally { setStatusExporting(false) }
   }
 
   // ── tab 6: upload a plan file straight into a new PM work queue ───────────
@@ -586,12 +645,23 @@ export function PmPlan() {
       {tab === 'status' && (
         <div className="panel overflow-hidden">
           <div className="px-3 py-2.5 border-b hairline flex items-center gap-2 flex-wrap">
-            <label className="flex items-center gap-2 px-3 py-1.5 rounded-xl flex-1 min-w-[220px] max-w-[380px]" style={{ background: 'var(--chip)' }}>
-              <Search size={14} style={{ color: 'var(--muted)' }} />
-              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="ค้นหา VIN / รุ่น…"
-                className="bg-transparent outline-none text-[13px] w-full" />
+            <label className="flex items-start gap-2 px-3 py-1.5 rounded-xl flex-1 min-w-[220px] max-w-[420px]" style={{ background: 'var(--chip)' }}>
+              <Search size={14} style={{ color: 'var(--muted)', marginTop: 3, flexShrink: 0 }} />
+              <textarea value={q} rows={1}
+                onChange={(e) => {
+                  setQ(e.target.value)
+                  const el = e.target
+                  el.style.height = 'auto'
+                  el.style.height = `${Math.min(el.scrollHeight, 110)}px`
+                }}
+                placeholder="ค้นหา VIN / รุ่น… วางได้หลายรายการ (ขึ้นบรรทัดใหม่ หรือคั่นด้วย , )"
+                className="bg-transparent outline-none text-[13px] w-full resize-none"
+                style={{ lineHeight: 1.5, maxHeight: 110, overflowY: 'auto' }} />
             </label>
-            <span className="text-[12px] ml-auto" style={{ color: 'var(--muted)' }}>
+            <button className="btn btn-primary px-3 py-1.5 text-[12.5px]" onClick={doExportStatus} disabled={statusExporting || status.list.length === 0}>
+              <Download size={14} /> {statusExporting ? 'กำลังสร้างไฟล์…' : 'Export Excel'}
+            </button>
+            <span className="text-[12px] w-full text-right sm:w-auto sm:ml-auto" style={{ color: 'var(--muted)' }}>
               {status.list.length > SHOW_CAP
                 ? `แสดง ${SHOW_CAP} จาก ${status.list.length.toLocaleString()} คัน — พิมพ์ค้นหาเพื่อกรอง`
                 : `${status.list.length.toLocaleString()} คัน`}
