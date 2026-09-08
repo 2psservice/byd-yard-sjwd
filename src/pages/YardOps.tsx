@@ -9,7 +9,7 @@ import {
   CheckCircle2, XCircle, AlertTriangle, Navigation, Clock,
   User, RefreshCw, Plus, Trash2,
   ArrowRight, Zap, Hand, X, Camera, Pencil, Gauge, Route, Crosshair,
-  LogOut, MapPin, ClipboardList, ListChecks, Copy, Check, Loader2, Images,
+  LogOut, MapPin, ClipboardList, ListChecks, Copy, Check, Loader2, Images, Sparkles,
 } from 'lucide-react'
 import { useYard, useUnits, useTrips, useBlocks, attachPendingDamages } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
@@ -218,7 +218,7 @@ function DefectStatusSelect({ d, onChange }: { d: Damage; onChange: (s: string) 
   )
 }
 
-type RoleKey = 'walk' | 'driver' | 'pdi' | 'pm' | 'fc' | 'mechanic' | 'gateout' | 'relocation' | 'check' | 'updatedmg' | 'walkcheck'
+type RoleKey = 'walk' | 'driver' | 'pdi' | 'pm' | 'fc' | 'mechanic' | 'special' | 'gateout' | 'relocation' | 'check' | 'updatedmg' | 'walkcheck'
 const ROLES: { key: RoleKey; th: string; en: string; icon: React.ReactNode; color: string; desc: string }[] = [
   { key: 'walk',      th: 'Gate-in',         en: 'Gate-in',         icon: <ScanLine size={28} />,      color: 'var(--brand)',   desc: 'ตรวจรับรถเข้าลาน' },
   { key: 'gateout',  th: 'Gate-out',        en: 'Gate-out',        icon: <LogOut size={28} />,        color: '#64748b',        desc: 'บันทึกรถออกจากลาน' },
@@ -230,7 +230,8 @@ const ROLES: { key: RoleKey; th: string; en: string; icon: React.ReactNode; colo
   { key: 'walkcheck',th: 'Walk Around Check', en: 'Walk Around Check', icon: <Hand size={28} />,      color: '#0d9488',        desc: 'สแกน / เพิ่ม Defect ระหว่างเดินตรวจ' },
   { key: 'updatedmg',th: 'Update Damage',   en: 'Update Damage',   icon: <AlertTriangle size={28} />, color: '#dc2626',        desc: 'บันทึก / แก้ไขความเสียหาย' },
   { key: 'check',    th: 'Check',           en: 'Check',           icon: <ClipboardList size={28} />, color: '#0891b2',        desc: 'ตรวจสอบข้อมูลรถ' },
-  { key: 'mechanic', th: 'ช่าง',             en: 'Mechanic',        icon: <Wrench size={28} />,        color: '#c2680b',        desc: 'คิวงานซ่อม / งานพิเศษ · แก้ไข NG' },
+  { key: 'mechanic', th: 'ช่าง',             en: 'Mechanic',        icon: <Wrench size={28} />,        color: '#c2680b',        desc: 'คิวงานซ่อม · แก้ไข NG' },
+  { key: 'special',  th: 'งานพิเศษ',         en: 'Special',         icon: <Sparkles size={28} />,      color: '#9333ea',        desc: 'คิวงานพิเศษ · แก้ไข NG' },
 ]
 
 // ── shared: "not gated-in" guard ──────────────────────────────────────────────
@@ -3565,7 +3566,15 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
 }
 
 // ── mechanic view ─────────────────────────────────────────────────────────────
-function MechanicView() {
+/** ช่าง (REPAIR) and งานพิเศษ (SPECIAL) are separate menu tiles — same free-form
+ *  "assigned queue → scan → fix NG" screen, scoped to just the ONE queue type
+ *  each tile is for, so a mechanic isn't shown special-work cars and vice versa. */
+function MechanicView({ types, accent, stationLabel, emptyLabel }: {
+  types: Extract<QueueType, 'REPAIR' | 'SPECIAL'>[]
+  accent: string
+  stationLabel: string
+  emptyLabel: string
+}) {
   const units = useSiteUnits()
   const trackingRows = useSiteRows()
   const wrongSite = useWrongSiteHint()
@@ -3581,17 +3590,16 @@ function MechanicView() {
 
   const unit = vin ? units.find(u => u.vin === vin) ?? null : null
 
-  // ONLY assigned queues from the Operation page appear here — ช่าง (ซ่อม) and
-  // งานพิเศษ both land at this station. The old auto-generated "every in-yard
-  // car with an open NG" list flooded the screen with hundreds of VINs nobody
-  // was assigned to fix today; scanning a car still opens its NG list directly.
+  // ONLY assigned queues from the Operation page appear here, and only this
+  // tile's own queue type (types). The old auto-generated "every in-yard car
+  // with an open NG" list flooded the screen with hundreds of VINs nobody was
+  // assigned to fix today; scanning a car still opens its NG list directly.
   const repairQueues = useMemo(
     () => allQueues.filter(q => {
       if (isSequenceQueue(q) || isPreGateInQueue(q) || isEmptyQueue(q) || isQueueComplete(q)) return false
-      const t = queueTypeOf(q)
-      return t === 'REPAIR' || t === 'SPECIAL'
+      return types.includes(queueTypeOf(q) as 'REPAIR' | 'SPECIAL')
     }),
-    [allQueues],
+    [allQueues, types],
   )
   // scan should resolve against this station's own assigned queue(s) first —
   // a handful of VINs, not the whole site — falling back to a full search
@@ -3628,24 +3636,24 @@ function MechanicView() {
 
   return (
     <div className="space-y-4">
-      <VinInput onScan={onScan} accent="#c2680b" />
+      <VinInput onScan={onScan} accent={accent} />
       {gateModal}
 
-      {/* assigned queues from the Operation page — ช่าง (ซ่อม) + งานพิเศษ */}
+      {/* assigned queues from the Operation page — this tile's own type only */}
       {!unit && (repairQueues.length > 0 ? (
         <AllQueuesBrowser queues={repairQueues} units={units} trackingRows={trackingRows}
           onPick={v => { setVin(v); setShowForm(false) }} />
       ) : (
         <div className="panel p-6 text-center fade-up" style={{ color: 'var(--faint)' }}>
           <Wrench size={26} className="mx-auto mb-2" style={{ color: 'var(--line-strong)' }} />
-          <div className="text-[13px] font-semibold" style={{ color: 'var(--muted)' }}>ยังไม่มีคิวงานซ่อม / งานพิเศษ</div>
+          <div className="text-[13px] font-semibold" style={{ color: 'var(--muted)' }}>{emptyLabel}</div>
           <div className="text-[12px] mt-1">แอดมินสร้างคิวได้ที่หน้า Operation — หรือสแกน VIN เพื่อเปิดรายการ NG ของคันนั้นได้เลย</div>
         </div>
       ))}
 
       {unit && (
         <div className="space-y-3 fade-up">
-          <UnitCard unit={unit} accent="#c2680b" />
+          <UnitCard unit={unit} accent={accent} />
 
           {unit.damages.length === 0 ? (
             <div className="panel p-5 text-center" style={{ color: 'var(--st-yard)' }}>
@@ -3656,7 +3664,7 @@ function MechanicView() {
             <div className="panel overflow-hidden">
               <div className="px-4 py-3 border-b hairline flex items-center justify-between"
                 style={{ background: '#fff8f0' }}>
-                <span className="text-[12.5px] font-semibold flex items-center gap-1.5" style={{ color: '#c2680b' }}>
+                <span className="text-[12.5px] font-semibold flex items-center gap-1.5" style={{ color: accent }}>
                   <Wrench size={14} /> รายการ NG ที่ต้องแก้ ({unit.damages.length})
                 </span>
               </div>
@@ -3680,7 +3688,7 @@ function MechanicView() {
               key={unit.vin}
               vin={unit.vin}
               onSaveAll={damages => {
-                damages.forEach(d => addDamage(unit.vin, { ...d, source: 'mechanic', station: 'ช่าง (Mechanic)' }))
+                damages.forEach(d => addDamage(unit.vin, { ...d, source: 'mechanic', station: stationLabel }))
                 setInspected(unit.vin, false)
                 toast('err', `เพิ่ม NG ${damages.length} รายการ · ${unit.vin}`)
                 setShowForm(false)
@@ -5440,8 +5448,8 @@ export function YardOps() {
       if (t === 'PDI') add('pdi', unchecked)
       else if (t === 'PM') add('pm', unchecked)
       else if (t === 'FINAL') add('fc', unchecked)
-      // ช่าง (ซ่อม) and งานพิเศษ queues both land at the mechanic station
-      else if (t === 'REPAIR' || t === 'SPECIAL') add('mechanic', unchecked)
+      else if (t === 'REPAIR') add('mechanic', unchecked)
+      else if (t === 'SPECIAL') add('special', unchecked)
       // the driver moves cars in (queued) and back out (checked)
       add('driver', q.items.filter(i => !i.done && (stageOf(i) === 'queued' || stageOf(i) === 'checked')).length)
     }
@@ -5542,7 +5550,8 @@ export function YardOps() {
       {role === 'pm'         && <PdiView types={['PM']} accent="#2563eb" title="PM" />}
       {role === 'fc'         && <PdiView types={['FINAL']} accent="#059669" title="FINAL CHECK" />}
       {role === 'check'      && <CheckView />}
-      {role === 'mechanic'   && <MechanicView />}
+      {role === 'mechanic'   && <MechanicView types={['REPAIR']} accent="#c2680b" stationLabel="ช่าง (Mechanic)" emptyLabel="ยังไม่มีคิวงานซ่อม" />}
+      {role === 'special'    && <MechanicView types={['SPECIAL']} accent="#9333ea" stationLabel="งานพิเศษ" emptyLabel="ยังไม่มีคิวงานพิเศษ" />}
     </div>
   )
 }
