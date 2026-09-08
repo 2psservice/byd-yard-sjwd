@@ -19,10 +19,11 @@
  * PM cadence: first PM once the car has been in the yard one interval, then
  * every interval after — 30 days everywhere except Auto Tran 38 Rai (90).
  */
-import { useMemo, useState } from 'react'
-import { CalendarClock, Send, Table2, ClipboardList, Search, Download } from 'lucide-react'
+import { useMemo, useRef, useState } from 'react'
+import { CalendarClock, Send, Table2, ClipboardList, Search, Download, Upload, Loader2, FileSpreadsheet, CheckCircle2, AlertTriangle } from 'lucide-react'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { useYard } from '../store/useYard'
+import { useOps } from '../store/useOps'
 import { parseCellDate, lastPmDate, PM_KEYS } from '../lib/trackingColumns'
 import { deriveCarStatus } from '../lib/carStatus'
 import { siteIdForLocation } from '../lib/siteScope'
@@ -30,12 +31,13 @@ import { PageHead, cx } from '../components/ui'
 import { DayPicker, dayKeyOf } from './Grouping'
 import { StationTables, useStationCtx, type StationTab } from '../components/StationTables'
 import { exportStationReport } from '../lib/opsReport'
+import { parsePmQueueWorkbook, pmQueueNameFromFile } from '../lib/pmQueueImport'
 import type { TrackRow } from '../lib/excelTracking'
 
 const DAY_MS = 86_400_000
 
-/** The page's five tabs: the station's daily tables, then the plan + register. */
-type PmTab = StationTab | 'plan' | 'status'
+/** The page's six tabs: the station's daily tables, the plan + register, then upload. */
+type PmTab = StationTab | 'plan' | 'status' | 'upload'
 const DAY_TABS: { id: StationTab; label: string }[] = [
   { id: 'list', label: 'PM' },
   { id: 'defect', label: 'PM DEFECT' },
@@ -100,13 +102,16 @@ export function PmPlan() {
   const rows = useTrackingRows() // ALL yards — this board is cross-site by design
   const sites = useYard((s) => s.sites)
   const currentSite = useYard((s) => s.currentSite)
+  const currentUser = useYard((s) => s.currentUser)
   const toast = useYard((s) => s.toast)
   const setView = useYard((s) => s.setView)
   const setCurrentSite = useYard((s) => s.setCurrentSite)
   const setUnitVinFilter = useYard((s) => s.setUnitVinFilter)
+  const { createTypedQueue, addVins } = useOps()
 
   // 1–3 are the station's daily tables (same three the PDI board shows);
-  // 4–5 are this page's own monthly plan grid and per-VIN register.
+  // 4–5 are this page's own monthly plan grid and per-VIN register; 6 uploads
+  // a plan file straight into a new PM work queue.
   const [tab, setTab] = useState<PmTab>('list')
   const [day, setDay] = useState<string | 'all'>(dayKeyOf(new Date()))
   const [exporting, setExporting] = useState(false)
@@ -334,6 +339,37 @@ export function PmPlan() {
     finally { setExporting(false) }
   }
 
+  // ── tab 6: upload a plan file straight into a new PM work queue ───────────
+  const [uploadBusy, setUploadBusy] = useState(false)
+  const [uploadErr, setUploadErr] = useState('')
+  const [uploadResult, setUploadResult] = useState<
+    { queueName: string; added: number; dup: number; skipped: number; total: number } | null>(null)
+  const uploadFileRef = useRef<HTMLInputElement>(null)
+
+  const onUploadFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    if (!currentSite) { toast('err', 'กรุณาเลือก Site ก่อน'); return }
+    setUploadBusy(true); setUploadErr(''); setUploadResult(null)
+    try {
+      const res = await parsePmQueueWorkbook(file)
+      const name = pmQueueNameFromFile(file.name)
+      const id = createTypedQueue('PM', name, currentUser, currentSite)
+      const { added, dup } = addVins(id, res.rows.map((r) => r.vin))
+      // createTypedQueue auto-suffixes a taken name ("PM plan … 2") — read the
+      // name it actually landed on, not the one asked for, so the toast/panel
+      // never claims a name the queue doesn't carry
+      const finalName = useOps.getState().queues.find((q) => q.id === id)?.name ?? name
+      setUploadResult({ queueName: finalName, added, dup, skipped: res.skipped, total: res.rows.length })
+      toast('ok', `สร้างคิวงาน PM "${finalName}" · ${added} คัน`)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'อ่านไฟล์ไม่สำเร็จ'
+      setUploadErr(msg)
+      toast('err', msg)
+    } finally { setUploadBusy(false) }
+  }
+
   return (
     <div className="max-w-[1400px] mx-auto">
       <div className="panel p-4 mb-4 flex items-center gap-3 flex-wrap">
@@ -398,6 +434,13 @@ export function PmPlan() {
           <span className="badge text-[11px]" style={tab === 'status'
             ? { background: 'rgba(255,255,255,0.22)', color: '#fff' }
             : { background: 'var(--panel)', color: 'var(--muted)' }}>{status.list.length.toLocaleString()}</span>
+        </button>
+        <button onClick={() => setTab('upload')}
+          className="btn px-4 py-2 text-[13px] font-bold flex items-center gap-1.5"
+          style={tab === 'upload'
+            ? { background: 'var(--brand)', color: '#fff', border: 'none' }
+            : { background: 'var(--chip)', color: 'var(--muted)', border: '1px solid var(--line)' }}>
+          <Upload size={14} /> 6. อัพโหลดคิวงาน PM
         </button>
         {triage.cutAllocated > 0 && (
           <span className="text-[12px] ml-2" style={{ color: 'var(--muted)' }}>
@@ -626,6 +669,51 @@ export function PmPlan() {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {tab === 'upload' && (
+        <div className="panel p-5 max-w-[640px]">
+          <input ref={uploadFileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={onUploadFile} />
+          <div className="text-[13px] font-bold mb-1.5">อัพโหลดไฟล์แผน PM เป็นคิวงานใหม่</div>
+          <div className="text-[12px] mb-3" style={{ color: 'var(--muted)' }}>
+            ไฟล์ Excel ที่มีหัวตาราง No · Vin · Model · Color · Gate In (Rayong yard) · Location · Remark —
+            ชื่อคิวงานที่สร้างจะเหมือนชื่อไฟล์ที่อัพโหลด และรายชื่อรถในคิวจะขึ้นตามคอลัมน์ Vin ในไฟล์
+          </div>
+          <button onClick={() => uploadFileRef.current?.click()} disabled={uploadBusy}
+            className="btn btn-primary px-4 py-2.5 text-[13px] font-bold flex items-center gap-2">
+            {uploadBusy ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
+            {uploadBusy ? 'กำลังอ่านไฟล์…' : 'เลือกไฟล์ Excel'}
+          </button>
+
+          {uploadErr && (
+            <div className="mt-3 rounded-xl p-3 text-[12.5px] flex items-start gap-2"
+              style={{ background: 'rgba(220,38,38,0.08)', color: '#b91c1c', border: '1px solid rgba(220,38,38,0.25)' }}>
+              <AlertTriangle size={15} className="shrink-0 mt-0.5" /> {uploadErr}
+            </div>
+          )}
+
+          {uploadResult && (
+            <div className="mt-3 rounded-xl p-3.5" style={{ background: 'rgba(22,163,74,0.06)', border: '1px solid rgba(22,163,74,0.25)' }}>
+              <div className="flex items-center gap-2 font-bold text-[13px] mb-2" style={{ color: '#16a34a' }}>
+                <CheckCircle2 size={16} /> สร้างคิวงานแล้ว
+              </div>
+              <div className="flex items-center gap-2 text-[12.5px] mb-2">
+                <FileSpreadsheet size={14} style={{ color: 'var(--muted)' }} />
+                <b>{uploadResult.queueName}</b>
+              </div>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[12px]" style={{ color: 'var(--text)' }}>
+                <div>อ่านได้จากไฟล์ <b>{uploadResult.total.toLocaleString()}</b> คัน</div>
+                <div>เพิ่มเข้าคิวใหม่ <b style={{ color: '#16a34a' }}>{uploadResult.added.toLocaleString()}</b> คัน</div>
+                {uploadResult.dup > 0 && <div>ซ้ำในคิวนี้อยู่แล้ว <b>{uploadResult.dup.toLocaleString()}</b> คัน</div>}
+                {uploadResult.skipped > 0 && <div style={{ color: '#dc2626' }}>ข้ามแถวที่ไม่มี VIN <b>{uploadResult.skipped.toLocaleString()}</b> แถว</div>}
+              </div>
+              <button onClick={() => setView('operation')}
+                className="btn btn-ghost mt-3 px-3 py-1.5 text-[12px]" style={{ color: 'var(--brand)' }}>
+                ไปที่หน้า Operation · คิวงาน
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
