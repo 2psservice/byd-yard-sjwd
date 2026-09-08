@@ -9,7 +9,7 @@ import {
   CheckCircle2, XCircle, AlertTriangle, Navigation, Clock,
   User, RefreshCw, Plus, Trash2,
   ArrowRight, Zap, Hand, X, Camera, Pencil, Gauge, Route, Crosshair,
-  LogOut, MapPin, ClipboardList, ListChecks, Copy, Check, Loader2, Images, Sparkles,
+  LogOut, MapPin, ClipboardList, ListChecks, Copy, Check, Loader2, Images, Sparkles, Download,
 } from 'lucide-react'
 import { useYard, useUnits, useTrips, useBlocks, attachPendingDamages } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
@@ -44,6 +44,7 @@ import { laneFromCloud } from '../lib/laneCloud'
 import { hasDialogOpen } from '../lib/keyboardGuard'
 import { useRecentOps } from '../store/useRecentOps'
 import { buildWorkRows, buildEventLog, fmtHistAt, histOf } from '../lib/carHistory'
+import { exportSpecialQueue } from '../lib/opsReport'
 
 const recordRecent = (key: string, vin: string, note?: string) => useRecentOps.getState().record(key, vin, note)
 
@@ -2399,8 +2400,10 @@ function ProcRouteCard({ fromLabel, toLabel, result, badge, reason, accent, onSt
 /** Browsable list of every station work queue (PDI / PM / FINAL CHECK / งานพิเศษ).
  *  Driver-only: a driver moves cars for all stations, so they need to see them
  *  all — the stations themselves stay strictly scoped to their own type. */
-function AllQueuesBrowser({ queues, units, trackingRows, onPick }: {
+function AllQueuesBrowser({ queues, units, trackingRows, onPick, onExport }: {
   queues: WorkQueue[]; units: Unit[]; trackingRows: TrackRow[]; onPick: (vin: string) => void
+  /** ออกไฟล์ Excel ของคิวนี้ (VIN + ผล OK/NG) — เฉพาะสถานีที่ตรวจแบบ OK/NG (งานพิเศษ) */
+  onExport?: (q: WorkQueue) => void
 }) {
   const [openId, setOpenId] = useState<string | null>(null)
   if (!queues.length) return null
@@ -2425,7 +2428,9 @@ function AllQueuesBrowser({ queues, units, trackingRows, onPick }: {
         }).sort((a, b) => byYardLocation(a.location, b.location))
         return (
           <div key={q.id} className="panel overflow-hidden">
-            <button className="w-full px-4 py-3 flex items-center gap-3 text-left" onClick={() => setOpenId(isOpen ? null : q.id)}>
+            <div className="w-full px-4 py-3 flex items-center gap-3 cursor-pointer" role="button" tabIndex={0}
+              onClick={() => setOpenId(isOpen ? null : q.id)}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') setOpenId(isOpen ? null : q.id) }}>
               <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: 'var(--chip)', color: 'var(--st-yard)' }}>
                 <ClipboardList size={17} />
               </div>
@@ -2438,8 +2443,15 @@ function AllQueuesBrowser({ queues, units, trackingRows, onPick }: {
                     : <span><b style={{ color: 'var(--text)' }}>{done}/{total}</b> คัน · เหลือ <b style={{ color: total - done > 0 ? '#d97706' : '#16a34a' }}>{total - done}</b></span>}
                 </div>
               </div>
+              {onExport && (
+                <button title="Export Excel" onClick={e => { e.stopPropagation(); onExport(q) }}
+                  className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 transition active:scale-95"
+                  style={{ background: 'rgba(147,51,234,0.1)', color: '#9333ea' }}>
+                  <Download size={16} />
+                </button>
+              )}
               <ChevronLeft size={16} style={{ color: 'var(--muted)', transform: isOpen ? 'rotate(90deg)' : 'rotate(-90deg)', transition: 'transform .15s' }} />
-            </button>
+            </div>
             {isOpen && (cars.length > 0 ? (
               <div className="border-t hairline max-h-[60vh] overflow-y-auto divide-y" style={{ borderColor: 'var(--line)' }}>
                 {cars.map(item => (
@@ -3569,18 +3581,24 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
 /** ช่าง (REPAIR) and งานพิเศษ (SPECIAL) are separate menu tiles — same free-form
  *  "assigned queue → scan → fix NG" screen, scoped to just the ONE queue type
  *  each tile is for, so a mechanic isn't shown special-work cars and vice versa. */
-function MechanicView({ types, accent, stationLabel, emptyLabel }: {
+function MechanicView({ types, accent, stationLabel, emptyLabel, okNgMode = false }: {
   types: Extract<QueueType, 'REPAIR' | 'SPECIAL'>[]
   accent: string
   stationLabel: string
   emptyLabel: string
+  /** งานพิเศษ (lot inspection, e.g. "ตรวจสอบแผ่น PGF ATTO2") is a pass/fail
+   *  count, not a defect-repair queue — scanning a car shows just OK / NG
+   *  against its own queue item (recordCheck), same as PDI/PM/FINAL, instead
+   *  of the free-form "+ADD DEFECT" form ช่าง (REPAIR) uses. */
+  okNgMode?: boolean
 }) {
   const units = useSiteUnits()
   const trackingRows = useSiteRows()
   const wrongSite = useWrongSiteHint()
   const allQueues = useSiteQueues()
   const { loadFromIdb } = useTracking()
-  const { addDamage, removeDamage, updateRepairStatus, setInspected, toast, loadFromSupabase } = useYard()
+  const { addDamage, removeDamage, updateRepairStatus, setInspected, toast, loadFromSupabase, currentUser } = useYard()
+  const { recordCheck } = useOps()
   const { block: blockGate, modal: gateModal } = useNotGatedIn()
   const sites = useYard(s => s.sites)
   const currentSite = useYard(s => s.currentSite)
@@ -3611,6 +3629,14 @@ function MechanicView({ types, accent, stationLabel, emptyLabel }: {
   }, [repairQueues])
   const repairQueueUnits = useMemo(() => units.filter(u => repairQueueVins.has(u.vin)), [units, repairQueueVins])
   const repairQueueRows = useMemo(() => trackingRows.filter(r => repairQueueVins.has(r.vin)), [trackingRows, repairQueueVins])
+  // งานพิเศษ only: which queue item (of this tile's own type) this car is
+  // waiting on — recordCheck needs the queue id, not just the VIN
+  const activeProc = useMemo(() => (okNgMode && unit ? activeProcess(unit.vin, repairQueues) : null), [okNgMode, unit, repairQueues])
+  const [justChecked, setJustChecked] = useState<'OK' | 'NG' | null>(null)
+
+  const onExportQueue = (q: WorkQueue) => {
+    exportSpecialQueue(q, trackingRows).catch(e => { console.error('[db] exportSpecialQueue', e); toast('err', 'ออกไฟล์ไม่สำเร็จ ลองใหม่อีกครั้ง') })
+  }
 
   const onScanRef = useRef<(v: string) => void>(() => {})
   const scanNotFound = useCloudNotFound(onScanRef)
@@ -3621,9 +3647,16 @@ function MechanicView({ types, accent, stationLabel, emptyLabel }: {
     if (res.type === 'none') { scanNotFound(v); return }
     if (res.type === 'notGated') { blockGate(res.vin, res.model); return }
     if (res.type === 'okPending') { toast('ok', 'กำลังโหลดข้อมูลรถ…'); fetchUnitFallback(res.vin) } // unit not synced yet
-    setVin(res.vin); setShowForm(false)
+    setVin(res.vin); setShowForm(false); setJustChecked(null)
   }
   onScanRef.current = onScan
+  const saveOkNg = (result: 'OK' | 'NG') => {
+    if (!activeProc || !unit) return
+    recordCheck(activeProc.queue.id, unit.vin, result, currentUser)
+    toast(result === 'OK' ? 'ok' : 'err', `${stationLabel} · ${result} · ${unit.vin.slice(-6)}`)
+    setJustChecked(result)
+    setTimeout(() => { setVin(null); setJustChecked(null) }, 1200)
+  }
   const doRelease = (id: string) => {
     if (!unit) return
     removeDamage(unit.vin, id)
@@ -3642,7 +3675,8 @@ function MechanicView({ types, accent, stationLabel, emptyLabel }: {
       {/* assigned queues from the Operation page — this tile's own type only */}
       {!unit && (repairQueues.length > 0 ? (
         <AllQueuesBrowser queues={repairQueues} units={units} trackingRows={trackingRows}
-          onPick={v => { setVin(v); setShowForm(false) }} />
+          onPick={v => { setVin(v); setShowForm(false); setJustChecked(null) }}
+          onExport={okNgMode ? onExportQueue : undefined} />
       ) : (
         <div className="panel p-6 text-center fade-up" style={{ color: 'var(--faint)' }}>
           <Wrench size={26} className="mx-auto mb-2" style={{ color: 'var(--line-strong)' }} />
@@ -3651,7 +3685,44 @@ function MechanicView({ types, accent, stationLabel, emptyLabel }: {
         </div>
       ))}
 
-      {unit && (
+      {unit && okNgMode ? (
+        <div className="space-y-3 fade-up">
+          <UnitCard unit={unit} accent={accent} />
+
+          {activeProc ? (
+            <div className="panel overflow-hidden">
+              <div className="px-4 py-3 border-b hairline flex items-center justify-between" style={{ background: `${accent}0d` }}>
+                <span className="text-[12.5px] font-semibold" style={{ color: accent }}>{activeProc.queue.name}</span>
+                {activeProc.item.stage === 'checked' && (
+                  <span className="badge text-[11px] font-bold" style={{
+                    background: activeProc.item.result === 'NG' ? 'rgba(220,38,38,0.1)' : 'rgba(22,163,74,0.12)',
+                    color: activeProc.item.result === 'NG' ? '#dc2626' : 'var(--st-yard)' }}>
+                    ตรวจแล้ว · {activeProc.item.result}
+                  </span>
+                )}
+              </div>
+              <div className="p-4 grid grid-cols-2 gap-3">
+                <button onClick={() => saveOkNg('OK')}
+                  className="h-16 rounded-2xl text-[16px] font-bold flex items-center justify-center gap-2 transition-all active:scale-95"
+                  style={justChecked === 'OK' ? { background: '#16a34a', color: '#fff' } : { background: 'rgba(22,163,74,0.1)', color: '#16a34a' }}>
+                  <CheckCircle2 size={20} /> OK
+                </button>
+                <button onClick={() => saveOkNg('NG')}
+                  className="h-16 rounded-2xl text-[16px] font-bold flex items-center justify-center gap-2 transition-all active:scale-95"
+                  style={justChecked === 'NG' ? { background: '#dc2626', color: '#fff' } : { background: 'rgba(220,38,38,0.1)', color: '#dc2626' }}>
+                  <XCircle size={20} /> NG
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="panel p-5 text-center" style={{ color: '#b45309' }}>
+              <AlertTriangle size={24} className="mx-auto mb-2" />
+              <div className="font-semibold text-[13.5px]">รถคันนี้ไม่อยู่ในคิว{stationLabel}ที่กำลังทำงานอยู่</div>
+              <div className="text-[12px] mt-1" style={{ color: 'var(--muted)' }}>ต้องเพิ่มรถเข้าคิวที่หน้า Operation ก่อน จึงจะตรวจ OK / NG ได้</div>
+            </div>
+          )}
+        </div>
+      ) : unit && (
         <div className="space-y-3 fade-up">
           <UnitCard unit={unit} accent={accent} />
 
@@ -5551,7 +5622,7 @@ export function YardOps() {
       {role === 'fc'         && <PdiView types={['FINAL']} accent="#059669" title="FINAL CHECK" />}
       {role === 'check'      && <CheckView />}
       {role === 'mechanic'   && <MechanicView types={['REPAIR']} accent="#c2680b" stationLabel="ช่าง (Mechanic)" emptyLabel="ยังไม่มีคิวงานซ่อม" />}
-      {role === 'special'    && <MechanicView types={['SPECIAL']} accent="#9333ea" stationLabel="งานพิเศษ" emptyLabel="ยังไม่มีคิวงานพิเศษ" />}
+      {role === 'special'    && <MechanicView types={['SPECIAL']} accent="#9333ea" stationLabel="งานพิเศษ" emptyLabel="ยังไม่มีคิวงานพิเศษ" okNgMode />}
     </div>
   )
 }

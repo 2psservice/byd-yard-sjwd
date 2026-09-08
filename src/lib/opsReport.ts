@@ -499,7 +499,7 @@ const LIST_SHEETS: { id: string; sheet: string }[] = [
 ]
 
 /** Save a finished workbook to the user's machine. */
-async function downloadWorkbook(wb: any, filename: string) {
+export async function downloadWorkbook(wb: any, filename: string) {
   const buf = await wb.xlsx.writeBuffer()
   const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
   const url = URL.createObjectURL(blob)
@@ -634,3 +634,79 @@ const pctStr = (n: number, total: number) => (total ? `${Math.round((n / total) 
 
 // re-export for the page's day marking
 export const pmLadderKeys = PM_KEYS
+
+// ── งานพิเศษ (SPECIAL) queue export — one ad-hoc lot, OK/NG per car ──────────
+// Unlike PDI/PM/FINAL, a SPECIAL queue has no date ladder on the master sheet
+// (stampStationDate is a documented no-op for it) — the queue ITSELF is the
+// only record of the lot's result, so the export reads straight off the
+// queue's items rather than the day-scoped ReportCtx builders above.
+
+export interface SpecialQueueRow {
+  no: number
+  vin: string
+  modelName: string
+  model: string
+  color: string
+  result: 'OK' | 'NG' | 'รอตรวจ'
+  checkedBy: string
+  checkedAt: string
+}
+
+export function buildSpecialQueueRows(q: WorkQueue, rows: TrackRow[]): SpecialQueueRow[] {
+  const byVin = new Map(rows.map((r) => [r.vin, r]))
+  return q.items.map((i, idx) => {
+    const c = byVin.get(i.vin)?.cells ?? {}
+    const checked = i.stage === 'checked'
+    return {
+      no: idx + 1,
+      vin: i.vin,
+      modelName: c['Model name'] || c['Model'] || '',
+      model: c['Model'] || c['Model name'] || '',
+      color: c['Color'] || '',
+      result: checked ? (i.result ?? 'OK') : 'รอตรวจ',
+      checkedBy: checked ? (i.checkedBy ?? '') : '',
+      checkedAt: checked && i.checkedAt ? fmtTime(i.checkedAt) : '',
+    }
+  })
+}
+
+export async function exportSpecialQueue(q: WorkQueue, rows: TrackRow[]) {
+  const XJS: any = await import('exceljs')
+  const ExcelJS = XJS.default ?? XJS
+  const wb = new ExcelJS.Workbook()
+  wb.creator = 'SJWD Yard Control'
+  const border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } }
+  const fill = (argb: string) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb } })
+  const font = { name: 'Tahoma', size: 10 }
+
+  const sheetName = (q.name || 'งานพิเศษ').replace(/[[\]*/\\?:]/g, ' ').slice(0, 31)
+  const ws = wb.addWorksheet(sheetName)
+  ws.columns = [{ width: 6 }, { width: 21 }, { width: 22 }, { width: 14 }, { width: 12 }, { width: 10 }, { width: 15 }, { width: 16 }]
+
+  const rowsOut = buildSpecialQueueRows(q, rows)
+  const okCount = rowsOut.filter((r) => r.result === 'OK').length
+  const ngCount = rowsOut.filter((r) => r.result === 'NG').length
+
+  const title = ws.addRow([q.name || 'งานพิเศษ'])
+  ws.mergeCells(1, 1, 1, 8)
+  title.font = { ...font, bold: true, size: 12 }
+  const sum = ws.addRow([`รวม ${rowsOut.length} คัน`, `OK ${okCount}`, `NG ${ngCount}`, `รอตรวจ ${rowsOut.length - okCount - ngCount}`])
+  sum.font = { ...font, bold: true }
+
+  const hr = ws.addRow(['No.', 'Vin', 'Model Name', 'Model', 'Color', 'Result', 'Checked By', 'Checked At'])
+  hr.eachCell((cell: any) => { cell.font = { ...font, bold: true }; cell.border = border; cell.fill = fill('FFD9D9D9'); cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true } })
+
+  for (const r of rowsOut) {
+    const row = ws.addRow([r.no, r.vin, r.modelName, r.model, r.color, r.result, r.checkedBy, r.checkedAt])
+    row.eachCell({ includeEmpty: true }, (cell: any, col: number) => {
+      if (col > 8) return
+      cell.font = font; cell.border = border
+      if (col === 6) {
+        if (r.result === 'OK') { cell.font = { ...font, bold: true, color: { argb: 'FF16A34A' } }; cell.fill = fill('FFD8E4BC') }
+        else if (r.result === 'NG') { cell.font = { ...font, bold: true, color: { argb: 'FFDC2626' } }; cell.fill = fill('FFFCD5B4') }
+      }
+    })
+  }
+
+  await downloadWorkbook(wb, `${sheetName.replace(/\s+/g, '_')}_${new Date().toISOString().slice(0, 10)}.xlsx`)
+}
