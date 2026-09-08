@@ -234,16 +234,19 @@ export default function App() {
     if (!loggedInUserId) return
     const catchUp = () => {
       useTracking.getState().syncCloud().catch(() => {})
-      // push any defect that failed to save earlier BEFORE the full re-pull —
-      // otherwise loadFromSupabase's cloud merge can race the flush and briefly
-      // show the car without its still-unsynced defect
+      // push any defect (or move) that failed to save earlier BEFORE the full
+      // re-pull — otherwise loadFromSupabase's cloud merge can race the flush
+      // and briefly show the car without its still-unsynced defect, or slide
+      // it back onto its old slot before the retry lands
       useYard.getState().flushPendingDamages().catch(() => {})
+      useYard.getState().flushPendingPlacements().catch(() => {})
       useYard.getState().loadFromSupabase().catch(() => {})
     }
-    // a defect can be left pending from a session that got killed before its
-    // retry landed — the boot loadFromSupabase() (below/elsewhere) already
-    // covers the full re-pull, this only needs to push the queued write
+    // a defect or move can be left pending from a session that got killed
+    // before its retry landed — the boot loadFromSupabase() (below/elsewhere)
+    // already covers the full re-pull, this only needs to push the queued write
     useYard.getState().flushPendingDamages().catch(() => {})
+    useYard.getState().flushPendingPlacements().catch(() => {})
     let hiddenAt = 0
     const onVis = () => {
       if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return }
