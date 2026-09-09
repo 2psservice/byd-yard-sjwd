@@ -57,7 +57,8 @@ export const FINAL_CHECK_TABS: CheckTab[] = [
         title: 'Group 2 : ห้องเก็บสัมภาระท้ายรถ / Trunk Room',
         items: [
           { th: 'ถาดรองห้องเก็บสัมภาระท้ายรถ / Rear luggage compartment tray' },
-          { th: 'พรม / ผ้ายาง ประจำรถ / Floor Carpet' },
+          { th: 'พรม ประจำรถ / Floor Carpet' },
+          { th: 'ผ้ายาง ประจำรถ / Floor Mat' },
           { th: 'กรอบป้ายทะเบียน / license plate frame' },
         ],
       },
