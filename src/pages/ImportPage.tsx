@@ -7,7 +7,7 @@ import { useYard } from '../store/useYard'
 import { useTracking } from '../store/useTracking'
 import { useOps } from '../store/useOps'
 import { downloadTemplate } from '../lib/excel'
-import { parseTrackingWorkbook, parseImportWorkbook, type ParseResult } from '../lib/excelTracking'
+import { parseTrackingWorkbook, parseImportWorkbook, isScanLocationEntry, type ParseResult } from '../lib/excelTracking'
 import { parseLane, parseLaneWorkbook, type LaneParseResult, type LaneRow } from '../lib/laneImport'
 import { coInspectionAccepts, rowInSite, siteForRow } from '../lib/siteScope'
 import { deriveCarStatus, hasLeftGate } from '../lib/carStatus'
@@ -193,16 +193,15 @@ export function ImportPage() {
     const plan = buildLocPlan(locParsed, useYard.getState().units, blocksBySite, currentSite, laneDepth) ?? locPlan
     // ── หน้างานชนะ: a car whose latest Location entry came from a FIELD SCAN
     // (driver parking / re-location) keeps the scanned lane — the file was
-    // exported earlier and is the less certain source. Legacy scan entries
-    // predate the src tag; every non-scan writer stamps ' · ' into `by`, so a
-    // plain-name entry is a scan. (Same rule the position-heal sweep enforces
-    // — filtering here just avoids the visible move-then-move-back churn.)
+    // exported earlier and is the less certain source. (Same rule the
+    // Relocation screen's position-heal enforces — filtering here just avoids
+    // the visible move-then-move-back churn.)
     const trRows = useTracking.getState().rows
     const scanHeld = (vin: string): boolean => {
       const hist = trRows[vin]?.history
       if (!hist) return false
       const last = [...hist].reverse().find((e) => e.field === 'Location')
-      return !!last && ((last as { src?: string }).src === 'scan' || !(last.by ?? '').includes('·'))
+      return !!last && isScanLocationEntry(last)
     }
     const apply = plan.placements.filter((p) => !scanHeld(p.vin))
     const held = plan.placements.length - apply.length

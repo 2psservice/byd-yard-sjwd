@@ -22,6 +22,16 @@ export interface RowEvent {
   src?: 'scan'
 }
 
+/** Was this Location history line written by a FIELD SCAN (driver parking /
+ *  re-location), as opposed to a file import or an admin bulk tool? The
+ *  position-heal (see YardOps RelocationView) and the "Update Location" import
+ *  both trust a scan over any other writer. Legacy entries predate the `src`
+ *  tag; every non-scan writer stamps " · " into `by` ("admin · นำเข้าไฟล์"),
+ *  so a plain name with no "·" is a scan. */
+export function isScanLocationEntry(e: { src?: string; by?: string }): boolean {
+  return e.src === 'scan' || !(e.by ?? '').includes('·')
+}
+
 export interface TrackRow {
   vin: string
   cells: Record<string, string>

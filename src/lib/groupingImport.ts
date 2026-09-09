@@ -76,6 +76,18 @@ export function yardLocFull(u: { block?: string; row?: number; slot?: number } |
   return `${blockCode(u.block)}${String(u.slot).padStart(2, '0')}${String(u.row).padStart(2, '0')}`
 }
 
+/** Reverse of yardLocFull: "T1201" → { block: 'T', slot: 12, row: 1 }. The
+ *  block code is letters only (single or multi-letter, e.g. "WCL"), followed
+ *  by exactly 4 digits — 2-digit ช่อง then 2-digit คันที่. Returns null for
+ *  anything else (blank, a bare yard name, a malformed cell). */
+export function parseYardLocCode(code: string): { block: string; slot: number; row: number } | null {
+  const m = (code || '').trim().toUpperCase().match(/^([A-Z]+)(\d{2})(\d{2})$/)
+  if (!m) return null
+  const slot = Number(m[2]), row = Number(m[3])
+  if (!slot || !row) return null
+  return { block: m[1], slot, row }
+}
+
 /** Sort key for a yard location code ("20-A28" → ["A", 28], "N-O15" → ["O", 15]).
  *  The yard prefix is ALPHANUMERIC ("N-", "R-", "20-", "38-"), so it must be stripped
  *  with [A-Za-z0-9]+ — a letters-only strip leaves "20-A28" untouched and every key
