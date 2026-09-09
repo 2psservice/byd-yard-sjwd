@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import {
   UploadCloud, FileSpreadsheet, Download, Sparkles, Trash2, CheckCircle2, Table2,
-  Loader2, Database, MapPin, Car, CalendarDays, Hourglass, ClipboardCheck, AlertTriangle,
+  Loader2, Database, MapPin, Car, CalendarDays, Hourglass, ClipboardCheck, AlertTriangle, Package,
 } from 'lucide-react'
 import { useYard } from '../store/useYard'
 import { useTracking } from '../store/useTracking'
@@ -13,6 +13,7 @@ import { coInspectionAccepts, rowInSite, siteForRow } from '../lib/siteScope'
 import { deriveCarStatus, hasLeftGate } from '../lib/carStatus'
 import { pos, blockKeyOfTag, blockTag, resolveBlockByName } from '../lib/format'
 import { yardLocFull } from '../lib/groupingImport'
+import { parseAccessoryWorkbook, resolveAccessoryItem, STOCK_TAB_LABEL, type AccessoryParseResult } from '../lib/accessoryImport'
 import { MasterDefectAdmin } from '../components/MasterDefectAdmin'
 import type { Block, Unit } from '../types'
 import { PageHead, cx } from '../components/ui'
@@ -109,7 +110,7 @@ function buildLocPlan(
 
 export function ImportPage() {
   const [tab, setTab] = useState<'import' | 'master'>('import')
-  const { loadSample, clearAll, toast, importDefects, updateLocations } = useYard()
+  const { loadSample, clearAll, toast, importDefects, updateLocations, addDamage } = useYard()
   const blocksBySite = useYard((s) => s.blocksBySite)
   const sites = useYard((s) => s.sites)
   const currentSite = useYard((s) => s.currentSite)
@@ -223,6 +224,71 @@ export function ImportPage() {
       (plan.rowFull.length ? ` · ช่องเต็ม ข้าม ${plan.rowFull.length}` : '') +
       (plan.badLane.length ? ` · Lane อ่านไม่ได้ ${plan.badLane.length}` : ''))
     setLocParsed(null); setLocFileName('')
+  }
+
+  // ── Update Accessory (Installed / Uninstalled / CBU-Installed → Control
+  // Stock Sheet NG) ──
+  const [accParsed, setAccParsed] = useState<AccessoryParseResult | null>(null)
+  const [accFileName, setAccFileName] = useState('')
+  const [accBusy, setAccBusy] = useState(false)
+  const [accSaving, setAccSaving] = useState(false)
+  const [accDrag, setAccDrag] = useState(false)
+  const accInputRef = useRef<HTMLInputElement>(null)
+
+  const handleAccFile = async (file: File) => {
+    setAccBusy(true)
+    try {
+      const res = await parseAccessoryWorkbook(file)
+      setAccParsed(res); setAccFileName(file.name)
+    } catch (e: any) {
+      toast('err', e?.message || 'อ่านไฟล์ไม่สำเร็จ — ตรวจรูปแบบ Excel')
+    } finally { setAccBusy(false) }
+  }
+
+  // one NG per (vin, item) still open from an earlier import is never
+  // duplicated — a re-upload of the same/updated file only adds what is
+  // genuinely new. A car not yet parked in this yard (no Unit row) is
+  // skipped: addDamage has nowhere to attach the NG to.
+  const accPlan = useMemo(() => {
+    if (!accParsed) return null
+    let matched = 0, notFound = 0, toAddTotal = 0, alreadyTotal = 0
+    const rows = accParsed.rows.map((r) => {
+      const u = yardUnits[r.vin]
+      if (!u) { notFound++; return { vin: r.vin, found: false, toAdd: [] as { label: string; groupTitle: string }[] } }
+      matched++
+      const toAdd: { label: string; groupTitle: string }[] = []
+      for (const name of r.ngNames) {
+        const item = resolveAccessoryItem(name)
+        if (!item) continue
+        const dup = u.damages.some((d) => d.source === 'accessoryImport' && d.areaTh === item.label && d.statusRepair === 'Waiting Repair')
+        if (dup) alreadyTotal++
+        else toAdd.push(item)
+      }
+      toAddTotal += toAdd.length
+      return { vin: r.vin, found: true, toAdd }
+    })
+    return { rows, matched, notFound, toAddTotal, alreadyTotal }
+  }, [accParsed, yardUnits])
+
+  const confirmAcc = () => {
+    if (!accPlan || !accPlan.toAddTotal || accSaving) return
+    setAccSaving(true)
+    let added = 0
+    for (const row of accPlan.rows) {
+      for (const item of row.toAdd) {
+        addDamage(row.vin, {
+          area: item.label, areaTh: item.label, type: '', severity: 'major',
+          item: `${STOCK_TAB_LABEL} · ${item.groupTitle}`,
+          categoryNG: 'NG', statusRepair: 'Waiting Repair',
+          source: 'accessoryImport', station: 'Update Accessory',
+        })
+        added++
+      }
+    }
+    toast('ok', `Update Accessory · บันทึก NG ${added.toLocaleString()} รายการ` +
+      (accPlan.notFound ? ` · ข้ามรถที่ยังไม่มีในยาร์ดนี้ ${accPlan.notFound.toLocaleString()}` : '') +
+      (accPlan.alreadyTotal ? ` · มีอยู่แล้ว ${accPlan.alreadyTotal.toLocaleString()}` : ''))
+    setAccParsed(null); setAccFileName(''); setAccSaving(false)
   }
 
   const handleFile = async (file: File) => {
@@ -643,6 +709,60 @@ export function ImportPage() {
                       <button className="btn" onClick={() => { setLocParsed(null); setLocFileName('') }}>ยกเลิก</button>
                       <button className="btn" style={{ background: '#d97706', color: '#fff' }} onClick={confirmLoc} disabled={!locPlan.placements.length}>
                         <CheckCircle2 size={15} /> ยืนยัน Update Location ({locPlan.placements.length.toLocaleString()})
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ── Update Accessory (Installed / Uninstalled / CBU-Installed → Control Stock Sheet NG) ── */}
+          <div className="panel mt-4 overflow-hidden fade-up">
+            <div className="flex items-center gap-2 px-4 py-3 border-b hairline">
+              <Package size={16} style={{ color: '#7c3aed' }} />
+              <span className="font-semibold text-[14px]">Update Accessory</span>
+              <span className="text-[12px] ml-auto" style={{ color: 'var(--muted)' }}>Installed / Uninstalled / CBU-Installed → Control Stock Sheet</span>
+            </div>
+            <div className="p-4">
+              {!accParsed ? (
+                <UploadRow
+                  color="#7c3aed" soft="rgba(124,58,237,0.1)"
+                  icon={<Package size={20} style={{ color: '#7c3aed' }} />}
+                  title="ลากไฟล์ Vin list (Installed/Uninstalled/CBU-Installed Accessories) มาวาง หรือคลิก"
+                  sub={<>ต้องมีคอลัมน์ <b>VIN</b> + <b>Uninstalled Accessories</b> — รายการที่ระบุว่าไม่ติดตั้งจะถูกบันทึกเป็น NG ใน Control Stock Sheet</>}
+                  busy={accBusy} drag={accDrag} inputRef={accInputRef} onFile={handleAccFile} setDrag={setAccDrag}
+                />
+              ) : accPlan && (
+                <div className="fade-up">
+                  <div className="flex items-center gap-2 mb-3">
+                    <FileSpreadsheet size={15} style={{ color: '#7c3aed' }} />
+                    <span className="font-semibold text-[13.5px] clip">{accFileName}</span>
+                    <span className="badge ml-auto" style={{ color: '#7c3aed', background: 'rgba(124,58,237,0.1)' }}>{accParsed.totalRows.toLocaleString()} VIN ในไฟล์</span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-px rounded-xl overflow-hidden" style={{ background: 'var(--line)' }}>
+                    <SumCell label="จะบันทึก NG" value={accPlan.toAddTotal} accent="#dc2626" big />
+                    <SumCell label="รถที่พบในยาร์ด" value={accPlan.matched} accent="var(--st-yard)" />
+                    <SumCell label="มี NG นี้อยู่แล้ว" value={accPlan.alreadyTotal} accent="var(--muted)" />
+                    <SumCell label="ยังไม่มีในยาร์ดนี้" value={accPlan.notFound} accent="var(--st-pending)" />
+                  </div>
+                  {accParsed.unmapped.length > 0 && (
+                    <div className="text-[11.5px] px-3 py-2 rounded-lg mt-2 flex items-start gap-1.5" style={{ background: 'rgba(217,119,6,0.09)', color: '#92400e' }}>
+                      <AlertTriangle size={12} className="shrink-0 mt-0.5" />
+                      <span>ชื่ออุปกรณ์ในไฟล์ที่ยังไม่มีในเช็คลิสต์ Control Stock Sheet — ข้ามไป: <b>{accParsed.unmapped.join(' · ')}</b></span>
+                    </div>
+                  )}
+                  {accParsed.skippedNoVin > 0 && (
+                    <div className="text-[11.5px] mt-2" style={{ color: 'var(--muted)' }}>ข้ามแถวที่ไม่มี VIN {accParsed.skippedNoVin.toLocaleString()} แถว</div>
+                  )}
+                  <div className="flex items-center justify-between gap-2 mt-3 flex-wrap">
+                    <span className="text-[12px]" style={{ color: 'var(--muted)' }}>
+                      <b style={{ color: '#dc2626' }}>{accPlan.toAddTotal.toLocaleString()}</b> รายการจะถูกบันทึกเป็น Defect (NG) ใน Control Stock Sheet
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button className="btn" onClick={() => { setAccParsed(null); setAccFileName('') }} disabled={accSaving}>ยกเลิก</button>
+                      <button className="btn" style={{ background: accSaving ? '#a78bda' : '#7c3aed', color: '#fff' }} onClick={confirmAcc} disabled={accSaving || !accPlan.toAddTotal}>
+                        {accSaving ? <><Loader2 size={15} className="animate-spin" /> กำลังบันทึก…</> : <><CheckCircle2 size={15} /> ยืนยัน Update Accessory ({accPlan.toAddTotal.toLocaleString()})</>}
                       </button>
                     </div>
                   </div>
