@@ -268,21 +268,20 @@ export function ImportPage() {
 
   // one NG per (vin, item) still open from an earlier import is never
   // duplicated — a re-upload of the same/updated file only adds what is
-  // genuinely new. A car with no Unit row yet — Pre Gate-in included — gets
-  // a stub registered at confirm time via importUnits, same as
-  // doTrackingGateIn does for its own walk-around NGs: importUnits creates it
-  // 'EXPECTED' (imported / on trailer, not yet arrived — see Unit['status']),
-  // never touches placement, and is exactly what the real Gate-in step later
-  // finds and upgrades in place, damages and all. Only a VIN this system has
-  // never heard of at all (no tracking row either) has nothing to attach a
-  // stock-sheet NG to and is truly skipped.
+  // genuinely new. A car with no Unit row yet but whose tracking row shows it
+  // HAS gated in gets one registered at confirm time (same fallback
+  // saveDefects uses) — only a car that has never gated in at all (still
+  // Pre Gate-in, or not in the system) is truly skipped: there is nothing to
+  // attach a stock-sheet NG to yet.
   const accPlan = useMemo(() => {
     if (!accParsed) return null
-    let matched = 0, willRegister = 0, unknown = 0, toAddTotal = 0, alreadyTotal = 0
+    let matched = 0, willRegister = 0, notGatedIn = 0, toAddTotal = 0, alreadyTotal = 0
     const rows = accParsed.rows.map((r) => {
       const u = yardUnits[r.vin]
       if (!u) {
-        if (!existing[r.vin]) { unknown++; return { vin: r.vin, status: 'unknown' as const, toAdd: [] as { label: string; groupTitle: string }[] } }
+        const tr = existing[r.vin]
+        const gated = tr && deriveCarStatus(tr.cells) !== 'Pre Gate-in'
+        if (!gated) { notGatedIn++; return { vin: r.vin, status: 'notGatedIn' as const, toAdd: [] as { label: string; groupTitle: string }[] } }
         willRegister++
         return { vin: r.vin, status: 'willRegister' as const, toAdd: r.ngNames.map(resolveAccessoryItem).filter((x): x is { label: string; groupTitle: string } => !!x) }
       }
@@ -299,7 +298,7 @@ export function ImportPage() {
       return { vin: r.vin, status: 'found' as const, toAdd }
     })
     toAddTotal += rows.filter((r) => r.status === 'willRegister').reduce((n, r) => n + r.toAdd.length, 0)
-    return { rows, matched, willRegister, unknown, toAddTotal, alreadyTotal }
+    return { rows, matched, willRegister, notGatedIn, toAddTotal, alreadyTotal }
   }, [accParsed, yardUnits, existing])
 
   const confirmAcc = () => {
@@ -323,7 +322,7 @@ export function ImportPage() {
       }
     }
     toast('ok', `Update Accessory · บันทึก NG ${added.toLocaleString()} รายการ` +
-      (accPlan.unknown ? ` · ไม่พบข้อมูลรถในระบบเลย ${accPlan.unknown.toLocaleString()}` : '') +
+      (accPlan.notGatedIn ? ` · ข้ามรถที่ยังไม่ Gate-in ${accPlan.notGatedIn.toLocaleString()}` : '') +
       (accPlan.alreadyTotal ? ` · มีอยู่แล้ว ${accPlan.alreadyTotal.toLocaleString()}` : ''))
     setAccParsed(null); setAccFileName(''); setAccSaving(false)
   }
@@ -780,9 +779,9 @@ export function ImportPage() {
                   <div className="grid grid-cols-5 gap-px rounded-xl overflow-hidden" style={{ background: 'var(--line)' }}>
                     <SumCell label="จะบันทึก NG" value={accPlan.toAddTotal} accent="#dc2626" big />
                     <SumCell label="รถที่พบในยาร์ด" value={accPlan.matched} accent="var(--st-yard)" />
-                    <SumCell label="ยังไม่มี Unit (จะลงทะเบียนให้ — รวม Pre Gate-in)" value={accPlan.willRegister} accent="var(--brand)" />
+                    <SumCell label="เพิ่งเข้ายาร์ด (จะลงทะเบียนให้)" value={accPlan.willRegister} accent="var(--brand)" />
                     <SumCell label="มี NG นี้อยู่แล้ว" value={accPlan.alreadyTotal} accent="var(--muted)" />
-                    <SumCell label="ไม่พบข้อมูลรถในระบบเลย" value={accPlan.unknown} accent="var(--st-pending)" />
+                    <SumCell label="ยังไม่ Gate-in" value={accPlan.notGatedIn} accent="var(--st-pending)" />
                   </div>
                   {accParsed.unmapped.length > 0 && (
                     <div className="text-[11.5px] px-3 py-2 rounded-lg mt-2 flex items-start gap-1.5" style={{ background: 'rgba(217,119,6,0.09)', color: '#92400e' }}>
