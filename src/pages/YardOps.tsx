@@ -5497,10 +5497,14 @@ export function YardOps() {
   const queues = useSiteQueues()
   const trackingRows = useSiteRows()
   const dismissedPreGateIn = useOps(s => s.dismissed)
+  const closedQueues = useOps(s => s.closed) // admin-archived lots leave the Gate-in board
   const menuBadges = useMemo(() => {
     const n: Partial<Record<RoleKey, number>> = {}
     const add = (k: RoleKey, v: number) => { if (v > 0) n[k] = (n[k] ?? 0) + v }
-    // only OPEN items count as covered — same rule as the station's own list
+    // only OPEN items count as covered — same rule as the station's own list.
+    // A CLOSED lot still marks its VINs covered (so they don't fall through to
+    // the uncovered safety net below) even though its own count is skipped —
+    // the admin archived it on purpose, same as gateInQueues excludes it.
     const queuedPreGateInVins = new Set<string>()
     for (const q of queues) if (isPreGateInQueue(q)) for (const i of q.items) if (!gateInArrived(i)) queuedPreGateInVins.add(i.vin)
     for (const q of queues) {
@@ -5512,7 +5516,11 @@ export function YardOps() {
         add('driver', q.items.filter(i => !i.done && !i.atLaneAt).length)
         continue
       }
-      if (isPreGateInQueue(q)) { add('walk', gateInPendingItems(q).length); continue }
+      // an admin-closed lot dropped off the Gate-in station's own list
+      // (gateInQueues filters !opsClosed) — its still-waiting cars should no
+      // longer swell the tile's badge either, or the two numbers disagree
+      // forever, exactly as they did here (admin board 274 · badge 505)
+      if (isPreGateInQueue(q)) { if (!closedQueues[q.id]) add('walk', gateInPendingItems(q).length); continue }
       const t = queueTypeOf(q)
       // the station's own count: cars whose check hasn't been recorded yet
       const unchecked = q.items.filter(i => !i.done && stageOf(i) !== 'checked').length
@@ -5531,7 +5539,7 @@ export function YardOps() {
     add('walk', trackingRows.filter(r => !queuedPreGateInVins.has(r.vin) && !dismissedPreGateIn[r.vin]
       && deriveCarStatus(r.cells) === 'Pre Gate-in').length)
     return n
-  }, [queues, trackingRows, dismissedPreGateIn])
+  }, [queues, trackingRows, dismissedPreGateIn, closedQueues])
 
   const activeRole = ROLES.find(r => r.key === role)
 
