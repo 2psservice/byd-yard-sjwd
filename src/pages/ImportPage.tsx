@@ -14,6 +14,7 @@ import { deriveCarStatus, hasLeftGate } from '../lib/carStatus'
 import { pos, blockKeyOfTag, blockTag, resolveBlockByName } from '../lib/format'
 import { yardLocFull } from '../lib/groupingImport'
 import { parseAccessoryWorkbook, resolveAccessoryItem, STOCK_TAB_LABEL, type AccessoryParseResult } from '../lib/accessoryImport'
+import { fetchUnitsByVins, isConfigured } from '../lib/db'
 import { MasterDefectAdmin } from '../components/MasterDefectAdmin'
 import type { Block, Unit } from '../types'
 import { PageHead, cx } from '../components/ui'
@@ -110,7 +111,7 @@ function buildLocPlan(
 
 export function ImportPage() {
   const [tab, setTab] = useState<'import' | 'master'>('import')
-  const { loadSample, clearAll, toast, importDefects, updateLocations, addDamage } = useYard()
+  const { loadSample, clearAll, toast, importDefects, updateLocations, addDamage, importUnits } = useYard()
   const blocksBySite = useYard((s) => s.blocksBySite)
   const sites = useYard((s) => s.sites)
   const currentSite = useYard((s) => s.currentSite)
@@ -239,6 +240,26 @@ export function ImportPage() {
     setAccBusy(true)
     try {
       const res = await parseAccessoryWorkbook(file)
+      // this device's units cache loads per-site, page by page — a phone
+      // opened minutes ago, or a batch another device just gated in, can be
+      // missing here even though the cloud already has it. A per-VIN read
+      // (same fallback UpdateDamageView's saveDefects uses) settles that
+      // BEFORE the preview below claims a car "ยังไม่มีในยาร์ดนี้" — otherwise
+      // every VIN in a freshly-arrived transfer batch read as not-found, and
+      // nothing this file said was NG ever got recorded.
+      if (isConfigured()) {
+        const missing = res.rows.map((r) => r.vin).filter((v) => !useYard.getState().units[v])
+        if (missing.length) {
+          try {
+            const fresh = await fetchUnitsByVins(missing)
+            if (fresh.length) useYard.setState((s) => {
+              const units = { ...s.units }
+              for (const u of fresh) if (!units[u.vin]) units[u.vin] = u
+              return { units }
+            })
+          } catch (e) { console.error('[db] accessory fetch units', e) }
+        }
+      }
       setAccParsed(res); setAccFileName(file.name)
     } catch (e: any) {
       toast('err', e?.message || 'อ่านไฟล์ไม่สำเร็จ — ตรวจรูปแบบ Excel')
@@ -247,14 +268,23 @@ export function ImportPage() {
 
   // one NG per (vin, item) still open from an earlier import is never
   // duplicated — a re-upload of the same/updated file only adds what is
-  // genuinely new. A car not yet parked in this yard (no Unit row) is
-  // skipped: addDamage has nowhere to attach the NG to.
+  // genuinely new. A car with no Unit row yet but whose tracking row shows it
+  // HAS gated in gets one registered at confirm time (same fallback
+  // saveDefects uses) — only a car that has never gated in at all (still
+  // Pre Gate-in, or not in the system) is truly skipped: there is nothing to
+  // attach a stock-sheet NG to yet.
   const accPlan = useMemo(() => {
     if (!accParsed) return null
-    let matched = 0, notFound = 0, toAddTotal = 0, alreadyTotal = 0
+    let matched = 0, willRegister = 0, notGatedIn = 0, toAddTotal = 0, alreadyTotal = 0
     const rows = accParsed.rows.map((r) => {
       const u = yardUnits[r.vin]
-      if (!u) { notFound++; return { vin: r.vin, found: false, toAdd: [] as { label: string; groupTitle: string }[] } }
+      if (!u) {
+        const tr = existing[r.vin]
+        const gated = tr && deriveCarStatus(tr.cells) !== 'Pre Gate-in'
+        if (!gated) { notGatedIn++; return { vin: r.vin, status: 'notGatedIn' as const, toAdd: [] as { label: string; groupTitle: string }[] } }
+        willRegister++
+        return { vin: r.vin, status: 'willRegister' as const, toAdd: r.ngNames.map(resolveAccessoryItem).filter((x): x is { label: string; groupTitle: string } => !!x) }
+      }
       matched++
       const toAdd: { label: string; groupTitle: string }[] = []
       for (const name of r.ngNames) {
@@ -265,16 +295,22 @@ export function ImportPage() {
         else toAdd.push(item)
       }
       toAddTotal += toAdd.length
-      return { vin: r.vin, found: true, toAdd }
+      return { vin: r.vin, status: 'found' as const, toAdd }
     })
-    return { rows, matched, notFound, toAddTotal, alreadyTotal }
-  }, [accParsed, yardUnits])
+    toAddTotal += rows.filter((r) => r.status === 'willRegister').reduce((n, r) => n + r.toAdd.length, 0)
+    return { rows, matched, willRegister, notGatedIn, toAddTotal, alreadyTotal }
+  }, [accParsed, yardUnits, existing])
 
   const confirmAcc = () => {
     if (!accPlan || !accPlan.toAddTotal || accSaving) return
     setAccSaving(true)
     let added = 0
     for (const row of accPlan.rows) {
+      if (!row.toAdd.length) continue
+      if (row.status === 'willRegister') {
+        const tr = existing[row.vin]
+        importUnits([{ vin: row.vin, model: tr?.cells['Model name'] ?? tr?.cells['Model'] ?? '', color: tr?.cells['Color'] ?? '' }])
+      }
       for (const item of row.toAdd) {
         addDamage(row.vin, {
           area: item.label, areaTh: item.label, type: '', severity: 'major',
@@ -286,7 +322,7 @@ export function ImportPage() {
       }
     }
     toast('ok', `Update Accessory · บันทึก NG ${added.toLocaleString()} รายการ` +
-      (accPlan.notFound ? ` · ข้ามรถที่ยังไม่มีในยาร์ดนี้ ${accPlan.notFound.toLocaleString()}` : '') +
+      (accPlan.notGatedIn ? ` · ข้ามรถที่ยังไม่ Gate-in ${accPlan.notGatedIn.toLocaleString()}` : '') +
       (accPlan.alreadyTotal ? ` · มีอยู่แล้ว ${accPlan.alreadyTotal.toLocaleString()}` : ''))
     setAccParsed(null); setAccFileName(''); setAccSaving(false)
   }
@@ -740,11 +776,12 @@ export function ImportPage() {
                     <span className="font-semibold text-[13.5px] clip">{accFileName}</span>
                     <span className="badge ml-auto" style={{ color: '#7c3aed', background: 'rgba(124,58,237,0.1)' }}>{accParsed.totalRows.toLocaleString()} VIN ในไฟล์</span>
                   </div>
-                  <div className="grid grid-cols-4 gap-px rounded-xl overflow-hidden" style={{ background: 'var(--line)' }}>
+                  <div className="grid grid-cols-5 gap-px rounded-xl overflow-hidden" style={{ background: 'var(--line)' }}>
                     <SumCell label="จะบันทึก NG" value={accPlan.toAddTotal} accent="#dc2626" big />
                     <SumCell label="รถที่พบในยาร์ด" value={accPlan.matched} accent="var(--st-yard)" />
+                    <SumCell label="เพิ่งเข้ายาร์ด (จะลงทะเบียนให้)" value={accPlan.willRegister} accent="var(--brand)" />
                     <SumCell label="มี NG นี้อยู่แล้ว" value={accPlan.alreadyTotal} accent="var(--muted)" />
-                    <SumCell label="ยังไม่มีในยาร์ดนี้" value={accPlan.notFound} accent="var(--st-pending)" />
+                    <SumCell label="ยังไม่ Gate-in" value={accPlan.notGatedIn} accent="var(--st-pending)" />
                   </div>
                   {accParsed.unmapped.length > 0 && (
                     <div className="text-[11.5px] px-3 py-2 rounded-lg mt-2 flex items-start gap-1.5" style={{ background: 'rgba(217,119,6,0.09)', color: '#92400e' }}>
