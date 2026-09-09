@@ -21,6 +21,7 @@ export default function StockAccessoryCheck({ vin, accent, station = 'Walk Aroun
   station?: string
 }) {
   const { addDamage, toast } = useYard()
+  const unit = useYard(s => s.units[vin])
   const [tab, setTab] = useState(0)
   const [state, setState] = useState<Record<string, CheckItemState>>({})
   const fileRef = useRef<HTMLInputElement | null>(null)   // camera (capture)
@@ -29,9 +30,27 @@ export default function StockAccessoryCheck({ vin, accent, station = 'Walk Aroun
 
   const tabs = WALK_CHECK_TABS
   const activeTab = tabs[tab]
-  const get = (id: string): CheckItemState => state[id] ?? { result: 'OK' }
+
+  // an item this car already carries an OPEN NG for (from an earlier PDI /
+  // Walk Around Check / accessory-file import, still Waiting Repair) opens
+  // showing NG here too — the sheet used to default every item to OK on
+  // every scan, which read as "ของครบ" for a car the office already knows
+  // is missing its manual/film even though nobody had touched this button.
+  const existingNg = useMemo(() => {
+    const map: Record<string, CheckItemState> = {}
+    const dmgs = unit?.damages ?? []
+    for (const t of tabs) t.groups.forEach((g, gi) => g.items.forEach((it, ii) => {
+      const label = it.th ?? it.en ?? ''
+      const itemKey = `${t.label} · ${g.title}`
+      const match = dmgs.find(d => d.item === itemKey && (d.areaTh === label || d.area === label) && d.statusRepair === 'Waiting Repair')
+      if (match) map[checkItemId(t.key, gi, ii)] = { result: match.categoryNG === 'HEAVY NG' ? 'NG Heavy' : 'NG' }
+    }))
+    return map
+  }, [unit, tabs])
+
+  const get = (id: string): CheckItemState => state[id] ?? existingNg[id] ?? { result: 'OK' }
   const setItem = (id: string, patch: Partial<CheckItemState>) =>
-    setState(s => ({ ...s, [id]: { ...(s[id] ?? { result: 'OK' }), ...patch } }))
+    setState(s => ({ ...s, [id]: { ...(s[id] ?? existingNg[id] ?? { result: 'OK' }), ...patch } }))
 
   const onPick = async (files: FileList | null) => {
     const id = pickingId.current
