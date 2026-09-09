@@ -34,7 +34,7 @@ import StockAccessoryCheck from '../components/StockAccessoryCheck'
 import { MasterCombo } from '../components/MasterCombo'
 import { MeasurementField, TirePressureField, TIRE_WHEELS, joinTirePressure } from '../components/MeasurementField'
 import { FINAL_CHECK_TABS } from '../lib/finalCheckList'
-import { yardLocCode, yardLocFull, blockCode, byYardLocation, LAST_LOCATION_KEY } from '../lib/groupingImport'
+import { yardLocCode, yardLocFull, blockCode, byYardLocation, LAST_LOCATION_KEY, parseYardLocCode } from '../lib/groupingImport'
 import { parseLane } from '../lib/laneImport'
 import { LOCATION_KEY, VIN_PHOTO_CELL } from '../lib/trackingColumns'
 import { blockTag, blockKeyOfTag, resolveBlockByName } from '../lib/format'
@@ -66,6 +66,7 @@ import { fmtSerialToDate } from '../lib/trackingColumns'
 import { matchModel } from '../lib/sampleData'
 import type { Damage, DamageInput, DamageSource, Unit } from '../types'
 import type { TrackRow } from '../lib/excelTracking'
+import { isScanLocationEntry } from '../lib/excelTracking'
 import { SeqQueuePicker } from '../components/SeqQueueList'
 
 // ── per-yard scoping ──────────────────────────────────────────────────────────
@@ -4275,6 +4276,25 @@ function RelocationView() {
   const moves = useMemo(() =>
     [...(row?.history ?? [])].filter(e => e.field === 'Location' || e.field === LOCATION_KEY).reverse(),
   [row])
+
+  // ── ตำแหน่งปัจจุบัน self-heal ─────────────────────────────────────────────
+  // A Relocation/Driver scan can log its Location history line and then have
+  // its cloud write to the `units` table silently fail — a later full units
+  // re-pull reverts the car to its OLD spot while the separately-persisted
+  // (separately retried) history line stays put, leaving "ตำแหน่งปัจจุบัน"
+  // pointing at the wrong block forever even though ประวัติการย้าย is right
+  // (see #428). Whenever the latest FIELD-SCAN move is newer than the last
+  // time this unit's spot was actually confirmed (parkedAt), trust the move
+  // and correct the spot — never over a fresher, unlogged move (e.g. the
+  // yard-plan's auto-park tool, which never touches this VIN's history).
+  useEffect(() => {
+    if (!unit || !moves[0] || !isScanLocationEntry(moves[0])) return
+    if (moves[0].at <= (unit.parkedAt ?? 0)) return
+    const fixed = parseYardLocCode(moves[0].to)
+    if (!fixed) return
+    if (unit.block === fixed.block && unit.row === fixed.row && unit.slot === fixed.slot) return
+    updateLocations([{ vin: unit.vin, block: fixed.block, row: fixed.row, slot: fixed.slot, modelName: unit.modelName, color: unit.color }])
+  }, [unit, moves, updateLocations])
 
   // one field, written the way the upload file writes a lane: "R14" (block +
   // column). The token resolves to the block it NAMES — name-first, so an
