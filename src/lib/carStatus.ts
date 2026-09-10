@@ -151,7 +151,13 @@ export function deriveCarStatus(c: Record<string, string>): string {
   // the Vin List Inventory uses "Gate Out Date"; either real date = gated out
   if (isGateOutStamp(c['Gate Out time stamp']) || isGateOutStamp(c['Gate Out Date'])) return 'Gate-out'
   if ((c['Grouping  Number'] || '').trim()) return 'Ready'
-  const gateIn = (c['Gate In (Rayong yard)'] || '').trim()
+  // gate-in signal — mirror the gate-out check above: the Vin List Inventory
+  // sheet writes "Gate In (Rayong yard)", a Vin List Inventory import can
+  // instead carry "Gate In Date", and an ops-scan gate-in stamps only "Gate
+  // In Time" (epoch ms) — checking just the first column read every car
+  // gated in through either of the other two paths as still Pre Gate-in the
+  // moment its explicit Car Status cell ever went blank.
+  const gateIn = (c['Gate In (Rayong yard)'] || c['Gate In Date'] || c['Gate In Time'] || '').trim()
   if (!gateIn || gateIn === '—') return 'Pre Gate-in'
   const storage = (c['storage Yard'] || '').trim()
   const loc = c['Location yard'] || ''
