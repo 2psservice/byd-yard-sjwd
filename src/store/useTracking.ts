@@ -25,6 +25,15 @@ let trackingHadDrop = false
 // reconnect can all fire within the same second, and two runs racing would both
 // read the same `lastSync` and push the same rows twice
 let syncInFlight = false
+// has THIS session's syncCloud completed at least once? `lastSync` alone
+// can't answer that — it is persisted, so a fresh boot loading yesterday's
+// IndexedDB snapshot already sees a non-zero `lastSync` before the first
+// network round trip lands. An automatic reconciler that ran on that stale
+// snapshot (see reconcileVinOfStatus below) used to re-stamp it as the
+// newest copy and push/broadcast it whole, letting an old "Pre Gate-in" (or
+// a blank) Car Status beat the real "In Yard" everywhere — session-only, so
+// it always starts false on a fresh load regardless of what was persisted.
+let cloudSyncedOnce = false
 // a realtime payload can arrive with the record body stripped (Supabase drops it
 // when the row exceeds the channel's max_record_bytes — a car with a long cell
 // set + audit history reaches that). The event then carries no VIN, so nothing
@@ -489,6 +498,7 @@ export const useTracking = create<TrackingState>()(
         }
         if (outgoing.size) pushRows([...outgoing.values()])
         set({ lastSync: startedAt })
+        cloudSyncedOnce = true
         // a full run has now seen — and cleaned — every row; don't force another
         if (!incremental) set({ sysHistoryPurged: SYS_HISTORY_PURGE_V })
         // occasionally clear tombstones older than 30 days so the table stays lean
@@ -1187,6 +1197,14 @@ function defectsAllCleared(vin: string): boolean {
 
 let vinStatusTimer: ReturnType<typeof setTimeout> | null = null
 function reconcileVinOfStatus() {
+  // never act on a stale snapshot: a fresh load starts from IndexedDB (often
+  // hours old) and fires this the moment those rows land, well before
+  // syncCloud's network round trip settles which copy is actually current.
+  // Wait for this session's first cloud sync when one is even possible —
+  // acting sooner is exactly how an already-corrected car's whole row (Car
+  // Status included) got overwritten with yesterday's data and republished
+  // as the newest version everywhere (bulkUpdate stamps a fresh updatedAt).
+  if (db.isConfigured() && !cloudSyncedOnce) return
   const { rows } = useTracking.getState()
   const dirty: string[] = []
   for (const vin in rows) {
