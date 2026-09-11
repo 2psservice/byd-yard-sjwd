@@ -3844,6 +3844,29 @@ function GateOutView() {
       .sort((a, b) => byYardLocation(a.location, b.location))
   }, [dn, trackingRows, units, queues])
 
+  // dnCars can only .filter() rows that already exist HERE — a car whose queue
+  // item carries this DN's group but whose tracking row never synced to this
+  // device is invisible to it no matter how the matching logic is written.
+  // Ask the cloud for exactly those rows once the DN opens, same fallback
+  // fetchTrackingRowsByVin/adoptCloudRows cloudRescan already uses on a failed
+  // single-VIN scan — dnCars re-filters itself once the row lands.
+  useEffect(() => {
+    if (!dn || !isConfigured()) return
+    const known = new Set(trackingRows.map(r => r.vin))
+    for (const q of queues) {
+      if (!isSequenceQueue(q)) continue
+      for (const i of q.items) {
+        if (i.done || known.has(i.vin) || normGroup(i.group) !== dn) continue
+        const last = cloudLookups.get(i.vin) ?? 0
+        if (Date.now() - last < 8000) continue
+        cloudLookups.set(i.vin, Date.now())
+        fetchTrackingRowsByVin(i.vin)
+          .then(rows => { if (rows.length) useTracking.getState().adoptCloudRows(rows) })
+          .catch(() => {})
+      }
+    }
+  }, [dn, queues, trackingRows])
+
   const dnGone = dnCars.filter(c => c.gone).length
 
   const onScanDn = (raw: string) => {
