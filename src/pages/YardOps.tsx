@@ -128,6 +128,14 @@ function findSeqItem(vin: string | null, queues: WorkQueue[]): { queue: WorkQueu
   return null
 }
 
+/** The DN / grouping code this row belongs to, for gate-out matching: the
+ *  tracking cell's Grouping Number, or — for a car whose cell was imported
+ *  before its tracking row existed and so was never stamped — the group its
+ *  own active delivery-sequence queue item still carries (see QueueItem.group). */
+function rowGroup(r: TrackRow, queues: WorkQueue[]): string {
+  return normGroup(r.cells[GROUP_KEY]) || normGroup(findSeqItem(r.vin, queues)?.item.group)
+}
+
 // ── damage config: bilingual master lists (Part + Defect) from the master Excel ──
 // Field staff type Thai (English shown alongside); we store BOTH languages.
 // The master lists are admin-editable, so read them at USE time — a module-level
@@ -3813,7 +3821,7 @@ function GateOutView() {
   const dnCars = useMemo(() => {
     if (!dn) return []
     return trackingRows
-      .filter(r => normGroup(r.cells[GROUP_KEY]) === dn)
+      .filter(r => rowGroup(r, queues) === dn)
       .map(r => {
         const u = units.find(x => x.vin === r.vin)
         const status = (r.cells['Car Status'] ?? '').trim()
@@ -3841,7 +3849,7 @@ function GateOutView() {
   const onScanDn = (raw: string) => {
     const g = normGroup(raw)
     if (!g) return
-    const n = trackingRows.filter(r => normGroup(r.cells[GROUP_KEY]) === g).length
+    const n = trackingRows.filter(r => rowGroup(r, queues) === g).length
     if (!n) { toast('err', `ไม่พบ DN / เลข Grouping: ${raw}`); return }
     setVin(null); setDn(g); setSessionOut([])
   }
@@ -3863,8 +3871,8 @@ function GateOutView() {
     if (!r) { scanNotFound(v); return }
     // the whole point of scanning at the car: a car whose grouping is not THIS
     // DN must never slip into the load — stop it with a popup, not a quiet toast
-    if (normGroup(r.cells[GROUP_KEY]) !== dn) {
-      setWrongGroup({ vin: r.vin, group: (r.cells[GROUP_KEY] ?? '').trim() })
+    if (rowGroup(r, queues) !== dn) {
+      setWrongGroup({ vin: r.vin, group: (r.cells[GROUP_KEY] ?? '').trim() || (findSeqItem(r.vin, queues)?.item.group ?? '') })
       return
     }
     const model = r.cells['Model name'] ?? r.cells['Model'] ?? ''

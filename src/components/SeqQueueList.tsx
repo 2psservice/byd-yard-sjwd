@@ -52,7 +52,10 @@ export function SeqQueuePicker({ queues, units, trackingRows, queuedLabel }: {
         vin: i.vin,
         model: row?.cells['Model'] ?? row?.cells['Model name'] ?? u?.modelName ?? '—',
         color: row?.cells['Color'] ?? u?.color ?? '—',
-        grouping: row?.cells['Grouping  Number'] ?? '—',
+        // a car imported into the plan before its tracking row existed never got
+        // its cell stamped — fall back to the queue item's own group so the
+        // number isn't blank on a car that's actually in this run (see YardOps.tsx rowGroup)
+        grouping: row?.cells['Grouping  Number'] || i.group || '—',
         location: yardLocCode(u) || '—',
         lane: i.laneLoad ?? '—',
         stage: gone ? 'gateout' : seqStageOf(i),
