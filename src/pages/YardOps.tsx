@@ -748,6 +748,7 @@ function VinInput({
   useEffect(() => {
     if (!camOpen) return
     let cancelled = false
+    let camTimeoutId: ReturnType<typeof setTimeout> | undefined
 
     // Two-stage capture size, because asking for everything up front is what
     // made the camera take seconds to appear on some phones. A 2560×1440
@@ -909,8 +910,18 @@ function VinInput({
         ])
         warm.catch(() => {}) // handled where it is awaited
 
+        // getUserMedia() can simply never settle — an unanswered permission
+        // prompt, the camera held by another app, a backgrounded PWA resuming
+        // from lock — leaving the "กำลังเปิดกล้อง…" spinner up forever with no
+        // error and no way out but the close button. Time it out instead.
+        let timedOut = false
+        camTimeoutId = setTimeout(() => {
+          timedOut = true
+          if (!cancelled) setCamErr('เปิดกล้องช้าเกินไป — ลองปิดแล้วเปิดกล้องใหม่ หรือตรวจสอบสิทธิ์กล้องของเบราว์เซอร์')
+        }, 10000)
         const stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO })
-        if (cancelled) { stream.getTracks().forEach(t => t.stop()); return }
+        clearTimeout(camTimeoutId)
+        if (cancelled || timedOut) { stream.getTracks().forEach(t => t.stop()); return }
         video.srcObject = stream
         await video.play().catch(() => {})
         setCamLive(true) // preview is up — everything below happens behind it
@@ -924,7 +935,7 @@ function VinInput({
         if (!cancelled) setCamErr('เปิดกล้องไม่สำเร็จ — โปรดอนุญาตสิทธิ์กล้องในเบราว์เซอร์ แล้วลองใหม่')
       }
     })()
-    return () => { cancelled = true; stopScan() }
+    return () => { cancelled = true; clearTimeout(camTimeoutId); stopScan() }
   }, [camOpen]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
