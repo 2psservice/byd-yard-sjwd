@@ -739,7 +739,11 @@ function VinInput({
     setCamLive(false)
   }
 
-  const openCamera = () => { setCamErr(''); setCamLive(false); setCamOpen(true) }
+  // blur the text field FIRST — if it's still focused when the camera portal
+  // mounts, the on-screen keyboard dismissing (viewport resize + relayout)
+  // lands right in the middle of the camera negotiation, on a device that
+  // needed every millisecond of main-thread time for that instead
+  const openCamera = () => { ref.current?.blur(); setCamErr(''); setCamLive(false); setCamOpen(true) }
   const closeCamera = () => { stopScan(); setCamOpen(false) }
 
   // Start the scanner whenever the overlay opens. ZXing manages getUserMedia +
@@ -824,8 +828,12 @@ function VinInput({
     // pixels), each tick decodes a CENTER CROP of the frame — the aiming box —
     // which multiplies the code's effective size. Every 3rd tick decodes the
     // full frame too, so a large/off-center code still hits.
-    const startZxing = async (video: HTMLVideoElement, warm: Promise<unknown>) => {
+    const startZxing = async (video: HTMLVideoElement, warmIn: Promise<unknown> | null) => {
       if (cancelled) return
+      // null only when Path 1 (native BarcodeDetector) skipped the fetch to
+      // save it entirely — reaching here means native failed anyway despite
+      // the detector existing, so start the fetch now rather than never
+      const warm = warmIn ?? Promise.all([import('zxing-wasm/reader'), import('zxing-wasm/reader/zxing_reader.wasm?url')])
 
       // ── decoder: zxing-wasm (the C++ engine compiled to WebAssembly) — near
       // Android-native accuracy and speed on tiny / glarey windshield codes.
@@ -904,11 +912,16 @@ function VinInput({
         // Fetch the wasm decoder and open the camera AT THE SAME TIME. These
         // used to run one after the other, so a phone paid for the download and
         // then for the camera; now the slower of the two sets the pace.
-        const warm = Promise.all([
+        // Skip it entirely where a native BarcodeDetector exists (Android
+        // Chrome, the common field device) — Path 1 below wins there and this
+        // ~1 MB fetch + wasm-glue eval would just steal main-thread time from
+        // the camera negotiation for a decoder that never gets used.
+        const hasNativeDetector = 'BarcodeDetector' in window
+        const warm = hasNativeDetector ? null : Promise.all([
           import('zxing-wasm/reader'),
           import('zxing-wasm/reader/zxing_reader.wasm?url'),
         ])
-        warm.catch(() => {}) // handled where it is awaited
+        warm?.catch(() => {}) // handled where it is awaited
 
         // getUserMedia() can simply never settle — an unanswered permission
         // prompt, the camera held by another app, a backgrounded PWA resuming

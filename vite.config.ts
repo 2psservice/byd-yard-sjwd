@@ -42,9 +42,13 @@ export default defineConfig({
         // ttf: the TH Sarabun faces the DN/IR print sheets embed — without them
         // in the precache, printing on yard wifi raced a 480 KB network fetch
         // and lost, falling back to a serif that clipped every table cell.
+        // wasm: the ZXing barcode decoder (~1 MB) — every device without a
+        // native BarcodeDetector (iOS Safari) fetches it cold on its FIRST scan
+        // unless it's precached, racing yard wifi during the exact moment a
+        // worker is standing at a car waiting for the camera to open.
         // Skip the lazily-imported Excel engines (~1.4 MB) — they're admin
         // import/export features a field phone never runs; fetched on demand.
-        globPatterns: ['**/*.{js,css,html,png,svg,woff2,ttf}'],
+        globPatterns: ['**/*.{js,css,html,png,svg,woff2,ttf,wasm}'],
         // skip the Excel engines (admin-only, fetched on demand) and font
         // subsets no screen renders (Thai + Latin are the only scripts used)
         globIgnores: ['**/exceljs*', '**/xlsx-*', '**/*cyrillic*', '**/*greek*', '**/*vietnamese*'],
