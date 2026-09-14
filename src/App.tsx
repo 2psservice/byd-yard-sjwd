@@ -50,6 +50,8 @@ export default function App() {
   const opsOnly = isOpsOnlyRole(me?.role) || isPhone
   const view = useYard((s) => s.view)
   const ensureUnitSites = useYard((s) => s.ensureUnitSites)
+  const runPendingSiteCleanup = useYard((s) => s.runPendingSiteCleanup)
+  const sites = useYard((s) => s.sites)
   const purgeNonTracking = useYard((s) => s.purgeNonTracking)
   const loadFromSupabase = useYard((s) => s.loadFromSupabase)
   const subscribeUnits = useYard((s) => s.subscribeRealtime)
@@ -296,6 +298,14 @@ export default function App() {
   useEffect(() => {
     if (hasUnits) ensureUnitSites()
   }, [hasUnits, ensureUnitSites])
+
+  // one-time correction for units ensureUnitSites' old round-robin bug
+  // wrongly dumped onto a site named in pendingSiteCleanup — no-op once done.
+  // Re-tries on `sites` too: a name not yet in this device's site list (still
+  // syncing from cloud) needs another pass once that site actually arrives.
+  useEffect(() => {
+    if (hasUnits) runPendingSiteCleanup()
+  }, [hasUnits, sites, runPendingSiteCleanup])
 
   const pages: Record<View, JSX.Element> = {
     dashboard: <Dashboard />,

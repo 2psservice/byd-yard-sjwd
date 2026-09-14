@@ -150,6 +150,10 @@ interface YardState {
   sites: Site[]
   currentSite: string | null
   siteModalOpen: boolean
+  /** Site NAMES ensureUnitSites' old round-robin bug once dumped a random
+   *  share of every untagged car onto — cleared by runPendingSiteCleanup as
+   *  soon as a device with real unit data next boots (see the v7 migration). */
+  pendingSiteCleanup: string[]
 
   // --- data ---
   units: Record<string, Unit>
@@ -264,6 +268,10 @@ interface YardState {
   endTrip: (vin: string) => void
   purgeNonTracking: (realVins: Set<string>) => void
   ensureUnitSites: () => void
+  /** One-time correction for sites named in `pendingSiteCleanup`: clears the
+   *  site tag off every unit currently assigned to them, undoing the old
+   *  round-robin bug's damage. No-op once the list is empty. */
+  runPendingSiteCleanup: () => void
   /** Give every car on a shared square its own คันที่ — same lane only, never a
    *  different ช่อง. Returns how many cars were re-numbered. */
   dedupeSlots: () => Promise<number>
@@ -466,6 +474,7 @@ export const useYard = create<YardState>()(
       ],
       currentSite: null,
       siteModalOpen: false,
+      pendingSiteCleanup: [],
 
       units: {},
       trailers: [],
@@ -1525,18 +1534,47 @@ export const useYard = create<YardState>()(
         return changed
       },
 
+      // Only safe while there is exactly ONE site — a single-site → multi-site
+      // transition can unambiguously stamp every legacy untagged car with the
+      // one site it was always at. With 2+ sites there is no way to tell which
+      // yard an untagged car actually belongs to, so round-robin-ing them
+      // across "whatever sites currently exist" is a straight-up mistake — a
+      // brand-new, still-empty site would instantly "inherit" a share of every
+      // other yard's fleet the moment it was created (see runPendingSiteCleanup
+      // for the one-time correction of sites this already happened to).
       ensureUnitSites: () =>
         set((s) => {
-          const ids = s.sites.map((x) => x.id)
-          if (!ids.length) return s
+          if (s.sites.length !== 1) return s
+          const onlySite = s.sites[0].id
           const vals = Object.values(s.units)
           if (vals.every((u) => u.site)) return s
           const units = { ...s.units }
-          let i = 0
           for (const u of vals) {
-            if (!u.site) { units[u.vin] = { ...u, site: ids[i % ids.length] }; i++ }
+            if (!u.site) units[u.vin] = { ...u, site: onlySite }
           }
           return { units }
+        }),
+
+      runPendingSiteCleanup: () =>
+        set((s) => {
+          if (!s.pendingSiteCleanup.length) return s
+          // a name this device's site list doesn't have YET (still syncing
+          // from cloud) stays pending rather than being given up on — it just
+          // retries, for free, on the next boot that has units loaded
+          const remaining: string[] = []
+          const badIds = new Set<string>()
+          for (const name of s.pendingSiteCleanup) {
+            const hit = s.sites.find((x) => x.name.trim().toLowerCase() === name.trim().toLowerCase())
+            if (hit) badIds.add(hit.id)
+            else remaining.push(name)
+          }
+          if (!badIds.size) return remaining.length === s.pendingSiteCleanup.length ? s : { pendingSiteCleanup: remaining }
+          const units = { ...s.units }
+          let changed = false
+          for (const [vin, u] of Object.entries(units)) {
+            if (u.site && badIds.has(u.site)) { units[vin] = { ...u, site: undefined }; changed = true }
+          }
+          return { pendingSiteCleanup: remaining, ...(changed ? { units } : {}) }
         }),
 
       unitsCloudDone: false,
@@ -1974,7 +2012,7 @@ export const useYard = create<YardState>()(
     }),
     {
       name: 'byd-yard-control',
-      version: 6,
+      version: 7,
       storage: debouncedLocalStorage(),
       migrate: (state: any, fromVersion: number) => {
         let s = state
@@ -2013,6 +2051,15 @@ export const useYard = create<YardState>()(
           // switch back to TH any time in the top bar; the choice then persists.
           s = { ...s, lang: 'en' }
         }
+        if (fromVersion < 7) {
+          // ensureUnitSites used to round-robin every untagged car across
+          // whatever sites existed — a brand-new, still-empty site instantly
+          // "inherited" a random share of every other yard's fleet the moment
+          // it was created. "60 RAI" is the one reported so far; runPendingSiteCleanup
+          // clears the site tag off every unit it wrongly picked up as soon as
+          // this device's units are loaded (see App.tsx).
+          s = { ...s, pendingSiteCleanup: [...(Array.isArray(s.pendingSiteCleanup) ? s.pendingSiteCleanup : []), '60 RAI'] }
+        }
         return s
       },
       // NOTE: currentSite IS persisted, but only within a login session. Field
@@ -2034,6 +2081,7 @@ export const useYard = create<YardState>()(
         // most recent, each capped to its last 600 fixes (~10 min at 1 Hz).
         trips: s.trips.slice(-30).map((t) => (t.path.length > 600 ? { ...t, path: t.path.slice(-600) } : t)),
         sites: s.sites,
+        pendingSiteCleanup: s.pendingSiteCleanup,
         // survive a killed app / reload before the retry landed — otherwise a
         // defect that failed to sync and then got the tab closed on it is lost
         // for good instead of being retried on the next launch
