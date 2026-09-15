@@ -6,7 +6,7 @@ import { useTrackingRows, useTracking } from '../store/useTracking'
 import { makeT } from '../i18n'
 import { ZONE_COLOR } from '../lib/sampleData'
 import { deriveCarStatus, CAR_STATUS_META, CAR_STATUS_ORDER, PARKED_STATUSES, isWaitingRepair } from '../lib/carStatus'
-import { rowInSite } from '../lib/siteScope'
+import { rowInSite, isPreGateInCandidate } from '../lib/siteScope'
 import { pct, pos, timeAgo } from '../lib/format'
 import { defectLabel } from '../lib/damageLabel'
 import { useOps, isPreGateInQueue, isQueueComplete, queueProgress, gateInArrived } from '../store/useOps'
@@ -178,11 +178,17 @@ export function Dashboard() {
   const dismissedPreGateIn = useOps((st) => st.dismissed) // cars the gate took off the board
   const loadFromIdb = useTracking((st) => st.loadFromIdb)
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
-  // per-yard separation: the whole dashboard reflects only the active site
-  const trackingRows = useMemo(
-    () => (currentSite ? allTrackingRows.filter((r) => rowInSite(r, currentSite, sites)) : allTrackingRows),
-    [allTrackingRows, currentSite, sites],
-  )
+  // per-yard separation: the whole dashboard reflects only the active site —
+  // PLUS any still-unclaimed shared-shuttle row naming this site as a
+  // candidate (see isPreGateInCandidate), so the "Pre Gate-in" headline never
+  // reads 0 while the per-lot progress card below shows the same cars pending.
+  const trackingRows = useMemo(() => {
+    if (!currentSite) return allTrackingRows
+    const scoped = allTrackingRows.filter((r) => rowInSite(r, currentSite, sites))
+    const scopedVins = new Set(scoped.map((r) => r.vin))
+    const candidates = allTrackingRows.filter((r) => !scopedVins.has(r.vin) && isPreGateInCandidate(r, currentSite))
+    return candidates.length ? [...scoped, ...candidates] : scoped
+  }, [allTrackingRows, currentSite, sites])
   const units = useMemo(
     () => (currentSite ? allUnits.filter((u) => u.site === currentSite) : allUnits),
     [allUnits, currentSite],

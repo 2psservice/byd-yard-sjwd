@@ -49,3 +49,24 @@ export function rowInSite(row: TrackRow | undefined, currentSite: string | null,
   const cur = sites.find((s) => s.id === currentSite)
   return !!cur && locationMatchesSite(row.cells, cur)
 }
+
+/** Cell naming the 2+ sites a "shared shuttle" Pre Gate-in import might land
+ *  at, when the file itself can't say which one — a comma-joined list of
+ *  site ids. Set only by that import path; every other row leaves it blank. */
+export const CANDIDATE_SITES_KEY = 'Candidate Sites'
+
+export function candidateSiteIds(cells: Record<string, string>): string[] {
+  return (cells[CANDIDATE_SITES_KEY] ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+}
+
+/** A still-unclaimed shared-shuttle row (no `site` tag yet) named as a
+ *  candidate for THIS site — visible for Gate-in scanning at every yard it
+ *  could still land at, without rowInSite's stricter scoping ever showing it
+ *  anywhere else (Unit List, reports, the wider Dashboard breakdown…), so it
+ *  can never leak to a site it was never actually shuttled toward. Whichever
+ *  site's Gate-in scans it first claims it for real (see doTrackingGateIn),
+ *  and it stops being a candidate everywhere the moment `site` is set. */
+export function isPreGateInCandidate(row: TrackRow | undefined, currentSite: string | null): boolean {
+  if (!currentSite || !row || row.site) return false
+  return candidateSiteIds(row.cells).includes(currentSite)
+}

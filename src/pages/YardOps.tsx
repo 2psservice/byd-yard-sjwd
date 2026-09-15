@@ -27,7 +27,7 @@ import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirs
 import { candidates } from '../lib/parkingEngine'
 import { slotToLatLng } from '../lib/geo'
 import { cx, PhotoLightbox } from '../components/ui'
-import { rowInSite } from '../lib/siteScope'
+import { rowInSite, isPreGateInCandidate } from '../lib/siteScope'
 import { compressImage } from '../lib/photo'
 import StationSheet from '../components/StationSheet'
 import StockAccessoryCheck from '../components/StockAccessoryCheck'
@@ -1616,9 +1616,10 @@ function WalkView() {
   const masterDefects = useMasterDefect((s) => s.defects)
   const allUnits = useUnits() // global (all sites) — for pulling a car's Defect list even if its unit lives in another site
   const { gateIn, importUnits, addDamage, updateDamage, markTrailerArrived, toast, currentUser } = useYard()
-  const trackingRows = useSiteRows()
+  const siteTrackingRows = useSiteRows()
+  const allTrackingRows = useTrackingRows()
   const wrongSite = useWrongSiteHint()
-  const { loadFromIdb, updateCell } = useTracking()
+  const { loadFromIdb, updateCell, claimPreGateInCandidate } = useTracking()
   const { toggleDone } = useOps()
   const { blockWith, modal: gateModal } = useNotGatedIn()
   const queues = useSiteQueues()
@@ -1626,6 +1627,16 @@ function WalkView() {
   const dismissedPreGateIn = useOps(s => s.dismissed) // cars the office says never came
   const sites = useYard(s => s.sites)
   const currentSite = useYard(s => s.currentSite)
+  // this site's own rows, PLUS any still-unclaimed shared-shuttle row naming
+  // this site as a candidate (see isPreGateInCandidate) — so a car nobody has
+  // decided the yard for yet can still be scanned in HERE. A row drops out of
+  // this extra set the instant Gate-in claims it (site gets set then), so it
+  // stops appearing at every OTHER candidate site immediately.
+  const trackingRows = useMemo(() => {
+    const siteVins = new Set(siteTrackingRows.map(r => r.vin))
+    const candidates = allTrackingRows.filter(r => !siteVins.has(r.vin) && isPreGateInCandidate(r, currentSite))
+    return candidates.length ? [...siteTrackingRows, ...candidates] : siteTrackingRows
+  }, [siteTrackingRows, allTrackingRows, currentSite])
   const [vin, setVin] = useState<string | null>(null)
   const [trackingVin, setTrackingVin] = useState<string | null>(null)
   const [selectedQueueId, setSelectedQueueId] = useState<string | null>(null)
@@ -1838,6 +1849,10 @@ function WalkView() {
     if (!trackRow) return
     const now = new Date()
     const d = `${now.getDate().toString().padStart(2, '0')}/${(now.getMonth() + 1).toString().padStart(2, '0')}/${now.getFullYear()}`
+    // a shared-shuttle candidate (see isPreGateInCandidate) has no site yet —
+    // THIS scan is what decides it for real. Claim it before anything else
+    // writes to the row, so every other candidate yard's board drops it too.
+    if (!trackRow.site && currentSite) claimPreGateInCandidate(trackRow.vin, currentSite)
     // straight to "In Yard" — no separate "Gate-in" stage anymore; gateIn()
     // (called below) auto-parks the unit at the WCL staging block, so the
     // car really is in the yard the moment this scan completes
