@@ -11,7 +11,7 @@ import * as db from '../lib/db'
 import { supabase } from '../lib/supabase'
 import { onSync, sendSync, type RowMsg, type RowsPayload } from '../lib/syncBus'
 import { useYard } from './useYard'
-import { siteForRow, siteIdForLocation, coInspectionAccepts } from '../lib/siteScope'
+import { siteForRow, siteIdForLocation, coInspectionAccepts, CANDIDATE_SITES_KEY } from '../lib/siteScope'
 import { CAR_STATUS_ORDER, deriveCarStatus, isGateOutStamp } from '../lib/carStatus'
 import { isOpenDefect } from '../lib/damageLabel'
 import type { RealtimeChannel } from '@supabase/supabase-js'
@@ -145,6 +145,18 @@ interface TrackingState {
   unsubscribeRealtime: () => void
   importFile: (file: File) => Promise<ParseResult>
   commitImport: (res: ParseResult) => void
+  /** A "shared shuttle" manifest — VINs headed toward 2+ candidate yards with
+   *  no way yet to say which one each lands at. Rows land as Pre Gate-in with
+   *  NO site tag (see CANDIDATE_SITES_KEY) — Gate-in at any candidate site
+   *  claims them for real. VINs already in the system are skipped, same as
+   *  commitImport. */
+  commitPreGateInCandidates: (rows: { vin: string; cells: Record<string, string> }[], candidateSiteIds: string[]) => { added: number; skipped: number }
+  /** A shared-shuttle row (commitPreGateInCandidates) whose destination is now
+   *  known for real — a car actually gate-in'd HERE. Locks the row to this
+   *  site for good; every other candidate site's Gate-in board drops it the
+   *  instant `site` is no longer blank (see isPreGateInCandidate). No-op once
+   *  the row already has a site. */
+  claimPreGateInCandidate: (vin: string, siteId: string) => void
   commitCoInspection: (res: ParseResult) => { updated: number; added: number; skipped: number; gateOut: number; moved: number }
   /** Set a cell and log it. `src: 'scan'` marks the write as a FIELD STATION
    *  action (ops-scan), which is what lets a report tell a real recording apart
@@ -635,6 +647,44 @@ export const useTracking = create<TrackingState>()(
           loaded: true,
           lastImport: { inYard: added.length, total: res.total, gatedOut: res.gatedOut, at: Date.now() },
         })
+      },
+
+      commitPreGateInCandidates: (incoming, candidateSiteIds) => {
+        const rows: Record<string, TrackRow> = { ...get().rows }
+        const now = Date.now()
+        const candidateCell = candidateSiteIds.join(',')
+        const added: TrackRow[] = []
+        let skipped = 0
+        for (const r of incoming) {
+          if (rows[r.vin]) { skipped++; continue } // already tracked somewhere — never overwrite
+          const stamped: TrackRow = {
+            vin: r.vin,
+            // site left UNSET on purpose — isPreGateInCandidate (siteScope.ts)
+            // is what makes it visible for Gate-in scanning at each candidate
+            // site until one of them actually claims it
+            cells: { ...r.cells, 'Car Status': 'Pre Gate-in', [CANDIDATE_SITES_KEY]: candidateCell },
+            updatedAt: now,
+          }
+          rows[r.vin] = stamped; added.push(stamped)
+        }
+        idbBulkPut(added).catch(() => {})
+        pushRows(added)
+        set({ rows, loaded: true })
+        return { added: added.length, skipped }
+      },
+
+      claimPreGateInCandidate: (vin, siteId) => {
+        const row = get().rows[vin]
+        if (!row || row.site) return
+        const siteName = useYard.getState().sites.find((s) => s.id === siteId)?.name
+        const stamped: TrackRow = {
+          ...row, site: siteId, updatedAt: Date.now(),
+          cells: siteName ? { ...row.cells, 'Location yard': siteName } : row.cells,
+        }
+        const rows = { ...get().rows, [vin]: stamped }
+        idbBulkPut([stamped]).catch(() => {})
+        pushRows([stamped])
+        set({ rows })
       },
 
       // Co-Inspection import: MERGE the file's columns into existing VINs (update

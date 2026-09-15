@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import {
   UploadCloud, FileSpreadsheet, Download, Sparkles, Trash2, CheckCircle2, Table2,
-  Loader2, Database, MapPin, Car, CalendarDays, Hourglass, ClipboardCheck, AlertTriangle, Package,
+  Loader2, Database, MapPin, Car, CalendarDays, Hourglass, ClipboardCheck, AlertTriangle, Package, Truck,
 } from 'lucide-react'
 import { useYard } from '../store/useYard'
 import { useTracking } from '../store/useTracking'
@@ -14,6 +14,7 @@ import { deriveCarStatus, hasLeftGate } from '../lib/carStatus'
 import { pos, blockKeyOfTag, blockTag, resolveBlockByName } from '../lib/format'
 import { yardLocFull } from '../lib/groupingImport'
 import { parseAccessoryWorkbook, resolveAccessoryItem, STOCK_TAB_LABEL, type AccessoryParseResult } from '../lib/accessoryImport'
+import { parseShuttleWorkbook, type ShuttleParseResult } from '../lib/shuttleImport'
 import { fetchUnitsByVins, isConfigured } from '../lib/db'
 import { MasterDefectAdmin } from '../components/MasterDefectAdmin'
 import type { Block, Unit } from '../types'
@@ -118,7 +119,7 @@ export function ImportPage() {
   const laneDepth = useYard((s) => s.laneDepth)
   const curSiteName = sites.find((s) => s.id === currentSite)?.name ?? '—'
   const yardUnits = useYard((s) => s.units)
-  const { commitImport, commitCoInspection, deleteRows, lastImport, loadFromIdb } = useTracking()
+  const { commitImport, commitCoInspection, commitPreGateInCandidates, deleteRows, lastImport, loadFromIdb } = useTracking()
   const existing = useTracking((s) => s.rows)
   const rowCount = Object.keys(existing).length
   // distinct vehicles across BOTH stores (gated-in cars live in tracking + yard units)
@@ -325,6 +326,49 @@ export function ImportPage() {
       (accPlan.notGatedIn ? ` · ข้ามรถที่ยังไม่ Gate-in ${accPlan.notGatedIn.toLocaleString()}` : '') +
       (accPlan.alreadyTotal ? ` · มีอยู่แล้ว ${accPlan.alreadyTotal.toLocaleString()}` : ''))
     setAccParsed(null); setAccFileName(''); setAccSaving(false)
+  }
+
+  // ── Shuttle to multiple yards (destination not known per-VIN — decided
+  // for real only when the car drives through a specific yard's Gate-in) ──
+  const [shuttleParsed, setShuttleParsed] = useState<ShuttleParseResult | null>(null)
+  const [shuttleFileName, setShuttleFileName] = useState('')
+  const [shuttleBusy, setShuttleBusy] = useState(false)
+  const [shuttleSaving, setShuttleSaving] = useState(false)
+  const [shuttleDrag, setShuttleDrag] = useState(false)
+  const [shuttleSites, setShuttleSites] = useState<string[]>([])
+  const shuttleInputRef = useRef<HTMLInputElement>(null)
+
+  const handleShuttleFile = async (file: File) => {
+    setShuttleBusy(true)
+    try {
+      const res = await parseShuttleWorkbook(file)
+      setShuttleParsed(res); setShuttleFileName(file.name)
+    } catch (e: any) {
+      toast('err', e?.message || 'อ่านไฟล์ไม่สำเร็จ — ตรวจรูปแบบ Excel')
+    } finally { setShuttleBusy(false) }
+  }
+
+  const shuttleNewRows = useMemo(
+    () => (shuttleParsed ? shuttleParsed.rows.filter((r) => !existing[r.vin]) : []),
+    [shuttleParsed, existing],
+  )
+  const shuttleDupCount = shuttleParsed ? shuttleParsed.rows.length - shuttleNewRows.length : 0
+
+  const toggleShuttleSite = (id: string) =>
+    setShuttleSites((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
+
+  const confirmShuttle = () => {
+    if (!shuttleParsed || shuttleSites.length < 2 || !shuttleNewRows.length || shuttleSaving) return
+    setShuttleSaving(true)
+    const { added } = commitPreGateInCandidates(shuttleNewRows, shuttleSites)
+    const names = shuttleSites.map((id) => sites.find((s) => s.id === id)?.name ?? id)
+    for (const id of shuttleSites) {
+      const site = sites.find((s) => s.id === id)
+      createGateInQueue(`(${site?.name ?? id} · shuttle · ${added})`, shuttleNewRows.map((r) => r.vin), undefined, id)
+    }
+    toast('ok', `Shuttle · นำเข้าใหม่ ${added.toLocaleString()} คัน · รอ Gate-in ตัดสินที่ ${names.join(' / ')}` +
+      (shuttleDupCount ? ` · ข้ามซ้ำ (มีในระบบแล้ว) ${shuttleDupCount.toLocaleString()}` : ''))
+    setShuttleParsed(null); setShuttleFileName(''); setShuttleSites([]); setShuttleSaving(false)
   }
 
   const handleFile = async (file: File) => {
@@ -800,6 +844,69 @@ export function ImportPage() {
                       <button className="btn" onClick={() => { setAccParsed(null); setAccFileName('') }} disabled={accSaving}>ยกเลิก</button>
                       <button className="btn" style={{ background: accSaving ? '#a78bda' : '#7c3aed', color: '#fff' }} onClick={confirmAcc} disabled={accSaving || !accPlan.toAddTotal}>
                         {accSaving ? <><Loader2 size={15} className="animate-spin" /> กำลังบันทึก…</> : <><CheckCircle2 size={15} /> ยืนยัน Update Accessory ({accPlan.toAddTotal.toLocaleString()})</>}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ── Shuttle to multiple yards (destination decided at Gate-in, not on paper) ── */}
+          <div className="panel mt-4 overflow-hidden fade-up">
+            <div className="flex items-center gap-2 px-4 py-3 border-b hairline">
+              <Truck size={16} style={{ color: '#0d9488' }} />
+              <span className="font-semibold text-[14px]">Shuttle หลายยาร์ด</span>
+              <span className="text-[12px] ml-auto" style={{ color: 'var(--muted)' }}>ยังไม่รู้ปลายทาง — ตัดสินตอน Gate-in จริง</span>
+            </div>
+            <div className="p-4">
+              {!shuttleParsed ? (
+                <UploadRow
+                  color="#0d9488" soft="rgba(13,148,136,0.1)"
+                  icon={<Truck size={20} style={{ color: '#0d9488' }} />}
+                  title="ลากไฟล์ Vin list ที่ยังไม่รู้ว่าคันไหนไปยาร์ดไหน มาวาง หรือคลิก"
+                  sub={<>แค่คอลัมน์ <b>VIN</b> ก็พอ — เลือกยาร์ดที่เป็นไปได้ทีหลัง รถจะขึ้นเป็น Pre Gate-in ที่ทุกยาร์ดที่เลือก จนกว่าจะขับเข้า Gate-in จริงที่ยาร์ดไหนยาร์ดหนึ่ง</>}
+                  busy={shuttleBusy} drag={shuttleDrag} inputRef={shuttleInputRef} onFile={handleShuttleFile} setDrag={setShuttleDrag}
+                />
+              ) : (
+                <div className="fade-up">
+                  <div className="flex items-center gap-2 mb-3">
+                    <FileSpreadsheet size={15} style={{ color: '#0d9488' }} />
+                    <span className="font-semibold text-[13.5px] clip">{shuttleFileName}</span>
+                    <span className="badge ml-auto" style={{ color: '#0d9488', background: 'rgba(13,148,136,0.1)' }}>{shuttleParsed.totalRows.toLocaleString()} VIN ในไฟล์</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-px rounded-xl overflow-hidden" style={{ background: 'var(--line)' }}>
+                    <SumCell label="จะนำเข้าใหม่" value={shuttleNewRows.length} accent="#0d9488" big />
+                    <SumCell label="ข้ามซ้ำ (มีในระบบแล้ว)" value={shuttleDupCount} accent="var(--muted)" />
+                  </div>
+                  {shuttleParsed.skippedNoVin > 0 && (
+                    <div className="text-[11.5px] mt-2" style={{ color: 'var(--muted)' }}>ข้ามแถวที่ไม่มี VIN {shuttleParsed.skippedNoVin.toLocaleString()} แถว</div>
+                  )}
+                  <div className="mt-3">
+                    <div className="text-[12px] font-semibold mb-1.5">เลือกยาร์ดที่เป็นไปได้ (อย่างน้อย 2 ยาร์ด)</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {sites.map((s) => {
+                        const on = shuttleSites.includes(s.id)
+                        return (
+                          <button key={s.id} onClick={() => toggleShuttleSite(s.id)}
+                            className="btn px-2.5 py-1 text-[12.5px]"
+                            style={on ? { background: '#0d9488', color: '#fff', borderColor: '#0d9488' } : undefined}>
+                            {on && <CheckCircle2 size={12} />} {s.name}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 mt-3 flex-wrap">
+                    <span className="text-[12px]" style={{ color: 'var(--muted)' }}>
+                      {shuttleSites.length < 2
+                        ? 'เลือกยาร์ดอย่างน้อย 2 ยาร์ด'
+                        : <>รถ <b style={{ color: '#0d9488' }}>{shuttleNewRows.length.toLocaleString()}</b> คัน จะรอ Gate-in ที่ {shuttleSites.map((id) => sites.find((s) => s.id === id)?.name ?? id).join(' / ')}</>}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button className="btn" onClick={() => { setShuttleParsed(null); setShuttleFileName(''); setShuttleSites([]) }} disabled={shuttleSaving}>ยกเลิก</button>
+                      <button className="btn" style={{ background: shuttleSaving ? '#5eaba5' : '#0d9488', color: '#fff' }} onClick={confirmShuttle} disabled={shuttleSaving || shuttleSites.length < 2 || !shuttleNewRows.length}>
+                        {shuttleSaving ? <><Loader2 size={15} className="animate-spin" /> กำลังบันทึก…</> : <><CheckCircle2 size={15} /> ยืนยัน Shuttle ({shuttleNewRows.length.toLocaleString()})</>}
                       </button>
                     </div>
                   </div>
