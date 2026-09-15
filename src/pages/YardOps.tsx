@@ -615,6 +615,47 @@ function savedScanZoom(): number {
 }
 const rememberScanZoom = (v: number) => { try { localStorage.setItem(SCAN_ZOOM_KEY, String(v)) } catch { /* full */ } }
 
+// ── keep the camera warm between scans ──────────────────────────────────────
+// A worker at the gate scans car after car. Every scan used to open the camera
+// from cold — getUserMedia, sensor mode negotiation, first frame — a wait of a
+// second or more on the phones in the yard, paid again for every single car.
+// Closing the overlay now PARKS the live stream instead of stopping it; the
+// next open within WARM_MS reuses it and the preview is up on the very next
+// frame. The stream is released for real when nobody reopens in time, when
+// the tab goes to the background (a camera must never stay on unseen), or on
+// an explicit release. The torch is switched off before parking so a phone
+// never sits with its flash burning while the scanner is closed.
+const WARM_MS = 45_000
+let warmStream: MediaStream | null = null
+let warmTimer: ReturnType<typeof setTimeout> | null = null
+function releaseWarmStream(): void {
+  if (warmTimer) { clearTimeout(warmTimer); warmTimer = null }
+  warmStream?.getTracks().forEach(t => t.stop())
+  warmStream = null
+}
+function parkWarmStream(s: MediaStream): void {
+  if (warmStream && warmStream !== s) releaseWarmStream()
+  warmStream = s
+  if (warmTimer) clearTimeout(warmTimer)
+  warmTimer = setTimeout(releaseWarmStream, WARM_MS)
+}
+/** The parked stream if every track is still live, else nothing (a track the OS
+ *  ended in the meantime is not reusable — a fresh getUserMedia is). */
+function takeWarmStream(): MediaStream | null {
+  if (warmTimer) { clearTimeout(warmTimer); warmTimer = null }
+  const s = warmStream
+  warmStream = null
+  if (!s) return null
+  const tracks = s.getVideoTracks()
+  if (tracks.length && tracks.every(t => t.readyState === 'live')) return s
+  s.getTracks().forEach(t => t.stop())
+  return null
+}
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') releaseWarmStream() })
+  window.addEventListener('pagehide', releaseWarmStream)
+}
+
 function VinInput({
   onScan, accent = 'var(--brand)',
   placeholder = 'VIN / 5 ตัวท้าย…',
@@ -723,14 +764,19 @@ function VinInput({
     return () => document.removeEventListener('keydown', onKey, true)
   }, [])
 
-  // Fully release the camera: stop ZXing's decode loop AND every media track,
-  // then detach from the <video> so the OS camera indicator turns off.
+  // Stop the decode loop and detach the <video>, but PARK the stream rather than
+  // stop it (see parkWarmStream) so the next scan a moment later opens on the
+  // very next frame. Torch off first — a parked stream must never leave the
+  // flash burning behind a closed overlay.
   const stopScan = () => {
     try { controlsRef.current?.stop() } catch { /* already stopped */ }
     controlsRef.current = null
     const v = videoRef.current
     const s = v?.srcObject as MediaStream | null
-    s?.getTracks().forEach(t => t.stop())
+    if (s) {
+      if (torchOn) trackRef.current?.applyConstraints({ advanced: [{ torch: false } as MediaTrackConstraintSet] }).catch(() => {})
+      parkWarmStream(s)
+    }
     if (v) v.srcObject = null
     trackRef.current = null
     setZoomCap(null); setZoom(1); setTorchCap(false); setTorchOn(false)
@@ -772,12 +818,16 @@ function VinInput({
     // (2×, capped) puts far more pixels on the small sticker code.
     // `allowDigital`: the ZXing path can crop-decode, so when the lens zoom is
     // NOT drivable (most iPhones on Safari) it falls back to a digital zoom.
-    const setupTrack = (video: HTMLVideoElement, allowDigital: boolean) => {
+    // The constraint writes are SEQUENCED, not fired together: focus, zoom and
+    // the resolution bump all reconfigure the same live track, and several
+    // in flight at once make some Android cameras restart the stream — a
+    // black preview right after the first frame, which read as "still opening".
+    const setupTrack = async (video: HTMLVideoElement, allowDigital: boolean) => {
       const track = (video.srcObject as MediaStream | null)?.getVideoTracks?.()[0] ?? null
       trackRef.current = track
       // nudge continuous autofocus — ignored where unsupported, but stops some
       // devices from locking focus at the wrong distance
-      track?.applyConstraints({ advanced: [{ focusMode: 'continuous' } as MediaTrackConstraintSet] }).catch(() => {})
+      await track?.applyConstraints({ advanced: [{ focusMode: 'continuous' } as MediaTrackConstraintSet] }).catch(() => {})
       const caps = (track?.getCapabilities?.() ?? {}) as MediaTrackCapabilities & { zoom?: { min?: number; max?: number; step?: number }; torch?: boolean }
       if (caps.zoom && typeof caps.zoom.max === 'number' && caps.zoom.max > (caps.zoom.min ?? 1)) {
         opticalRef.current = true
@@ -785,7 +835,7 @@ function VinInput({
         setZoomCap(cap)
         // start at the zoom the worker used LAST time (remembered), capped
         const z = Math.min(Math.max(savedScanZoom(), cap.min), cap.max)
-        track!.applyConstraints({ advanced: [{ zoom: z } as MediaTrackConstraintSet] })
+        await track!.applyConstraints({ advanced: [{ zoom: z } as MediaTrackConstraintSet] })
           .then(() => setZoom(z)).catch(() => setZoom(cap.min))
       } else if (allowDigital) {
         setDigitalZoom(true) // slider drives the crop-decode + preview scale
@@ -818,7 +868,7 @@ function VinInput({
           } catch { /* detector hiccup — next tick */ }
         }, 120)
         controlsRef.current = { stop: () => clearInterval(iv) }
-        setupTrack(video, false) // native detector reads the full frame — no crop zoom
+        await setupTrack(video, false) // native detector reads the full frame — no crop zoom
         return true
       } catch { return false } // permission error falls through to ZXing for its message
     }
@@ -901,7 +951,7 @@ function VinInput({
         })()
       }, 90)
       controlsRef.current = { stop: () => clearInterval(iv) }
-      setupTrack(video, true)
+      await setupTrack(video, true)
     }
 
     ;(async () => {
@@ -927,22 +977,31 @@ function VinInput({
         // prompt, the camera held by another app, a backgrounded PWA resuming
         // from lock — leaving the "กำลังเปิดกล้อง…" spinner up forever with no
         // error and no way out but the close button. Time it out instead.
-        let timedOut = false
-        camTimeoutId = setTimeout(() => {
-          timedOut = true
-          if (!cancelled) setCamErr('เปิดกล้องช้าเกินไป — ลองปิดแล้วเปิดกล้องใหม่ หรือตรวจสอบสิทธิ์กล้องของเบราว์เซอร์')
-        }, 10000)
-        const stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO })
-        clearTimeout(camTimeoutId)
-        if (cancelled || timedOut) { stream.getTracks().forEach(t => t.stop()); return }
+        // a stream parked by the previous scan (see parkWarmStream) is already
+        // open, focused and at full resolution — no negotiation at all
+        let stream = takeWarmStream()
+        const reused = !!stream
+        if (!stream) {
+          let timedOut = false
+          camTimeoutId = setTimeout(() => {
+            timedOut = true
+            if (!cancelled) setCamErr('เปิดกล้องช้าเกินไป — ลองปิดแล้วเปิดกล้องใหม่ หรือตรวจสอบสิทธิ์กล้องของเบราว์เซอร์')
+          }, 10000)
+          stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO })
+          clearTimeout(camTimeoutId)
+          if (timedOut) { stream.getTracks().forEach(t => t.stop()); return }
+        }
+        if (cancelled) { parkWarmStream(stream); return }
         video.srcObject = stream
         await video.play().catch(() => {})
         setCamLive(true) // preview is up — everything below happens behind it
 
-        // now push the sensor to full size, on the running track
-        stream.getVideoTracks()[0]?.applyConstraints(HI_RES).catch(() => {})
-
         if (!(await startNative(video))) await startZxing(video, warm)
+
+        // now push the sensor to full size, on the running track — AFTER the
+        // focus / zoom writes above have settled (see setupTrack), and only
+        // for a freshly opened stream: a reused one is at full size already
+        if (!reused && !cancelled) stream.getVideoTracks()[0]?.applyConstraints(HI_RES).catch(() => {})
       } catch (e) {
         console.error('[scan] camera', e)
         if (!cancelled) setCamErr('เปิดกล้องไม่สำเร็จ — โปรดอนุญาตสิทธิ์กล้องในเบราว์เซอร์ แล้วลองใหม่')
@@ -977,6 +1036,7 @@ function VinInput({
               playsInline
               muted
               autoPlay
+              onPlaying={() => setCamLive(true)} // the spinner drops on the first real frame, not on play()'s promise
             />
             {/* Until the first frame lands the overlay is pure black, which
                 reads as "hung" — say what is happening instead. */}
