@@ -119,7 +119,7 @@ export function ImportPage() {
   const laneDepth = useYard((s) => s.laneDepth)
   const curSiteName = sites.find((s) => s.id === currentSite)?.name ?? '—'
   const yardUnits = useYard((s) => s.units)
-  const { commitImport, commitCoInspection, commitPreGateInCandidates, deleteRows, lastImport, loadFromIdb, updateCell } = useTracking()
+  const { commitImport, commitCoInspection, commitPreGateInCandidates, deleteRows, lastImport, loadFromIdb, startNewTrip } = useTracking()
   const existing = useTracking((s) => s.rows)
   const rowCount = Object.keys(existing).length
   // distinct vehicles across BOTH stores (gated-in cars live in tracking + yard units)
@@ -494,18 +494,18 @@ export function ImportPage() {
     // rows as expected arrivals and queued long-departed cars for gate-in.
     for (const r of newRows) if (r.cells['Car Status'] !== 'Gate-out') r.cells['Car Status'] = 'Pre Gate-in'
     if (newRows.length) commitImport({ ...parsed, rows: newRows, inYard: newRows.length })
+    // a returning car CLOSES its old round and starts the next one on an empty
+    // sheet — the previous visit's gate-out, lot, PDI/PM and results are filed
+    // away under the row, never mixed into this one (see tripHistory.ts)
     for (const r of returningRows) {
-      const ex = existing[r.vin]
-      // the yard it is coming back to — the file's Location yard, else the yard
-      // this import runs under; a car returning to a DIFFERENT yard than the one
-      // it left moves there (Location yard drives the site tag — applyYardMove)
-      const yard = (r.cells['Location yard'] || '').trim() || curSiteName
-      if (ex.site !== currentSite || (ex.cells['Location yard'] || '').trim() !== yard) updateCell(r.vin, 'Location yard', yard)
-      updateCell(r.vin, 'Car Status', 'Pre Gate-in')
-      for (const k of ['Gate In Date', 'moving date', 'Lot transfer']) {
-        const v = (r.cells[k] || '').trim()
-        if (v && v !== (ex.cells[k] || '').trim()) updateCell(r.vin, k, v)
-      }
+      startNewTrip(r.vin, {
+        // the yard it is coming back to — the file's Location yard, else the
+        // yard this import runs under (a different yard moves the car there)
+        yard: (r.cells['Location yard'] || '').trim() || curSiteName,
+        gateInDate: (r.cells['Gate In Date'] || '').trim(),
+        movingDate: (r.cells['moving date'] || '').trim(),
+        lot: (r.cells['Lot transfer'] || '').trim(),
+      })
     }
     toast('ok', `นำเข้าใหม่ ${newRows.length.toLocaleString()} คัน` +
       (returningRows.length ? ` · กลับเข้ามาใหม่ (เคย Gate-out) ${returningRows.length.toLocaleString()}` : '') +
