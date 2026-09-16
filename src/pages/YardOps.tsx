@@ -27,7 +27,7 @@ import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirs
 import { candidates } from '../lib/parkingEngine'
 import { slotToLatLng } from '../lib/geo'
 import { cx, PhotoLightbox } from '../components/ui'
-import { rowInSite, isPreGateInCandidate } from '../lib/siteScope'
+import { rowInSite, rowsForSite } from '../lib/siteScope'
 import { compressImage } from '../lib/photo'
 import StationSheet from '../components/StationSheet'
 import StockAccessoryCheck from '../components/StockAccessoryCheck'
@@ -1722,7 +1722,6 @@ function WalkView() {
   const masterDefects = useMasterDefect((s) => s.defects)
   const allUnits = useUnits() // global (all sites) — for pulling a car's Defect list even if its unit lives in another site
   const { gateIn, importUnits, addDamage, updateDamage, markTrailerArrived, toast, currentUser } = useYard()
-  const siteTrackingRows = useSiteRows()
   const allTrackingRows = useTrackingRows()
   const wrongSite = useWrongSiteHint()
   const { loadFromIdb, updateCell, claimPreGateInCandidate } = useTracking()
@@ -1738,11 +1737,7 @@ function WalkView() {
   // decided the yard for yet can still be scanned in HERE. A row drops out of
   // this extra set the instant Gate-in claims it (site gets set then), so it
   // stops appearing at every OTHER candidate site immediately.
-  const trackingRows = useMemo(() => {
-    const siteVins = new Set(siteTrackingRows.map(r => r.vin))
-    const candidates = allTrackingRows.filter(r => !siteVins.has(r.vin) && isPreGateInCandidate(r, currentSite))
-    return candidates.length ? [...siteTrackingRows, ...candidates] : siteTrackingRows
-  }, [siteTrackingRows, allTrackingRows, currentSite])
+  const trackingRows = useMemo(() => rowsForSite(allTrackingRows, currentSite, sites), [allTrackingRows, currentSite, sites])
   const [vin, setVin] = useState<string | null>(null)
   const [trackingVin, setTrackingVin] = useState<string | null>(null)
   const [selectedQueueId, setSelectedQueueId] = useState<string | null>(null)

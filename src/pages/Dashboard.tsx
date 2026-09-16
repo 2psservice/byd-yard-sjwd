@@ -6,7 +6,7 @@ import { useTrackingRows, useTracking } from '../store/useTracking'
 import { makeT } from '../i18n'
 import { ZONE_COLOR } from '../lib/sampleData'
 import { deriveCarStatus, CAR_STATUS_META, CAR_STATUS_ORDER, PARKED_STATUSES, isWaitingRepair } from '../lib/carStatus'
-import { rowInSite, isPreGateInCandidate } from '../lib/siteScope'
+import { rowsForSite } from '../lib/siteScope'
 import { pct, pos, timeAgo } from '../lib/format'
 import { defectLabel } from '../lib/damageLabel'
 import { useOps, isPreGateInQueue, isQueueComplete, queueProgress, gateInArrived } from '../store/useOps'
@@ -182,13 +182,7 @@ export function Dashboard() {
   // PLUS any still-unclaimed shared-shuttle row naming this site as a
   // candidate (see isPreGateInCandidate), so the "Pre Gate-in" headline never
   // reads 0 while the per-lot progress card below shows the same cars pending.
-  const trackingRows = useMemo(() => {
-    if (!currentSite) return allTrackingRows
-    const scoped = allTrackingRows.filter((r) => rowInSite(r, currentSite, sites))
-    const scopedVins = new Set(scoped.map((r) => r.vin))
-    const candidates = allTrackingRows.filter((r) => !scopedVins.has(r.vin) && isPreGateInCandidate(r, currentSite))
-    return candidates.length ? [...scoped, ...candidates] : scoped
-  }, [allTrackingRows, currentSite, sites])
+  const trackingRows = useMemo(() => rowsForSite(allTrackingRows, currentSite, sites), [allTrackingRows, currentSite, sites])
   const units = useMemo(
     () => (currentSite ? allUnits.filter((u) => u.site === currentSite) : allUnits),
     [allUnits, currentSite],
