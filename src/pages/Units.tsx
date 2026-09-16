@@ -20,7 +20,7 @@ import { rowsToCsv, type TrackRow, type RowEvent } from '../lib/excelTracking'
 import { isStockSheetEntry } from '../lib/finalCheckList'
 import { printFindList } from '../lib/groupingPrint'
 import { matchVins, toFindListRows } from '../lib/findCar'
-import { rowInSite } from '../lib/siteScope'
+import { rowsForSite, siteWorksWith } from '../lib/siteScope'
 import { zoneLabel } from '../components/CarDiagramMultiView'
 import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirst, REPAIR_STATUSES, canonRepairStatus } from '../lib/damageLabel'
 import { resolvePart, resolveDefect } from '../lib/masterDefect'
@@ -234,11 +234,10 @@ export function Units() {
   const currentSite = useYard((s) => s.currentSite)
   const sites = useYard((s) => s.sites)
   const allRows = useTrackingRows()
-  // per-yard separation: the whole Unit List only ever shows the active site
-  const rows = useMemo(
-    () => (currentSite ? allRows.filter((r) => rowInSite(r, currentSite, sites)) : allRows),
-    [allRows, currentSite, sites],
-  )
+  // per-yard separation: the whole Unit List only ever shows the active site —
+  // including the shared-shuttle cars still waiting to be claimed here, which
+  // the Dashboard's Pre Gate-in card counts and drills down into
+  const rows = useMemo(() => rowsForSite(allRows, currentSite, sites), [allRows, currentSite, sites])
   const visCols = useVisibleColumns()
   const { lastImport, loadFromIdb } = useTracking()
   // computed yard-location code (prefix-block+ช่อง+ลำดับ, e.g. "N-R1402"), for the Location column.
@@ -1278,7 +1277,7 @@ function MylistView({ allRows, visCols, sel, setSel, sortKey, sortDir, toggleSor
   // cars the paste reached that this yard's list does not carry — flagged so a
   // gated-out (or other-yard) car is never read as standing in this yard
   const outsideCount = useMemo(
-    () => found.reduce((n, r) => n + (rowInSite(r, currentSite, sites) ? 0 : 1), 0),
+    () => found.reduce((n, r) => n + (siteWorksWith(r, currentSite, sites) ? 0 : 1), 0),
     [found, currentSite, sites],
   )
 

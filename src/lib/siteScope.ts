@@ -70,3 +70,16 @@ export function isPreGateInCandidate(row: TrackRow | undefined, currentSite: str
   if (!currentSite || !row || row.site) return false
   return candidateSiteIds(row.cells).includes(currentSite)
 }
+
+/** Does this yard work with this car? Its own cars, PLUS any shared-shuttle car
+ *  still waiting to be claimed that named this yard as a destination — those are
+ *  genuinely ITS arrivals to expect, so the Dashboard counts them, the Gate-in
+ *  station can scan them and the Unit List lists them. One rule, so no screen
+ *  can disagree with the count another one shows. */
+export const siteWorksWith = (row: TrackRow | undefined, currentSite: string | null, sites: Site[]): boolean =>
+  rowInSite(row, currentSite, sites) || isPreGateInCandidate(row, currentSite)
+
+export function rowsForSite(all: TrackRow[], currentSite: string | null, sites: Site[]): TrackRow[] {
+  if (!currentSite) return all
+  return all.filter((r) => siteWorksWith(r, currentSite, sites))
+}
