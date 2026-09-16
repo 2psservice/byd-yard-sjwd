@@ -44,6 +44,7 @@ import { laneFromCloud } from '../lib/laneCloud'
 import { hasDialogOpen } from '../lib/keyboardGuard'
 import { useRecentOps } from '../store/useRecentOps'
 import { buildWorkRows, buildEventLog, fmtHistAt, histOf } from '../lib/carHistory'
+import { roundOf } from '../lib/tripHistory'
 import { exportSpecialQueue } from '../lib/opsReport'
 
 const recordRecent = (key: string, vin: string, note?: string) => useRecentOps.getState().record(key, vin, note)
@@ -5540,6 +5541,9 @@ function CheckView() {
           {/* ── Identity ── */}
           <CheckSec title="ข้อมูลรถ">
             <CheckRow label="Model"       value={model} />
+            {/* a car on its 2nd+ visit — the earlier visits' data is filed away,
+                not mixed into this one; the Event log below lists them */}
+            {row && roundOf(row.cells) > 1 && <CheckRow label="รอบที่" value={String(roundOf(row.cells))} />}
             {row?.cells['company']   && <CheckRow label="Company"  value={row.cells['company']} />}
             {/* the sheet first: a unit registered by an older defect import
                 carries the MODEL as its colour (see importDefects), and the

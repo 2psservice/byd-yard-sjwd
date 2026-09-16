@@ -12,6 +12,7 @@ import { supabase } from '../lib/supabase'
 import { onSync, sendSync, type RowMsg, type RowsPayload } from '../lib/syncBus'
 import { useYard } from './useYard'
 import { siteForRow, siteIdForLocation, coInspectionAccepts, CANDIDATE_SITES_KEY } from '../lib/siteScope'
+import { TRIPS_CELL, TRIP_SCOPED_KEYS, tripsOf, type TripSnapshot } from '../lib/tripHistory'
 import { CAR_STATUS_ORDER, deriveCarStatus, isGateOutStamp } from '../lib/carStatus'
 import { isOpenDefect } from '../lib/damageLabel'
 import type { RealtimeChannel } from '@supabase/supabase-js'
@@ -157,6 +158,10 @@ interface TrackingState {
    *  instant `site` is no longer blank (see isPreGateInCandidate). No-op once
    *  the row already has a site. */
   claimPreGateInCandidate: (vin: string, siteId: string) => void
+  /** A car that gated out has come back: file this visit away as a closed
+   *  round and start the next one on an empty sheet (see tripHistory.ts).
+   *  Returns the new round number, or 0 when the VIN is unknown. */
+  startNewTrip: (vin: string, next: { yard?: string; gateInDate?: string; movingDate?: string; lot?: string }) => number
   commitCoInspection: (res: ParseResult) => { updated: number; added: number; skipped: number; gateOut: number; moved: number }
   /** Set a cell and log it. `src: 'scan'` marks the write as a FIELD STATION
    *  action (ops-scan), which is what lets a report tell a real recording apart
@@ -685,6 +690,57 @@ export const useTracking = create<TrackingState>()(
         idbBulkPut([stamped]).catch(() => {})
         pushRows([stamped])
         set({ rows })
+      },
+
+      startNewTrip: (vin, next) => {
+        const r = get().rows[vin]
+        if (!r) return 0
+        const by = useYard.getState().currentUser
+        const trips = tripsOf(r.cells)
+        const closing = trips.length + 1 // the round that ends here
+        // lift every cell of the round being closed OFF the row, so the next
+        // round cannot read one of them as its own
+        const cells = { ...r.cells }
+        const cleared: Record<string, string> = {}
+        for (const k of TRIP_SCOPED_KEYS) {
+          const v = (cells[k] ?? '').trim()
+          if (v) { cleared[k] = v; delete cells[k] }
+        }
+        const snap: TripSnapshot = {
+          round: closing,
+          gateIn: cleared['Gate In (Rayong yard)'] || cleared['Gate In Date'] || '',
+          gateOut: cleared['Gate Out time stamp'] || cleared['Gate Out Date'] || '',
+          yard: (r.cells['Location yard'] ?? '').trim(),
+          lot: cleared['Lot transfer'] || '',
+          grouping: cleared['Grouping  Number'] || '',
+          closedAt: Date.now(),
+          cells: cleared,
+        }
+        cells[TRIPS_CELL] = JSON.stringify([...trips, snap])
+        // …and the new round begins, waiting at the gate like any other arrival
+        cells['Car Status'] = 'Pre Gate-in'
+        if (next.yard) cells['Location yard'] = next.yard
+        if (next.gateInDate) cells['Gate In Date'] = next.gateInDate
+        if (next.movingDate) cells['moving date'] = next.movingDate
+        if (next.lot) cells['Lot transfer'] = next.lot
+        const entry: RowEvent = { at: Date.now(), by, field: 'รอบที่', from: String(closing), to: String(closing + 1) }
+        let out: TrackRow = { ...r, cells, history: [...(r.history ?? []), entry].slice(-MAX_ROW_HISTORY), updatedAt: Date.now() }
+        // coming back to a DIFFERENT yard moves the car there (same rule as
+        // applyYardMove, which this path bypasses by writing cells directly)
+        const target = siteIdForLocation(cells, useYard.getState().sites)
+        if (target && target !== out.site) { out = { ...out, site: target }; useYard.getState().moveUnitsToSite([vin], target) }
+        set({ rows: { ...get().rows, [vin]: out } })
+        idbPut(out).catch(() => {})
+        pushRows([out])
+        // the closed round's queues go with it: the arrival lot it gated in on
+        // AND the delivery run it left on — otherwise that finished run re-opens
+        // the moment this car stops reading as gated-out (seqCarGone) and asks
+        // to be sent again. Only FINISHED items, so this landing after the new
+        // round's own lot is created cannot empty it (see releaseFinishedRound).
+        import('./useOps')
+          .then((m) => m.useOps.getState().releaseFinishedRound([vin]))
+          .catch(() => {})
+        return closing + 1
       },
 
       // Co-Inspection import: MERGE the file's columns into existing VINs (update

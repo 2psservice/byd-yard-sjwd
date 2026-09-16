@@ -7,6 +7,7 @@ import type { TrackRow, RowEvent } from './excelTracking'
 import type { Column } from './trackingColumns'
 import { LOCATION_KEY } from './trackingColumns'
 import { yardLocFull } from './groupingImport'
+import { tripsOf } from './tripHistory'
 import type { Unit, Damage } from '../types'
 import type { WorkQueue } from '../store/useOps'
 
@@ -109,6 +110,17 @@ export function buildEventLog(
 ): CarEvent[] {
   const c = row.cells
   const log: CarEvent[] = []
+  // rounds the car already finished — it left the yard and came back, so this
+  // visit's sheet is clean and the old one is filed here (see tripHistory.ts)
+  for (const t of tripsOf(c)) {
+    const span = [t.gateIn && `เข้า ${t.gateIn}`, t.gateOut && `ออก ${t.gateOut}`].filter(Boolean).join(' → ')
+    const extra = [t.yard, t.lot && `Lot ${t.lot}`, t.grouping && `Grouping ${t.grouping}`].filter(Boolean).join(' · ')
+    log.push({
+      at: t.closedAt, by: '—', station: `รอบที่ ${t.round}`,
+      text: `ปิดรอบที่ ${t.round}${span ? ` · ${span}` : ''}${extra ? ` · ${extra}` : ''}`,
+      accent: '#0891b2',
+    })
+  }
   for (const h of row.history ?? []) {
     if (h.field === '__damage') { log.push({ at: h.at, by: h.by, station: 'Damage', text: h.to, accent: '#dc2626' }); continue }
     log.push({ at: h.at, by: h.by, text: `แก้ไข ${h.field}: ${h.from || '(ว่าง)'} → ${h.to}` })

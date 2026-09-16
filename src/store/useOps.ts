@@ -257,6 +257,11 @@ interface OpsState {
   /** The office re-announced these cars as expected arrivals. Any arrival lot
    *  that has ALREADY gated them in lets them go — see the action for why. */
   releaseArrivedFromLots: (vins: string[]) => void
+  /** A car closed a round (gated out, now back — see tripHistory.ts): drop it
+   *  from the arrival lot it already gated in on and the delivery run it
+   *  already left on, so neither re-opens asking for it again. Open items —
+   *  the new round's own lot — are left alone. */
+  releaseFinishedRound: (vins: string[]) => void
   /** Drop every car that has already gated in from ONE arrival lot, leaving the
    *  cars still expected. Returns how many were removed. */
   dropArrivedFromLot: (id: string) => number
@@ -611,6 +616,27 @@ export const useOps = create<OpsState>()(
        * Only items the lot had already ticked in are released; a car still
        * waiting in a live lot stays exactly where it is.
        */
+      releaseFinishedRound: (vins) => {
+        const want = new Set(vins.map((v) => v.trim().toUpperCase()).filter(Boolean))
+        if (!want.size) return
+        const touched: string[] = []
+        set((s) => ({
+          queues: s.queues.map((q) => {
+            const seq = isSequenceQueue(q)
+            if (!seq && queueTypeOf(q) !== 'GATEIN') return q
+            // ONLY items the closed round finished: an arrival it already gated
+            // in, a delivery run it already left on. An item still open — above
+            // all the arrival lot this same import is about to create for the
+            // NEW round — is untouched, so this landing late cannot undo it.
+            const items = q.items.filter((i) => !(want.has(i.vin) && (i.done || (seq && i.gatedOut))))
+            if (items.length === q.items.length) return q
+            touched.push(q.id)
+            return { ...q, items }
+          }),
+        }))
+        for (const id of touched) pushQueue(get, id)
+      },
+
       releaseArrivedFromLots: (vins) => {
         const want = new Set(vins.map((v) => v.trim().toUpperCase()).filter(Boolean))
         if (!want.size) return
