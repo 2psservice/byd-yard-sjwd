@@ -17,7 +17,7 @@ import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, LOCATION_KEY, MAX_FIL
 import { yardLocFull, byYardLocation } from '../lib/groupingImport'
 import { CAR_STATUS_META, deriveCarStatus, IN_YARD_STATUSES, PARKED_STATUSES, isWaitingRepair, finalColor, vinOfStatusColor, taxStatusColor } from '../lib/carStatus'
 import { rowsToCsv, type TrackRow, type RowEvent } from '../lib/excelTracking'
-import { isStockSheetEntry } from '../lib/finalCheckList'
+import { isAccessoryCheckEntry } from '../lib/finalCheckList'
 import { printFindList } from '../lib/groupingPrint'
 import { matchVins, toFindListRows } from '../lib/findCar'
 import { rowsForSite, siteWorksWith } from '../lib/siteScope'
@@ -935,7 +935,7 @@ function BulkDefectModal({ vins, onClose, onDone }: { vins: string[]; onClose: (
   const opts = useMemo(() => {
     const S = { position: new Set<string>(), defect: new Set<string>(), catNG: new Set<string>(), catRepair: new Set<string>(), incharge: new Set<string>(), note: new Set<string>() }
     for (const u of Object.values(allUnits)) for (const d of u.damages) {
-      if (isStockSheetEntry(d)) continue // stock count, not a defect to suggest
+      if (isAccessoryCheckEntry(d)) continue // stock count, not a defect to suggest
       if (d.area && d.area !== '—') S.position.add(zoneLabel(d.area))
       const df = d.item ?? d.type; if (df && df !== '—') S.defect.add(df)
       if (d.categoryNG) S.catNG.add(d.categoryNG)
@@ -1700,7 +1700,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
   // worth chasing, but not a mark on the bodywork, and mixed into the same table
   // it buried the real findings. The records are NOT deleted: they stay on the
   // car in the Event tab as PDI history, they just stop being listed as defects.
-  const damages = useMemo(() => allDamages.filter((d) => !isStockSheetEntry(d)), [allDamages])
+  const damages = useMemo(() => allDamages.filter((d) => !isAccessoryCheckEntry(d)), [allDamages])
   const updateRepairStatus = useYard((s) => s.updateRepairStatus)
   const updateDamage = useYard((s) => s.updateDamage)
   const addManualDamage = useYard((s) => s.addManualDamage)
@@ -1723,7 +1723,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
   const dmgOpts = useMemo(() => {
     const S = { position: new Set<string>(), defect: new Set<string>(), catNG: new Set<string>(), catRepair: new Set<string>(), incharge: new Set<string>(), note: new Set<string>() }
     for (const u of Object.values(allUnits)) for (const d of u.damages) {
-      if (isStockSheetEntry(d)) continue // stock count, not a defect to suggest
+      if (isAccessoryCheckEntry(d)) continue // stock count, not a defect to suggest
       if (d.area && d.area !== '—') S.position.add(zoneLabel(d.area))
       const df = d.item ?? d.type; if (df && df !== '—') S.defect.add(df)
       if (d.categoryNG) S.catNG.add(d.categoryNG)
@@ -1781,8 +1781,12 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
   const { rows: workRows, done: workDone } = buildWorkRows(row, unit, columns)
 
   // NG defects a station recorded (StationSheet tags them source:'pdi' + station name)
+  // "NG ที่บันทึกจากสถานี" is the station's FULL record — its own label says
+  // Overall inspection / Control Stock Sheet / Additional Accessories / NG — so
+  // it reads allDamages, not the defect-only list. The accessory ticks are not
+  // defects (see realDefects) but they ARE what this station wrote down.
   const stationDmgs = (match: string) =>
-    damages.filter((d) => d.source === 'pdi' && (d.station ?? '').toUpperCase().includes(match))
+    allDamages.filter((d) => d.source === 'pdi' && (d.station ?? '').toUpperCase().includes(match))
   // queue verdicts of one station type for this car
   const stationChecks = (types: string[]) => queues
     .map((q) => ({ q, item: q.items.find((i) => i.vin === vin) }))

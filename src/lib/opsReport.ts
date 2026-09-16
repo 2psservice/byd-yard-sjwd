@@ -11,8 +11,8 @@ import { PM_KEYS } from './trackingColumns'
 
 // A "Control Stock Sheet" tick is a stock count, not a body defect — the rule
 // lives with the checklist definition so every screen filters the same way.
-export { isStockSheetEntry } from './finalCheckList'
-import { isStockSheetEntry } from './finalCheckList'
+export { isAccessoryCheckEntry } from './finalCheckList'
+import { isAccessoryCheckEntry } from './finalCheckList'
 
 export type MenuKind = 'stock' | 'list' | 'defect' | 'time'
 export interface ReportMenu { id: string; label: string; kind: MenuKind }
@@ -337,7 +337,7 @@ export function buildDefects(ctx: ReportCtx, id: 'fcdefect' | 'pmdefect' | 'pdid
     if (!stationVins.has(u.vin)) continue
     for (const d of u.damages) {
       if (dayKeyOfTs(d.at) !== ctx.day) continue
-      if (isStockSheetEntry(d)) continue // stock count, not a defect — see above
+      if (isAccessoryCheckEntry(d)) continue // stock count, not a defect — see above
       const c = rows.get(u.vin)?.cells ?? {}
       out.push({
         no: out.length + 1, vin: u.vin,

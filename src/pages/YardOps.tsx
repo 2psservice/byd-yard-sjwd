@@ -33,7 +33,7 @@ import StationSheet from '../components/StationSheet'
 import StockAccessoryCheck from '../components/StockAccessoryCheck'
 import { MasterCombo } from '../components/MasterCombo'
 import { MeasurementField, TirePressureField, TIRE_WHEELS, joinTirePressure } from '../components/MeasurementField'
-import { FINAL_CHECK_TABS } from '../lib/finalCheckList'
+import { FINAL_CHECK_TABS, realDefects, accessoryEntries } from '../lib/finalCheckList'
 import { yardLocCode, yardLocFull, blockCode, byYardLocation, LAST_LOCATION_KEY, parseYardLocCode } from '../lib/groupingImport'
 import { parseLane } from '../lib/laneImport'
 import { LOCATION_KEY, VIN_PHOTO_CELL } from '../lib/trackingColumns'
@@ -2384,7 +2384,7 @@ function WalkView() {
             <div className="flex items-center justify-between mb-2">
               <span className="text-[13px] font-semibold flex items-center gap-1.5">
                 <AlertTriangle size={14} style={{ color: 'var(--st-damage)' }} />
-                Damage {unit.damages.length > 0 && <span className="badge" style={{ color: 'var(--st-damage)', background: '#fef2f2' }}>{unit.damages.length}</span>}
+                Damage {realDefects(unit.damages).length > 0 && <span className="badge" style={{ color: 'var(--st-damage)', background: '#fef2f2' }}>{realDefects(unit.damages).length}</span>}
               </span>
               <button onClick={() => setShowDmg(v => !v)}
                 className="btn btn-ghost text-[12px] py-1 px-2.5" style={{ color: 'var(--st-damage)' }}>
@@ -2403,7 +2403,7 @@ function WalkView() {
                 onCancel={() => setShowDmg(false)}
               />
             )}
-            {openDefectsFirst(unit.damages).map(d => (
+            {openDefectsFirst(realDefects(unit.damages)).map(d => (
               editId === d.id ? (
                 <div key={d.id} className="rounded-xl mb-2 overflow-hidden" style={{ background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.14)' }}>
                   <div className="p-3 space-y-2">
@@ -3228,7 +3228,7 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved, stationTit
   // station's type (NGs recorded while in queue "FINAL CHECK 2" must still show
   // after that queue completes and the car is re-scanned station-only)
   const matchStation = (st?: string) => !!st && (st === stationName || st.toUpperCase().includes(stationTitle.toUpperCase()))
-  const stationDmgs = unit.damages.filter(d => d.source === 'pdi' && matchStation(d.station))
+  const stationDmgs = realDefects(unit.damages).filter(d => d.source === 'pdi' && matchStation(d.station))
   // the OK/NG verdict counts only UNRESOLVED defects — a repaired NG must not
   // force this car to save NG forever
   const openDmgs = stationDmgs.filter(d => !d.statusRepair || d.statusRepair === 'Waiting Repair')
@@ -3437,7 +3437,7 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
   const procStage = activeProc ? stageOf(activeProc.item) : null
   const canRecord = !!activeProc && procStage !== 'checked'   // station task not yet recorded
   const walkDmgs = unit ? walkAroundDamages(unit) : []                              // found at gate-in
-  const otherDmgs = unit ? unit.damages.filter(d => d.source && d.source !== 'walkaround') : [] // PDI / ช่าง
+  const otherDmgs = unit ? realDefects(unit.damages).filter(d => d.source && d.source !== 'walkaround') : [] // PDI / ช่าง
 
   const onScanRef = useRef<(v: string) => void>(() => {})
   const scanNotFound = useCloudNotFound(onScanRef)
@@ -3648,7 +3648,7 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
               </div>
             </div>
           )}
-          {!activeProc && unit.inspected && unit.damages.length === 0 && (
+          {!activeProc && unit.inspected && realDefects(unit.damages).length === 0 && (
             <div className="panel p-3 flex items-center gap-2 font-semibold text-[13.5px]" style={{ color: 'var(--st-yard)' }}>
               <ShieldCheck size={17} /> ผ่านการตรวจแล้ว (OK)
             </div>
@@ -3875,7 +3875,7 @@ function MechanicView({ types, accent, stationLabel, emptyLabel, okNgMode = fals
         <div className="space-y-3 fade-up">
           <UnitCard unit={unit} accent={accent} />
 
-          {unit.damages.length === 0 ? (
+          {realDefects(unit.damages).length === 0 ? (
             <div className="panel p-5 text-center" style={{ color: 'var(--st-yard)' }}>
               <CheckCircle2 size={28} className="mx-auto mb-2" />
               <div className="font-semibold text-[13.5px]">ไม่มี NG — รถสภาพดี</div>
@@ -3885,11 +3885,11 @@ function MechanicView({ types, accent, stationLabel, emptyLabel, okNgMode = fals
               <div className="px-4 py-3 border-b hairline flex items-center justify-between"
                 style={{ background: '#fff8f0' }}>
                 <span className="text-[12.5px] font-semibold flex items-center gap-1.5" style={{ color: accent }}>
-                  <Wrench size={14} /> รายการ NG ที่ต้องแก้ ({unit.damages.length})
+                  <Wrench size={14} /> รายการ NG ที่ต้องแก้ ({realDefects(unit.damages).length})
                 </span>
               </div>
               <div className="p-3 space-y-2">
-                {openDefectsFirst(unit.damages).map(d => (
+                {openDefectsFirst(realDefects(unit.damages)).map(d => (
                   <DefectCard key={d.id} d={d}
                     right={<DefectStatusSelect d={d} onChange={s => updateRepairStatus(unit.vin, d.id, s)} />} />
                 ))}
@@ -5031,7 +5031,10 @@ function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', s
   const rawUnit = useYard(s => (vin ? s.units[vin] : undefined))
   const unit = vin ? units.find(u => u.vin === vin) ?? rawUnit ?? null : null
   const trackRow = vin ? trackingRows.find(r => r.vin === vin) ?? null : null
-  const damages = unit?.damages ?? []
+  // Defect list ของสถานีนี้ = แผลบนตัวรถเท่านั้น · ของประจำรถที่ติ๊ก NG ไว้
+  // (Control Stock Sheet / Additional Accessories) เป็นการนับของ ไม่ใช่แผล
+  // เอามารวมแล้วรายการจริงจมหาย — ข้อมูลยังอยู่ครบ ดูได้ที่แท็บ Accessory
+  const damages = useMemo(() => realDefects(unit?.damages ?? []), [unit])
 
   // refresh EVERY focused car from the cloud (one row, damages included) — the
   // local copy can be stale (defect recorded on another device) or frozen (a
@@ -5296,7 +5299,7 @@ function CheckView() {
   const columns = useTracking(s => s.columns)
   const { toast, loadFromSupabase } = useYard()
   const [vin, setVin] = useState<string | null>(null)
-  const [ctab, setCtab] = useState<'info' | 'location' | 'work' | 'event'>('info')
+  const [ctab, setCtab] = useState<'info' | 'location' | 'work' | 'event' | 'accessory'>('info')
 
   // pull units + damages from the cloud too — Check is read-only and often sits
   // open while OTHER devices record PDI defects; local state alone showed
@@ -5372,7 +5375,10 @@ function CheckView() {
   // derived data
   const vinTrips   = vin ? allTrips.filter(t => t.vin === vin).sort((a, b) => b.startedAt - a.startedAt) : []
   const vinQueues  = vin ? queues.map(q => ({ q, item: q.items.find(i => i.vin === vin) })).filter(x => x.item) : []
-  const damaged    = row ? isDamaged(row.cells) : (unit ? unit.damages.length > 0 : false)
+  const damaged    = row ? isDamaged(row.cells) : (unit ? realDefects(unit.damages).length > 0 : false)
+  // ของประจำรถที่พนักงานติ๊ก NG (Control Stock Sheet / Additional Accessories)
+  // — ของที่ขาด ไม่ใช่แผลบนตัวรถ จึงแยกมาไว้แท็บของตัวเอง ใหม่สุดขึ้นก่อน
+  const accDmgs    = useMemo(() => accessoryEntries(unit?.damages ?? []).slice().sort((a, b) => b.at - a.at), [unit])
   const carStatus  = row?.cells['Car Status'] ?? (unit ? unit.status : null)
   const model      = row?.cells['Model name'] ?? row?.cells['Model'] ?? unit?.modelName ?? '—'
   const colorHex   = unit?.colorHex ?? '#cfd6dd'
@@ -5387,12 +5393,15 @@ function CheckView() {
       <VinInput onScan={onScan} accent="#0891b2" />
       {!vin && <RecentPanel station="check" accent="#0891b2" onPick={onScan} />}
 
-      {/* tabs — ข้อมูล / Work / Event, same history the admin detail shows */}
+      {/* tabs — ข้อมูล / Location / Work / Event / Accessory, same history the
+          admin detail shows. Accessory is its own tab because a Control Stock
+          Sheet / Additional Accessories tick is a stock count, not a defect —
+          mixing them into Damage buried the real findings (see realDefects). */}
       {(row || unit) && vin && (
         <div className="flex gap-1.5">
-          {([['info', 'ข้อมูล'], ['location', 'Location'], ['work', `Work${workData ? ` ${workData.done}/${workData.rows.length}` : ''}`], ['event', `Event${eventLog.length ? ` ${eventLog.length}` : ''}`]] as ['info' | 'location' | 'work' | 'event', string][]).map(([id, label]) => (
+          {([['info', 'ข้อมูล'], ['location', 'Location'], ['work', `Work${workData ? ` ${workData.done}/${workData.rows.length}` : ''}`], ['event', `Event${eventLog.length ? ` ${eventLog.length}` : ''}`], ['accessory', `Accessory${accDmgs.length ? ` ${accDmgs.length}` : ''}`]] as ['info' | 'location' | 'work' | 'event' | 'accessory', string][]).map(([id, label]) => (
             <button key={id} onClick={() => setCtab(id)}
-              className="flex-1 py-2 rounded-xl text-[12.5px] font-bold transition"
+              className="flex-1 py-2 rounded-xl text-[11.5px] font-bold transition"
               style={ctab === id ? { background: '#0891b2', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>
               {label}
             </button>
@@ -5505,6 +5514,53 @@ function CheckView() {
         </div>
       )}
 
+      {/* ── Accessory — ของประจำรถที่ติ๊ก NG ไว้ (ไม่นับเป็น Defect) ── */}
+      {(row || unit) && vin && ctab === 'accessory' && (
+        <div className="panel overflow-hidden fade-up">
+          <div className="px-3.5 py-2.5 border-b hairline">
+            <div className="text-[12.5px] font-bold">ของประจำรถที่ติ๊ก NG</div>
+            <div className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
+              Control Stock Sheet · Additional Accessories — ของที่ขาด/ไม่ครบ ไม่นับรวมกับ Defect
+            </div>
+          </div>
+          {accDmgs.length === 0 ? (
+            <div className="py-8 text-center text-[12.5px]" style={{ color: 'var(--st-yard)' }}>
+              <CheckCircle2 size={26} className="mx-auto mb-2" />
+              ของประจำรถครบ — ไม่มีรายการ NG
+            </div>
+          ) : (
+            <div className="divide-y" style={{ borderColor: 'var(--line)' }}>
+              {accDmgs.map((d) => {
+                const heavy = String(d.categoryNG ?? '').toUpperCase().includes('HEAVY')
+                return (
+                  <div key={d.id} className="px-3.5 py-2.5">
+                    <div className="flex items-start gap-2">
+                      <span className="badge shrink-0" style={{ background: heavy ? '#dc2626' : '#fee2e2', color: heavy ? '#fff' : '#dc2626', fontSize: 10, fontWeight: 700 }}>
+                        {heavy ? 'HEAVY NG' : 'NG'}
+                      </span>
+                      <div className="min-w-0">
+                        <div className="text-[12.5px] font-semibold leading-snug" style={{ color: '#dc2626' }}>
+                          {d.areaTh || d.area}
+                        </div>
+                        {d.areaTh && d.area && d.area !== d.areaTh && (
+                          <div className="text-[11px] leading-snug" style={{ color: 'var(--muted)' }}>{d.area}</div>
+                        )}
+                        <div className="text-[11px] mt-0.5" style={{ color: 'var(--faint)' }}>{d.item}</div>
+                        {d.remark && <div className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>{d.remark}</div>}
+                      </div>
+                    </div>
+                    <div className="text-[11px] mt-1 flex items-center gap-1.5 flex-wrap" style={{ color: 'var(--muted)' }}>
+                      {d.station && <span className="badge" style={{ background: 'var(--chip)', color: 'var(--muted)', fontSize: 10 }}>{d.station}</span>}
+                      <span>{fmtHistAt(d.at)}</span><span>· {d.by || '—'}</span>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {(row || unit) && vin && ctab === 'info' && (
         <div className="panel overflow-hidden fade-up">
 
@@ -5592,9 +5648,9 @@ function CheckView() {
             <CheckRow label="Damage" value={damaged ? 'NG — มี Defect' : 'OK — ปกติ'} accent={damaged ? '#dc2626' : '#16a34a'} />
             {/* same DefectCard as Gate-in: bilingual labels, photo strip with
                 full-screen lightbox, and a read-only repair-status badge */}
-            {unit && unit.damages.length > 0 && (
+            {unit && realDefects(unit.damages).length > 0 && (
               <div className="p-3 space-y-2">
-                {openDefectsFirst(unit.damages).map(d => (
+                {openDefectsFirst(realDefects(unit.damages)).map(d => (
                   <DefectCard key={d.id} d={d} right={
                     <span className="font-bold rounded-lg px-2.5 py-1.5 whitespace-nowrap shrink-0"
                       style={{ ...defectStatusStyle(d.statusRepair || 'Waiting Repair'), fontSize: 11.5 }}>
