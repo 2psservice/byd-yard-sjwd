@@ -104,19 +104,37 @@ export const FINAL_CHECK_TABS: CheckTab[] = [
 export const WALK_CHECK_TABS: CheckTab[] = FINAL_CHECK_TABS.filter((t) => t.key !== 'overall')
 
 /**
- * A "Control Stock Sheet" tick is a STOCK COUNT, not a body defect.
+ * A "Control Stock Sheet" / "Additional Accessories" tick is a STOCK COUNT,
+ * not a body defect.
  *
  * The station sheet writes every checklist NG as a damage so the record is
- * kept, and this tab counts what shipped WITH the car — the owner's manual, the
- * warranty book, the plate frame, the boot tray. A missing manual is something
- * to chase, but it is not a defect on the car, and listing those ticks
- * alongside รอยขีด / บุบ / สีพอง drowns the real findings.
+ * kept, and these two tabs count what shipped WITH the car — the owner's
+ * manual, the warranty book, the plate frame, the NFC card, the boot tray. A
+ * missing manual is something to chase, but it is not a mark on the car, and
+ * listing those ticks alongside รอยขีด / บุบ / สีพอง drowns the real findings.
  *
- * The records are NOT deleted — they stay on the car in its Event timeline as
- * PDI history; they simply stop counting, and stop being listed, as defects.
- * The tab label is read from the definition above so renaming the tab there can
- * never silently un-filter them.
+ * The records are NOT deleted — they stay on the car, in its Event timeline and
+ * in the Check station's own "Accessory" tab; they simply stop counting, and
+ * stop being listed, as defects. The labels are read from the definition above
+ * so renaming a tab there can never silently un-filter them.
  */
-const STOCK_SHEET_LABEL = FINAL_CHECK_TABS.find((t) => t.key === 'stock')?.label ?? 'Control Stock Sheet'
-export const isStockSheetEntry = (d: { item?: string }): boolean =>
-  (d.item ?? '').trim().startsWith(STOCK_SHEET_LABEL)
+const ACCESSORY_TAB_KEYS = ['stock', 'accessories']
+export const ACCESSORY_TAB_LABELS = FINAL_CHECK_TABS
+  .filter((t) => ACCESSORY_TAB_KEYS.includes(t.key))
+  .map((t) => t.label)
+
+/** Is this damage record an accessory/stock tick rather than a real defect? */
+export const isAccessoryCheckEntry = (d: { item?: string }): boolean => {
+  const item = (d.item ?? '').trim()
+  return ACCESSORY_TAB_LABELS.some((label) => item.startsWith(label))
+}
+
+/** Defect-only view of a car's damages — every screen that says "Defect" or
+ *  "NG" filters through this one rule, so no two screens can disagree. */
+export const realDefects = <T extends { item?: string }>(all: T[]): T[] => all.filter((d) => !isAccessoryCheckEntry(d))
+
+/** The other half: the accessory/stock ticks, for the screens that DO show them. */
+export const accessoryEntries = <T extends { item?: string }>(all: T[]): T[] => all.filter(isAccessoryCheckEntry)
+
+/** @deprecated narrower predecessor — kept so older imports keep compiling. */
+export const isStockSheetEntry = isAccessoryCheckEntry
