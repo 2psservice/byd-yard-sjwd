@@ -12,6 +12,8 @@ import { PageHead, Segmented } from '../components/ui'
 import { partLabel, defectLabel, partBilingual, defectBilingual } from '../lib/damageLabel'
 import { stationLabelOf } from '../lib/carHistory'
 import { deriveCarStatus, IN_YARD_STATUSES } from '../lib/carStatus'
+import { rowsForSite } from '../lib/siteScope'
+import { realDefects } from '../lib/finalCheckList'
 import type { TrackRow } from '../lib/excelTracking'
 import type { Unit } from '../types'
 
@@ -78,11 +80,17 @@ function buildStationEvents(units: Unit[], rowByVin: Map<string, TrackRow>, queu
 }
 
 /** One row per Defect event: when it was FOUND, and one more row for every
- *  time its repair status changed (the "แก้ไข" side of the ask). */
+ *  time its repair status changed (the "แก้ไข" side of the ask).
+ *
+ *  Defect here means a mark on the car — ประตูหน้า บุบ. A Control Stock Sheet /
+ *  Additional Accessories tick counts what shipped WITH the car (คู่มือ ·
+ *  สมุดรับประกัน · กรอบป้ายทะเบียน); it is not an NG on the bodywork and listing
+ *  it here buried the real findings. realDefects is the one rule every screen
+ *  that says "Defect" filters through. */
 function buildDefectEvents(units: Unit[]): DefectEvent[] {
   const out: DefectEvent[] = []
   for (const u of units) {
-    for (const d of u.damages) {
+    for (const d of realDefects(u.damages)) {
       const station = stationLabelOf(d)
       const area = partLabel(d, 'th') || partLabel(d, 'en')
       const defect = defectLabel(d, 'th') || defectLabel(d, 'en')
@@ -112,14 +120,27 @@ export function Report2ps() {
   const allRows = useTrackingRows()
   const allQueues = useActiveQueues()
   const currentSite = useYard((s) => s.currentSite)
+  const sites = useYard((s) => s.sites)
   const [tab, setTab] = useState<'station' | 'defect'>('station')
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
 
-  const units = useMemo(() => (currentSite ? allUnits.filter((u) => !u.site || u.site === currentSite) : allUnits), [allUnits, currentSite])
-  const rows = useMemo(() => (currentSite ? allRows.filter((r) => !r.site || r.site === currentSite) : allRows), [allRows, currentSite])
-  const queues = useMemo(() => (currentSite ? allQueues.filter((q) => !q.site || q.site === currentSite) : allQueues), [allQueues, currentSite])
+  // ── ยาร์ดใคร ยาร์ดมัน ────────────────────────────────────────────────────
+  // เดิมกรองด้วย "!site || site === currentSite" — รถที่ยังไม่มียาร์ดกำกับจึง
+  // โผล่ที่ "ทุก" ยาร์ด ยาร์ดหนึ่งเลยเห็น Defect ของอีกยาร์ดที่หน้างานตัวเอง
+  // ไม่เคยสแกน (เช่น Defect ที่นำเข้ามาจากไฟล์ Co-Inspection ของอีกยาร์ด)
+  // ใช้กติกากลางของระบบแทน (rowsForSite): ดูแท็บยาร์ดของแถวหลักก่อน ถ้าไม่มี
+  // ก็เทียบ "Location yard" กับชื่อยาร์ด — กติกาเดียวกับ Unit List/Dashboard
+  const rows = useMemo(() => rowsForSite(allRows, currentSite, sites), [allRows, currentSite, sites])
   const rowByVin = useMemo(() => new Map(rows.map((r) => [r.vin, r])), [rows])
+  // แถวหลักเป็นตัวตัดสินยาร์ดของรถ · unit ที่ไม่มีแถวหลักเลย (ของเก่า/กำพร้า)
+  // ยังใช้กติกาเดิม จะได้ไม่มีข้อมูลหายไปเงียบๆ
+  const hasRow = useMemo(() => new Set(allRows.map((r) => r.vin)), [allRows])
+  const units = useMemo(() => {
+    if (!currentSite) return allUnits
+    return allUnits.filter((u) => (hasRow.has(u.vin) ? rowByVin.has(u.vin) : !u.site || u.site === currentSite))
+  }, [allUnits, currentSite, rowByVin, hasRow])
+  const queues = useMemo(() => (currentSite ? allQueues.filter((q) => !q.site || q.site === currentSite) : allQueues), [allQueues, currentSite])
 
   // "(On Yard)" — currently in the yard, not departed. Same status set the
   // Dashboard's "In Yard" count uses, so the two numbers agree.
