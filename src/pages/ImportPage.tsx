@@ -24,6 +24,19 @@ import { PageHead, cx } from '../components/ui'
  *  transfer files by "moving date" (empty → "(ไม่ระบุ)") */
 const dateKey = (cells: Record<string, string>) => (cells['Gate In Date'] || cells['moving date'] || '').trim() || '(ไม่ระบุ)'
 
+/** The sheet's free-text "Remark" saying where the cars came from ("Move From
+ *  Main yard", "Move From เมืองทอง"). One upload carrying two different remarks
+ *  is two different jobs at the gate, so each becomes its OWN Gate-in queue,
+ *  named by its remark; rows with a blank remark keep the plain queue name. */
+const remarkText = (cells: Record<string, string>) => {
+  const v = (cells['Remark'] || cells['remark'] || cells['หมายเหตุ'] || '').replace(/\s+/g, ' ').trim()
+  return v === '-' ? '' : v
+}
+/** Grouping key for remarkText. The sheets spell the same remark several ways
+ *  ("Move From RY" / "Move From  RY" / "Move From Main yard" / "Move From  Main
+ *  Yard"), and those are one job — not four queues. */
+const remarkKey = (cells: Record<string, string>) => remarkText(cells).toLowerCase()
+
 const MONTHS: Record<string, number> = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 }
 /** Parse a moving-date label to a sortable YYYYMMDD number (unknown → -Infinity → bottom). */
 function dateSortVal(s: string): number {
@@ -489,6 +502,33 @@ export function ImportPage() {
   const dupCount = selRows.length - newRows.length - returningRows.length
   const importCount = newRows.length + returningRows.length
 
+  // Rows that will actually END UP in a Gate-in queue: a car already gated in is
+  // never re-queued, one that already left is never queued, and an undated row
+  // has no lot to go in. The preview below and confirm() must agree on this set
+  // — counting plain selRows made the preview promise lots the import never made.
+  const queueRows = useMemo(() => {
+    const returning = new Set(returningRows.map((r) => r.vin))
+    return selRows.filter((r) => {
+      const ex = existing[r.vin]
+      if (ex && !returning.has(r.vin) && deriveCarStatus(ex.cells) !== 'Pre Gate-in') return false
+      if (r.cells['Car Status'] === 'Gate-out') return false
+      return dateKey(r.cells) !== '(ไม่ระบุ)'
+    })
+  }, [selRows, returningRows, existing])
+
+  // how those rows split into Gate-in queues by their "Remark" — shown BEFORE
+  // confirming, so the office sees it will get two lots (not one) when the file
+  // mixes "Move From Main yard" with "Move From เมืองทอง"
+  const remarkSplit = useMemo(() => {
+    const m = new Map<string, { label: string; n: number }>()
+    for (const r of queueRows) {
+      const k = remarkKey(r.cells)
+      const e = m.get(k) ?? { label: remarkText(r.cells) || '(ไม่มีชื่อ)', n: 0 }
+      e.n++; m.set(k, e)
+    }
+    return [...m.values()].sort((a, b) => b.n - a.n)
+  }, [queueRows])
+
   const confirm = () => {
     if (!parsed || !importCount) return
     // keep the parser's Gate-out detection: a row with a real Gate Out Date is a
@@ -521,27 +561,24 @@ export function ImportPage() {
     // build from every row for the picked date that STILL needs gate-in: brand-new
     // rows, plus existing rows whose current status is still Pre Gate-in (so a
     // re-import repopulates a queue whose VINs were lost) — but never a car that
-    // has already gated in.
-    const groups = new Map<string, { site?: string; yard: string; date: string; vins: string[] }>()
-    const returning = new Set(returningRows.map((r) => r.vin))
-    for (const r of selRows) {
-      const ex = existing[r.vin]
-      // `existing` is the snapshot from BEFORE the updateCell calls above, so a
-      // returning car still reads Gate-out here — it is queued regardless
-      if (ex && !returning.has(r.vin) && deriveCarStatus(ex.cells) !== 'Pre Gate-in') continue
-      if (r.cells['Car Status'] === 'Gate-out') continue // already left — never queue for gate-in
+    // has already gated in (queueRows, the same set the preview counts; it reads
+    // `existing`, the snapshot from BEFORE the updateCell calls above, so a
+    // returning car still reads Gate-out there and is queued regardless).
+    const groups = new Map<string, { site?: string; yard: string; date: string; remark: string; vins: string[] }>()
+    for (const r of queueRows) {
       const dk = dateKey(r.cells)
-      if (dk === '(ไม่ระบุ)') continue
       const yard = (r.cells['Location yard'] || '').trim() || '—'
-      const key = `${yard}||${dk}`
-      const g = groups.get(key) ?? { site: siteForRow(r.cells, sites, currentSite), yard, date: dk, vins: [] }
+      const key = `${yard}||${dk}||${remarkKey(r.cells)}`
+      const g = groups.get(key) ?? { site: siteForRow(r.cells, sites, currentSite), yard, date: dk, remark: remarkText(r.cells), vins: [] }
       g.vins.push(r.vin)
       groups.set(key, g)
     }
     for (const g of groups.values()) {
       const sv = dateSortVal(g.date)
       const datePart = sv > 0 ? `${Math.floor((sv % 10000) / 100)}-${sv % 100}` : g.date
-      const qName = `(${g.yard} · ${datePart} · ${g.vins.length})`
+      // the remark IS the lot's name at the gate ("… · Move From Main yard · 120");
+      // rows with no remark keep the plain "(yard · date · N)" name
+      const qName = `(${[g.yard, datePart, g.remark, String(g.vins.length)].filter(Boolean).join(' · ')})`
       createGateInQueue(qName, g.vins, undefined, g.site)
     }
 
@@ -635,6 +672,16 @@ export function ImportPage() {
                   <Hourglass size={11} /> นำเข้าเป็น Pre Gate-in
                 </span>
               </div>
+              {remarkSplit.length > 1 && (
+                <div className="px-4 py-2.5 border-t hairline text-[12px] flex flex-wrap items-center gap-x-2 gap-y-1.5">
+                  <span style={{ color: 'var(--muted)' }}>แยกเป็น {remarkSplit.length} คิวงาน ตาม Remark:</span>
+                  {remarkSplit.map((s) => (
+                    <span key={s.label} className="badge" style={{ color: 'var(--brand)', background: 'rgba(37,99,235,0.1)' }}>
+                      {s.label} · {s.n.toLocaleString()}
+                    </span>
+                  ))}
+                </div>
+              )}
               <div className="flex items-center justify-between gap-2 px-4 py-3 border-t hairline">
                 <span className="text-[12.5px]" style={{ color: 'var(--muted)' }}>
                   {selectedDate ? <>เฉพาะวันที่ <b style={{ color: 'var(--text)' }}>{selectedDate}</b></> : 'ทุกวันที่ในไฟล์'} · <b style={{ color: 'var(--st-yard)' }}>{newRows.length.toLocaleString()}</b> ใหม่{returningRows.length ? <> · <b style={{ color: 'var(--brand)' }}>{returningRows.length.toLocaleString()}</b> กลับเข้ามาใหม่ (เคย Gate-out)</> : ''}{dupCount ? <> · <b style={{ color: 'var(--st-pending)' }}>{dupCount.toLocaleString()}</b> เดิมในระบบ (ข้าม)</> : ''}
