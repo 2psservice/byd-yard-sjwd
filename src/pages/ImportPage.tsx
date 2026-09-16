@@ -119,7 +119,7 @@ export function ImportPage() {
   const laneDepth = useYard((s) => s.laneDepth)
   const curSiteName = sites.find((s) => s.id === currentSite)?.name ?? '—'
   const yardUnits = useYard((s) => s.units)
-  const { commitImport, commitCoInspection, commitPreGateInCandidates, deleteRows, lastImport, loadFromIdb } = useTracking()
+  const { commitImport, commitCoInspection, commitPreGateInCandidates, deleteRows, lastImport, loadFromIdb, updateCell } = useTracking()
   const existing = useTracking((s) => s.rows)
   const rowCount = Object.keys(existing).length
   // distinct vehicles across BOTH stores (gated-in cars live in tracking + yard units)
@@ -473,17 +473,43 @@ export function ImportPage() {
   // NEW vins only — a VIN already in the system (e.g. already gated-in / In Yard)
   // is skipped: never re-imported and never re-queued, so no duplicate work
   const newRows = useMemo(() => selRows.filter((r) => !existing[r.vin]), [selRows, existing])
-  const dupCount = selRows.length - newRows.length
-  const importCount = newRows.length
+  // …except a car that already LEFT: a VIN the sheet reads as Gate-out that the
+  // file lists again for the picked date is coming BACK (the parser only lets a
+  // row through here when its own gate-out stamp is blank — a fresh trip, not
+  // the old history row). Treating it as a duplicate silently left it Gate-out
+  // and the gate could never take it in. It is put back to Pre Gate-in through
+  // updateCell, so its history stays and the old arrival lot lets it go (see
+  // reannouncedArrival in useTracking).
+  const returningRows = useMemo(
+    () => selRows.filter((r) => { const ex = existing[r.vin]; return !!ex && deriveCarStatus(ex.cells) === 'Gate-out' }),
+    [selRows, existing],
+  )
+  const dupCount = selRows.length - newRows.length - returningRows.length
+  const importCount = newRows.length + returningRows.length
 
   const confirm = () => {
-    if (!parsed || !newRows.length) return
+    if (!parsed || !importCount) return
     // keep the parser's Gate-out detection: a row with a real Gate Out Date is a
     // car that already LEFT — blanket-forcing Pre Gate-in re-imported historical
     // rows as expected arrivals and queued long-departed cars for gate-in.
     for (const r of newRows) if (r.cells['Car Status'] !== 'Gate-out') r.cells['Car Status'] = 'Pre Gate-in'
-    commitImport({ ...parsed, rows: newRows, inYard: newRows.length })
-    toast('ok', `นำเข้าใหม่ ${newRows.length.toLocaleString()} คัน · ข้ามซ้ำ (In Yard เดิม) ${dupCount.toLocaleString()} · Pre Gate-in`)
+    if (newRows.length) commitImport({ ...parsed, rows: newRows, inYard: newRows.length })
+    for (const r of returningRows) {
+      const ex = existing[r.vin]
+      // the yard it is coming back to — the file's Location yard, else the yard
+      // this import runs under; a car returning to a DIFFERENT yard than the one
+      // it left moves there (Location yard drives the site tag — applyYardMove)
+      const yard = (r.cells['Location yard'] || '').trim() || curSiteName
+      if (ex.site !== currentSite || (ex.cells['Location yard'] || '').trim() !== yard) updateCell(r.vin, 'Location yard', yard)
+      updateCell(r.vin, 'Car Status', 'Pre Gate-in')
+      for (const k of ['Gate In Date', 'moving date', 'Lot transfer']) {
+        const v = (r.cells[k] || '').trim()
+        if (v && v !== (ex.cells[k] || '').trim()) updateCell(r.vin, k, v)
+      }
+    }
+    toast('ok', `นำเข้าใหม่ ${newRows.length.toLocaleString()} คัน` +
+      (returningRows.length ? ` · กลับเข้ามาใหม่ (เคย Gate-out) ${returningRows.length.toLocaleString()}` : '') +
+      ` · ข้ามซ้ำ (In Yard เดิม) ${dupCount.toLocaleString()} · Pre Gate-in`)
 
     // build a Gate-in work queue per (yard + Gate-in date) from NEW VINs ONLY —
     // a VIN already in the system is skipped (never re-queued) so gated-in cars
@@ -495,9 +521,12 @@ export function ImportPage() {
     // re-import repopulates a queue whose VINs were lost) — but never a car that
     // has already gated in.
     const groups = new Map<string, { site?: string; yard: string; date: string; vins: string[] }>()
+    const returning = new Set(returningRows.map((r) => r.vin))
     for (const r of selRows) {
       const ex = existing[r.vin]
-      if (ex && deriveCarStatus(ex.cells) !== 'Pre Gate-in') continue
+      // `existing` is the snapshot from BEFORE the updateCell calls above, so a
+      // returning car still reads Gate-out here — it is queued regardless
+      if (ex && !returning.has(r.vin) && deriveCarStatus(ex.cells) !== 'Pre Gate-in') continue
       if (r.cells['Car Status'] === 'Gate-out') continue // already left — never queue for gate-in
       const dk = dateKey(r.cells)
       if (dk === '(ไม่ระบุ)') continue
@@ -606,7 +635,7 @@ export function ImportPage() {
               </div>
               <div className="flex items-center justify-between gap-2 px-4 py-3 border-t hairline">
                 <span className="text-[12.5px]" style={{ color: 'var(--muted)' }}>
-                  {selectedDate ? <>เฉพาะวันที่ <b style={{ color: 'var(--text)' }}>{selectedDate}</b></> : 'ทุกวันที่ในไฟล์'} · <b style={{ color: 'var(--st-yard)' }}>{importCount.toLocaleString()}</b> ใหม่{dupCount ? <> · <b style={{ color: 'var(--st-pending)' }}>{dupCount.toLocaleString()}</b> เดิมในระบบ (ข้าม)</> : ''}
+                  {selectedDate ? <>เฉพาะวันที่ <b style={{ color: 'var(--text)' }}>{selectedDate}</b></> : 'ทุกวันที่ในไฟล์'} · <b style={{ color: 'var(--st-yard)' }}>{newRows.length.toLocaleString()}</b> ใหม่{returningRows.length ? <> · <b style={{ color: 'var(--brand)' }}>{returningRows.length.toLocaleString()}</b> กลับเข้ามาใหม่ (เคย Gate-out)</> : ''}{dupCount ? <> · <b style={{ color: 'var(--st-pending)' }}>{dupCount.toLocaleString()}</b> เดิมในระบบ (ข้าม)</> : ''}
                 </span>
                 <div className="flex items-center gap-2">
                   <button className="btn" onClick={() => { setParsed(null); setFileName('') }}>ยกเลิก</button>
