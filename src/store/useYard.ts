@@ -1895,7 +1895,9 @@ export const useYard = create<YardState>()(
             const m = matchModel(tr?.cells['Model name'] ?? tr?.cells['Model'] ?? defs[0].model ?? '')
             u = {
               vin, model: m.id, modelName: m.name,
-              color: tr?.cells['Color'] ?? defs[0].model ?? '—', colorHex: paintHex(tr?.cells['Color'] ?? ''),
+              // never the defect's MODEL text as a stand-in — that painted
+              // "SEALION 7" into the Color line of every car this registered
+              color: tr?.cells['Color'] || '—', colorHex: paintHex(tr?.cells['Color'] ?? ''),
               trailer: parseInt(tr?.cells['Grouping  Number'] ?? '0') || 0,
               status: IN_YARD_STATUSES.has(cs.trim()) ? 'GATE_IN' : 'EXPECTED',
               damages: [], importedAt: Date.now(), site,

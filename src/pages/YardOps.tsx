@@ -843,31 +843,76 @@ function VinInput({
       setTorchCap(!!caps.torch)
     }
 
+    // A sticker rarely encodes the bare VIN: a QR often carries a URL or a
+    // "VIN:" prefix, and a Code 39 VIN barcode has a leading "I" (18 chars).
+    // Handing that raw text to the station read as "ไม่พบ VIN" — the scan
+    // looked like it never locked. Pull the 17-char VIN out (no I/O/Q in a
+    // VIN, so an 18-char run starting with I is the Code 39 form) and fall
+    // back to the raw text only when there is none (a DN number, a lane code).
+    const vinIn = (raw: string): string => {
+      for (const run of raw.match(/[A-HJ-NPR-Z0-9]{17,}/g) ?? []) {
+        if (run.length === 17) return run
+        if (run.length === 18 && run[0] === 'I') return run.slice(1)
+      }
+      return raw
+    }
     const hit = (text?: string | null) => {
       const t = text?.trim().toUpperCase()
-      if (t) { closeCamera(); go(t) }
+      if (!t) return
+      try { navigator.vibrate?.(60) } catch { /* no haptics */ }
+      closeCamera(); go(vinIn(t))
     }
 
     // Path 1 — native BarcodeDetector (Android Chrome): hardware-accelerated and
     // markedly better than JS decoding at glare / angle / focus hunting. Detects
     // straight off the <video> ~8×/sec.
     const startNative = async (video: HTMLVideoElement): Promise<boolean> => {
-      const BD = (window as unknown as { BarcodeDetector?: { new (o: { formats: string[] }): { detect: (v: HTMLVideoElement) => Promise<{ rawValue?: string }[]> }; getSupportedFormats?: () => Promise<string[]> } }).BarcodeDetector
+      const BD = (window as unknown as { BarcodeDetector?: { new (o: { formats: string[] }): { detect: (v: HTMLVideoElement | HTMLCanvasElement) => Promise<{ rawValue?: string }[]> }; getSupportedFormats?: () => Promise<string[]> } }).BarcodeDetector
       if (!BD) return false
       try {
         const supported = (await BD.getSupportedFormats?.()) ?? []
-        const want = ['qr_code', 'code_128', 'code_39', 'ean_13', 'data_matrix'].filter(f => supported.includes(f))
+        const want = ['qr_code', 'code_128', 'code_39', 'code_93', 'ean_13', 'data_matrix'].filter(f => supported.includes(f))
         if (!want.includes('qr_code')) return false
         if (cancelled) return true
         const det = new BD({ formats: want })
-        const iv = setInterval(async () => {
-          if (video.readyState < 2) return
-          try {
-            const codes = await det.detect(video)
-            if (codes.length) hit(codes[0].rawValue)
-          } catch { /* detector hiccup — next tick */ }
-        }, 120)
-        controlsRef.current = { stop: () => clearInterval(iv) }
+        // Detect on EVERY camera frame (requestVideoFrameCallback), not on a
+        // 120 ms timer that could miss the one steady frame between two
+        // hand-shakes. Alternate the full frame with a centre crop of the
+        // aiming box: the native detector downsizes a large frame internally,
+        // which is what turned a small windshield barcode into an unreadable
+        // smear — the crop hands it the sticker at full pixel density.
+        const crop = document.createElement('canvas')
+        const cctx = crop.getContext('2d', { willReadFrequently: true })
+        let stopped = false
+        let busy = false
+        let tick = 0
+        const schedule = () => {
+          if (stopped) return
+          const rvfc = (video as HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => number }).requestVideoFrameCallback
+          if (rvfc) rvfc.call(video, step); else setTimeout(step, 60)
+        }
+        const step = async () => {
+          if (stopped) return
+          if (!busy && video.readyState >= 2 && video.videoWidth) {
+            busy = true
+            try {
+              let src: HTMLVideoElement | HTMLCanvasElement = video
+              if (++tick % 2 === 1 && cctx) {
+                const vw = video.videoWidth, vh = video.videoHeight
+                const cw = Math.round(vw * 0.6), ch = Math.round(vh * 0.6)
+                crop.width = cw; crop.height = ch
+                cctx.drawImage(video, (vw - cw) >> 1, (vh - ch) >> 1, cw, ch, 0, 0, cw, ch)
+                src = crop
+              }
+              const codes = await det.detect(src)
+              if (codes.length) { stopped = true; hit(codes[0].rawValue); return }
+            } catch { /* detector hiccup — next frame */ }
+            busy = false
+          }
+          schedule()
+        }
+        schedule()
+        controlsRef.current = { stop: () => { stopped = true } }
         await setupTrack(video, false) // native detector reads the full frame — no crop zoom
         return true
       } catch { return false } // permission error falls through to ZXing for its message
@@ -897,7 +942,7 @@ function VinInput({
         ]>)
         const wasmUrl = (wasmUrlMod as { default: string }).default
         prepareZXingModule({ overrides: { locateFile: (p: string, prefix: string) => (p.endsWith('.wasm') ? wasmUrl : prefix + p) } })
-        const OPTS = { formats: ['QRCode', 'Code128', 'Code39', 'EAN13', 'DataMatrix'], tryHarder: true, maxNumberOfSymbols: 1 } as const
+        const OPTS = { formats: ['QRCode', 'Code128', 'Code39', 'Code93', 'EAN13', 'DataMatrix'], tryHarder: true, maxNumberOfSymbols: 1 } as const
         // warm the module now so the first real frame doesn't pay the load
         await readBarcodes(new ImageData(2, 2), OPTS as never).catch(() => {})
         wasmRead = async (img) => (await readBarcodes(img, OPTS as never))[0]?.text ?? null
@@ -911,7 +956,7 @@ function VinInput({
         ])
         const hints = new Map<number, unknown>()
         hints.set(DecodeHintType.POSSIBLE_FORMATS, [
-          BarcodeFormat.QR_CODE, BarcodeFormat.CODE_128, BarcodeFormat.CODE_39,
+          BarcodeFormat.QR_CODE, BarcodeFormat.CODE_128, BarcodeFormat.CODE_39, BarcodeFormat.CODE_93,
           BarcodeFormat.EAN_13, BarcodeFormat.DATA_MATRIX,
         ])
         hints.set(DecodeHintType.TRY_HARDER, true)
@@ -5496,7 +5541,10 @@ function CheckView() {
           <CheckSec title="ข้อมูลรถ">
             <CheckRow label="Model"       value={model} />
             {row?.cells['company']   && <CheckRow label="Company"  value={row.cells['company']} />}
-            {(unit?.color || row?.cells['Color']) && <CheckRow label="Color" value={unit?.color ?? row?.cells['Color'] ?? '—'} />}
+            {/* the sheet first: a unit registered by an older defect import
+                carries the MODEL as its colour (see importDefects), and the
+                sheet's Color cell is the one the office actually maintains */}
+            {(row?.cells['Color'] || unit?.color) && <CheckRow label="Color" value={row?.cells['Color'] || unit?.color || '—'} />}
             {row?.cells['Lot transfer'] && <CheckRow label="Lot" value={row.cells['Lot transfer']} />}
             {row?.cells['moving date']  && <CheckRow label="Moving Date" value={row.cells['moving date']} />}
             {/* always shown — the gate uses this screen to CHECK whether the car
