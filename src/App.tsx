@@ -217,7 +217,15 @@ export default function App() {
           const txt = (rows[vin]?.cells['Model name'] || rows[vin]?.cells['Model'] || '').trim()
           if (!txt) continue
           const m = matchModel(txt)
-          if (m.id !== 'OTHER' && m.id !== u.model) fixes.push({ vin, model: txt, color: '' })
+          // the sheet's Color is the truth too — a unit an older defect import
+          // registered carries the MODEL text as its colour ("SEALION 7");
+          // re-stamp it from the sheet wherever the two disagree
+          const sheetColor = (rows[vin]?.cells['Color'] || '').trim()
+          const badColor = !!sheetColor && u.color !== sheetColor
+          const badModel = m.id !== 'OTHER' && m.id !== u.model
+          // a colour-only fix re-sends the unit's OWN model name, so unknown
+          // sheet text still never overwrites an existing class
+          if (badModel || badColor) fixes.push({ vin, model: badModel ? txt : u.modelName, color: badColor ? sheetColor : '' })
         }
         if (fixes.length) useYard.getState().importUnits(fixes)
       }
