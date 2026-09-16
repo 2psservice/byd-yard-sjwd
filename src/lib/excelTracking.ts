@@ -267,8 +267,22 @@ const VINLIST_SHEETS: { key: string; yard: string }[] = [
   { key: '20rai', yard: 'Auto Tran 20Rai' },
   { key: '38rai', yard: 'Auto Tran 38Rai' },
 ]
-const vinListYard = (sheetName: string): string | null =>
-  VINLIST_SHEETS.find((m) => m.key === norm(sheetName))?.yard ?? null
+/** A yard the app actually has configured (its Site name + optional code). */
+export type YardName = { name: string; code?: string }
+
+/** Sheets NAMED AFTER one of the app's own yards ("3D LCB", "60 Rai", …) — the
+ *  sheet name IS the yard, so a file split per yard imports every sheet at once
+ *  and a newly created Site is read with no code change. Returns the Site's own
+ *  name (not the sheet's spelling) so "Location yard" matches the Site exactly. */
+const siteSheetYard = (sheetName: string, yards: YardName[]): string | null => {
+  const n = norm(sheetName)
+  if (!n) return null
+  const hit = yards.find((y) => [y.name, y.code].some((k) => k && norm(k) === n))
+  return hit?.name ?? null
+}
+
+const vinListYard = (sheetName: string, yards: YardName[] = []): string | null =>
+  VINLIST_SHEETS.find((m) => m.key === norm(sheetName))?.yard ?? siteSheetYard(sheetName, yards)
 
 /** Excel serial (1900 date system) or date-ish string → "YYYY-MM-DD" (sortable,
  *  parseable by the import date picker). "-"/blank → '' (grouped as unspecified). */
@@ -284,14 +298,14 @@ function excelDateToStr(XLSX: any, v: any): string {
 }
 
 /** Parse the per-yard Vin List Inventory workbook → Pre Gate-in rows. */
-export function parseVinListInventory(XLSX: any, wb: any): ParseResult {
+export function parseVinListInventory(XLSX: any, wb: any, yards: YardName[] = []): ParseResult {
   const byVin = new Map<string, TrackRow>()
   const optSets: Record<string, Set<string>> = {}
   const headerSet = new Set<string>(['Vin', 'Location yard', 'Model', 'Color', 'Gate In Date', 'Car Status'])
   let total = 0
 
   for (const sheetName of wb.SheetNames) {
-    const yard = vinListYard(sheetName)
+    const yard = vinListYard(sheetName, yards)
     if (!yard) continue
     const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, defval: '', raw: true, blankrows: false }) as any[][]
 
@@ -370,11 +384,17 @@ export function parseVinListInventory(XLSX: any, wb: any): ParseResult {
 
 /** Main import entry: auto-detect the per-yard Vin List Inventory (Pre Gate-in)
  *  workbook, else fall back to the "Tracking Status" / transfer parser. */
-export async function parseImportWorkbook(file: File): Promise<ParseResult> {
+export async function parseImportWorkbook(file: File, yards: YardName[] = []): Promise<ParseResult> {
   const XLSX = await import('xlsx')
   const buf = await file.arrayBuffer()
   const wb = XLSX.read(buf, { type: 'array' })
-  if (wb.SheetNames.some((n: string) => vinListYard(n))) return parseVinListInventory(XLSX, wb)
+  const known = wb.SheetNames.some((n: string) => VINLIST_SHEETS.some((m) => m.key === norm(n)))
+  // a workbook carrying a real "Tracking Status" sheet is that file, even when
+  // another sheet happens to share a yard's name — only the fixed sheet names
+  // above outrank it (that shape has always been the Vin List Inventory).
+  const tracking = wb.SheetNames.some((n: string) => n.trim() === TARGET_SHEET || norm(n).includes('trackingstatus'))
+  const byYardName = !tracking && wb.SheetNames.some((n: string) => siteSheetYard(n, yards))
+  if (known || byYardName) return parseVinListInventory(XLSX, wb, yards)
   return parseTrackingWorkbook(file)
 }
 
