@@ -626,7 +626,10 @@ const rememberScanZoom = (v: number) => { try { localStorage.setItem(SCAN_ZOOM_K
 // the tab goes to the background (a camera must never stay on unseen), or on
 // an explicit release. The torch is switched off before parking so a phone
 // never sits with its flash burning while the scanner is closed.
-const WARM_MS = 45_000
+// 3 minutes, not 45 s: at the gate the next car is usually within a minute,
+// but a phone call or a trailer arriving in between used to push past the
+// window and the very next scan paid the cold open again.
+const WARM_MS = 180_000
 let warmStream: MediaStream | null = null
 let warmTimer: ReturnType<typeof setTimeout> | null = null
 function releaseWarmStream(): void {
@@ -640,6 +643,10 @@ function parkWarmStream(s: MediaStream): void {
   if (warmTimer) clearTimeout(warmTimer)
   warmTimer = setTimeout(releaseWarmStream, WARM_MS)
 }
+/** Is a live stream parked right now? (peek — takeWarmStream claims it) */
+function hasWarmStream(): boolean {
+  return !!warmStream && warmStream.getVideoTracks().length > 0 && warmStream.getVideoTracks().every(t => t.readyState === 'live')
+}
 /** The parked stream if every track is still live, else nothing (a track the OS
  *  ended in the meantime is not reusable — a fresh getUserMedia is). */
 function takeWarmStream(): MediaStream | null {
@@ -652,9 +659,112 @@ function takeWarmStream(): MediaStream | null {
   s.getTracks().forEach(t => t.stop())
   return null
 }
+
+// Two-stage capture size, because asking for everything up front is what
+// made the camera take seconds to appear on some phones. A 2560×1440
+// request forces the sensor into a mode it may have to negotiate and
+// re-allocate buffers for, and the preview stays black the whole time —
+// "กดแล้วรอนาน", and only on the devices whose pipeline is slow at it.
+//
+// Stage 1 asks for 1280×720: a native mode on essentially every phone, so
+// it opens almost immediately, and still ~4× the pixels of the old 640×480
+// default if a device ignores stage 2. Stage 2 then raises it to the full
+// sensor size on the LIVE track, which happens behind an already-visible
+// preview and costs the operator nothing.
+const SCAN_VIDEO: MediaTrackConstraints = { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
+const SCAN_HI_RES: MediaTrackConstraints = { width: { ideal: 2560 }, height: { ideal: 1440 } }
+
+// ── remember which camera worked ─────────────────────────────────────────────
+// "facingMode: environment" is a description, not a camera: on the multi-lens
+// phones in the yard the browser has to enumerate the cameras and pick one
+// every single open, and on some of them that pick is a visible part of the
+// wait. The deviceId of the camera that opened last time is stable for this
+// site once permission is granted, so ask for THAT camera outright and skip
+// the pick. If it is ever gone (browser reset, different phone profile) the
+// request fails fast and the open falls back to the description — and forgets
+// the stale id so the next open does not try it again.
+const SCAN_CAMERA_KEY = 'sjwd-scan-camera'
+function rememberedCamera(): string | null {
+  try { return localStorage.getItem(SCAN_CAMERA_KEY) || null } catch { return null }
+}
+function rememberCamera(s: MediaStream): void {
+  const id = s.getVideoTracks()[0]?.getSettings?.().deviceId
+  if (!id) return
+  try { localStorage.setItem(SCAN_CAMERA_KEY, id) } catch { /* full */ }
+}
+function forgetCamera(): void {
+  try { localStorage.removeItem(SCAN_CAMERA_KEY) } catch { /* nothing to forget */ }
+}
+/** Open the scanner camera: the remembered one by id when there is one, else
+ *  the rear camera by description. Remembers whichever one actually opened. */
+async function openScanStream(): Promise<MediaStream> {
+  const id = rememberedCamera()
+  if (id) {
+    const { facingMode: _fm, ...size } = SCAN_VIDEO
+    void _fm
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: id }, ...size } })
+      rememberCamera(s)
+      return s
+    } catch { forgetCamera() } // that camera is gone — pick by description below
+  }
+  const s = await navigator.mediaDevices.getUserMedia({ video: SCAN_VIDEO })
+  rememberCamera(s)
+  return s
+}
+
+// ── open the camera BEFORE the button is pressed ─────────────────────────────
+// The wait behind "กำลังเปิดกล้อง…" is almost entirely getUserMedia — the OS
+// bringing the sensor up — and no code makes that faster. What it can do is
+// pay it earlier: the moment a scanning station is on screen, open the camera
+// in the background and park it, so the tap on the camera button finds a
+// live stream waiting (takeWarmStream) and the preview is up on the next
+// frame. Guards, because a camera that switches itself on must be predictable:
+//  · only where the site ALREADY holds camera permission — never a permission
+//    prompt popping up on its own when a screen opens (on browsers without the
+//    permission query, iOS Safari, there is no pre-warm at all)
+//  · only while a station with a scan field is mounted, and again when the
+//    app comes back to the foreground (the parked stream is released on hide,
+//    so LINE → back used to be a cold open every time)
+//  · released by the same WARM_MS timer as a parked stream, so an idle station
+//    never holds the camera open for more than that
+//  · deferred a beat after mount so it never competes with the screen's own
+//    first paint for the main thread
+let scanStationsMounted = 0
+let prewarmInFlight = false
+async function prewarmScanner(): Promise<void> {
+  if (prewarmInFlight || warmStream || scanStationsMounted === 0) return
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+  const perms = (navigator as Navigator & { permissions?: { query: (d: { name: string }) => Promise<{ state: string }> } }).permissions
+  if (!perms) return
+  let granted = false
+  try { granted = (await perms.query({ name: 'camera' })).state === 'granted' } catch { return } // no camera query → no pre-warm
+  if (!granted || prewarmInFlight || warmStream || scanStationsMounted === 0) return
+  prewarmInFlight = true
+  try {
+    const s = await openScanStream()
+    // full sensor size now, while nobody is watching — a reused stream is
+    // assumed to be at full size already (see the open path)
+    await s.getVideoTracks()[0]?.applyConstraints(SCAN_HI_RES).catch(() => {})
+    if (scanStationsMounted === 0 || warmStream || document.visibilityState === 'hidden') { s.getTracks().forEach(t => t.stop()); return }
+    parkWarmStream(s)
+  } catch { /* camera busy or gone — the tap will try for real and show its own error */ }
+  finally { prewarmInFlight = false }
+}
+function scheduleScanPrewarm(): void {
+  setTimeout(() => { void prewarmScanner() }, 500)
+}
 if (typeof document !== 'undefined') {
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') releaseWarmStream() })
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') releaseWarmStream()
+    else scheduleScanPrewarm() // back in the foreground with a station open → warm it again
+  })
   window.addEventListener('pagehide', releaseWarmStream)
+  if (import.meta.env.DEV) {
+    // test hook: is a stream parked, and which camera is remembered
+    ;(window as unknown as { __scanWarm: () => { warm: boolean; camera: string | null } }).__scanWarm =
+      () => ({ warm: !!warmStream && warmStream.getVideoTracks().every(t => t.readyState === 'live'), camera: rememberedCamera() })
+  }
 }
 
 function VinInput({
@@ -721,6 +831,15 @@ function VinInput({
     onScan(v)
     setVal('')
   }
+
+  // a scanning station is on screen → have the camera ready before the tap
+  // (see prewarmScanner for the guards); two fields on one screen count twice
+  // and pre-warm once
+  useEffect(() => {
+    scanStationsMounted++
+    scheduleScanPrewarm()
+    return () => { scanStationsMounted-- }
+  }, [])
 
   useEffect(() => {
     if (!autoFocus) return
@@ -790,7 +909,9 @@ function VinInput({
   // mounts, the on-screen keyboard dismissing (viewport resize + relayout)
   // lands right in the middle of the camera negotiation, on a device that
   // needed every millisecond of main-thread time for that instead
-  const openCamera = () => { ref.current?.blur(); setCamErr(''); setCamLive(false); setCamOpen(true) }
+  // a parked stream means the preview is up on the next frame — don't mount
+  // the "กำลังเปิดกล้อง…" spinner for that one frame, it reads as a flicker
+  const openCamera = () => { ref.current?.blur(); setCamErr(''); setCamLive(hasWarmStream()); setCamOpen(true) }
   const closeCamera = () => { stopScan(); setCamOpen(false) }
 
   // Start the scanner whenever the overlay opens. ZXing manages getUserMedia +
@@ -800,20 +921,6 @@ function VinInput({
     if (!camOpen) return
     let cancelled = false
     let camTimeoutId: ReturnType<typeof setTimeout> | undefined
-
-    // Two-stage capture size, because asking for everything up front is what
-    // made the camera take seconds to appear on some phones. A 2560×1440
-    // request forces the sensor into a mode it may have to negotiate and
-    // re-allocate buffers for, and the preview stays black the whole time —
-    // "กดแล้วรอนาน", and only on the devices whose pipeline is slow at it.
-    //
-    // Stage 1 asks for 1280×720: a native mode on essentially every phone, so
-    // it opens almost immediately, and still ~4× the pixels of the old 640×480
-    // default if a device ignores stage 2. Stage 2 then raises it to the full
-    // sensor size on the LIVE track, which happens behind an already-visible
-    // preview and costs the operator nothing.
-    const VIDEO: MediaTrackConstraints = { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
-    const HI_RES: MediaTrackConstraints = { width: { ideal: 2560 }, height: { ideal: 1440 } }
 
     // zoom + torch, where the hardware offers them. A slight starting zoom
     // (2×, capped) puts far more pixels on the small sticker code.
@@ -1033,7 +1140,7 @@ function VinInput({
             timedOut = true
             if (!cancelled) setCamErr('เปิดกล้องช้าเกินไป — ลองปิดแล้วเปิดกล้องใหม่ หรือตรวจสอบสิทธิ์กล้องของเบราว์เซอร์')
           }, 10000)
-          stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO })
+          stream = await openScanStream()
           clearTimeout(camTimeoutId)
           if (timedOut) { stream.getTracks().forEach(t => t.stop()); return }
         }
@@ -1047,7 +1154,7 @@ function VinInput({
         // now push the sensor to full size, on the running track — AFTER the
         // focus / zoom writes above have settled (see setupTrack), and only
         // for a freshly opened stream: a reused one is at full size already
-        if (!reused && !cancelled) stream.getVideoTracks()[0]?.applyConstraints(HI_RES).catch(() => {})
+        if (!reused && !cancelled) stream.getVideoTracks()[0]?.applyConstraints(SCAN_HI_RES).catch(() => {})
       } catch (e) {
         console.error('[scan] camera', e)
         if (!cancelled) setCamErr('เปิดกล้องไม่สำเร็จ — โปรดอนุญาตสิทธิ์กล้องในเบราว์เซอร์ แล้วลองใหม่')
