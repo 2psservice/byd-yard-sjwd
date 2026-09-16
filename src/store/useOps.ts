@@ -1273,12 +1273,21 @@ export function useActiveQueues(): WorkQueue[] {
     const gone = new Set<string>()
     const waiting = new Set<string>()          // อยู่ที่ Pre Gate-in ตอนนี้
     const leftAtOf = new Map<string, number>() // vin → เวลาที่ออกจากลานครั้งล่าสุด (0 = ไม่รู้)
+    const now = Date.now()
     for (const vin in rows) {
       const r = rows[vin]
       if (hasLeftGate(r.cells)) { gone.add(vin); continue }
       if (deriveCarStatus(r.cells) !== 'Pre Gate-in') continue
       waiting.add(vin)
-      if (everLeftGate(r)) leftAtOf.set(vin, gateOutScanMs(r.cells))
+      // รถออกจากลานได้เฉพาะ "ไปแล้ว" เท่านั้น — เวลาที่ยังมาไม่ถึงไม่ใช่การออก
+      // มันคือแผนรับรถ ("แผนรับวันที่ 21/09/2026") หรือวันที่ในไฟล์ที่ล่วงหน้า
+      // ถ้าปล่อยไว้ leftAt จะมากกว่าเวลาสร้างล็อตเสมอ ล็อตที่เพิ่งสร้างวันนี้
+      // เลยถูกตัดสินว่าเป็น "ประวัติเก่า" แล้วรถหลุดจากล็อตของตัวเองไปกอง
+      // รวมที่การ์ด "(รอ Gate-in · ยังไม่มีคิวงาน)" ทั้งที่เพิ่งนำเข้ามาเมื่อกี้
+      if (everLeftGate(r)) {
+        const t = gateOutScanMs(r.cells)
+        leftAtOf.set(vin, t > now ? 0 : t) // 0 = ไม่รู้เวลา → ใช้เกณฑ์ i.done แทน
+      }
     }
     if (!gone.size && !waiting.size) return queues
     /**
