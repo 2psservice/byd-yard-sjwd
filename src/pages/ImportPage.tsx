@@ -374,7 +374,9 @@ export function ImportPage() {
   const handleFile = async (file: File) => {
     setBusy(true)
     try {
-      const res = await parseImportWorkbook(file)
+      // sites go in so a sheet NAMED after one of our yards is read as that
+      // yard's list — a per-yard file imports every yard in one upload
+      const res = await parseImportWorkbook(file, sites)
       setParsed(res); setFileName(file.name); setSelectedDate('')
     } catch (e: any) {
       toast('err', e?.message || 'อ่านไฟล์ไม่สำเร็จ — ตรวจรูปแบบ Excel')
