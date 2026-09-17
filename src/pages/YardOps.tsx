@@ -612,6 +612,19 @@ const CAM_PAUSED = 'พักกล้องไว้เพื่อไม่ใ
 // เปิดกล้องค้างเฉยๆ นานเท่านี้แล้วยังไม่ได้สแกน = ปล่อยกล้องคืนระบบ
 const CAM_IDLE_MS = 90_000
 
+// ── เปิดกล้อง "ครั้งต่อไป" ให้ติดทุกครั้ง ─────────────────────────────────────
+// track.stop() จบทันทีในฝั่งจาวาสคริปต์ แต่ฝั่งระบบ (ตัวขับกล้องของ Android)
+// ยังเก็บกวาดเซสชันเดิมอยู่อีกพักหนึ่ง ถ้าขอกล้องใหม่ทับเข้าไปตอนนั้น จะ "ได้"
+// สตรีมมาจริงแต่ไม่มีเฟรมสักเฟรม = จอดำเงียบๆ แล้วไปโผล่เป็นข้อความ "กล้อง
+// ยังไม่ส่งภาพมา" ตอน 8 วิ ซึ่งตรงกับอาการ "ครั้งแรกได้ ครั้งต่อไปไม่ได้"
+// (สแกนติด → ปิดจอกล้องเอง → พนักงานกดเปิดคันถัดไปทันที = ขอทับพอดี)
+// ระยะที่เว้นให้ระบบเก็บกวาด — เครื่องแต่ละรุ่นใช้เวลาไม่เท่ากัน เดาครั้งเดียว
+// ไม่พอ จึงถอยเพิ่มทีละขั้น (0.45 → 0.9 → 1.35 วิ) จนกว่าจะได้ภาพจริง
+const CAM_COOLDOWN_MS = 450
+const CAM_MAX_AUTO_TRY = 3
+let lastCamStopAt = 0
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+
 // keyboard-wedge dedupe: two VinInputs on one screen both hear the burst —
 // only the first may fire it
 let lastWedgeAt = 0
@@ -731,7 +744,10 @@ function VinInput({
     controlsRef.current = null
     const v = videoRef.current
     const s = v?.srcObject as MediaStream | null
-    s?.getTracks().forEach(t => t.stop())
+    const tracks = s?.getTracks() ?? []
+    tracks.forEach(t => t.stop())
+    // จำเวลาที่ปล่อยกล้องไว้ — รอบเปิดถัดไปจะเว้นระยะให้ระบบเก็บกวาดให้เสร็จก่อน
+    if (tracks.length) lastCamStopAt = Date.now()
     if (v) v.srcObject = null
     trackRef.current = null
     setZoomCap(null); setZoom(1); setTorchCap(false); setTorchOn(false)
@@ -739,9 +755,19 @@ function VinInput({
     setDigitalZoom(false); setDz(z0); dzRef.current = z0; opticalRef.current = false
   }
 
-  const openCamera = () => { setCamErr(''); setCamPaused(false); setCamOpen(true) }
-  const retryCamera = () => { setCamErr(''); setCamPaused(false); setCamTry(n => n + 1) }
-  const closeCamera = () => { stopScan(); setCamPaused(false); setCamOpen(false) }
+  // เปิดใหม่ให้เองเงียบๆ ได้ไม่เกิน CAM_MAX_AUTO_TRY ครั้งต่อการกดปุ่ม 1 ครั้ง
+  const autoTryRef = useRef(0)
+  // เวลาที่ "พนักงานกดปุ่ม" — ข้อความเตือนนับจากตรงนี้ ไม่ใช่นับใหม่ทุกครั้งที่
+  // ระบบลองเปิดเอง ไม่งั้นลองไปเรื่อยๆ แล้วคนกดไม่เคยได้รับคำตอบสักที
+  const camAskedAtRef = useRef(0)
+  const beginOpen = () => { autoTryRef.current = 0; camAskedAtRef.current = Date.now(); setCamErr(''); setCamPaused(false) }
+  const openCamera = () => { beginOpen(); setCamOpen(true) }
+  const retryCamera = () => { beginOpen(); setCamTry(n => n + 1) }
+  // ปิดหูปิดตา event "กล้องหลุด" ก่อนที่เราจะเป็นคนสั่งปิดเอง — บางเบราว์เซอร์
+  // ยิง ended/mute ตอน track.stop() ด้วย ถ้าไม่ปิดไว้จะขึ้นข้อความหลุดหลอกๆ
+  // ทุกครั้งที่สแกนติด (สแกนติด = ปิดหน้ากล้องเอง)
+  const hushRef = useRef<() => void>(() => {})
+  const closeCamera = () => { hushRef.current(); stopScan(); setCamPaused(false); setCamOpen(false) }
 
   // Start the scanner whenever the overlay opens. ZXing manages getUserMedia +
   // srcObject + play() + the continuous decode loop internally, which also
@@ -751,10 +777,12 @@ function VinInput({
     let cancelled = false
     let watchId: ReturnType<typeof setInterval>
     let idleId: ReturnType<typeof setTimeout>
+    let frameId: ReturnType<typeof setInterval>
     let vtrack: MediaStreamTrack | null = null
     // ปิดหูปิดตา event "กล้องหลุด" ก่อนที่ "เรา" จะเป็นคนสั่งหยุดกล้องเอง
     // (พักกล้อง/สลับแอป) ไม่งั้นจะขึ้นข้อความหลุดทั้งที่เราตั้งใจปิด
     const hush = () => { if (vtrack) { vtrack.onended = null; vtrack.onmute = null; vtrack.onunmute = null } }
+    hushRef.current = hush
 
     // ขนาดภาพ: ของเดิมขอ 2560×1440 ซึ่งหนักเครื่องที่สุดเท่าที่เคยใช้ —
     // เซนเซอร์+ชิปภาพ+การวาดพรีวิวเต็มจอทำงานที่ความละเอียดนี้ตลอดเวลาที่กล้อง
@@ -764,6 +792,24 @@ function VinInput({
     // และ frameRate 15 ตัดงานลงอีกครึ่ง รวมแล้วเบาลงราว 3.5 เท่า
     // ใช้ ideal ล้วน ๆ ไม่ใส่ max เพื่อไม่ให้เครื่องที่ทำค่านี้ไม่ได้เปิดกล้องไม่ขึ้น
     const VIDEO: MediaTrackConstraints = { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 15 } }
+
+    // ขอกล้องแบบ "ให้ติดจริง": เว้นระยะให้ระบบปล่อยกล้องรอบก่อนให้เสร็จ แล้วถ้า
+    // ยังถูกปฏิเสธ (NotReadableError = เครื่องยังยึดกล้องอยู่ / ขอค่าที่ทำไม่ได้)
+    // ก็ถอยไปขอแบบง่ายที่สุดอีกที ดีกว่าโยน error ใส่หน้าพนักงานตั้งแต่ครั้งเดียว
+    const openStream = async () => {
+      const need = CAM_COOLDOWN_MS * (autoTryRef.current + 1) // ถอยเพิ่มทุกรอบที่ลองเอง
+      const since = Date.now() - lastCamStopAt
+      if (since < need) await sleep(need - since)
+      if (cancelled) throw new Error('cancelled')
+      try {
+        return await navigator.mediaDevices.getUserMedia({ video: VIDEO })
+      } catch (e) {
+        console.warn('[scan] ขอกล้องรอบแรกไม่ผ่าน ลองแบบง่าย', e)
+        await sleep(CAM_COOLDOWN_MS)
+        if (cancelled) throw new Error('cancelled')
+        return await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } } })
+      }
+    }
 
     // zoom + torch, where the hardware offers them. A slight starting zoom
     // (2×, capped) puts far more pixels on the small sticker code.
@@ -919,7 +965,9 @@ function VinInput({
       // เฝ้าดูว่ามี "ภาพจริง" ขึ้นไหม ไม่ใช่แค่ขอกล้องผ่าน — ครอบทั้งกรณีระบบ
       // ไม่ตอบ ตอบช้ามาก และกรณีได้กล้องมาแต่ไม่มีเฟรมสักเฟรม พอภาพมาเมื่อไหร่
       // ข้อความก็หายเอง (ไม่ต้องกดอะไร)
-      const t0 = Date.now()
+      // นับจากตอนพนักงานกดปุ่ม ไม่ใช่นับใหม่ทุกรอบที่ระบบลองเปิดเอง — คนกดปุ่ม
+      // ต้องได้คำตอบภายใน 8 วิเสมอ ไม่ว่าเบื้องหลังจะลองไปกี่รอบ
+      const t0 = camAskedAtRef.current || Date.now()
       watchId = setInterval(() => {
         if (cancelled) return
         // ล้างเฉพาะข้อความ "ยังไม่ส่งภาพ" ของตัวเอง — ถ้าระหว่างนี้กล้องหลุด
@@ -928,10 +976,24 @@ function VinInput({
         if (Date.now() - t0 > 8000) setCamErr(CAM_ERR_NO_IMAGE)
       }, 500)
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO })
-        if (cancelled) { stream.getTracks().forEach(t => t.stop()); return }
+        const stream = await openStream()
+        if (cancelled) { stream.getTracks().forEach(t => t.stop()); lastCamStopAt = Date.now(); return }
         video.srcObject = stream
         await video.play().catch(() => {})
+        // ได้สตรีมมาแล้วแต่ไม่มีเฟรมสักเฟรม = ระบบยังปล่อยกล้องรอบก่อนไม่หมด
+        // ปล่อยทิ้งแล้วเปิดใหม่ให้เองทันที (รอบใหม่จะเว้นระยะให้เอง) — พนักงาน
+        // ไม่ต้องรู้เรื่องนี้ แค่เห็นภาพขึ้น
+        const tFrame = Date.now() // นับจากตอน "ได้กล้องมาแล้ว" ไม่ใช่ตอนเริ่มขอ
+        frameId = setInterval(() => {
+          if (cancelled) return
+          if (videoRef.current?.videoWidth) { clearInterval(frameId); return }
+          if (Date.now() - tFrame < 2200 || autoTryRef.current >= CAM_MAX_AUTO_TRY) return
+          autoTryRef.current++
+          clearInterval(frameId); clearInterval(watchId); clearTimeout(idleId)
+          console.warn('[scan] ได้กล้องแต่ไม่มีภาพ — เปิดใหม่ให้อัตโนมัติ')
+          hush(); stopScan()
+          setCamTry(n => n + 1)
+        }, 300)
         // ระบบยึดกล้องคืนได้ทุกเมื่อ (เครื่องร้อนจัด · แอปกล้อง/LINE เปิดแทรก) —
         // เดิมไม่มีใครฟัง พรีวิวเลยค้างเป็นภาพนิ่ง/ดำไปเงียบ ๆ ไม่มีทางรู้
         vtrack = stream.getVideoTracks()[0] ?? null
@@ -958,7 +1020,7 @@ function VinInput({
     // ต่อในพื้นหลัง เครื่องร้อนอยู่ในกระเป๋าโดยไม่มีใครดู ปล่อยกล้องคืนทันที
     const release = () => {
       if (cancelled) return
-      hush(); clearTimeout(idleId); clearInterval(watchId); stopScan(); setCamPaused(true)
+      hush(); clearTimeout(idleId); clearInterval(watchId); clearInterval(frameId); stopScan(); setCamPaused(true)
     }
     const onVis = () => { if (document.visibilityState === 'hidden') release() }
     document.addEventListener('visibilitychange', onVis)
@@ -968,7 +1030,7 @@ function VinInput({
       cancelled = true
       document.removeEventListener('visibilitychange', onVis)
       window.removeEventListener('pagehide', release)
-      clearInterval(watchId); clearTimeout(idleId); hush(); stopScan()
+      clearInterval(watchId); clearInterval(frameId); clearTimeout(idleId); hush(); stopScan()
     }
   }, [camOpen, camTry]) // eslint-disable-line react-hooks/exhaustive-deps
 
