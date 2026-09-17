@@ -375,9 +375,15 @@ export function ImportPage() {
     setShuttleSaving(true)
     const { added } = commitPreGateInCandidates(shuttleNewRows, shuttleSites)
     const names = shuttleSites.map((id) => sites.find((s) => s.id === id)?.name ?? id)
+    // the lot is the WHOLE batch the file announces. A VIN the system already
+    // knew (it arrived early, or came in an earlier upload) is skipped as a row
+    // so its data is never overwritten — but it still belongs to this
+    // shipment's lot, or the lot is born short and can never read N/N (same
+    // rule as queueRows above; progress reads each car's own status)
+    const batch = shuttleParsed.rows.map((r) => r.vin)
     for (const id of shuttleSites) {
       const site = sites.find((s) => s.id === id)
-      createGateInQueue(`(${site?.name ?? id} · shuttle · ${added})`, shuttleNewRows.map((r) => r.vin), undefined, id)
+      createGateInQueue(`(${site?.name ?? id} · shuttle · ${batch.length})`, batch, undefined, id)
     }
     toast('ok', `Shuttle · นำเข้าใหม่ ${added.toLocaleString()} คัน · รอ Gate-in ตัดสินที่ ${names.join(' / ')}` +
       (shuttleDupCount ? ` · ข้ามซ้ำ (มีในระบบแล้ว) ${shuttleDupCount.toLocaleString()}` : ''))
@@ -502,19 +508,20 @@ export function ImportPage() {
   const dupCount = selRows.length - newRows.length - returningRows.length
   const importCount = newRows.length + returningRows.length
 
-  // Rows that will actually END UP in a Gate-in queue: a car already gated in is
-  // never re-queued, one that already left is never queued, and an undated row
-  // has no lot to go in. The preview below and confirm() must agree on this set
-  // — counting plain selRows made the preview promise lots the import never made.
-  const queueRows = useMemo(() => {
-    const returning = new Set(returningRows.map((r) => r.vin))
-    return selRows.filter((r) => {
-      const ex = existing[r.vin]
-      if (ex && !returning.has(r.vin) && deriveCarStatus(ex.cells) !== 'Pre Gate-in') return false
-      if (r.cells['Car Status'] === 'Gate-out') return false
-      return dateKey(r.cells) !== '(ไม่ระบุ)'
-    })
-  }, [selRows, returningRows, existing])
+  // Rows that will actually END UP in a Gate-in queue — the lot IS the batch the
+  // file announces, arrived cars included. A car that had already gated in by
+  // the time the file was imported used to be left out, so the lot was born one
+  // short: the office counted the shipment (237/670) while the card counted only
+  // the lot's members (236/669), and the two could never agree. An arrived
+  // member makes no work for the gate — progress and "still waiting" read the
+  // car's OWN status (queueProgress / gateInArrived), never the membership — it
+  // only makes the lot's total honest. Left out: a car the FILE itself says has
+  // already left (never expected at the gate), and an undated row (no lot to go
+  // in). The preview below and confirm() must agree on this set.
+  const queueRows = useMemo(
+    () => selRows.filter((r) => r.cells['Car Status'] !== 'Gate-out' && dateKey(r.cells) !== '(ไม่ระบุ)'),
+    [selRows],
+  )
 
   // how those rows split into Gate-in queues by their "Remark" — shown BEFORE
   // confirming, so the office sees it will get two lots (not one) when the file
