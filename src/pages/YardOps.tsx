@@ -747,11 +747,14 @@ async function prewarmScanner(): Promise<void> {
   prewarmInFlight = (async () => {
     try {
       const s = await openScanStream()
-      // full sensor size now, while nobody is watching — a reused stream is
-      // assumed to be at full size already (see the open path)
-      await s.getVideoTracks()[0]?.applyConstraints(SCAN_HI_RES).catch(() => {})
       if (scanStationsMounted === 0 || warmStream || document.visibilityState === 'hidden') { s.getTracks().forEach(t => t.stop()); return }
+      // park FIRST — a tap can take the stream the moment the system answers.
+      // The full-size bump runs on the parked track in the background and is
+      // never awaited: on some phones that reconfigure takes tens of seconds,
+      // and holding the stream back until it finished made a tap wait for it
+      // too (the open path treats a pre-warmed stream as already bumped)
       parkWarmStream(s)
+      s.getVideoTracks()[0]?.applyConstraints(SCAN_HI_RES).catch(() => {})
     } catch { /* camera busy or gone — the tap will try for real and show its own error */ }
     finally { prewarmInFlight = null }
   })()
@@ -1145,23 +1148,28 @@ function VinInput({
         // the same sensor is what pinned a field phone on "กำลังเปิดกล้อง…"
         // for half a minute, then again on the retry.
         let stream = takeWarmStream()
-        if (!stream && prewarmInFlight) { await prewarmInFlight; stream = takeWarmStream() }
-        const reused = !!stream
+        let reused = !!stream
         if (!stream) {
           // getUserMedia() can take ages or never settle — an unanswered
           // permission prompt, the camera held by another app, a backgrounded
           // PWA resuming from lock. Say so after 10 s instead of spinning
-          // forever. But a stream that arrives AFTER that is still a perfectly
-          // good camera: use it if the overlay is still open (the worker is
-          // looking at the error), else park it so the retry opens instantly —
+          // forever — and that clock must run over the WHOLE wait, including
+          // the wait for a pre-warm that is still opening the camera (a
+          // pre-warm that hung left the tap spinning with no message at all).
+          // A stream that arrives AFTER the message is still a perfectly good
+          // camera: use it if the overlay is still open (the worker is looking
+          // at the error), else park it so the retry opens instantly —
           // throwing it away made the retry pay the whole wait again.
+          const t0 = Date.now()
           let timedOut = false
           camTimeoutId = setTimeout(() => {
             timedOut = true
-            if (!cancelled) setCamErr('เปิดกล้องช้าเกินไป — ลองปิดแล้วเปิดกล้องใหม่ หรือตรวจสอบสิทธิ์กล้องของเบราว์เซอร์')
+            if (!cancelled) setCamErr('เปิดกล้องช้าเกินไป (ระบบยังไม่ส่งภาพกล้องมาใน 10 วิ) — รอต่อได้ หรือปิดแล้วเปิดใหม่ · ถ้าเป็นบ่อยแจ้งรุ่นมือถือให้ทีมระบบ')
           }, 10000)
-          stream = await openScanStream()
+          if (prewarmInFlight) { await prewarmInFlight; stream = takeWarmStream(); reused = !!stream }
+          if (!stream) stream = await openScanStream()
           clearTimeout(camTimeoutId)
+          console.info(`[scan] camera ready in ${Date.now() - t0} ms${reused ? ' (pre-warm)' : ''}`)
           if (timedOut && !cancelled) setCamErr('')
         }
         if (cancelled) { parkWarmStream(stream); return }
