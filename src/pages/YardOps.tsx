@@ -600,6 +600,10 @@ function RecentPanel({ station, accent, onPick }: { station: string; accent: str
  * so the printed Delivery Note scans exactly like a VIN sticker.
  * `autoFocus` is opt-out: with two fields on one screen only one may grab focus.
  */
+// ข้อความตอนกล้องมีปัญหา — จอดำเฉยๆ โดยไม่บอกอะไรคือสิ่งที่หน้างานเจอ
+const CAM_ERR_OPEN = 'เปิดกล้องไม่สำเร็จ — โปรดอนุญาตสิทธิ์กล้องในเบราว์เซอร์ แล้วลองใหม่'
+const CAM_ERR_NO_IMAGE = 'กล้องยังไม่ส่งภาพมา — อาจมีแอปอื่นใช้กล้องอยู่ ลองปิดแอปกล้อง/LINE แล้วกดลองใหม่'
+
 // keyboard-wedge dedupe: two VinInputs on one screen both hear the burst —
 // only the first may fire it
 let lastWedgeAt = 0
@@ -629,6 +633,8 @@ function VinInput({
   const [val, setVal] = useState('')
   const [camOpen, setCamOpen] = useState(false)
   const [camErr, setCamErr] = useState('')
+  // กดปุ่ม "ลองใหม่" = เปิดกล้องรอบใหม่ (cleanup ของรอบเก่าปล่อยกล้องให้เอง)
+  const [camTry, setCamTry] = useState(0)
   const ref = useRef<HTMLInputElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   // ZXing scanner controls — decodes QR + 1D barcodes (Code128/39, EAN, DataMatrix)
@@ -724,6 +730,7 @@ function VinInput({
   }
 
   const openCamera = () => { setCamErr(''); setCamOpen(true) }
+  const retryCamera = () => { setCamErr(''); setCamTry(n => n + 1) }
   const closeCamera = () => { stopScan(); setCamOpen(false) }
 
   // Start the scanner whenever the overlay opens. ZXing manages getUserMedia +
@@ -732,6 +739,7 @@ function VinInput({
   useEffect(() => {
     if (!camOpen) return
     let cancelled = false
+    let watchId: ReturnType<typeof setInterval>
 
     // ask for a real capture size: the default 640×480 left a windshield QR
     // only ~40 px wide, below what any decoder can read. 2560 gives iPhones
@@ -771,19 +779,14 @@ function VinInput({
     // Path 1 — native BarcodeDetector (Android Chrome): hardware-accelerated and
     // markedly better than JS decoding at glare / angle / focus hunting. Detects
     // straight off the <video> ~8×/sec.
-    const startNative = async (): Promise<boolean> => {
+    const startNative = async (video: HTMLVideoElement): Promise<boolean> => {
       const BD = (window as unknown as { BarcodeDetector?: { new (o: { formats: string[] }): { detect: (v: HTMLVideoElement) => Promise<{ rawValue?: string }[]> }; getSupportedFormats?: () => Promise<string[]> } }).BarcodeDetector
       if (!BD) return false
       try {
         const supported = (await BD.getSupportedFormats?.()) ?? []
         const want = ['qr_code', 'code_128', 'code_39', 'ean_13', 'data_matrix'].filter(f => supported.includes(f))
         if (!want.includes('qr_code')) return false
-        const video = videoRef.current
-        if (!video || cancelled) return false
-        const stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO })
-        if (cancelled) { stream.getTracks().forEach(t => t.stop()); return true }
-        video.srcObject = stream
-        await video.play().catch(() => {})
+        if (cancelled) return true
         const det = new BD({ formats: want })
         const iv = setInterval(async () => {
           if (video.readyState < 2) return
@@ -803,13 +806,8 @@ function VinInput({
     // pixels), each tick decodes a CENTER CROP of the frame — the aiming box —
     // which multiplies the code's effective size. Every 3rd tick decodes the
     // full frame too, so a large/off-center code still hits.
-    const startZxing = async () => {
-      const video = videoRef.current
-      if (!video || cancelled) return
-      const stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO })
-      if (cancelled) { stream.getTracks().forEach(t => t.stop()); return }
-      video.srcObject = stream
-      await video.play().catch(() => {})
+    const startZxing = async (video: HTMLVideoElement) => {
+      if (cancelled) return
 
       // ── decoder: zxing-wasm (the C++ engine compiled to WebAssembly) — near
       // Android-native accuracy and speed on tiny / glarey windshield codes.
@@ -842,7 +840,7 @@ function VinInput({
         hints.set(DecodeHintType.TRY_HARDER, true)
         jsReader = new BrowserMultiFormatReader(hints as never)
       }
-      if (cancelled) { stream.getTracks().forEach(t => t.stop()); return }
+      if (cancelled) return // กล้องถูกปล่อยโดย stopScan ใน cleanup อยู่แล้ว
 
       const canvas = document.createElement('canvas')
       const ctx = canvas.getContext('2d', { willReadFrequently: true })
@@ -879,16 +877,37 @@ function VinInput({
       setupTrack(video, true)
     }
 
+    // ── ขอกล้อง "ครั้งเดียว" ต่อการเปิดหนึ่งครั้ง ───────────────────────────
+    // ของเดิมให้ตัวถอดรหัสแต่ละทางไปขอกล้องเองแยกกัน และ catch ของ startNative
+    // กลืน error ที่เกิด "หลัง" ได้กล้องมาแล้ว — สตรีมแรกจึงค้างเปิดอยู่ แล้ว
+    // ZXing ไปขอกล้องตัวเดิมซ้ำอีกคำขอ สองคำขอบนเซนเซอร์เดียวคือสิ่งที่ทำให้
+    // จอดำโดยไม่มีอะไรขึ้นเลย (อาการ "กดรูปกล้องแล้วจอมืด เป็นบางครั้ง")
+    // เปิดที่นี่ครั้งเดียว แล้วส่งสตรีมตัวเดียวกันให้ทางที่ได้ใช้
     ;(async () => {
+      const video = videoRef.current
+      if (!video) { setCamErr(CAM_ERR_OPEN); return }
+      // เฝ้าดูว่ามี "ภาพจริง" ขึ้นไหม ไม่ใช่แค่ขอกล้องผ่าน — ครอบทั้งกรณีระบบ
+      // ไม่ตอบ ตอบช้ามาก และกรณีได้กล้องมาแต่ไม่มีเฟรมสักเฟรม พอภาพมาเมื่อไหร่
+      // ข้อความก็หายเอง (ไม่ต้องกดอะไร)
+      const t0 = Date.now()
+      watchId = setInterval(() => {
+        if (cancelled) return
+        if (videoRef.current?.videoWidth) { setCamErr(''); clearInterval(watchId); return }
+        if (Date.now() - t0 > 8000) setCamErr(CAM_ERR_NO_IMAGE)
+      }, 500)
       try {
-        if (!(await startNative())) await startZxing()
+        const stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO })
+        if (cancelled) { stream.getTracks().forEach(t => t.stop()); return }
+        video.srcObject = stream
+        await video.play().catch(() => {})
+        if (!(await startNative(video))) await startZxing(video)
       } catch (e) {
         console.error('[scan] camera', e)
-        if (!cancelled) setCamErr('เปิดกล้องไม่สำเร็จ — โปรดอนุญาตสิทธิ์กล้องในเบราว์เซอร์ แล้วลองใหม่')
+        if (!cancelled) setCamErr(CAM_ERR_OPEN)
       }
     })()
-    return () => { cancelled = true; stopScan() }
-  }, [camOpen]) // eslint-disable-line react-hooks/exhaustive-deps
+    return () => { cancelled = true; clearInterval(watchId); stopScan() }
+  }, [camOpen, camTry]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <>
@@ -931,6 +950,11 @@ function VinInput({
             {camErr && (
               <div className="absolute bottom-8 left-4 right-4 text-center text-[13px] py-2 px-4 rounded-xl" style={{ background: 'rgba(0,0,0,0.7)', color: '#fca5a5' }}>
                 {camErr}
+                <button onClick={retryCamera}
+                  className="mt-2 w-full py-2 rounded-lg text-[13.5px] font-bold"
+                  style={{ background: '#fff', color: '#111' }}>
+                  ลองเปิดกล้องใหม่
+                </button>
               </div>
             )}
           </div>
