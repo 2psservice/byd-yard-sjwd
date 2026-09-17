@@ -9,7 +9,7 @@ import {
   CheckCircle2, XCircle, AlertTriangle, Navigation, Clock,
   User, RefreshCw, Plus, Trash2,
   ArrowRight, Zap, Hand, X, Camera, Pencil, Gauge, Route, Crosshair,
-  LogOut, MapPin, ClipboardList, ListChecks, Copy, Check, Loader2, Images, Sparkles, Download,
+  LogOut, MapPin, ClipboardList, ListChecks, Copy, Check, Images, Sparkles, Download,
 } from 'lucide-react'
 import { useYard, useUnits, useTrips, useBlocks, attachPendingDamages } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
@@ -41,7 +41,6 @@ import { blockTag, blockKeyOfTag, resolveBlockByName } from '../lib/format'
 import { fetchUnitsByVins, fetchTrackingRowsByVin, isConfigured } from '../lib/db'
 import { refreshUnitFocus } from '../lib/unitFocus'
 import { laneFromCloud } from '../lib/laneCloud'
-import { hasDialogOpen } from '../lib/keyboardGuard'
 import { useRecentOps } from '../store/useRecentOps'
 import { buildWorkRows, buildEventLog, fmtHistAt, histOf } from '../lib/carHistory'
 import { roundOf } from '../lib/tripHistory'
@@ -616,208 +615,6 @@ function savedScanZoom(): number {
 }
 const rememberScanZoom = (v: number) => { try { localStorage.setItem(SCAN_ZOOM_KEY, String(v)) } catch { /* full */ } }
 
-// ── keep the camera warm between scans ──────────────────────────────────────
-// A worker at the gate scans car after car. Every scan used to open the camera
-// from cold — getUserMedia, sensor mode negotiation, first frame — a wait of a
-// second or more on the phones in the yard, paid again for every single car.
-// Closing the overlay now PARKS the live stream instead of stopping it; the
-// next open within WARM_MS reuses it and the preview is up on the very next
-// frame. The stream is released for real when nobody reopens in time, when
-// the tab goes to the background (a camera must never stay on unseen), or on
-// an explicit release. The torch is switched off before parking so a phone
-// never sits with its flash burning while the scanner is closed.
-// 3 minutes, not 45 s: at the gate the next car is usually within a minute,
-// but a phone call or a trailer arriving in between used to push past the
-// window and the very next scan paid the cold open again.
-// …on a normal phone. A low-spec phone (see scanLite) parks for one minute:
-// a parked stream is a live camera pipeline the phone keeps feeding, and on
-// those devices that alone warms the chip until everything — the camera
-// open included — is throttled to a crawl ("มือถือร้อน").
-const warmMs = () => (scanLite() ? 60_000 : 180_000)
-let warmStream: MediaStream | null = null
-let warmTimer: ReturnType<typeof setTimeout> | null = null
-function releaseWarmStream(): void {
-  if (warmTimer) { clearTimeout(warmTimer); warmTimer = null }
-  warmStream?.getTracks().forEach(t => t.stop())
-  warmStream = null
-}
-function parkWarmStream(s: MediaStream): void {
-  if (warmStream && warmStream !== s) releaseWarmStream()
-  warmStream = s
-  if (warmTimer) clearTimeout(warmTimer)
-  warmTimer = setTimeout(releaseWarmStream, warmMs())
-}
-/** Is a live stream parked right now? (peek — takeWarmStream claims it) */
-function hasWarmStream(): boolean {
-  return !!warmStream && warmStream.getVideoTracks().length > 0 && warmStream.getVideoTracks().every(t => t.readyState === 'live')
-}
-/** The parked stream if every track is still live, else nothing (a track the OS
- *  ended in the meantime is not reusable — a fresh getUserMedia is). */
-function takeWarmStream(): MediaStream | null {
-  if (warmTimer) { clearTimeout(warmTimer); warmTimer = null }
-  const s = warmStream
-  warmStream = null
-  if (!s) return null
-  const tracks = s.getVideoTracks()
-  if (tracks.length && tracks.every(t => t.readyState === 'live')) return s
-  s.getTracks().forEach(t => t.stop())
-  return null
-}
-
-// Two-stage capture size, because asking for everything up front is what
-// made the camera take seconds to appear on some phones. A 2560×1440
-// request forces the sensor into a mode it may have to negotiate and
-// re-allocate buffers for, and the preview stays black the whole time —
-// "กดแล้วรอนาน", and only on the devices whose pipeline is slow at it.
-//
-// Stage 1 asks for 1280×720: a native mode on essentially every phone, so
-// it opens almost immediately, and still ~4× the pixels of the old 640×480
-// default if a device ignores stage 2. Stage 2 then raises it to the full
-// sensor size on the LIVE track, which happens behind an already-visible
-// preview and costs the operator nothing.
-const SCAN_VIDEO: MediaTrackConstraints = { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
-const SCAN_HI_RES: MediaTrackConstraints = { width: { ideal: 2560 }, height: { ideal: 1440 } }
-
-// ── low-spec ("lite") scanning ────────────────────────────────────────────
-// The field phones are not all the same. On a cheap one, everything the
-// scanner does to be fast on a good phone turns into heat: a camera held
-// open at full sensor size between scans, a decoder on every frame, two
-// decoders at once. A hot phone throttles its own chip, and then the camera
-// takes 30 s to come up and the code never locks — the exact report from the
-// yard. So a low-spec phone runs a lighter scanner: 720p at 15 fps and no
-// full-size bump, no camera held open between scans (parked for a minute at
-// most), decode a few times a second instead of every frame, and never two
-// decoders together. Decided from what the browser tells us about the phone
-// (memory / cores); the worker can force it either way from the overlay
-// ("ประหยัด"), which is remembered on that device.
-const SCAN_LITE_KEY = 'sjwd-scan-lite'
-function scanLite(): boolean {
-  try {
-    const v = localStorage.getItem(SCAN_LITE_KEY)
-    if (v === '1') return true
-    if (v === '0') return false
-  } catch { /* storage blocked — fall through to the heuristic */ }
-  // Chrome (the Android field phones) reports memory; Safari never does and
-  // caps the core count at 4 on every iPhone — so without the memory signal
-  // there is no verdict, only the worker's own toggle
-  const mem = (navigator as Navigator & { deviceMemory?: number }).deviceMemory
-  if (mem == null) return false
-  return mem <= 3 || (navigator.hardwareConcurrency ?? 8) <= 4
-}
-function setScanLite(on: boolean): void {
-  try { localStorage.setItem(SCAN_LITE_KEY, on ? '1' : '0') } catch { /* full */ }
-}
-/** Constraints for a fresh open. The lite phone also asks for a lower frame
- *  rate — fewer frames to capture, decode, and heat up over. */
-function scanVideoConstraints(): MediaTrackConstraints {
-  return scanLite() ? { ...SCAN_VIDEO, frameRate: { ideal: 15 } } : SCAN_VIDEO
-}
-
-// ── remember which camera worked ─────────────────────────────────────────────
-// "facingMode: environment" is a description, not a camera: on the multi-lens
-// phones in the yard the browser has to enumerate the cameras and pick one
-// every single open, and on some of them that pick is a visible part of the
-// wait. The deviceId of the camera that opened last time is stable for this
-// site once permission is granted, so ask for THAT camera outright and skip
-// the pick. If it is ever gone (browser reset, different phone profile) the
-// request fails fast and the open falls back to the description — and forgets
-// the stale id so the next open does not try it again.
-const SCAN_CAMERA_KEY = 'sjwd-scan-camera'
-function rememberedCamera(): string | null {
-  try { return localStorage.getItem(SCAN_CAMERA_KEY) || null } catch { return null }
-}
-function rememberCamera(s: MediaStream): void {
-  const id = s.getVideoTracks()[0]?.getSettings?.().deviceId
-  if (!id) return
-  try { localStorage.setItem(SCAN_CAMERA_KEY, id) } catch { /* full */ }
-}
-function forgetCamera(): void {
-  try { localStorage.removeItem(SCAN_CAMERA_KEY) } catch { /* nothing to forget */ }
-}
-/** Open the scanner camera: the remembered one by id when there is one, else
- *  the rear camera by description. Remembers whichever one actually opened. */
-async function openScanStream(): Promise<MediaStream> {
-  const id = rememberedCamera()
-  if (id) {
-    const { facingMode: _fm, ...size } = scanVideoConstraints()
-    void _fm
-    try {
-      const s = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: id }, ...size } })
-      rememberCamera(s)
-      return s
-    } catch { forgetCamera() } // that camera is gone — pick by description below
-  }
-  const s = await navigator.mediaDevices.getUserMedia({ video: scanVideoConstraints() })
-  rememberCamera(s)
-  return s
-}
-
-// ── open the camera BEFORE the button is pressed ─────────────────────────────
-// The wait behind "กำลังเปิดกล้อง…" is almost entirely getUserMedia — the OS
-// bringing the sensor up — and no code makes that faster. What it can do is
-// pay it earlier: the moment a scanning station is on screen, open the camera
-// in the background and park it, so the tap on the camera button finds a
-// live stream waiting (takeWarmStream) and the preview is up on the next
-// frame. Guards, because a camera that switches itself on must be predictable:
-//  · only where the site ALREADY holds camera permission — never a permission
-//    prompt popping up on its own when a screen opens (on browsers without the
-//    permission query, iOS Safari, there is no pre-warm at all)
-//  · only while a station with a scan field is mounted, and again when the
-//    app comes back to the foreground (the parked stream is released on hide,
-//    so LINE → back used to be a cold open every time)
-//  · released by the same WARM_MS timer as a parked stream, so an idle station
-//    never holds the camera open for more than that
-//  · deferred a beat after mount so it never competes with the screen's own
-//    first paint for the main thread
-let scanStationsMounted = 0
-// the pre-warm that is opening the camera RIGHT NOW, if any. A tap that lands
-// while it is still negotiating must wait for it, not fire a second
-// getUserMedia for the same camera — two opens in flight is exactly what left
-// the field phone on "กำลังเปิดกล้อง…" for half a minute (see the open path)
-let prewarmInFlight: Promise<void> | null = null
-async function prewarmScanner(): Promise<void> {
-  // a low-spec phone never holds the camera open while nobody is scanning —
-  // that idle pipeline is what heats it (see scanLite); it opens on the tap
-  if (scanLite()) return
-  if (prewarmInFlight || warmStream || scanStationsMounted === 0) return
-  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
-  const perms = (navigator as Navigator & { permissions?: { query: (d: { name: string }) => Promise<{ state: string }> } }).permissions
-  if (!perms) return
-  let granted = false
-  try { granted = (await perms.query({ name: 'camera' })).state === 'granted' } catch { return } // no camera query → no pre-warm
-  if (!granted || prewarmInFlight || warmStream || scanStationsMounted === 0) return
-  prewarmInFlight = (async () => {
-    try {
-      const s = await openScanStream()
-      if (scanStationsMounted === 0 || warmStream || document.visibilityState === 'hidden') { s.getTracks().forEach(t => t.stop()); return }
-      // park FIRST — a tap can take the stream the moment the system answers.
-      // The full-size bump runs on the parked track in the background and is
-      // never awaited: on some phones that reconfigure takes tens of seconds,
-      // and holding the stream back until it finished made a tap wait for it
-      // too (the open path treats a pre-warmed stream as already bumped)
-      parkWarmStream(s)
-      if (!scanLite()) s.getVideoTracks()[0]?.applyConstraints(SCAN_HI_RES).catch(() => {})
-    } catch { /* camera busy or gone — the tap will try for real and show its own error */ }
-    finally { prewarmInFlight = null }
-  })()
-  await prewarmInFlight
-}
-function scheduleScanPrewarm(): void {
-  setTimeout(() => { void prewarmScanner() }, 500)
-}
-if (typeof document !== 'undefined') {
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') releaseWarmStream()
-    else scheduleScanPrewarm() // back in the foreground with a station open → warm it again
-  })
-  window.addEventListener('pagehide', releaseWarmStream)
-  if (import.meta.env.DEV) {
-    // test hook: is a stream parked, and which camera is remembered
-    ;(window as unknown as { __scanWarm: () => { warm: boolean; camera: string | null; lite: boolean } }).__scanWarm =
-      () => ({ warm: !!warmStream && warmStream.getVideoTracks().every(t => t.readyState === 'live'), camera: rememberedCamera(), lite: scanLite() })
-  }
-}
-
 function VinInput({
   onScan, accent = 'var(--brand)',
   placeholder = 'VIN / 5 ตัวท้าย…',
@@ -832,7 +629,6 @@ function VinInput({
   const [val, setVal] = useState('')
   const [camOpen, setCamOpen] = useState(false)
   const [camErr, setCamErr] = useState('')
-  const [camLive, setCamLive] = useState(false) // first frame is on screen
   const ref = useRef<HTMLInputElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   // ZXing scanner controls — decodes QR + 1D barcodes (Code128/39, EAN, DataMatrix)
@@ -872,42 +668,14 @@ function VinInput({
   const go = (raw?: string) => {
     const v = (raw ?? val).trim().toUpperCase()
     if (v.length < 3) return
-    // หุบแป้นพิมพ์ก่อนส่งเลขวินออกไป
-    // The scan is submitted; there is nothing left to type until the worker sees
-    // the result. Blur while this field is still ON SCREEN — a phone keyboard
-    // only comes down for a real blur, and if the field is unmounted by the next
-    // screen while it still holds focus, Android leaves the keys up covering the
-    // card and its ตกลง button, which is exactly what the gate-out screen hit.
+    // หุบแป้นพิมพ์ก่อนส่งเลขวินออกไป — ไม่งั้นแป้นพิมพ์ค้างทับการ์ดผลลัพธ์
+    // และปุ่ม ตกลง (คงไว้จากการแก้ภายหลัง ไม่เกี่ยวกับความเร็วกล้อง)
     ref.current?.blur()
     onScan(v)
     setVal('')
   }
 
-  // a scanning station is on screen → have the camera ready before the tap
-  // (see prewarmScanner for the guards); two fields on one screen count twice
-  // and pre-warm once
-  useEffect(() => {
-    scanStationsMounted++
-    scheduleScanPrewarm()
-    return () => { scanStationsMounted-- }
-  }, [])
-
-  useEffect(() => {
-    if (!autoFocus) return
-    // บนมือถือ/แท็บเล็ต ไม่ดึงโฟกัสเลย — การดึงโฟกัสคือการเด้งแป้นพิมพ์ขึ้นมาทับ
-    // รายการทันทีที่กลับมาหน้าสถานี (ในวิดีโอหน้างาน: บันทึก PM เสร็จ กลับมาหน้า
-    // รายการ แป้นพิมพ์ไทยเด้งขึ้นมาทั้งที่จะกดกล้องสแกนคันถัดไป) กล้องกับ
-    // เครื่องยิงบาร์โค้ดไม่เคยต้องการโฟกัส คนที่จะพิมพ์ก็แตะช่องเอง
-    if (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches) return
-    // ห้ามดึงโฟกัสตอนมีกล่องเต็มจอเปิดอยู่
-    // Confirming a scan re-mounts this field behind the result box, and grabbing
-    // focus here is what pops the phone keyboard straight back up over that box
-    // — the worker then has to close the keyboard before every ตกลง. A worker
-    // who wants to type the next VIN taps the field; the handheld scanner and
-    // the camera never needed focus in the first place.
-    if (hasDialogOpen()) return
-    ref.current?.focus()
-  }, [autoFocus])
+  useEffect(() => { if (autoFocus) ref.current?.focus() }, [autoFocus])
 
   // ── handheld (keyboard-wedge) scanners: the SCAN trigger types the code as a
   // rapid keystroke burst + Enter. When focus is NOT in any text field, catch
@@ -940,45 +708,23 @@ function VinInput({
     return () => document.removeEventListener('keydown', onKey, true)
   }, [])
 
-  // Stop the decode loop and detach the <video>, but PARK the stream rather than
-  // stop it (see parkWarmStream) so the next scan a moment later opens on the
-  // very next frame. Torch off first — a parked stream must never leave the
-  // flash burning behind a closed overlay.
+  // Fully release the camera: stop ZXing's decode loop AND every media track,
+  // then detach from the <video> so the OS camera indicator turns off.
   const stopScan = () => {
     try { controlsRef.current?.stop() } catch { /* already stopped */ }
     controlsRef.current = null
     const v = videoRef.current
     const s = v?.srcObject as MediaStream | null
-    if (s) {
-      if (torchOn) trackRef.current?.applyConstraints({ advanced: [{ torch: false } as MediaTrackConstraintSet] }).catch(() => {})
-      parkWarmStream(s)
-    }
+    s?.getTracks().forEach(t => t.stop())
     if (v) v.srcObject = null
     trackRef.current = null
     setZoomCap(null); setZoom(1); setTorchCap(false); setTorchOn(false)
     const z0 = Math.min(3, savedScanZoom())
     setDigitalZoom(false); setDz(z0); dzRef.current = z0; opticalRef.current = false
-    setCamLive(false)
   }
 
-  // blur the text field FIRST — if it's still focused when the camera portal
-  // mounts, the on-screen keyboard dismissing (viewport resize + relayout)
-  // lands right in the middle of the camera negotiation, on a device that
-  // needed every millisecond of main-thread time for that instead
-  // a parked stream means the preview is up on the next frame — don't mount
-  // the "กำลังเปิดกล้อง…" spinner for that one frame, it reads as a flicker
-  const openCamera = () => { ref.current?.blur(); setCamErr(''); setCamLive(hasWarmStream()); setCamOpen(true) }
+  const openCamera = () => { setCamErr(''); setCamOpen(true) }
   const closeCamera = () => { stopScan(); setCamOpen(false) }
-  // "ประหยัด" — the worker forces the lite scanner on or off for this phone
-  // (remembered); a reopen applies it, since the constraints and the decode
-  // loops are chosen at open time
-  const [lite, setLite] = useState(scanLite)
-  const toggleLite = () => {
-    const on = !lite
-    setScanLite(on); setLite(on)
-    releaseWarmStream() // a parked stream carries the old settings
-    closeCamera(); setTimeout(openCamera, 80)
-  }
 
   // Start the scanner whenever the overlay opens. ZXing manages getUserMedia +
   // srcObject + play() + the continuous decode loop internally, which also
@@ -986,27 +732,22 @@ function VinInput({
   useEffect(() => {
     if (!camOpen) return
     let cancelled = false
-    let camTimeoutId: ReturnType<typeof setTimeout> | undefined
-    // every decode loop started for this open registers its stop here — the
-    // native and the ZXing loop can both be running (see below), and closing
-    // the overlay must stop them all, not just whichever registered last
-    const stops: (() => void)[] = []
-    controlsRef.current = { stop: () => { for (const s of stops) s() } }
+
+    // ask for a real capture size: the default 640×480 left a windshield QR
+    // only ~40 px wide, below what any decoder can read. 2560 gives iPhones
+    // (which clamp to what the sensor pipeline allows) every pixel available.
+    const VIDEO: MediaTrackConstraints = { facingMode: { ideal: 'environment' }, width: { ideal: 2560 }, height: { ideal: 1440 } }
 
     // zoom + torch, where the hardware offers them. A slight starting zoom
     // (2×, capped) puts far more pixels on the small sticker code.
     // `allowDigital`: the ZXing path can crop-decode, so when the lens zoom is
     // NOT drivable (most iPhones on Safari) it falls back to a digital zoom.
-    // The constraint writes are SEQUENCED, not fired together: focus, zoom and
-    // the resolution bump all reconfigure the same live track, and several
-    // in flight at once make some Android cameras restart the stream — a
-    // black preview right after the first frame, which read as "still opening".
-    const setupTrack = async (video: HTMLVideoElement, allowDigital: boolean) => {
+    const setupTrack = (video: HTMLVideoElement, allowDigital: boolean) => {
       const track = (video.srcObject as MediaStream | null)?.getVideoTracks?.()[0] ?? null
       trackRef.current = track
       // nudge continuous autofocus — ignored where unsupported, but stops some
       // devices from locking focus at the wrong distance
-      await track?.applyConstraints({ advanced: [{ focusMode: 'continuous' } as MediaTrackConstraintSet] }).catch(() => {})
+      track?.applyConstraints({ advanced: [{ focusMode: 'continuous' } as MediaTrackConstraintSet] }).catch(() => {})
       const caps = (track?.getCapabilities?.() ?? {}) as MediaTrackCapabilities & { zoom?: { min?: number; max?: number; step?: number }; torch?: boolean }
       if (caps.zoom && typeof caps.zoom.max === 'number' && caps.zoom.max > (caps.zoom.min ?? 1)) {
         opticalRef.current = true
@@ -1014,7 +755,7 @@ function VinInput({
         setZoomCap(cap)
         // start at the zoom the worker used LAST time (remembered), capped
         const z = Math.min(Math.max(savedScanZoom(), cap.min), cap.max)
-        await track!.applyConstraints({ advanced: [{ zoom: z } as MediaTrackConstraintSet] })
+        track!.applyConstraints({ advanced: [{ zoom: z } as MediaTrackConstraintSet] })
           .then(() => setZoom(z)).catch(() => setZoom(cap.min))
       } else if (allowDigital) {
         setDigitalZoom(true) // slider drives the crop-decode + preview scale
@@ -1022,81 +763,37 @@ function VinInput({
       setTorchCap(!!caps.torch)
     }
 
-    // A sticker rarely encodes the bare VIN: a QR often carries a URL or a
-    // "VIN:" prefix, and a Code 39 VIN barcode has a leading "I" (18 chars).
-    // Handing that raw text to the station read as "ไม่พบ VIN" — the scan
-    // looked like it never locked. Pull the 17-char VIN out (no I/O/Q in a
-    // VIN, so an 18-char run starting with I is the Code 39 form) and fall
-    // back to the raw text only when there is none (a DN number, a lane code).
-    const vinIn = (raw: string): string => {
-      for (const run of raw.match(/[A-HJ-NPR-Z0-9]{17,}/g) ?? []) {
-        if (run.length === 17) return run
-        if (run.length === 18 && run[0] === 'I') return run.slice(1)
-      }
-      return raw
-    }
     const hit = (text?: string | null) => {
       const t = text?.trim().toUpperCase()
-      if (!t) return
-      try { navigator.vibrate?.(60) } catch { /* no haptics */ }
-      closeCamera(); go(vinIn(t))
+      if (t) { closeCamera(); go(t) }
     }
 
     // Path 1 — native BarcodeDetector (Android Chrome): hardware-accelerated and
     // markedly better than JS decoding at glare / angle / focus hunting. Detects
     // straight off the <video> ~8×/sec.
-    const startNative = async (video: HTMLVideoElement): Promise<boolean> => {
-      const BD = (window as unknown as { BarcodeDetector?: { new (o: { formats: string[] }): { detect: (v: HTMLVideoElement | HTMLCanvasElement) => Promise<{ rawValue?: string }[]> }; getSupportedFormats?: () => Promise<string[]> } }).BarcodeDetector
+    const startNative = async (): Promise<boolean> => {
+      const BD = (window as unknown as { BarcodeDetector?: { new (o: { formats: string[] }): { detect: (v: HTMLVideoElement) => Promise<{ rawValue?: string }[]> }; getSupportedFormats?: () => Promise<string[]> } }).BarcodeDetector
       if (!BD) return false
       try {
         const supported = (await BD.getSupportedFormats?.()) ?? []
-        const want = ['qr_code', 'code_128', 'code_39', 'code_93', 'ean_13', 'data_matrix'].filter(f => supported.includes(f))
+        const want = ['qr_code', 'code_128', 'code_39', 'ean_13', 'data_matrix'].filter(f => supported.includes(f))
         if (!want.includes('qr_code')) return false
-        if (cancelled) return true
+        const video = videoRef.current
+        if (!video || cancelled) return false
+        const stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO })
+        if (cancelled) { stream.getTracks().forEach(t => t.stop()); return true }
+        video.srcObject = stream
+        await video.play().catch(() => {})
         const det = new BD({ formats: want })
-        // Detect on EVERY camera frame (requestVideoFrameCallback), not on a
-        // 120 ms timer that could miss the one steady frame between two
-        // hand-shakes. Alternate the full frame with a centre crop of the
-        // aiming box: the native detector downsizes a large frame internally,
-        // which is what turned a small windshield barcode into an unreadable
-        // smear — the crop hands it the sticker at full pixel density.
-        const crop = document.createElement('canvas')
-        const cctx = crop.getContext('2d', { willReadFrequently: true })
-        let stopped = false
-        let busy = false
-        let tick = 0
-        const schedule = () => {
-          if (stopped) return
-          const rvfc = (video as HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => number }).requestVideoFrameCallback
-          if (rvfc) rvfc.call(video, step); else setTimeout(step, 60)
-        }
-        let frame = 0
-        const step = async () => {
-          if (stopped) return
-          // lite: every 3rd frame (~4–5 detects/s). Every frame is what runs a
-          // low-spec chip hot, and a hand holding a phone at a sticker does
-          // not need more than that to catch a steady frame
-          if (scanLite() && ++frame % 3) { schedule(); return }
-          if (!busy && video.readyState >= 2 && video.videoWidth) {
-            busy = true
-            try {
-              let src: HTMLVideoElement | HTMLCanvasElement = video
-              if (++tick % 2 === 1 && cctx) {
-                const vw = video.videoWidth, vh = video.videoHeight
-                const cw = Math.round(vw * 0.6), ch = Math.round(vh * 0.6)
-                crop.width = cw; crop.height = ch
-                cctx.drawImage(video, (vw - cw) >> 1, (vh - ch) >> 1, cw, ch, 0, 0, cw, ch)
-                src = crop
-              }
-              const codes = await det.detect(src)
-              if (codes.length) { stopped = true; hit(codes[0].rawValue); return }
-            } catch { /* detector hiccup — next frame */ }
-            busy = false
-          }
-          schedule()
-        }
-        schedule()
-        stops.push(() => { stopped = true })
+        const iv = setInterval(async () => {
+          if (video.readyState < 2) return
+          try {
+            const codes = await det.detect(video)
+            if (codes.length) hit(codes[0].rawValue)
+          } catch { /* detector hiccup — next tick */ }
+        }, 120)
+        controlsRef.current = { stop: () => clearInterval(iv) }
+        setupTrack(video, false) // native detector reads the full frame — no crop zoom
         return true
       } catch { return false } // permission error falls through to ZXing for its message
     }
@@ -1106,26 +803,26 @@ function VinInput({
     // pixels), each tick decodes a CENTER CROP of the frame — the aiming box —
     // which multiplies the code's effective size. Every 3rd tick decodes the
     // full frame too, so a large/off-center code still hits.
-    const startZxing = async (video: HTMLVideoElement, warmIn: Promise<unknown> | null): Promise<(() => void) | undefined> => {
-      if (cancelled) return
-      // null only when Path 1 (native BarcodeDetector) skipped the fetch to
-      // save it entirely — reaching here means native failed anyway despite
-      // the detector existing, so start the fetch now rather than never
-      const warm = warmIn ?? Promise.all([import('zxing-wasm/reader'), import('zxing-wasm/reader/zxing_reader.wasm?url')])
+    const startZxing = async () => {
+      const video = videoRef.current
+      if (!video || cancelled) return
+      const stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO })
+      if (cancelled) { stream.getTracks().forEach(t => t.stop()); return }
+      video.srcObject = stream
+      await video.play().catch(() => {})
 
       // ── decoder: zxing-wasm (the C++ engine compiled to WebAssembly) — near
       // Android-native accuracy and speed on tiny / glarey windshield codes.
       // Falls back to the pure-JS @zxing/library if the wasm fails to load.
       let wasmRead: ((img: ImageData) => Promise<string | null>) | null = null
       try {
-        // `warm` was started BEFORE the camera was even asked for, so on a warm
-        // connection the decoder is already here by the time the preview is up
-        const [{ readBarcodes, prepareZXingModule }, wasmUrlMod] = await (warm as Promise<[
-          typeof import('zxing-wasm/reader'), { default: string },
-        ]>)
+        const [{ readBarcodes, prepareZXingModule }, wasmUrlMod] = await Promise.all([
+          import('zxing-wasm/reader'),
+          import('zxing-wasm/reader/zxing_reader.wasm?url'),
+        ])
         const wasmUrl = (wasmUrlMod as { default: string }).default
         prepareZXingModule({ overrides: { locateFile: (p: string, prefix: string) => (p.endsWith('.wasm') ? wasmUrl : prefix + p) } })
-        const OPTS = { formats: ['QRCode', 'Code128', 'Code39', 'Code93', 'EAN13', 'DataMatrix'], tryHarder: true, maxNumberOfSymbols: 1 } as const
+        const OPTS = { formats: ['QRCode', 'Code128', 'Code39', 'EAN13', 'DataMatrix'], tryHarder: true, maxNumberOfSymbols: 1 } as const
         // warm the module now so the first real frame doesn't pay the load
         await readBarcodes(new ImageData(2, 2), OPTS as never).catch(() => {})
         wasmRead = async (img) => (await readBarcodes(img, OPTS as never))[0]?.text ?? null
@@ -1139,13 +836,13 @@ function VinInput({
         ])
         const hints = new Map<number, unknown>()
         hints.set(DecodeHintType.POSSIBLE_FORMATS, [
-          BarcodeFormat.QR_CODE, BarcodeFormat.CODE_128, BarcodeFormat.CODE_39, BarcodeFormat.CODE_93,
+          BarcodeFormat.QR_CODE, BarcodeFormat.CODE_128, BarcodeFormat.CODE_39,
           BarcodeFormat.EAN_13, BarcodeFormat.DATA_MATRIX,
         ])
         hints.set(DecodeHintType.TRY_HARDER, true)
         jsReader = new BrowserMultiFormatReader(hints as never)
       }
-      if (cancelled) return
+      if (cancelled) { stream.getTracks().forEach(t => t.stop()); return }
 
       const canvas = document.createElement('canvas')
       const ctx = canvas.getContext('2d', { willReadFrequently: true })
@@ -1163,7 +860,7 @@ function VinInput({
         const ch = full ? vh : Math.round(vh / factor)
         // cap the decode surface at ~1024 px wide — plenty for the wasm engine,
         // and each frame decodes in tens of ms instead of hundreds on iPhone
-        const scale = Math.min(1, (scanLite() ? 720 : 1024) / cw) // lite: smaller surface, cheaper decode
+        const scale = Math.min(1, 1024 / cw)
         canvas.width = Math.max(2, Math.round(cw * scale))
         canvas.height = Math.max(2, Math.round(ch * scale))
         ctx.drawImage(video, (vw - cw) >> 1, (vh - ch) >> 1, cw, ch, 0, 0, canvas.width, canvas.height)
@@ -1177,99 +874,20 @@ function VinInput({
           } catch { /* decoder hiccup — next tick */ }
           finally { busy = false }
         })()
-      }, scanLite() ? 220 : 90) // lite: ~4 decodes/s, not 11
-      const stop = () => clearInterval(iv)
-      stops.push(stop)
-      return stop
+      }, 90)
+      controlsRef.current = { stop: () => clearInterval(iv) }
+      setupTrack(video, true)
     }
 
     ;(async () => {
       try {
-        const video = videoRef.current
-        if (!video || cancelled) return
-
-        // Start fetching the wasm decoder now, on every device. It is precached
-        // by the service worker, so this is a local read, and it must be in
-        // hand the moment the native detector turns out to be slow (below) —
-        // a phone whose Play Services barcode module is cold has NO decoder
-        // running until then, and the worker aims at a code that never locks.
-        const hasNativeDetector = 'BarcodeDetector' in window
-        const warm = Promise.all([
-          import('zxing-wasm/reader'),
-          import('zxing-wasm/reader/zxing_reader.wasm?url'),
-        ])
-        warm.catch(() => {}) // handled where it is awaited
-
-        // a stream parked by the previous scan (see parkWarmStream) is already
-        // open, focused and at full resolution — no negotiation at all. If the
-        // pre-warm is STILL opening the camera, wait for that one instead of
-        // asking for the same camera a second time: two opens in flight on
-        // the same sensor is what pinned a field phone on "กำลังเปิดกล้อง…"
-        // for half a minute, then again on the retry.
-        let stream = takeWarmStream()
-        let reused = !!stream
-        if (!stream) {
-          // getUserMedia() can take ages or never settle — an unanswered
-          // permission prompt, the camera held by another app, a backgrounded
-          // PWA resuming from lock. Say so after 10 s instead of spinning
-          // forever — and that clock must run over the WHOLE wait, including
-          // the wait for a pre-warm that is still opening the camera (a
-          // pre-warm that hung left the tap spinning with no message at all).
-          // A stream that arrives AFTER the message is still a perfectly good
-          // camera: use it if the overlay is still open (the worker is looking
-          // at the error), else park it so the retry opens instantly —
-          // throwing it away made the retry pay the whole wait again.
-          const t0 = Date.now()
-          let timedOut = false
-          camTimeoutId = setTimeout(() => {
-            timedOut = true
-            if (!cancelled) setCamErr('เปิดกล้องช้าเกินไป (ระบบยังไม่ส่งภาพกล้องมาใน 10 วิ) — รอต่อได้ หรือปิดแล้วเปิดใหม่ · ถ้าเป็นบ่อยแจ้งรุ่นมือถือให้ทีมระบบ')
-          }, 10000)
-          if (prewarmInFlight) { await prewarmInFlight; stream = takeWarmStream(); reused = !!stream }
-          if (!stream) stream = await openScanStream()
-          clearTimeout(camTimeoutId)
-          console.info(`[scan] camera ready in ${Date.now() - t0} ms${reused ? ' (pre-warm)' : ''}`)
-          if (timedOut && !cancelled) setCamErr('')
-        }
-        if (cancelled) { parkWarmStream(stream); return }
-        video.srcObject = stream
-        await video.play().catch(() => {})
-        setCamLive(true) // preview is up — everything below happens behind it
-
-        // focus / zoom / torch FIRST, straight off the live track — not after
-        // the decoder has initialised. Waiting on the decoder left the zoom
-        // slider (and the focus nudge) 18 s late on the field phone.
-        // allowDigital: the ZXing path can crop-decode, so where the lens zoom
-        // is not drivable (iPhone Safari) it falls back to a digital zoom;
-        // the native detector reads the full frame, so not there.
-        await setupTrack(video, !hasNativeDetector)
-        // now push the sensor to full size, on the running track — AFTER the
-        // focus / zoom writes above have settled (see setupTrack), and only
-        // for a freshly opened stream: a reused one is at full size already
-        // …and never on a low-spec phone: 1440p through a weak chip is heat,
-        // and the 2× lens zoom already puts the pixels on the sticker
-        if (!reused && !cancelled && !scanLite()) stream.getVideoTracks()[0]?.applyConstraints(SCAN_HI_RES).catch(() => {})
-
-        // Decoders. The native detector is the better one when it is there
-        // and READY — but on Android its first use can wait on Play Services
-        // bringing the barcode module up, seconds in which nothing decodes.
-        // Give it 800 ms to report ready; otherwise ZXing starts now and the
-        // native loop simply joins in whenever it is ready. First hit wins,
-        // and closing the overlay stops every loop that was started.
-        const nativeReady = startNative(video)
-        const quick = await Promise.race([nativeReady, new Promise<null>(r => setTimeout(() => r(null), 800))])
-        if (quick !== true && !cancelled) {
-          const stopZxing = await startZxing(video, warm)
-          // lite: once the native detector does come up, hand over to it alone
-          // — two decoders on a low-spec chip is heat, not speed
-          if (stopZxing && scanLite()) nativeReady.then(ok => { if (ok && !cancelled) stopZxing() }).catch(() => {})
-        }
+        if (!(await startNative())) await startZxing()
       } catch (e) {
         console.error('[scan] camera', e)
         if (!cancelled) setCamErr('เปิดกล้องไม่สำเร็จ — โปรดอนุญาตสิทธิ์กล้องในเบราว์เซอร์ แล้วลองใหม่')
       }
     })()
-    return () => { cancelled = true; clearTimeout(camTimeoutId); stopScan() }
+    return () => { cancelled = true; stopScan() }
   }, [camOpen]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
@@ -1298,16 +916,7 @@ function VinInput({
               playsInline
               muted
               autoPlay
-              onPlaying={() => setCamLive(true)} // the spinner drops on the first real frame, not on play()'s promise
             />
-            {/* Until the first frame lands the overlay is pure black, which
-                reads as "hung" — say what is happening instead. */}
-            {!camLive && !camErr && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 pointer-events-none">
-                <Loader2 size={30} className="animate-spin" color="#fff" />
-                <span className="text-white text-[13.5px] font-semibold">กำลังเปิดกล้อง…</span>
-              </div>
-            )}
             {/* scan frame */}
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
               <div className="relative w-60 h-44">
@@ -1327,7 +936,7 @@ function VinInput({
           </div>
           {/* zoom / torch — lens zoom where the camera drives it, digital
               (crop-decode) zoom where it doesn't (iPhone Safari) */}
-          {(zoomCap || digitalZoom || torchCap || camLive) && (
+          {(zoomCap || digitalZoom || torchCap) && (
             <div className="px-5 py-2 flex items-center gap-3 shrink-0" style={{ touchAction: 'pan-x' }}>
               {zoomCap ? (
                 <>
@@ -1350,12 +959,6 @@ function VinInput({
                   <span className="text-white/70 text-[12px] tabular shrink-0" style={{ width: 36, textAlign: 'right' }}>{dz.toFixed(1)}×</span>
                 </>
               )}
-              <button onClick={toggleLite}
-                className="shrink-0 px-3 py-1.5 rounded-full text-[12.5px] font-bold flex items-center gap-1.5"
-                style={lite ? { background: '#f59e0b', color: '#111' } : { background: 'rgba(255,255,255,0.12)', color: '#fff' }}
-                title="โหมดประหยัดสำหรับมือถือสเปกต่ำ — ลดความละเอียด/เฟรม ไม่เปิดกล้องค้าง">
-                ประหยัด{lite ? ' ✓' : ''}
-              </button>
               {torchCap && (
                 <button onClick={toggleTorch}
                   className="shrink-0 px-3 py-1.5 rounded-full text-[12.5px] font-bold flex items-center gap-1.5"
