@@ -55,7 +55,7 @@ export default function StationSheet({ unit, row, activeProc, onSaved, stationTi
   stationType: Extract<QueueType, 'PDI' | 'FINAL'>
 }) {
   const { addDamage, setInspected, currentUser, toast } = useYard()
-  const { updateCell } = useTracking()
+  const { updateCell, updateCells } = useTracking()
   const columns = useTracking(st => st.columns)
   const { recordCheck } = useOps()
   const masterParts = useMasterDefect((s) => s.parts)
@@ -153,15 +153,22 @@ export default function StationSheet({ unit, row, activeProc, onSaved, stationTi
     if (row && vinPhoto && !savedVinPhoto) useTracking.getState().setCellNoHistory(row.vin, VIN_PHOTO_CELL, vinPhoto)
 
     if (row) {
+      // ONE row write for every reading. Each updateCell is a full store
+      // update — every screen subscribed to the yard's rows recomputes over
+      // all of them — and nine of those back to back (SOC, mileage, voltage,
+      // four wheels, the combined pressure…) is what froze the phone for
+      // seconds after Save, taps ignored, in the field recording.
+      const patch: Record<string, string> = {}
       for (const m of MEASUREMENTS) {
         const v = (meas[m.key] ?? '').trim()
-        if (v) updateCell(row.vin, m.key, v)
+        if (v) patch[m.key] = v
       }
       // per-wheel readings, plus a combined "Tire Pressure" so the single-value
       // history (and anything reading that cell) still shows the whole set
       const wheels = TIRE_WHEELS.filter(w => (meas[w.key] ?? '').trim())
-      for (const w of wheels) updateCell(row.vin, w.key, meas[w.key].trim())
-      if (wheels.length) updateCell(row.vin, 'Tire Pressure', joinTirePressure(meas))
+      for (const w of wheels) patch[w.key] = meas[w.key].trim()
+      if (wheels.length) patch['Tire Pressure'] = joinTirePressure(meas)
+      updateCells(row.vin, patch)
     }
 
     // checklist NG → Defect

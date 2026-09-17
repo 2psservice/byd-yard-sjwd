@@ -731,7 +731,11 @@ async function openScanStream(): Promise<MediaStream> {
 //  · deferred a beat after mount so it never competes with the screen's own
 //    first paint for the main thread
 let scanStationsMounted = 0
-let prewarmInFlight = false
+// the pre-warm that is opening the camera RIGHT NOW, if any. A tap that lands
+// while it is still negotiating must wait for it, not fire a second
+// getUserMedia for the same camera — two opens in flight is exactly what left
+// the field phone on "กำลังเปิดกล้อง…" for half a minute (see the open path)
+let prewarmInFlight: Promise<void> | null = null
 async function prewarmScanner(): Promise<void> {
   if (prewarmInFlight || warmStream || scanStationsMounted === 0) return
   if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
@@ -740,16 +744,18 @@ async function prewarmScanner(): Promise<void> {
   let granted = false
   try { granted = (await perms.query({ name: 'camera' })).state === 'granted' } catch { return } // no camera query → no pre-warm
   if (!granted || prewarmInFlight || warmStream || scanStationsMounted === 0) return
-  prewarmInFlight = true
-  try {
-    const s = await openScanStream()
-    // full sensor size now, while nobody is watching — a reused stream is
-    // assumed to be at full size already (see the open path)
-    await s.getVideoTracks()[0]?.applyConstraints(SCAN_HI_RES).catch(() => {})
-    if (scanStationsMounted === 0 || warmStream || document.visibilityState === 'hidden') { s.getTracks().forEach(t => t.stop()); return }
-    parkWarmStream(s)
-  } catch { /* camera busy or gone — the tap will try for real and show its own error */ }
-  finally { prewarmInFlight = false }
+  prewarmInFlight = (async () => {
+    try {
+      const s = await openScanStream()
+      // full sensor size now, while nobody is watching — a reused stream is
+      // assumed to be at full size already (see the open path)
+      await s.getVideoTracks()[0]?.applyConstraints(SCAN_HI_RES).catch(() => {})
+      if (scanStationsMounted === 0 || warmStream || document.visibilityState === 'hidden') { s.getTracks().forEach(t => t.stop()); return }
+      parkWarmStream(s)
+    } catch { /* camera busy or gone — the tap will try for real and show its own error */ }
+    finally { prewarmInFlight = null }
+  })()
+  await prewarmInFlight
 }
 function scheduleScanPrewarm(): void {
   setTimeout(() => { void prewarmScanner() }, 500)
@@ -843,6 +849,11 @@ function VinInput({
 
   useEffect(() => {
     if (!autoFocus) return
+    // บนมือถือ/แท็บเล็ต ไม่ดึงโฟกัสเลย — การดึงโฟกัสคือการเด้งแป้นพิมพ์ขึ้นมาทับ
+    // รายการทันทีที่กลับมาหน้าสถานี (ในวิดีโอหน้างาน: บันทึก PM เสร็จ กลับมาหน้า
+    // รายการ แป้นพิมพ์ไทยเด้งขึ้นมาทั้งที่จะกดกล้องสแกนคันถัดไป) กล้องกับ
+    // เครื่องยิงบาร์โค้ดไม่เคยต้องการโฟกัส คนที่จะพิมพ์ก็แตะช่องเอง
+    if (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches) return
     // ห้ามดึงโฟกัสตอนมีกล่องเต็มจอเปิดอยู่
     // Confirming a scan re-mounts this field behind the result box, and grabbing
     // focus here is what pops the phone keyboard straight back up over that box
@@ -921,6 +932,11 @@ function VinInput({
     if (!camOpen) return
     let cancelled = false
     let camTimeoutId: ReturnType<typeof setTimeout> | undefined
+    // every decode loop started for this open registers its stop here — the
+    // native and the ZXing loop can both be running (see below), and closing
+    // the overlay must stop them all, not just whichever registered last
+    const stops: (() => void)[] = []
+    controlsRef.current = { stop: () => { for (const s of stops) s() } }
 
     // zoom + torch, where the hardware offers them. A slight starting zoom
     // (2×, capped) puts far more pixels on the small sticker code.
@@ -1020,8 +1036,7 @@ function VinInput({
           schedule()
         }
         schedule()
-        controlsRef.current = { stop: () => { stopped = true } }
-        await setupTrack(video, false) // native detector reads the full frame — no crop zoom
+        stops.push(() => { stopped = true })
         return true
       } catch { return false } // permission error falls through to ZXing for its message
     }
@@ -1103,8 +1118,7 @@ function VinInput({
           finally { busy = false }
         })()
       }, 90)
-      controlsRef.current = { stop: () => clearInterval(iv) }
-      await setupTrack(video, true)
+      stops.push(() => clearInterval(iv))
     }
 
     ;(async () => {
@@ -1112,29 +1126,35 @@ function VinInput({
         const video = videoRef.current
         if (!video || cancelled) return
 
-        // Fetch the wasm decoder and open the camera AT THE SAME TIME. These
-        // used to run one after the other, so a phone paid for the download and
-        // then for the camera; now the slower of the two sets the pace.
-        // Skip it entirely where a native BarcodeDetector exists (Android
-        // Chrome, the common field device) — Path 1 below wins there and this
-        // ~1 MB fetch + wasm-glue eval would just steal main-thread time from
-        // the camera negotiation for a decoder that never gets used.
+        // Start fetching the wasm decoder now, on every device. It is precached
+        // by the service worker, so this is a local read, and it must be in
+        // hand the moment the native detector turns out to be slow (below) —
+        // a phone whose Play Services barcode module is cold has NO decoder
+        // running until then, and the worker aims at a code that never locks.
         const hasNativeDetector = 'BarcodeDetector' in window
-        const warm = hasNativeDetector ? null : Promise.all([
+        const warm = Promise.all([
           import('zxing-wasm/reader'),
           import('zxing-wasm/reader/zxing_reader.wasm?url'),
         ])
-        warm?.catch(() => {}) // handled where it is awaited
+        warm.catch(() => {}) // handled where it is awaited
 
-        // getUserMedia() can simply never settle — an unanswered permission
-        // prompt, the camera held by another app, a backgrounded PWA resuming
-        // from lock — leaving the "กำลังเปิดกล้อง…" spinner up forever with no
-        // error and no way out but the close button. Time it out instead.
         // a stream parked by the previous scan (see parkWarmStream) is already
-        // open, focused and at full resolution — no negotiation at all
+        // open, focused and at full resolution — no negotiation at all. If the
+        // pre-warm is STILL opening the camera, wait for that one instead of
+        // asking for the same camera a second time: two opens in flight on
+        // the same sensor is what pinned a field phone on "กำลังเปิดกล้อง…"
+        // for half a minute, then again on the retry.
         let stream = takeWarmStream()
+        if (!stream && prewarmInFlight) { await prewarmInFlight; stream = takeWarmStream() }
         const reused = !!stream
         if (!stream) {
+          // getUserMedia() can take ages or never settle — an unanswered
+          // permission prompt, the camera held by another app, a backgrounded
+          // PWA resuming from lock. Say so after 10 s instead of spinning
+          // forever. But a stream that arrives AFTER that is still a perfectly
+          // good camera: use it if the overlay is still open (the worker is
+          // looking at the error), else park it so the retry opens instantly —
+          // throwing it away made the retry pay the whole wait again.
           let timedOut = false
           camTimeoutId = setTimeout(() => {
             timedOut = true
@@ -1142,19 +1162,34 @@ function VinInput({
           }, 10000)
           stream = await openScanStream()
           clearTimeout(camTimeoutId)
-          if (timedOut) { stream.getTracks().forEach(t => t.stop()); return }
+          if (timedOut && !cancelled) setCamErr('')
         }
         if (cancelled) { parkWarmStream(stream); return }
         video.srcObject = stream
         await video.play().catch(() => {})
         setCamLive(true) // preview is up — everything below happens behind it
 
-        if (!(await startNative(video))) await startZxing(video, warm)
-
+        // focus / zoom / torch FIRST, straight off the live track — not after
+        // the decoder has initialised. Waiting on the decoder left the zoom
+        // slider (and the focus nudge) 18 s late on the field phone.
+        // allowDigital: the ZXing path can crop-decode, so where the lens zoom
+        // is not drivable (iPhone Safari) it falls back to a digital zoom;
+        // the native detector reads the full frame, so not there.
+        await setupTrack(video, !hasNativeDetector)
         // now push the sensor to full size, on the running track — AFTER the
         // focus / zoom writes above have settled (see setupTrack), and only
         // for a freshly opened stream: a reused one is at full size already
         if (!reused && !cancelled) stream.getVideoTracks()[0]?.applyConstraints(SCAN_HI_RES).catch(() => {})
+
+        // Decoders. The native detector is the better one when it is there
+        // and READY — but on Android its first use can wait on Play Services
+        // bringing the barcode module up, seconds in which nothing decodes.
+        // Give it 800 ms to report ready; otherwise ZXing starts now and the
+        // native loop simply joins in whenever it is ready. First hit wins,
+        // and closing the overlay stops every loop that was started.
+        const nativeReady = startNative(video)
+        const quick = await Promise.race([nativeReady, new Promise<null>(r => setTimeout(() => r(null), 800))])
+        if (quick !== true && !cancelled) await startZxing(video, warm)
       } catch (e) {
         console.error('[scan] camera', e)
         if (!cancelled) setCamErr('เปิดกล้องไม่สำเร็จ — โปรดอนุญาตสิทธิ์กล้องในเบราว์เซอร์ แล้วลองใหม่')

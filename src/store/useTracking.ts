@@ -168,6 +168,12 @@ interface TrackingState {
    *  from an import or an office edit — the only thing that may be printed as
    *  "the time the yard recorded this". */
   updateCell: (vin: string, key: string, value: string, src?: 'scan') => void
+  /** Several cells of ONE row in ONE store write. A station sheet saving six
+   *  readings through updateCell paid six full row-set updates — every screen
+   *  subscribed to `rows` recomputed over the whole yard six times over, and on
+   *  a phone that read as the app freezing after Save. Same per-cell history
+   *  and yard-move rules as updateCell, one set / one IndexedDB put / one push. */
+  updateCells: (vin: string, patch: Record<string, string>, src?: 'scan') => void
   /** Set a cell WITHOUT writing a history line — for system/media cells (e.g. the
    *  per-car "Vin Photo" label shot) whose value may be a huge data-URL that must
    *  never be copied into the row's Event history. */
@@ -906,6 +912,22 @@ export const useTracking = create<TrackingState>()(
         // read the DERIVED status, so a yard move (which sets Pre Gate-in inside
         // applyYardMove) releases the old yard's lot too, not just an explicit
         // Car Status edit
+        if (reannouncedArrival(r, next)) releaseArrivalLots([vin])
+      },
+
+      updateCells: (vin, patch, src) => {
+        const r = get().rows[vin]
+        if (!r) return
+        const keys = Object.keys(patch)
+        if (!keys.length) return
+        const by = useYard.getState().currentUser
+        const cols = get().columns
+        let next: TrackRow = r
+        for (const key of keys) next = applyYardMove(withHistoryEntry(next, key, patch[key], cols, by, src), key, cols, by)
+        next = { ...next, updatedAt: Date.now() }
+        set({ rows: { ...get().rows, [vin]: next } })
+        idbPut(next).catch(() => {})
+        pushRows([next])
         if (reannouncedArrival(r, next)) releaseArrivalLots([vin])
       },
 
