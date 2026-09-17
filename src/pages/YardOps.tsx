@@ -603,6 +603,14 @@ function RecentPanel({ station, accent, onPick }: { station: string; accent: str
 // ข้อความตอนกล้องมีปัญหา — จอดำเฉยๆ โดยไม่บอกอะไรคือสิ่งที่หน้างานเจอ
 const CAM_ERR_OPEN = 'เปิดกล้องไม่สำเร็จ — โปรดอนุญาตสิทธิ์กล้องในเบราว์เซอร์ แล้วลองใหม่'
 const CAM_ERR_NO_IMAGE = 'กล้องยังไม่ส่งภาพมา — อาจมีแอปอื่นใช้กล้องอยู่ ลองปิดแอปกล้อง/LINE แล้วกดลองใหม่'
+// เครื่องร้อนจัด/แอปอื่นแย่งกล้อง ระบบจะ "ดึงกล้องคืน" กลางทาง พรีวิวค้างเป็น
+// ภาพนิ่งหรือดำไปเฉยๆ โดยไม่มี error — ต้องจับให้ได้แล้วบอก ไม่ใช่ปล่อยค้าง
+const CAM_ERR_LOST = 'กล้องหลุดกลางทาง — มักเกิดตอนเครื่องร้อนหรือมีแอปอื่นแย่งกล้อง กดเปิดใหม่ได้เลย'
+// พักกล้องเองเมื่อเปิดค้างไว้เฉยๆ หรือสลับไปแอปอื่น — กล้องที่เปิดค้างคือ
+// ตัวทำให้เครื่องร้อนที่สุด และความร้อนคือต้นเหตุของอาการค้าง/จอดำ
+const CAM_PAUSED = 'พักกล้องไว้เพื่อไม่ให้เครื่องร้อน'
+// เปิดกล้องค้างเฉยๆ นานเท่านี้แล้วยังไม่ได้สแกน = ปล่อยกล้องคืนระบบ
+const CAM_IDLE_MS = 90_000
 
 // keyboard-wedge dedupe: two VinInputs on one screen both hear the burst —
 // only the first may fire it
@@ -633,6 +641,8 @@ function VinInput({
   const [val, setVal] = useState('')
   const [camOpen, setCamOpen] = useState(false)
   const [camErr, setCamErr] = useState('')
+  // พักกล้องเอง (ไม่ใช่ error) — overlay ยังอยู่ แค่ปล่อยกล้องคืนระบบชั่วคราว
+  const [camPaused, setCamPaused] = useState(false)
   // กดปุ่ม "ลองใหม่" = เปิดกล้องรอบใหม่ (cleanup ของรอบเก่าปล่อยกล้องให้เอง)
   const [camTry, setCamTry] = useState(0)
   const ref = useRef<HTMLInputElement>(null)
@@ -729,9 +739,9 @@ function VinInput({
     setDigitalZoom(false); setDz(z0); dzRef.current = z0; opticalRef.current = false
   }
 
-  const openCamera = () => { setCamErr(''); setCamOpen(true) }
-  const retryCamera = () => { setCamErr(''); setCamTry(n => n + 1) }
-  const closeCamera = () => { stopScan(); setCamOpen(false) }
+  const openCamera = () => { setCamErr(''); setCamPaused(false); setCamOpen(true) }
+  const retryCamera = () => { setCamErr(''); setCamPaused(false); setCamTry(n => n + 1) }
+  const closeCamera = () => { stopScan(); setCamPaused(false); setCamOpen(false) }
 
   // Start the scanner whenever the overlay opens. ZXing manages getUserMedia +
   // srcObject + play() + the continuous decode loop internally, which also
@@ -740,11 +750,20 @@ function VinInput({
     if (!camOpen) return
     let cancelled = false
     let watchId: ReturnType<typeof setInterval>
+    let idleId: ReturnType<typeof setTimeout>
+    let vtrack: MediaStreamTrack | null = null
+    // ปิดหูปิดตา event "กล้องหลุด" ก่อนที่ "เรา" จะเป็นคนสั่งหยุดกล้องเอง
+    // (พักกล้อง/สลับแอป) ไม่งั้นจะขึ้นข้อความหลุดทั้งที่เราตั้งใจปิด
+    const hush = () => { if (vtrack) { vtrack.onended = null; vtrack.onmute = null; vtrack.onunmute = null } }
 
-    // ask for a real capture size: the default 640×480 left a windshield QR
-    // only ~40 px wide, below what any decoder can read. 2560 gives iPhones
-    // (which clamp to what the sensor pipeline allows) every pixel available.
-    const VIDEO: MediaTrackConstraints = { facingMode: { ideal: 'environment' }, width: { ideal: 2560 }, height: { ideal: 1440 } }
+    // ขนาดภาพ: ของเดิมขอ 2560×1440 ซึ่งหนักเครื่องที่สุดเท่าที่เคยใช้ —
+    // เซนเซอร์+ชิปภาพ+การวาดพรีวิวเต็มจอทำงานที่ความละเอียดนี้ตลอดเวลาที่กล้อง
+    // เปิด นั่นคือต้นเหตุ "มือถือร้อน" แล้วพอร้อนระบบก็หรี่ความเร็วเครื่อง →
+    // ค้าง/จอดำ. 1920×1080 ยังละเอียดพอเหลือเฟือ (บาร์โค้ด VIN ยาว ๆ ได้ราว
+    // 5 จุดต่อ 1 ขีด — เดิม 6.7 ส่วนเกณฑ์อ่านออกคือ ~2) แต่กินงานแค่ 56%
+    // และ frameRate 15 ตัดงานลงอีกครึ่ง รวมแล้วเบาลงราว 3.5 เท่า
+    // ใช้ ideal ล้วน ๆ ไม่ใส่ max เพื่อไม่ให้เครื่องที่ทำค่านี้ไม่ได้เปิดกล้องไม่ขึ้น
+    const VIDEO: MediaTrackConstraints = { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 15 } }
 
     // zoom + torch, where the hardware offers them. A slight starting zoom
     // (2×, capped) puts far more pixels on the small sticker code.
@@ -788,8 +807,12 @@ function VinInput({
         if (!want.includes('qr_code')) return false
         if (cancelled) return true
         const det = new BD({ formats: want })
+        let lastT = -1
         const iv = setInterval(async () => {
           if (video.readyState < 2) return
+          // เฟรมเดิมถอดซ้ำก็ได้ผลเดิม — ข้ามไป ลดงานเครื่องโดยไม่ช้าลงเลย
+          if (video.currentTime === lastT) return
+          lastT = video.currentTime
           try {
             const codes = await det.detect(video)
             if (codes.length) hit(codes[0].rawValue)
@@ -846,10 +869,13 @@ function VinInput({
       const ctx = canvas.getContext('2d', { willReadFrequently: true })
       let tick = 0
       let busy = false
+      let lastT = -1
       const iv = setInterval(() => {
         if (busy || !ctx || video.readyState < 2) return
+        if (video.currentTime === lastT) return // เฟรมเดิม — ไม่ต้องถอดซ้ำ
         const vw = video.videoWidth, vh = video.videoHeight
         if (!vw || !vh) return
+        lastT = video.currentTime
         // crop factor: with lens zoom the frame is already magnified → a mild
         // 1.6× aim-box crop; without it the slider's digital zoom drives it
         const factor = opticalRef.current ? 1.6 : Math.max(1.6, dzRef.current)
@@ -872,7 +898,11 @@ function VinInput({
           } catch { /* decoder hiccup — next tick */ }
           finally { busy = false }
         })()
-      }, 90)
+        // 90 → 130ms: ทาง ZXing (iPhone) ถอดรหัสด้วย CPU แบบ tryHarder ซึ่งกิน
+        // เวลา 30–80ms ต่อรอบ ที่ 90ms จึงกินซีพียูเกือบเต็มเส้นตลอดเวลา = ร้อน
+        // และหน้าจอกระตุก ที่ 130ms ยังได้ ~7 ครั้ง/วินาที (คนจ่อกล้องนิ่งเป็น
+        // วินาที) แต่เบาลงราว 30% — และเครื่องที่ไม่ร้อนถอดได้เร็วกว่าเครื่องร้อน
+      }, 130)
       controlsRef.current = { stop: () => clearInterval(iv) }
       setupTrack(video, true)
     }
@@ -892,7 +922,9 @@ function VinInput({
       const t0 = Date.now()
       watchId = setInterval(() => {
         if (cancelled) return
-        if (videoRef.current?.videoWidth) { setCamErr(''); clearInterval(watchId); return }
+        // ล้างเฉพาะข้อความ "ยังไม่ส่งภาพ" ของตัวเอง — ถ้าระหว่างนี้กล้องหลุด
+        // กลางทาง ข้อความนั้นต้องไม่ถูกลบทิ้งตอนตัวเฝ้าเลิกงาน
+        if (videoRef.current?.videoWidth) { setCamErr(e => (e === CAM_ERR_NO_IMAGE ? '' : e)); clearInterval(watchId); return }
         if (Date.now() - t0 > 8000) setCamErr(CAM_ERR_NO_IMAGE)
       }, 500)
       try {
@@ -900,13 +932,44 @@ function VinInput({
         if (cancelled) { stream.getTracks().forEach(t => t.stop()); return }
         video.srcObject = stream
         await video.play().catch(() => {})
+        // ระบบยึดกล้องคืนได้ทุกเมื่อ (เครื่องร้อนจัด · แอปกล้อง/LINE เปิดแทรก) —
+        // เดิมไม่มีใครฟัง พรีวิวเลยค้างเป็นภาพนิ่ง/ดำไปเงียบ ๆ ไม่มีทางรู้
+        vtrack = stream.getVideoTracks()[0] ?? null
+        if (vtrack) {
+          vtrack.onended = () => { if (!cancelled) setCamErr(CAM_ERR_LOST) }
+          vtrack.onmute = () => { if (!cancelled) setCamErr(CAM_ERR_LOST) }
+          vtrack.onunmute = () => { if (!cancelled) setCamErr('') } // ได้กล้องคืนเอง
+        }
+        // เปิดค้างไว้เฉย ๆ ไม่ได้สแกน = เผาเครื่องฟรี ๆ → ปล่อยกล้องคืนระบบ
+        // overlay ยังอยู่ที่เดิม แตะปุ่มเดียวสแกนต่อได้ (สแกนติดจะปิดจอเอง
+        // อยู่แล้ว ตัวจับเวลานี้จึงเริ่มนับใหม่ทุกครั้งที่เปิดกล้อง)
+        idleId = setTimeout(() => {
+          if (cancelled) return
+          hush(); stopScan(); setCamPaused(true)
+        }, CAM_IDLE_MS)
         if (!(await startNative(video))) await startZxing(video)
       } catch (e) {
         console.error('[scan] camera', e)
         if (!cancelled) setCamErr(CAM_ERR_OPEN)
       }
     })()
-    return () => { cancelled = true; clearInterval(watchId); stopScan() }
+
+    // สลับไปแอปอื่น / ดับจอทั้งที่หน้ากล้องยังเปิด — Android ปล่อยให้กล้องทำงาน
+    // ต่อในพื้นหลัง เครื่องร้อนอยู่ในกระเป๋าโดยไม่มีใครดู ปล่อยกล้องคืนทันที
+    const release = () => {
+      if (cancelled) return
+      hush(); clearTimeout(idleId); clearInterval(watchId); stopScan(); setCamPaused(true)
+    }
+    const onVis = () => { if (document.visibilityState === 'hidden') release() }
+    document.addEventListener('visibilitychange', onVis)
+    window.addEventListener('pagehide', release)
+
+    return () => {
+      cancelled = true
+      document.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('pagehide', release)
+      clearInterval(watchId); clearTimeout(idleId); hush(); stopScan()
+    }
   }, [camOpen, camTry]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
@@ -947,7 +1010,21 @@ function VinInput({
                 <div className="absolute inset-0 border border-white/10 rounded" />
               </div>
             </div>
-            {camErr && (
+            {/* พักกล้องเอง — ไม่ใช่ความผิดพลาด จึงไม่ใช้สีแดง และให้ปุ่มเต็ม ๆ
+                กดง่ายด้วยมือเดียวกลางจอ */}
+            {camPaused && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-8 text-center"
+                style={{ background: 'rgba(0,0,0,0.75)' }}>
+                <span className="text-white text-[15px] font-bold">{CAM_PAUSED}</span>
+                <span className="text-[12.5px]" style={{ color: '#d4d4d8' }}>กล้องถูกปล่อยคืนเครื่องแล้ว แตะเพื่อสแกนต่อ</span>
+                <button onClick={retryCamera}
+                  className="mt-1 px-8 py-3 rounded-2xl text-[15px] font-bold"
+                  style={{ background: accent, color: '#fff' }}>
+                  แตะเพื่อสแกนต่อ
+                </button>
+              </div>
+            )}
+            {camErr && !camPaused && (
               <div className="absolute bottom-8 left-4 right-4 text-center text-[13px] py-2 px-4 rounded-xl" style={{ background: 'rgba(0,0,0,0.7)', color: '#fca5a5' }}>
                 {camErr}
                 <button onClick={retryCamera}
