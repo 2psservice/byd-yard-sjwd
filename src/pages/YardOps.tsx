@@ -625,6 +625,42 @@ const CAM_MAX_AUTO_TRY = 3
 let lastCamStopAt = 0
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
+// ── "ปิด" = จอดกล้องไว้สั้นๆ · "เปิด" = หยิบกลับมาใช้ทันที ────────────────────
+// หน้างานปิด-เปิดกล้องซ้ำทั้งวัน (สแกนติด → ปิดเอง → เปิดคันถัดไป) ทุกรอบที่
+// ต้องไปขอกล้องจากระบบใหม่คือ ช้า + เสี่ยงชนช่วงที่ระบบยังปล่อยรอบก่อนไม่เสร็จ
+// (= จอดำ) ทางเดียวที่ตัดทั้งสองอย่างพร้อมกันคือ "ไม่ปล่อยเลย" ในช่วงสั้นๆ:
+// ปิดแล้วเก็บสตรีมเดิมไว้ 8 วิ เปิดใหม่ในช่วงนี้ = ต่อสตรีมเดิมเข้า <video> ทันที
+// ไม่มีคำขอกล้อง ไม่มีการปล่อย ไม่มีอะไรให้ชน · พ้น 8 วิ ค่อยปล่อยจริง (ไม่ให้
+// เครื่องร้อนเปล่าๆ) และปล่อยทันทีถ้าสลับไปแอปอื่น — ต่างจาก pre-warm รุ่นก่อน
+// ที่เปิดกล้องตั้งแต่เข้าหน้า: อันนี้ไม่แตะกล้องเลยจนกว่าจะกดปุ่มครั้งแรก
+const CAM_PARK_MS = 8_000
+let parkedCam: { stream: MediaStream; timer: ReturnType<typeof setTimeout> } | null = null
+const releaseParkedCam = () => {
+  if (!parkedCam) return
+  clearTimeout(parkedCam.timer)
+  parkedCam.stream.getTracks().forEach(t => t.stop())
+  parkedCam = null
+  lastCamStopAt = Date.now()
+}
+const parkCam = (stream: MediaStream) => {
+  releaseParkedCam()
+  parkedCam = { stream, timer: setTimeout(releaseParkedCam, CAM_PARK_MS) }
+}
+// หยิบกล้องที่จอดไว้ — ถ้าระหว่างจอดมันตายไปแล้ว (ระบบยึดคืน) ก็ทิ้งแล้วไปขอใหม่
+const takeParkedCam = (): MediaStream | null => {
+  if (!parkedCam) return null
+  const { stream, timer } = parkedCam
+  clearTimeout(timer); parkedCam = null
+  const t = stream.getVideoTracks()[0]
+  // ตายไปแล้ว = ระบบปล่อยฮาร์ดแวร์ไปแล้วตั้งแต่ตอนนั้น ไม่ต้องนับเป็น "เพิ่งปล่อย"
+  if (!t || t.readyState !== 'live') { stream.getTracks().forEach(x => x.stop()); return null }
+  return stream
+}
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') releaseParkedCam() })
+  window.addEventListener('pagehide', releaseParkedCam)
+}
+
 // keyboard-wedge dedupe: two VinInputs on one screen both hear the burst —
 // only the first may fire it
 let lastWedgeAt = 0
@@ -737,17 +773,22 @@ function VinInput({
     return () => document.removeEventListener('keydown', onKey, true)
   }, [])
 
-  // Fully release the camera: stop ZXing's decode loop AND every media track,
-  // then detach from the <video> so the OS camera indicator turns off.
-  const stopScan = () => {
+  // Stop the decode loop and detach from the <video>. `park` keeps the stream
+  // alive for a few seconds so the next open is instant; otherwise every
+  // track is stopped for real (OS camera indicator turns off).
+  const stopScan = (park = false) => {
     try { controlsRef.current?.stop() } catch { /* already stopped */ }
     controlsRef.current = null
     const v = videoRef.current
     const s = v?.srcObject as MediaStream | null
-    const tracks = s?.getTracks() ?? []
-    tracks.forEach(t => t.stop())
-    // จำเวลาที่ปล่อยกล้องไว้ — รอบเปิดถัดไปจะเว้นระยะให้ระบบเก็บกวาดให้เสร็จก่อน
-    if (tracks.length) lastCamStopAt = Date.now()
+    if (s) {
+      if (park) parkCam(s)
+      else {
+        s.getTracks().forEach(t => t.stop())
+        // จำเวลาที่ปล่อยกล้องไว้ — รอบเปิดถัดไปจะเว้นระยะให้ระบบเก็บกวาดให้เสร็จก่อน
+        lastCamStopAt = Date.now()
+      }
+    }
     if (v) v.srcObject = null
     trackRef.current = null
     setZoomCap(null); setZoom(1); setTorchCap(false); setTorchOn(false)
@@ -767,7 +808,9 @@ function VinInput({
   // ยิง ended/mute ตอน track.stop() ด้วย ถ้าไม่ปิดไว้จะขึ้นข้อความหลุดหลอกๆ
   // ทุกครั้งที่สแกนติด (สแกนติด = ปิดหน้ากล้องเอง)
   const hushRef = useRef<() => void>(() => {})
-  const closeCamera = () => { hushRef.current(); stopScan(); setCamPaused(false); setCamOpen(false) }
+  // ปิดโดยคน/โดยสแกนติด → จอดไว้ (เปิดคันถัดไปได้ทันที) — ส่วนการปิดเพราะกล้อง
+  // มีปัญหา (ลองใหม่/พัก/สลับแอป) ยังปล่อยจริงเหมือนเดิม
+  const closeCamera = () => { hushRef.current(); stopScan(true); setCamPaused(false); setCamOpen(false) }
 
   // Start the scanner whenever the overlay opens. ZXing manages getUserMedia +
   // srcObject + play() + the continuous decode loop internally, which also
@@ -976,7 +1019,10 @@ function VinInput({
         if (Date.now() - t0 > 8000) setCamErr(CAM_ERR_NO_IMAGE)
       }, 500)
       try {
-        const stream = await openStream()
+        // มีกล้องจอดอยู่ (เพิ่งปิดไปไม่ถึง 8 วิ) → ใช้เลย ไม่ต้องขอ ไม่ต้องรอ
+        const parked = takeParkedCam()
+        if (parked) console.info('[scan] ใช้กล้องที่จอดไว้ — ไม่ต้องขอใหม่')
+        const stream = parked ?? await openStream()
         if (cancelled) { stream.getTracks().forEach(t => t.stop()); lastCamStopAt = Date.now(); return }
         video.srcObject = stream
         await video.play().catch(() => {})
