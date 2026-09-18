@@ -83,3 +83,26 @@ export function rowsForSite(all: TrackRow[], currentSite: string | null, sites: 
   if (!currentSite) return all
   return all.filter((r) => siteWorksWith(r, currentSite, sites))
 }
+
+/** A grouping run's "Delivery Location" sometimes names one of THIS app's own
+ *  yards rather than a real external dealer — BYD writes it as e.g. "VEHICLE
+ *  60Rai" for a car whose next stop is the 60 Rai yard, not a customer. Used
+ *  to auto-transfer a car straight into Pre Gate-in at that yard the moment
+ *  it truly gates out (see App.tsx's reconciliation sweep), instead of
+ *  someone having to notice and re-import a Vin List Inventory sheet by hand.
+ *
+ *  Matches by substring so "VEHICLE 60Rai" / "TO 60 RAI" / etc. all hit the
+ *  Site named "60 Rai" — a real dealer name is exceedingly unlikely to
+ *  contain one of the app's own yard names. Site keys under 4 characters are
+ *  skipped: a short code ("A5") would false-positive inside an ordinary
+ *  dealer name. */
+// stricter than the file's own `norm` (which only COLLAPSES whitespace, for
+// exact-match comparisons elsewhere here) — this one strips it out entirely,
+// so "60 Rai" and "60Rai" compare equal regardless of how either side spaced it
+const stripAll = (s: string) => s.trim().toLowerCase().replace(/[\s._\-#]/g, '')
+
+export function deliveryDestinationSite(deliveryLocation: string, sites: Site[]): Site | undefined {
+  const dl = stripAll(deliveryLocation)
+  if (!dl) return undefined
+  return sites.find((s) => [s.name, s.code].filter(Boolean).map((x) => stripAll(x as string)).some((k) => k.length >= 4 && dl.includes(k)))
+}
