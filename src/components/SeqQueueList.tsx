@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { ListChecks, ChevronLeft, Clock } from 'lucide-react'
 import { seqStageOf, seqCarGone } from '../store/useOps'
-import { yardLocCode, byYardLocation } from '../lib/groupingImport'
+import { yardLocCode, yardLocFull, byYardLocation } from '../lib/groupingImport'
 import type { WorkQueue, QueueItem } from '../store/useOps'
 import type { Unit } from '../types'
 import type { TrackRow } from '../lib/excelTracking'
@@ -56,7 +56,12 @@ export function SeqQueuePicker({ queues, units, trackingRows, queuedLabel }: {
         // its cell stamped — fall back to the queue item's own group so the
         // number isn't blank on a car that's actually in this run (see YardOps.tsx rowGroup)
         grouping: row?.cells['Grouping  Number'] || i.group || '—',
-        location: yardLocCode(u) || '—',
+        // ตำแหน่งเต็ม บล็อก + ช่อง + คันที่ ("A0206" = บล็อก A ช่อง 02 คันที่ 6)
+        // เดิมโชว์แค่ บล็อก+ช่อง ("A02") คนขับรู้แค่ว่าอยู่ช่องไหน แต่ไม่รู้ว่า
+        // คันที่เท่าไหร่ในช่องนั้น ต้องไปไล่นับเอาหน้างาน — และการ์ด "เรียกรถทั้ง
+        // DN" บนหน้าจอเดียวกันโชว์เลขเต็มอยู่แล้ว (YardOps GateOutView) สองที่
+        // จึงเคยแสดงตำแหน่งคนละแบบ · ถ้ารถยังไม่มีเลขคันที่ ค่อยถอยไปใช้แบบเดิม
+        location: yardLocFull(u) || yardLocCode(u) || '—',
         lane: i.laneLoad ?? '—',
         stage: gone ? 'gateout' : seqStageOf(i),
         done: gone || i.done,
