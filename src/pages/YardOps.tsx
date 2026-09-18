@@ -1237,6 +1237,10 @@ function VinInput({
           )}
           <div className="px-4 pt-2 pb-1 text-center text-white/60 text-[13px] shrink-0">
             {camHint}{zoomCap || digitalZoom ? ' · เลื่อนซูมถ้าโค้ดเล็ก' : ''}
+            {/* build stamp ตรงนี้เพราะหน้ากล้องคือจอที่หน้างานถ่ายส่งมาเสมอ —
+                จะได้รู้ทันทีจากรูปว่าเครื่องนั้นรันโค้ดรอบไหน (เคยไล่แก้ 8 รอบ
+                ทั้งที่เครื่องหน้างานยังค้างอยู่ที่บิลด์เก่าเพราะอัปเดตไม่เข้า) */}
+            <div className="text-[10px] font-mono text-white/30 mt-0.5">build {__BUILD__}</div>
           </div>
           {/* thumb-reach close bar — one tap to leave, no stretching to the top */}
           <div className="px-4 pt-1 shrink-0" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 12px)' }}>

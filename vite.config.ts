@@ -4,8 +4,17 @@ import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
-  // build stamp shown in the UI so stale service-worker builds are identifiable
-  define: { __BUILD__: JSON.stringify(new Date().toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })) },
+  // build stamp shown in the UI so stale service-worker builds are identifiable.
+  // Bangkok time (CI runs in UTC — a stamp 7 h off the wall clock the yard sees
+  // is useless for "which build is this phone on") + short commit SHA when CI
+  // provides one, so a screenshot maps straight to a PR.
+  define: {
+    __BUILD__: JSON.stringify((() => {
+      const t = new Date().toLocaleString('en-GB', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
+      const sha = (process.env.GITHUB_SHA ?? '').slice(0, 7)
+      return sha ? `${t} · ${sha}` : t
+    })()),
+  },
   plugins: [
     react(),
     tailwindcss(),
