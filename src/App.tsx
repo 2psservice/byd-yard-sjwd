@@ -12,6 +12,7 @@ import { startSyncBus, stopSyncBus } from './lib/syncBus'
 import { startKeyboardGuard } from './lib/keyboardGuard'
 import { deriveCarStatus } from './lib/carStatus'
 import { yardLocCode, LAST_LOCATION_KEY } from './lib/groupingImport'
+import { deliveryDestinationSite, siteIdForLocation } from './lib/siteScope'
 import { matchModel } from './lib/sampleData'
 import { isPhone } from './lib/device'
 import { Dashboard } from './pages/Dashboard'
@@ -204,6 +205,30 @@ export default function App() {
         useYard.getState().markDepartedMany(gone)
       }
 
+      // ── auto-transfer: Gate-out to a destination that IS one of our own
+      // yards → file it as Pre Gate-in there, automatically ────────────────
+      // A grouping run's "Delivery Location" sometimes names another yard
+      // this app runs (e.g. "VEHICLE 60Rai") rather than a real dealer — the
+      // car isn't being sold, it's being moved yard-to-yard. The moment such
+      // a car's status truly derives Gate-out, file its current visit away
+      // and start the next one at the destination — reusing the SAME "รอบที่"
+      // round-closing the manual "re-import a sheet, the car came back" path
+      // already uses (see tripHistory.ts / startNewTrip), so this visit's
+      // Walk Around damages travel with the car (moveUnitsToSite never
+      // touches Unit.damages) and this visit's own history is filed, not lost.
+      {
+        const sites = useYard.getState().sites
+        for (const vin in rows) {
+          const r = rows[vin]
+          const dest = deliveryDestinationSite(r.cells['Dealer Location'] || '', sites)
+          if (!dest) continue
+          const curSite = r.site ?? siteIdForLocation(r.cells, sites)
+          if (dest.id === curSite) continue // already there — a real dealer that happens to share a yard's name, or already transferred
+          if (deriveCarStatus(r.cells) !== 'Gate-out') continue // hasn't actually left yet
+          useTracking.getState().startNewTrip(vin, { yard: dest.name })
+        }
+      }
+
       // ── model heal: the sheet's รุ่น is the truth — a unit created from an
       // older file keeps a stale class forever (a SEAL 5 painted "SEAL" on the
       // yard plan). Re-derive the class from the row's model text and fix any
@@ -232,6 +257,9 @@ export default function App() {
     }
     const t = setTimeout(sweep, 9000) // let the boot loads settle first
     const iv = setInterval(sweep, 60_000)
+    // dev-only: let automated tests trigger this sweep on demand instead of
+    // waiting on real timers (same pattern as the __yard/__ops/__tracking hooks)
+    if (import.meta.env.DEV) (window as unknown as { __sweepNow?: () => void }).__sweepNow = sweep
     return () => { clearTimeout(t); clearInterval(iv) }
   }, [loggedInUserId])
 
