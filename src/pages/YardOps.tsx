@@ -850,6 +850,8 @@ function VinInput({
     let idleId: ReturnType<typeof setTimeout>
     let frameId: ReturnType<typeof setInterval>
     let vtrack: MediaStreamTrack | null = null
+    // ตัวฟัง "ภาพมาแล้ว" บน <video> — เก็บไว้ถอดออกตอน cleanup
+    let frameListener: { el: HTMLVideoElement; fn: () => void } | null = null
     // ปิดหูปิดตา event "กล้องหลุด" ก่อนที่ "เรา" จะเป็นคนสั่งหยุดกล้องเอง
     // (พักกล้อง/สลับแอป) ไม่งั้นจะขึ้นข้อความหลุดทั้งที่เราตั้งใจปิด
     const hush = () => { if (vtrack) { vtrack.onended = null; vtrack.onmute = null; vtrack.onunmute = null } }
@@ -1047,11 +1049,26 @@ function VinInput({
       // นับจากตอนพนักงานกดปุ่ม ไม่ใช่นับใหม่ทุกรอบที่ระบบลองเปิดเอง — คนกดปุ่ม
       // ต้องได้คำตอบภายใน 8 วิเสมอ ไม่ว่าเบื้องหลังจะลองไปกี่รอบ
       const t0 = camAskedAtRef.current || Date.now()
+      // เดิมรู้ว่า "ภาพมาแล้ว" จากการโพลทุก 300–500ms เท่านั้น — เท่ากับ
+      // บวกเวลารอเปล่าๆ เข้าไปอีกสูงสุดรอบละเท่านั้น ทั้งที่ตัว <video> เอง
+      // "รู้" ทันทีที่มีเฟรมจริง (ยิง loadedmetadata/resize) ฟังตรงนี้แทน
+      // ให้ตัดจบทันทีที่ภาพมาถึง ไม่ต้องรอรอบโพลถัดไป — ลดเวลาจอดำที่ไม่จำเป็น
+      // ไปได้อีกชั้นหนึ่ง (คนละเรื่องกับความช้าจากฮาร์ดแวร์เอง ซึ่งแก้ตรงนี้
+      // ไม่ได้ แต่ก็ไม่ควรบวกความช้าของ "การตรวจจับ" เข้าไปทับอีก)
+      const frameSeen = () => {
+        if (cancelled || !videoRef.current?.videoWidth) return
+        setCamErr(e => (e === CAM_ERR_NO_IMAGE ? '' : e))
+        clearInterval(watchId); clearInterval(frameId)
+      }
+      video.addEventListener('loadedmetadata', frameSeen)
+      video.addEventListener('resize', frameSeen)
+      frameListener = { el: video, fn: frameSeen }
       watchId = setInterval(() => {
         if (cancelled) return
         // ล้างเฉพาะข้อความ "ยังไม่ส่งภาพ" ของตัวเอง — ถ้าระหว่างนี้กล้องหลุด
         // กลางทาง ข้อความนั้นต้องไม่ถูกลบทิ้งตอนตัวเฝ้าเลิกงาน
-        if (videoRef.current?.videoWidth) { setCamErr(e => (e === CAM_ERR_NO_IMAGE ? '' : e)); clearInterval(watchId); return }
+        frameSeen()
+        if (videoRef.current?.videoWidth) return
         if (Date.now() - t0 > 8000) setCamErr(CAM_ERR_NO_IMAGE)
       }, 500)
       try {
@@ -1068,7 +1085,8 @@ function VinInput({
         const tFrame = Date.now() // นับจากตอน "ได้กล้องมาแล้ว" ไม่ใช่ตอนเริ่มขอ
         frameId = setInterval(() => {
           if (cancelled) return
-          if (videoRef.current?.videoWidth) { clearInterval(frameId); return }
+          frameSeen()
+          if (videoRef.current?.videoWidth) return
           if (Date.now() - tFrame < 2200 || autoTryRef.current >= CAM_MAX_AUTO_TRY) return
           autoTryRef.current++
           clearInterval(frameId); clearInterval(watchId); clearTimeout(idleId)
@@ -1112,6 +1130,10 @@ function VinInput({
       cancelled = true
       document.removeEventListener('visibilitychange', onVis)
       window.removeEventListener('pagehide', release)
+      if (frameListener) {
+        frameListener.el.removeEventListener('loadedmetadata', frameListener.fn)
+        frameListener.el.removeEventListener('resize', frameListener.fn)
+      }
       clearInterval(watchId); clearInterval(frameId); clearTimeout(idleId); hush(); stopScan()
     }
   }, [camOpen, camTry]) // eslint-disable-line react-hooks/exhaustive-deps
