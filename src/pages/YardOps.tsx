@@ -634,16 +634,37 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 // เครื่องร้อนเปล่าๆ) และปล่อยทันทีถ้าสลับไปแอปอื่น — ต่างจาก pre-warm รุ่นก่อน
 // ที่เปิดกล้องตั้งแต่เข้าหน้า: อันนี้ไม่แตะกล้องเลยจนกว่าจะกดปุ่มครั้งแรก
 const CAM_PARK_MS = 8_000
+// สตรีมที่จอดไว้ต้อง "มีภาพไหลตลอด" ผ่าน <video> ที่มองไม่เห็น — ถ้าปล่อยลอย
+// ไม่มีใครแสดงผลเลย มือถือหลายรุ่น (โดยเฉพาะ Android บางเครื่อง) จะหยุดส่งเฟรม
+// ให้เพื่อประหยัดพลังงาน ทั้งที่ track ยังรายงานว่า "live" อยู่ พอเอากลับมาแสดง
+// ผลจะเป็นจอดำพักหนึ่งเหมือนกำลังรอกล้องใหม่ — พอๆ กับไม่ได้จอดกล้องไว้เลย
+// (นี่คือสาเหตุที่คาดว่าทำให้ "กดเปิดกล้องแล้วจอดำเหมือนรอ" เกิดขึ้นทุกครั้ง)
+let keepAliveVideo: HTMLVideoElement | null = null
+const getKeepAliveVideo = (): HTMLVideoElement | null => {
+  if (typeof document === 'undefined') return null
+  if (keepAliveVideo) return keepAliveVideo
+  const v = document.createElement('video')
+  v.muted = true
+  v.playsInline = true
+  v.setAttribute('aria-hidden', 'true')
+  v.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none'
+  document.body.appendChild(v)
+  keepAliveVideo = v
+  return v
+}
 let parkedCam: { stream: MediaStream; timer: ReturnType<typeof setTimeout> } | null = null
 const releaseParkedCam = () => {
   if (!parkedCam) return
   clearTimeout(parkedCam.timer)
   parkedCam.stream.getTracks().forEach(t => t.stop())
+  if (keepAliveVideo) keepAliveVideo.srcObject = null
   parkedCam = null
   lastCamStopAt = Date.now()
 }
 const parkCam = (stream: MediaStream) => {
   releaseParkedCam()
+  const kv = getKeepAliveVideo()
+  if (kv) { kv.srcObject = stream; kv.play().catch(() => {}) }
   parkedCam = { stream, timer: setTimeout(releaseParkedCam, CAM_PARK_MS) }
 }
 // หยิบกล้องที่จอดไว้ — ถ้าระหว่างจอดมันตายไปแล้ว (ระบบยึดคืน) ก็ทิ้งแล้วไปขอใหม่
@@ -651,6 +672,7 @@ const takeParkedCam = (): MediaStream | null => {
   if (!parkedCam) return null
   const { stream, timer } = parkedCam
   clearTimeout(timer); parkedCam = null
+  if (keepAliveVideo) keepAliveVideo.srcObject = null
   const t = stream.getVideoTracks()[0]
   // ตายไปแล้ว = ระบบปล่อยฮาร์ดแวร์ไปแล้วตั้งแต่ตอนนั้น ไม่ต้องนับเป็น "เพิ่งปล่อย"
   if (!t || t.readyState !== 'live') { stream.getTracks().forEach(x => x.stop()); return null }
@@ -832,9 +854,17 @@ function VinInput({
     // เปิด นั่นคือต้นเหตุ "มือถือร้อน" แล้วพอร้อนระบบก็หรี่ความเร็วเครื่อง →
     // ค้าง/จอดำ. 1920×1080 ยังละเอียดพอเหลือเฟือ (บาร์โค้ด VIN ยาว ๆ ได้ราว
     // 5 จุดต่อ 1 ขีด — เดิม 6.7 ส่วนเกณฑ์อ่านออกคือ ~2) แต่กินงานแค่ 56%
-    // และ frameRate 15 ตัดงานลงอีกครึ่ง รวมแล้วเบาลงราว 3.5 เท่า
     // ใช้ ideal ล้วน ๆ ไม่ใส่ max เพื่อไม่ให้เครื่องที่ทำค่านี้ไม่ได้เปิดกล้องไม่ขึ้น
-    const VIDEO: MediaTrackConstraints = { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 15 } }
+    //
+    // เดิมเคยใส่ frameRate: { ideal: 15 } เพิ่มด้วย (ตัดงานลงอีกครึ่ง) แต่ "ตัด
+    // ออกแล้ว" ในรอบนี้: หน้างานแจ้งว่าหลังใส่ frameRate เข้าไป "ทุกครั้ง" ที่
+    // กดเปิดกล้องจะดำเหมือนรอกล้องอยู่พักหนึ่ง — ตรงกับที่กล้องหลายรุ่นมีโหมด
+    // สตรีมมิ่งเป็นชุดคู่ความละเอียด+เฟรมเรตตายตัว (ไม่ใช่ปรับผสมกันได้อิสระ)
+    // การขอ "1920×1080 ที่ 15fps" จึงอาจไม่ตรงกับโหมดที่กล้องมีอยู่แล้ว ตัวขับ
+    // กล้องต้องหาโหมดใหม่/สลับโหมด ซึ่งช้ากว่าการใช้โหมดเริ่มต้นของเซนเซอร์มาก —
+    // ตัวถอดรหัสเราจำกัดจังหวะถอดเองอยู่แล้ว (120/130ms ต่อรอบ) ไม่ว่ากล้องจะส่ง
+    // เฟรมมาถี่แค่ไหน จึงไม่ได้อาศัย frameRate ของกล้องเพื่อลดภาระถอดรหัสจริงๆ
+    const VIDEO: MediaTrackConstraints = { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }
 
     // ขอกล้องแบบ "ให้ติดจริง": เว้นระยะให้ระบบปล่อยกล้องรอบก่อนให้เสร็จ แล้วถ้า
     // ยังถูกปฏิเสธ (NotReadableError = เครื่องยังยึดกล้องอยู่ / ขอค่าที่ทำไม่ได้)
