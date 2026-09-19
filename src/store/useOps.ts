@@ -788,8 +788,12 @@ export const useOps = create<OpsState>()(
           .map((it) => ({ vin: it.vin, addedAt: now, done: false, laneLoad: it.laneLoad, dest: it.dest, group: it.group, remark: it.remark }))
         const existing = get().queues.find((q) => (q.name ?? '').toLowerCase() === n.toLowerCase())
         if (existing) {
-          // re-uploading the same sequence: replace its items, keep the id
-          set((s) => ({ queues: s.queues.map((q) => (q.id === existing.id ? { ...q, kind: 'sequence', items: rows, createdBy: by, createdAt: now } : q)) }))
+          // re-uploading the same sequence: replace its items, keep the id.
+          // Clear any leftover `type` too — a name collision with an old
+          // arrival lot (same shipment, uploaded once as Pre Gate-in and
+          // once as Grouping to Dealer) must not leave this delivery run
+          // still reading as a GATEIN lot on the Dashboard (see isPreGateInQueue).
+          set((s) => ({ queues: s.queues.map((q) => (q.id === existing.id ? { ...q, kind: 'sequence', type: undefined, items: rows, createdBy: by, createdAt: now } : q)) }))
           pushQueue(get, existing.id)
           return existing.id
         }
@@ -1375,8 +1379,19 @@ export const stageOf = (item: QueueItem): QueueStage => item.stage ?? 'queued'
  * as an arrival lot and vanished from the board and from every phone at the
  * gate. The name is a label; the type is what the lot IS. Lots created before
  * the type existed still resolve by name through queueTypeOf.
+ *
+ * A sequence (delivery-out) queue is excluded even if `type` reads 'GATEIN' —
+ * createSequence() re-uses an existing queue's id when a re-uploaded "Grouping
+ * to Dealer" sheet has the SAME NAME as an old arrival lot (so a re-import
+ * doesn't fork into a duplicate), and that merge only touches `kind`/`items`,
+ * never clearing a leftover `type`. The result is a queue that is now
+ * genuinely a delivery run (`kind: 'sequence'`) but still carries the old
+ * lot's stale `type: 'GATEIN'` — and used to keep showing on the Dashboard's
+ * Pre Gate-in card forever, "461/503" and all, for a yard that was never
+ * waiting on those cars to arrive. `kind` says what the queue IS NOW; a
+ * leftover `type` from before the merge never gets the final say.
  */
-export const isPreGateInQueue = (q: WorkQueue): boolean => queueTypeOf(q) === 'GATEIN'
+export const isPreGateInQueue = (q: WorkQueue): boolean => !isSequenceQueue(q) && queueTypeOf(q) === 'GATEIN'
 
 export const isSequenceQueue = (q: WorkQueue): boolean =>
   q.kind === 'sequence' || q.items.some((i) => i.laneLoad != null || i.dest != null)
