@@ -5,8 +5,9 @@ import { useYard, useUnits, useBlocks } from '../store/useYard'
 import { useTrackingRows, useTracking } from '../store/useTracking'
 import { makeT } from '../i18n'
 import { ZONE_COLOR } from '../lib/sampleData'
-import { deriveCarStatus, CAR_STATUS_META, CAR_STATUS_ORDER, PARKED_STATUSES, isWaitingRepair } from '../lib/carStatus'
+import { deriveCarStatus, CAR_STATUS_META, CAR_STATUS_ORDER, PARKED_STATUSES, isWaitingRepair, departedFromSite } from '../lib/carStatus'
 import { rowsForSite } from '../lib/siteScope'
+import type { TrackRow } from '../lib/excelTracking'
 import { pct, pos, timeAgo } from '../lib/format'
 import { defectLabel } from '../lib/damageLabel'
 import { useOps, isPreGateInQueue, isQueueComplete, queueProgress, gateInArrived } from '../store/useOps'
@@ -194,9 +195,10 @@ export function Dashboard() {
   const s = useMemo(() => {
     // ── real imported data (tracking rows) — driven by Car Status ──
     if (fromTracking) {
-      let inYard = 0, parked = 0, gatein = 0, expected = 0, preGateOut = 0, gateOut = 0, preload = 0, damaged = 0
+      let inYard = 0, parked = 0, gatein = 0, expected = 0, preGateOut = 0, preload = 0, damaged = 0
       const byStatus = new Map<string, number>()
       const byModel = new Map<string, number>()
+      const liveGateOutRows: TrackRow[] = []
       for (const r of trackingRows) {
         const cs = deriveCarStatus(r.cells)
         byStatus.set(cs, (byStatus.get(cs) ?? 0) + 1)
@@ -204,7 +206,7 @@ export function Dashboard() {
         byModel.set(mod, (byModel.get(mod) ?? 0) + 1)
         if (cs === 'Pre Gate-in') expected++
         else if (cs === 'Pre Gate-out') preGateOut++   // ops-scan gate-out, awaiting 09:30 flush
-        else if (cs === 'Gate-out') gateOut++          // actually departed — the yard-to-yard sweep also lands here briefly before it re-files as Pre Gate-in elsewhere
+        else if (cs === 'Gate-out') liveGateOutRows.push(r) // actually departed, still reading Gate-out live (dealer-bound, or the brief moment before a yard-to-yard car re-files)
         else if (cs === 'Preload') preload++            // confirmed still on-site in preload lane
         else {                   // actively in the yard
           inYard++
@@ -215,9 +217,20 @@ export function Dashboard() {
           if (isWaitingRepair(r.cells)) damaged++
         }
       }
+      // yard-to-yard departures never sit at live 'Gate-out' long enough to be
+      // caught above — the SAME gate-out action re-files the row as Pre
+      // Gate-in at the destination, so its `site` has already moved off this
+      // yard's board too (rowsForSite would filter it out). Scanned separately
+      // by its GATE_OUT_ORIGIN_* marker across every row this device knows, so
+      // this yard's own gate-out scans still count even after the car moves on.
+      const seen = new Set(liveGateOutRows.map((r) => r.vin))
+      const transferredOutRows = currentSite
+        ? allTrackingRows.filter((r) => !seen.has(r.vin) && departedFromSite(r.cells, currentSite))
+        : []
+      const gateOutRows = [...liveGateOutRows, ...transferredOutRows]
       const mix = [...byModel.entries()].map(([m, n]) => ({ m, n })).sort((a, b) => b.n - a.n).slice(0, 8)
       const statusBreakdown = CAR_STATUS_ORDER.map((st) => ({ st, n: byStatus.get(st) ?? 0 })).filter((x) => x.n > 0)
-      return { total: trackingRows.length, inYard, parked, gatein, expected, preGateOut, gateOut, preload, damaged, occupied: parked, cap: inYard, mix, byZone: [] as [string, { used: number; cap: number }][], statusBreakdown }
+      return { total: trackingRows.length, inYard, parked, gatein, expected, preGateOut, gateOut: gateOutRows.length, gateOutRows, preload, damaged, occupied: parked, cap: inYard, mix, byZone: [] as [string, { used: number; cap: number }][], statusBreakdown }
     }
 
     // ── sample / operational fallback ──
@@ -247,6 +260,7 @@ export function Dashboard() {
       expected: units.filter((u) => u.status === 'EXPECTED').length,
       preGateOut: 0,
       gateOut: units.filter((u) => u.status === 'DEPARTED').length,
+      gateOutRows: [] as TrackRow[],
       preload: units.filter((u) => u.status === 'LOADED').length,
       damaged: units.filter((u) => u.damages.length > 0).length,
       occupied: occupied.length,
@@ -363,6 +377,20 @@ export function Dashboard() {
 
   const openPopup = (label: string, accent: string, filter: (u: Unit) => boolean) =>
     setPopup({ label, accent, units: units.filter(filter) })
+  // Gate-out's own popup, never the Unit List: a yard-to-yard departure's row
+  // has already moved to the destination site's Unit List (see gateOutRows
+  // above) — jumping to THIS site's Units page, like every other card does,
+  // would show fewer cars than the number just clicked. Built from the exact
+  // same rows the count itself uses, so the two can never disagree.
+  const rowToUnit = (r: TrackRow): Unit => ({
+    vin: r.vin, model: '', modelName: (r.cells['Model name'] || r.cells['Model'] || '—').trim() || '—',
+    color: (r.cells['Color'] || '').trim(), trailer: 0, status: 'DEPARTED', damages: [],
+    importedAt: r.updatedAt ?? Date.now(),
+  })
+  const openGateOutPopup = () => setPopup({
+    label: 'Gate-out', accent: '#64748b',
+    units: fromTracking ? s.gateOutRows.map(rowToUnit) : units.filter((u) => u.status === 'DEPARTED'),
+  })
   // imported data is row-based (not Unit) → jump to the Unit List, pre-filtered by
   // the card's preset (setView clears it first, so we set it right after)
   const kpiClick = (label: string, accent: string, filter: (u: Unit) => boolean, preset: string) =>
@@ -408,7 +436,7 @@ export function Dashboard() {
           onClick={kpiClick('Pre Gate-out', '#f59e0b', () => false, 'preGateOut')} />
         <Stat label="Gate-out" value={<Num n={s.gateOut} />} accent="#64748b" icon={<LogOut size={17} />}
           sub={lang === 'th' ? 'ออกจากลานแล้ว' : 'departed'} image="/car-top.png" imageVariant="top"
-          onClick={kpiClick('Gate-out', '#64748b', u => u.status === 'DEPARTED', 'gateOut')} />
+          onClick={openGateOutPopup} />
         <Stat label="Preload" value={<Num n={s.preload} />} accent="#0d9488" icon={<Truck size={17} />}
           sub={lang === 'th' ? 'จอดรอรถมารับ' : 'in preload'} image="/side.png" imageVariant="side"
           onClick={kpiClick('Preload', '#0d9488', u => u.status === 'LOADED', 'preload')} />
