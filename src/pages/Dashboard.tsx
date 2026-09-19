@@ -5,8 +5,8 @@ import { useYard, useUnits, useBlocks } from '../store/useYard'
 import { useTrackingRows, useTracking } from '../store/useTracking'
 import { makeT } from '../i18n'
 import { ZONE_COLOR } from '../lib/sampleData'
-import { deriveCarStatus, CAR_STATUS_META, CAR_STATUS_ORDER, PARKED_STATUSES, isWaitingRepair, departedFromSite } from '../lib/carStatus'
-import { rowsForSite } from '../lib/siteScope'
+import { deriveCarStatus, CAR_STATUS_META, CAR_STATUS_ORDER, PARKED_STATUSES, isWaitingRepair } from '../lib/carStatus'
+import { rowsForSite, rowInSite, departedFromSite } from '../lib/siteScope'
 import type { TrackRow } from '../lib/excelTracking'
 import { pct, pos, timeAgo } from '../lib/format'
 import { defectLabel } from '../lib/damageLabel'
@@ -234,7 +234,8 @@ export function Dashboard() {
       // vanished from the count.
       const seen = new Set(liveGateOutRows.map((r) => r.vin))
       const transferredOutRows = currentSite
-        ? allTrackingRows.filter((r) => !seen.has(r.vin) && departedFromSite(r.cells, currentSite))
+        ? allTrackingRows.filter((r) =>
+            !seen.has(r.vin) && !rowInSite(r, currentSite, sites) && departedFromSite(r.cells, currentSite, sites))
         : []
       const gateOutRows = [...liveGateOutRows, ...transferredOutRows]
       const mix = [...byModel.entries()].map(([m, n]) => ({ m, n })).sort((a, b) => b.n - a.n).slice(0, 8)
