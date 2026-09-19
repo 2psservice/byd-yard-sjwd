@@ -378,22 +378,19 @@ export function Dashboard() {
 
   const openPopup = (label: string, accent: string, filter: (u: Unit) => boolean) =>
     setPopup({ label, accent, units: units.filter(filter) })
-  // Gate-out opens the Unit List like every other card, but by an explicit VIN
-  // set rather than a preset: this card counts cars that LEFT, and the Units
-  // page carries its own (wider, multi-day) view of those — a preset would
-  // land on a different number than the one just clicked. Handing over the
-  // exact VINs the count was made of makes the two impossible to disagree.
-  const rowToUnit = (r: TrackRow): Unit => ({
-    vin: r.vin, model: '', modelName: (r.cells['Model name'] || r.cells['Model'] || '—').trim() || '—',
-    color: (r.cells['Color'] || '').trim(), trailer: 0, status: 'DEPARTED', damages: [],
-    importedAt: r.updatedAt ?? Date.now(),
-  })
+  // Gate-out always opens the Unit List — never a popup. It lands there by an
+  // explicit VIN set rather than a preset: this card counts cars that LEFT,
+  // and the Units page carries its own (wider, multi-day) view of those, so a
+  // preset would land on a different number than the one just clicked.
+  // Handing over the exact VINs the count was made of makes the two
+  // impossible to disagree. With no VINs to hand over (sample/operational
+  // data, which has no tracking rows behind the number) the preset is all
+  // there is — still the list, never a popup.
   const openGateOut = () => {
-    // sample/operational data has no tracking rows to list — keep the popup
-    if (!fromTracking) { setPopup({ label: 'Gate-out', accent: '#64748b', units: units.filter((u) => u.status === 'DEPARTED') }); return }
     const vins = s.gateOutRows.map((r) => r.vin)
     setView('units') // clears any filter first, so the VIN set goes on after
-    setUnitVinFilter({ label: `Gate-out · ${vins.length.toLocaleString()} คัน`, vins })
+    if (vins.length) setUnitVinFilter({ label: `Gate-out · ${vins.length.toLocaleString()} คัน`, vins })
+    else setUnitPreset('gateOut')
   }
   // imported data is row-based (not Unit) → jump to the Unit List, pre-filtered by
   // the card's preset (setView clears it first, so we set it right after)
