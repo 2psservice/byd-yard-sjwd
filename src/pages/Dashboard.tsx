@@ -227,6 +227,11 @@ export function Dashboard() {
       // yard's board too (rowsForSite would filter it out). Scanned separately
       // by its GATE_OUT_ORIGIN_* marker across every row this device knows, so
       // this yard's own gate-out scans still count even after the car moves on.
+      // Over the SHARED departure window (see DEPARTED_DAYS), which is what
+      // makes this card, the Unit List and this card's own drill-down report
+      // the same departures — a card counting only since 09:30 read 113 of the
+      // cars the list showed 176 of, and a car that left yesterday had simply
+      // vanished from the count.
       const seen = new Set(liveGateOutRows.map((r) => r.vin))
       const transferredOutRows = currentSite
         ? allTrackingRows.filter((r) => !seen.has(r.vin) && departedFromSite(r.cells, currentSite))
