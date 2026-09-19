@@ -4026,7 +4026,7 @@ function GateOutView() {
   const queues = useSiteQueues()
   const { loadFromIdb, updateCell, startNewTrip } = useTracking()
   const { toast, currentUser, sites, currentSite, markDeparted } = useYard()
-  const { confirmSeqGateOut } = useOps()
+  const { confirmSeqGateOut, createGateInQueue } = useOps()
   const { block: blockGate, blockWith, modal: gateModal } = useNotGatedIn()
   const [vin, setVin] = useState<string | null>(null)
   const [dn, setDn] = useState<string | null>(null)      // scanned DN / grouping number
@@ -4204,7 +4204,15 @@ function GateOutView() {
     // yard's Pre Gate-in board is waiting on, not the next 60-วิ sweep tick
     // (see App.tsx, which still catches any case that slips through here —
     // e.g. this same transfer happening via a re-imported sheet instead)
-    if (isYardTransfer) startNewTrip(row.vin, { yard: transferDest!.name })
+    if (isYardTransfer) {
+      startNewTrip(row.vin, { yard: transferDest!.name })
+      // แปะเข้าคิวงาน Gate-in ที่ปลายทางด้วย ไม่งั้นการ์ด "Pre Gate-in" ที่นั่น
+      // จะเห็นแค่ "(รอ Gate-in · ยังไม่มีคิวงาน)" เหมือนรถลอยไม่มีที่มา —
+      // createGateInQueue หาคิวชื่อเดียวกันที่ยังเปิดอยู่แล้วแปะเพิ่ม ไม่สร้างซ้ำ
+      // ทุกครั้งที่มีรถย้ายมาอีกคัน (เหมือนคิวงาน Pre Gate-in ปกติจากการ import)
+      const originName = sites.find(s => s.id === currentSite)?.name ?? currentSite ?? ''
+      createGateInQueue(`Shuttle ${originName} to ${transferDest!.name}`, [row.vin], currentUser, transferDest!.id)
+    }
     setSessionOut(prev => [...prev, row.vin]) // this Note session did real work
     setDone({ vin: row.vin, label: isYardTransfer ? 'Gate-out' : 'Pre Gate-out' }); setVin(null)
   }
