@@ -187,22 +187,44 @@ export default function App() {
       const { units } = useYard.getState()
       const { rows } = useTracking.getState()
       const gone: string[] = []
+      // …and cars the sheet has since moved to ANOTHER yard, whose slot here
+      // was never released. A yard-to-yard gate-out re-files the row at the
+      // destination in the same action, so by the time any sweep looks, the
+      // row reads "Pre Gate-in" over there and NOTHING says Gate-out any
+      // more — the rule above can never catch it. If the scan device had not
+      // loaded this car's unit yet, markDeparted found nothing to release
+      // (units come from the cloud, rows from IndexedDB) and the slot stayed
+      // painted into the lane for good: the plan showed a car that had left.
+      // Send the unit where the sheet says the car is — that frees the slot
+      // AND lets the destination's gate find it.
+      const strayed = new Map<string, string[]>() // siteId ปลายทาง → รายชื่อ vin
       for (const vin in units) {
         const u = units[vin]
         if (u.block == null && u.row == null && u.slot == null) continue
         const r = rows[vin]
-        if (r && deriveCarStatus(r.cells) === 'Gate-out') gone.push(vin)
+        if (!r) continue
+        if (deriveCarStatus(r.cells) === 'Gate-out') { gone.push(vin); continue }
+        if (r.site && u.site && r.site !== u.site) {
+          const list = strayed.get(r.site) ?? []
+          list.push(vin)
+          strayed.set(r.site, list)
+        }
+      }
+      // snapshot each car's last slot before it is cleared — this path (unlike
+      // the ops-scan gate-out) never ran doGateOut, so it never got its own
+      // snapshot; without this a reprinted Grouping / find-car sheet would
+      // show "ไม่พบ" for every car this sweep releases
+      const snapshotSlot = (vin: string) => {
+        const loc = yardLocCode(units[vin])
+        if (loc) useTracking.getState().updateCell(vin, LAST_LOCATION_KEY, loc)
       }
       if (gone.length) {
-        // snapshot each car's last slot before markDepartedMany clears it — this
-        // path (unlike the ops-scan gate-out) never ran doGateOut, so it never
-        // got its own snapshot; without this a reprinted Grouping / find-car
-        // sheet would show "ไม่พบ" for every car this sweep releases
-        for (const vin of gone) {
-          const loc = yardLocCode(units[vin])
-          if (loc) useTracking.getState().updateCell(vin, LAST_LOCATION_KEY, loc)
-        }
+        for (const vin of gone) snapshotSlot(vin)
         useYard.getState().markDepartedMany(gone)
+      }
+      for (const [siteId, vins] of strayed) {
+        for (const vin of vins) snapshotSlot(vin)
+        useYard.getState().moveUnitsToSite(vins, siteId)
       }
 
       // ── auto-transfer: Gate-out to a destination that IS one of our own
