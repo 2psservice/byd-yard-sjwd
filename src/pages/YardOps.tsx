@@ -27,7 +27,7 @@ import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirs
 import { candidates } from '../lib/parkingEngine'
 import { slotToLatLng } from '../lib/geo'
 import { cx, PhotoLightbox } from '../components/ui'
-import { rowInSite, rowsForSite } from '../lib/siteScope'
+import { rowInSite, rowsForSite, deliveryDestinationSite, siteIdForLocation } from '../lib/siteScope'
 import { compressImage } from '../lib/photo'
 import StationSheet from '../components/StationSheet'
 import StockAccessoryCheck from '../components/StockAccessoryCheck'
@@ -4024,7 +4024,7 @@ function GateOutView() {
   const units = useSiteUnits()
   const wrongSite = useWrongSiteHint()
   const queues = useSiteQueues()
-  const { loadFromIdb, updateCell } = useTracking()
+  const { loadFromIdb, updateCell, startNewTrip } = useTracking()
   const { toast, currentUser, sites, currentSite, markDeparted } = useYard()
   const { confirmSeqGateOut } = useOps()
   const { block: blockGate, blockWith, modal: gateModal } = useNotGatedIn()
@@ -4176,11 +4176,20 @@ function GateOutView() {
   const stamp = (now: Date) =>
     `${now.getDate().toString().padStart(2, '0')}/${(now.getMonth() + 1).toString().padStart(2, '0')}/${now.getFullYear()} ${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`
 
+  // ปลายทางเป็น yard อื่นของแอปเอง (ไม่ใช่ดีลเลอร์จริง) → ไม่มีเหตุผลต้องรอ
+  // flush 09:30: ไม่มีรถบรรทุกที่ "อาจไม่มา" แบบดีลเลอร์จริง มีแต่รถวิ่งข้าม
+  // yard เอง ให้ออกจริงทันทีที่กดยืนยัน เพื่อให้ปลายทางเห็น Pre Gate-in และ
+  // ยิงรับรถได้เลย — ดีลเลอร์จริงยังคงรอ flush เหมือนเดิม (ให้ Confirm Preload
+  // แก้ตัวได้ทั้งวันก่อนรถจะออกจริง)
+  const transferDest = row ? deliveryDestinationSite(row.cells['Dealer Location'] || '', sites) : undefined
+  const curSiteOfRow = row ? (row.site ?? siteIdForLocation(row.cells, sites)) : undefined
+  const isYardTransfer = !!transferDest && transferDest.id !== curSiteOfRow
+
   const doGateOut = () => {
     if (!row) return
     const now = new Date()
     const ts = stamp(now)
-    updateCell(row.vin, 'Car Status', 'Pre Gate-out')
+    updateCell(row.vin, 'Car Status', isYardTransfer ? 'Gate-out' : 'Pre Gate-out')
     updateCell(row.vin, 'Gate Out time stamp', ts)
     updateCell(row.vin, 'Gate Out Time', String(now.getTime())) // epoch → 09:30 flush calc
     // snapshot the slot this car is leaving BEFORE markDeparted clears it — a
@@ -4190,8 +4199,14 @@ function GateOutView() {
     markDeparted(row.vin) // release the parking slot — the car left it for the preload lane
     // close the delivery-sequence item too, if this car belongs to one
     if (seqHit) confirmSeqGateOut(seqHit.queue.id, row.vin, currentUser)
+    // yard-to-yard: file this visit away and open the next one at the
+    // destination right now — the gate operator's tap is what the other
+    // yard's Pre Gate-in board is waiting on, not the next 60-วิ sweep tick
+    // (see App.tsx, which still catches any case that slips through here —
+    // e.g. this same transfer happening via a re-imported sheet instead)
+    if (isYardTransfer) startNewTrip(row.vin, { yard: transferDest!.name })
     setSessionOut(prev => [...prev, row.vin]) // this Note session did real work
-    setDone({ vin: row.vin, label: 'Pre Gate-out' }); setVin(null)
+    setDone({ vin: row.vin, label: isYardTransfer ? 'Gate-out' : 'Pre Gate-out' }); setVin(null)
   }
 
   // Confirm Preload (before 09:30) → the Pre-Gate-out car has NOT left; it stays
@@ -4431,7 +4446,9 @@ function GateOutView() {
                 <Clock size={16} /> Confirm Preload · จอดต่อรอรับ
               </button>
               <div className="text-[10.5px] text-center leading-snug" style={{ color: 'var(--muted)' }}>
-                Gate-out → รถจะออกจริงตอน 09:30 · Preload → ยังจอดอยู่รอรถมารับ
+                {isYardTransfer
+                  ? `Gate-out → รถออกทันที เข้า Pre Gate-in ที่ ${transferDest!.name} เลย · Preload → ยังจอดอยู่รอรถมารับ`
+                  : 'Gate-out → รถจะออกจริงตอน 09:30 · Preload → ยังจอดอยู่รอรถมารับ'}
               </div>
             </div>
           )}
