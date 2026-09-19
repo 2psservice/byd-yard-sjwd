@@ -374,16 +374,6 @@ function resolveForUnit(v: string, units: Unit[], rows: TrackRow[]):
   | { type: 'notGated'; vin: string; model: string }
   | { type: 'ambiguous'; count: number }
   | { type: 'none' } {
-  // Is this VIN already gated-in according to the tracking sheet? The `units`
-  // store is fetched from the cloud on every app start (not persisted) while
-  // tracking rows load instantly from IndexedDB — so right after opening the
-  // app the unit may not be loaded yet even though the car is long gated-in.
-  // Trust the sheet's Car Status so a search during that window isn't wrongly
-  // told "not Gate-in".
-  const sheetGated = (vin: string) => {
-    const r = rows.find(x => x.vin === vin)
-    return !!r && isGatedInStatus(r.cells['Car Status'])
-  }
   let u = units.find(x => x.vin === v) ?? null
   if (!u && v.length <= 8) {
     // suffix ambiguity must be checked across BOTH lists together — one unit hit
@@ -394,7 +384,21 @@ function resolveForUnit(v: string, units: Unit[], rows: TrackRow[]):
     if (hits.length === 1) u = hits[0]
   }
   if (u) {
-    if (u.status === 'EXPECTED' && !sheetGated(u.vin)) return { type: 'notGated', vin: u.vin, model: u.modelName }
+    // ── ยังไม่ Gate-in = ไม่มีสถานีไหนทำงานกับรถคันนี้ได้ ──
+    // A yard's own record of a car standing in it is the unit being PARKED /
+    // GATE_IN / ASSIGNED / LOADED. EXPECTED is a car still waiting outside the
+    // gate; DEPARTED is the record another yard left on it when it shuttled
+    // the car over here (see needsArrival) — neither has come through THIS
+    // gate, so Re-location, Walk Around, PDI, PM and Final Check must all send
+    // it to Gate-in first. The sheet alone is not enough to let it through: an
+    // import can write "In Yard" onto a car nobody has scanned in, and that is
+    // exactly the car this rule exists to stop.
+    // Exception: a car the sheet says has LEFT. That is a different mistake,
+    // and each station says so itself ("รถออกจากลานแล้ว") — far more use to
+    // the operator than being sent to the gate for a car that is gone.
+    const parkedHere = u.status !== 'EXPECTED' && u.status !== 'DEPARTED'
+    const sheetCells = rows.find((x) => x.vin === u!.vin)?.cells
+    if (!parkedHere && !hasGoneOut(sheetCells)) return { type: 'notGated', vin: u.vin, model: u.modelName }
     return { type: 'ok', vin: u.vin }
   }
   // no parkable unit — is it a known (pre-gate-in) tracking row?
@@ -4652,12 +4656,19 @@ function RelocationView() {
   // cell and heal the cell so counts/filters agree from now on.
   const unitGated = (vin: string) => {
     const u = siteUnits.find(x => x.vin === vin)
-    return !!u && (u.status !== 'EXPECTED' || !!(u.block && u.row && u.slot))
+    // DEPARTED is the record another yard left on a car it shuttled here — it
+    // has never come through THIS gate (see needsArrival), exactly like
+    // EXPECTED. A real slot still counts as present: a lane/plan import can
+    // place a car before any scan.
+    return !!u && ((u.status !== 'EXPECTED' && u.status !== 'DEPARTED') || !!(u.block && u.row && u.slot))
   }
   const passGateGuard = (r: TrackRow): boolean => {
-    if (isGatedInStatus(r.cells['Car Status'])) return true
+    // the YARD's own record decides, not the sheet: an import can write
+    // "In Yard" onto a car nobody ever scanned in, and moving such a car is
+    // exactly what this guard exists to stop. The sheet is only healed after
+    // the unit has already vouched for the car being here.
     if (!unitGated(r.vin)) return false
-    useTracking.getState().updateCell(r.vin, 'Car Status', 'In Yard')
+    if (!isGatedInStatus(r.cells['Car Status'])) useTracking.getState().updateCell(r.vin, 'Car Status', 'In Yard')
     return true
   }
 
@@ -5289,7 +5300,14 @@ function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', s
     if (!found) { scanNotFound(v); return }
     const fu = units.find(u => u.vin === found)
     const fr = trackingRows.find(r => r.vin === found)
-    const gated = (fu && fu.status !== 'EXPECTED') || (fr && isGatedInStatus(fr.cells['Car Status']))
+    // the yard's own record of the car standing here decides. DEPARTED is what
+    // another yard left on a car it shuttled over — never gated in HERE (see
+    // needsArrival) — and the sheet alone can read "In Yard" from an import
+    // that no one ever scanned. Only fall back to the sheet when this device
+    // has no unit for the car at all (units load from the cloud, rows from IDB).
+    const gated = fu
+      ? (fu.status !== 'EXPECTED' && fu.status !== 'DEPARTED')
+      : !!fr && isGatedInStatus(fr.cells['Car Status'])
     if (!gated) { blockGate(found, fu?.modelName ?? fr?.cells['Model name'] ?? fr?.cells['Model'] ?? ''); return }
     setVin(found); setShowAdd(false)
     recordRecent(`${recentKey}:search`, found)
