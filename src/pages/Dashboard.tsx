@@ -176,6 +176,9 @@ export function Dashboard() {
   const blocks = useBlocks()
   const allTrackingRows = useTrackingRows()
   const opsQueues = useOps((st) => st.queues)
+  const closeQueue = useOps((st) => st.closeQueue)
+  const currentUser = useYard((st) => st.currentUser)
+  const toast = useYard((st) => st.toast)
   const opsClosed = useOps((st) => st.closed) // admin-archived lots leave the card
   const dismissedPreGateIn = useOps((st) => st.dismissed) // cars the gate took off the board
   const loadFromIdb = useTracking((st) => st.loadFromIdb)
@@ -415,12 +418,27 @@ export function Dashboard() {
             {preGateInLots.length > 0 && (
               <div className="mt-1.5 space-y-0.5">
                 {preGateInLots.slice(0, PRE_GATEIN_LOT_LINES).map(l => (
-                  <div key={l.id} className="flex items-baseline gap-1.5" title={l.name}>
+                  <div key={l.id} className="flex items-baseline gap-1.5 group" title={l.name}>
                     <span className="tabular font-bold shrink-0" style={{ color: 'var(--st-pending)' }}
                       title={`${l.name} — เข้าลานแล้ว ${l.arrived.toLocaleString()} จากทั้งหมด ${l.total.toLocaleString()} คัน (ยังไม่เข้า ${(l.total - l.arrived).toLocaleString()})`}>
                       {l.arrived.toLocaleString()}/{l.total.toLocaleString()}
                     </span>
                     <span className="truncate text-[10.5px]" style={{ color: 'var(--faint)' }}>{l.name}</span>
+                    {/* เก็บล็อตนี้เข้าคลังได้จากตรงนี้เลย — เดิมต้องไปหาในหน้า
+                        Gate In ทั้งที่คนเห็นปัญหา (ล็อตเก่าค้างบอร์ด) ตรงนี้ */}
+                    {l.id !== '__uncovered' && (
+                      <button className="ml-auto shrink-0 px-1 leading-none opacity-40 hover:opacity-100 transition-opacity"
+                        style={{ color: 'var(--faint)' }}
+                        title={`เก็บคิวงาน "${l.name}" เข้าคลัง — ออกจากบอร์ด (เปิดกลับได้จากหน้า Gate In)`}
+                        onClick={(e) => {
+                          e.stopPropagation() // อย่าเปิด Unit List ตามการ์ด
+                          if (!window.confirm(`เก็บคิวงาน "${l.name}" เข้าคลัง?\n\nคิวจะหายจากการ์ด Pre Gate-in และบอร์ด Gate In — เปิดกลับได้ที่หน้า Gate In`)) return
+                          closeQueue(l.id, currentUser)
+                          toast('ok', `เก็บคิวงาน "${l.name}" เข้าคลังแล้ว`)
+                        }}>
+                        <X size={11} />
+                      </button>
+                    )}
                   </div>
                 ))}
                 {preGateInLots.length > PRE_GATEIN_LOT_LINES && (
