@@ -802,19 +802,32 @@ export const useYard = create<YardState>()(
           // staging slot — so a returning car passed the gate on the sheet
           // while its yard record stayed DEPARTED with no place at all. It
           // showed nowhere on the plan and no driver could move it.
-          const arriving = u.status === 'EXPECTED' || u.status === 'DEPARTED'
+          // รถที่ shuttle มาจากยาร์ดอื่น ก็คือ "มาถึงใหม่" เหมือนกัน — ตัวเก็บกวาด
+          // ย้ายมันมาเป็น EXPECTED ให้ก็จริง แต่ถ้าเครื่องที่ยิงยังเก็บกวาดไม่ทัน
+          // unit จะยังเป็น PARKED ของยาร์ดต้นทางอยู่ ต้องดูที่ "ยาร์ดไม่ตรงกัน"
+          // ด้วย ไม่งั้นจะนับเป็นการสแกนซ้ำของรถที่จอดอยู่แล้ว
+          const elsewhere = !!s.currentSite && !!u.site && u.site !== s.currentSite
+          const returning = u.status === 'DEPARTED' || elsewhere
+          const arriving = u.status === 'EXPECTED' || returning
           const slot = arriving ? nextFreeSlotInBlock(WCL_STAGING_BLOCK, curBlocks(s), siteUnits) : null
           const updated: Unit = {
             ...u,
             status: slot ? 'PARKED' : (arriving ? 'GATE_IN' : u.status),
             ...(slot ? { block: slot.block, row: slot.row, slot: slot.slot, parkedAt: now } : {}),
+            // ช่องจอดของยาร์ดต้นทางต้องไม่ติดตัวมาด้วย — ไม่งั้นรถจะไปโผล่ในช่อง
+            // ที่มีชื่อเดียวกันของลานนี้ ทั้งที่ไม่เคยถูกจัดที่ให้ที่นี่เลย
+            ...(elsewhere && !slot ? { block: undefined, row: undefined, slot: undefined, parkedAt: undefined } : {}),
             // the previous stay's driver hand-off must not follow the car back
             // in — it would show as already assigned to someone who is long done
-            ...(u.status === 'DEPARTED'
-              ? { driver: undefined, assignedAt: undefined, drivingStartedAt: undefined, gateInAt: now }
-              : {}),
-            gateInAt: u.status === 'DEPARTED' ? now : (u.gateInAt ?? now),
-            gateInBy: s.currentUser, inspected: true, site: s.currentSite ?? u.site,
+            ...(returning ? { driver: undefined, assignedAt: undefined, drivingStartedAt: undefined } : {}),
+            // ผู้ตรวจ + เวลา = "ใครรับรถเข้าลานนี้ เมื่อไหร่" จึงต้องประทับใหม่ทุกครั้ง
+            // ที่รถมาถึงจริง ของเดิมประทับเวลาใหม่เฉพาะตอน DEPARTED เท่านั้น รถที่
+            // shuttle มาจากยาร์ดอื่น (EXPECTED) จึงแบกเวลาของการ gate-in ที่ลาน
+            // ต้นทางติดมาด้วย — การ์ดที่ปลายทางเลยขึ้นวันที่เก่าหลายวัน
+            // ส่วนการสแกนซ้ำรถที่จอดอยู่แล้ว ต้องไม่ไปทับของเดิม (ทั้งเวลาและชื่อ)
+            gateInAt: arriving ? now : (u.gateInAt ?? now),
+            gateInBy: arriving ? s.currentUser : (u.gateInBy ?? s.currentUser),
+            inspected: true, site: s.currentSite ?? u.site,
           }
           db.upsertUnit(updated).catch((e) => console.error('[db] gateIn', e))
           return { units: { ...s.units, [vin]: updated } }
