@@ -1266,6 +1266,11 @@ function everLeftGate(r: TrackRow): boolean {
  * of that run, so the cars stay visible (shown "Gate-out") and the progress
  * counts up 1/17 → 17/17 instead of the total shrinking. Display-only.
  */
+// เวลาห่างสูงสุดที่ยังถือว่า "การกระทำเดียวกัน" — gate-out ยิง item.doneAt แล้ว
+// startNewTrip ยิง row.updatedAt ต่อกันทันทีแบบ synchronous (ห่างกันแค่หลัก
+// มิลลิวินาที) ส่วนรถที่ "กลับมาใหม่" จริงๆ ห่างกันเป็นชั่วโมง/วันขึ้นไปเสมอ
+const SAME_TRANSFER_ACTION_MS = 15_000
+
 export function useActiveQueues(): WorkQueue[] {
   const queues = useOps((s) => s.queues)
   const rows = useTracking((s) => s.rows)
@@ -1318,7 +1323,18 @@ export function useActiveQueues(): WorkQueue[] {
      */
     const partIsHistory = (q: WorkQueue, i: QueueItem): boolean => {
       if (!waiting.has(i.vin)) return false
-      if (i.gatedOut) return true
+      if (i.gatedOut) {
+        // ปกติกฎนี้จับรถที่ "กลับมาใหม่" วันหลัง (re-import) — แต่การย้ายข้าม
+        // yard อัตโนมัติ (#472/#473) ก็ทำให้ item ตัวนี้ gatedOut=true พร้อมกับ
+        // แถวรถกลายเป็น Pre Gate-in "ในการกระทำเดียวกัน" (ห่างกันแค่มิลลิ
+        // วินาที ไม่ใช่คนละวัน) — ถ้าเวลาห่างกันสั้นขนาดนั้น แปลว่าคิวงานนี้
+        // คือคิวที่เพิ่ง gate-out รถออกไปจริงๆ ไม่ใช่ประวัติเก่าที่ควรตัดทิ้ง
+        // ต้องนับต่อ ไม่งั้นยอด "X/Y" ของคิวงานที่กำลังไล่ยิงอยู่จะหดแทนที่จะ
+        // ไต่ขึ้น (ดู startNewTrip keepQueueProgress)
+        const updatedAt = rows[i.vin]?.updatedAt ?? 0
+        if (updatedAt - (i.doneAt ?? 0) < SAME_TRANSFER_ACTION_MS) return false
+        return true
+      }
       const leftAt = leftAtOf.get(i.vin)
       if (leftAt === undefined) return false   // ไม่เคยออกจากลาน → ไม่ใช่รถกลับเข้ามาใหม่
       if (leftAt > 0) return Math.max(q.createdAt || 0, i.addedAt || 0) <= leftAt

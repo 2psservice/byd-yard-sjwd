@@ -4205,7 +4205,7 @@ function GateOutView() {
     // (see App.tsx, which still catches any case that slips through here —
     // e.g. this same transfer happening via a re-imported sheet instead)
     if (isYardTransfer) {
-      startNewTrip(row.vin, { yard: transferDest!.name })
+      startNewTrip(row.vin, { yard: transferDest!.name, keepQueueProgress: true })
       // แปะเข้าคิวงาน Gate-in ที่ปลายทางด้วย ไม่งั้นการ์ด "Pre Gate-in" ที่นั่น
       // จะเห็นแค่ "(รอ Gate-in · ยังไม่มีคิวงาน)" เหมือนรถลอยไม่มีที่มา —
       // createGateInQueue หาคิวชื่อเดียวกันที่ยังเปิดอยู่แล้วแปะเพิ่ม ไม่สร้างซ้ำ

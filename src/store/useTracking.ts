@@ -160,8 +160,14 @@ interface TrackingState {
   claimPreGateInCandidate: (vin: string, siteId: string) => void
   /** A car that gated out has come back: file this visit away as a closed
    *  round and start the next one on an empty sheet (see tripHistory.ts).
-   *  Returns the new round number, or 0 when the VIN is unknown. */
-  startNewTrip: (vin: string, next: { yard?: string; gateInDate?: string; movingDate?: string; lot?: string }) => number
+   *  Returns the new round number, or 0 when the VIN is unknown.
+   *  `keepQueueProgress`: skip releaseFinishedRound — for a yard-to-yard
+   *  transfer (gate-out and round-close happen in the SAME action), the
+   *  delivery run this car just left on is not an old, already-reported
+   *  round; it is the run whose progress ("X/Y คัน") the office is watching
+   *  RIGHT NOW, so this car's just-set done/gatedOut flag must stay put
+   *  there instead of being stripped out (see App.tsx / YardOps.tsx). */
+  startNewTrip: (vin: string, next: { yard?: string; gateInDate?: string; movingDate?: string; lot?: string; keepQueueProgress?: boolean }) => number
   commitCoInspection: (res: ParseResult) => { updated: number; added: number; skipped: number; gateOut: number; moved: number }
   /** Set a cell and log it. `src: 'scan'` marks the write as a FIELD STATION
    *  action (ops-scan), which is what lets a report tell a real recording apart
@@ -743,9 +749,13 @@ export const useTracking = create<TrackingState>()(
         // the moment this car stops reading as gated-out (seqCarGone) and asks
         // to be sent again. Only FINISHED items, so this landing after the new
         // round's own lot is created cannot empty it (see releaseFinishedRound).
-        import('./useOps')
-          .then((m) => m.useOps.getState().releaseFinishedRound([vin]))
-          .catch(() => {})
+        // Skipped for a yard-to-yard transfer (see keepQueueProgress above) —
+        // that run is not old history, it is what just gated this car out.
+        if (!next.keepQueueProgress) {
+          import('./useOps')
+            .then((m) => m.useOps.getState().releaseFinishedRound([vin]))
+            .catch(() => {})
+        }
         return closing + 1
       },
 
