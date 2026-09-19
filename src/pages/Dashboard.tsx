@@ -169,6 +169,7 @@ export function Dashboard() {
   const lang = useYard((s) => s.lang)
   const setView = useYard((s) => s.setView)
   const setUnitPreset = useYard((s) => s.setUnitPreset)
+  const setUnitVinFilter = useYard((s) => s.setUnitVinFilter)
   const currentSite = useYard((s) => s.currentSite)
   const sites = useYard((s) => s.sites)
   const allUnits = useUnits()
@@ -377,20 +378,23 @@ export function Dashboard() {
 
   const openPopup = (label: string, accent: string, filter: (u: Unit) => boolean) =>
     setPopup({ label, accent, units: units.filter(filter) })
-  // Gate-out's own popup, never the Unit List: a yard-to-yard departure's row
-  // has already moved to the destination site's Unit List (see gateOutRows
-  // above) — jumping to THIS site's Units page, like every other card does,
-  // would show fewer cars than the number just clicked. Built from the exact
-  // same rows the count itself uses, so the two can never disagree.
+  // Gate-out opens the Unit List like every other card, but by an explicit VIN
+  // set rather than a preset: this card counts cars that LEFT, and the Units
+  // page carries its own (wider, multi-day) view of those — a preset would
+  // land on a different number than the one just clicked. Handing over the
+  // exact VINs the count was made of makes the two impossible to disagree.
   const rowToUnit = (r: TrackRow): Unit => ({
     vin: r.vin, model: '', modelName: (r.cells['Model name'] || r.cells['Model'] || '—').trim() || '—',
     color: (r.cells['Color'] || '').trim(), trailer: 0, status: 'DEPARTED', damages: [],
     importedAt: r.updatedAt ?? Date.now(),
   })
-  const openGateOutPopup = () => setPopup({
-    label: 'Gate-out', accent: '#64748b',
-    units: fromTracking ? s.gateOutRows.map(rowToUnit) : units.filter((u) => u.status === 'DEPARTED'),
-  })
+  const openGateOut = () => {
+    // sample/operational data has no tracking rows to list — keep the popup
+    if (!fromTracking) { setPopup({ label: 'Gate-out', accent: '#64748b', units: units.filter((u) => u.status === 'DEPARTED') }); return }
+    const vins = s.gateOutRows.map((r) => r.vin)
+    setView('units') // clears any filter first, so the VIN set goes on after
+    setUnitVinFilter({ label: `Gate-out · ${vins.length.toLocaleString()} คัน`, vins })
+  }
   // imported data is row-based (not Unit) → jump to the Unit List, pre-filtered by
   // the card's preset (setView clears it first, so we set it right after)
   const kpiClick = (label: string, accent: string, filter: (u: Unit) => boolean, preset: string) =>
@@ -436,7 +440,7 @@ export function Dashboard() {
           onClick={kpiClick('Pre Gate-out', '#f59e0b', () => false, 'preGateOut')} />
         <Stat label="Gate-out" value={<Num n={s.gateOut} />} accent="#64748b" icon={<LogOut size={17} />}
           sub={lang === 'th' ? 'ออกจากลานแล้ว' : 'departed'} image="/car-top.png" imageVariant="top"
-          onClick={openGateOutPopup} />
+          onClick={openGateOut} />
         <Stat label="Preload" value={<Num n={s.preload} />} accent="#0d9488" icon={<Truck size={17} />}
           sub={lang === 'th' ? 'จอดรอรถมารับ' : 'in preload'} image="/side.png" imageVariant="side"
           onClick={kpiClick('Preload', '#0d9488', u => u.status === 'LOADED', 'preload')} />
