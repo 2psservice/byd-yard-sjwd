@@ -10,7 +10,7 @@ import { useTrackingRows, useTracking } from './store/useTracking'
 import { useOps } from './store/useOps'
 import { startSyncBus, stopSyncBus } from './lib/syncBus'
 import { startKeyboardGuard } from './lib/keyboardGuard'
-import { deriveCarStatus } from './lib/carStatus'
+import { deriveCarStatus, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY } from './lib/carStatus'
 import { yardLocCode, LAST_LOCATION_KEY } from './lib/groupingImport'
 import { deliveryDestinationSite, siteIdForLocation } from './lib/siteScope'
 import { matchModel } from './lib/sampleData'
@@ -225,6 +225,15 @@ export default function App() {
           const curSite = r.site ?? siteIdForLocation(r.cells, sites)
           if (dest.id === curSite) continue // already there — a real dealer that happens to share a yard's name, or already transferred
           if (deriveCarStatus(r.cells) !== 'Gate-out') continue // hasn't actually left yet
+          // เหมือนกับที่ doGateOut ทำตอนกดปุ่มโดยตรง — จดไว้เองว่าออกจากยาร์ด
+          // ไหนไปตอนไหน เพราะ startNewTrip ด้านล่างเปลี่ยน Car Status กลับเป็น
+          // Pre Gate-in ทันที ไม่มี live status เหลือให้การ์ด "Gate-out" ของ
+          // ต้นทางอ่านได้อีก (ดู departedFromSite ใน carStatus.ts)
+          if (curSite) {
+            const gateOutAt = parseInt(r.cells['Gate Out Time'] || '', 10)
+            useTracking.getState().updateCell(vin, GATE_OUT_ORIGIN_SITE_KEY, curSite)
+            useTracking.getState().updateCell(vin, GATE_OUT_ORIGIN_AT_KEY, String(Number.isFinite(gateOutAt) && gateOutAt > 0 ? gateOutAt : Date.now()))
+          }
           useTracking.getState().startNewTrip(vin, { yard: dest.name, keepQueueProgress: true })
           // แปะเข้าคิวงาน Gate-in ที่ปลายทางด้วย (เหมือนที่ YardOps doGateOut ทำ
           // ตอนกดปุ่มโดยตรง) ไม่งั้นรถที่ผ่านทางนี้ (เช่น re-import ไฟล์) จะไป

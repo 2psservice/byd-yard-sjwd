@@ -13,7 +13,7 @@ import {
 } from 'lucide-react'
 import { useYard, useUnits, useTrips, useBlocks, attachPendingDamages } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
-import { isDamaged, deriveCarStatus, hasLeftGate, IN_YARD_STATUSES, CAR_STATUS_META } from '../lib/carStatus'
+import { isDamaged, deriveCarStatus, hasLeftGate, IN_YARD_STATUSES, CAR_STATUS_META, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY } from '../lib/carStatus'
 import { useOps, useActiveQueues, activeProcess, stageOf, isSequenceQueue, isPreGateInQueue, seqStageOf, isQueueComplete, isEmptyQueue, isStationWorkComplete, queueTypeOf, stampStationDate, stationProgress, drivingNow, gateInArrived, gateInPendingItems } from '../store/useOps'
 import type { WorkQueue, QueueItem, QueueType, QueueStage } from '../store/useOps'
 import { CarTopView } from '../components/CarTopView'
@@ -4205,6 +4205,13 @@ function GateOutView() {
     // (see App.tsx, which still catches any case that slips through here —
     // e.g. this same transfer happening via a re-imported sheet instead)
     if (isYardTransfer) {
+      // startNewTrip ด้านล่างจะเปลี่ยน Car Status กลับเป็น Pre Gate-in ทันที
+      // (คนละ tick เดียวกับบรรทัด Gate-out ด้านบน) — ต้นทางจึงไม่มีทางเห็น
+      // สถานะ Gate-out ค้างให้อ่านได้อีกเลย การ์ด "Gate-out" ของยาร์ดนี้เลย
+      // ค้าง 0 ตลอดไม่ว่าจะสแกนออกกี่คัน ต้องจดไว้เองว่า "ออกจากยาร์ดนี้ไปแล้ว
+      // เมื่อไหร่" แยกจากสถานะสด (ดู departedFromSite ใน carStatus.ts)
+      updateCell(row.vin, GATE_OUT_ORIGIN_SITE_KEY, currentSite ?? '')
+      updateCell(row.vin, GATE_OUT_ORIGIN_AT_KEY, String(now.getTime()))
       startNewTrip(row.vin, { yard: transferDest!.name, keepQueueProgress: true })
       // แปะเข้าคิวงาน Gate-in ที่ปลายทางด้วย ไม่งั้นการ์ด "Pre Gate-in" ที่นั่น
       // จะเห็นแค่ "(รอ Gate-in · ยังไม่มีคิวงาน)" เหมือนรถลอยไม่มีที่มา —

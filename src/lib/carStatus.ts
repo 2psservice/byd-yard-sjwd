@@ -90,6 +90,40 @@ export function isLapsedPlan(v: string | undefined | null, now: Date = new Date(
 export const GATE_OUT_FLUSH_H = 9
 export const GATE_OUT_FLUSH_M = 30
 
+/** Marker cells recording which SITE a car most recently gated out FROM, and
+ *  when — set only on a yard-to-yard transfer (see doGateOut's isYardTransfer
+ *  branch), never a Column, never trip-scoped. A yard-to-yard car's Car Status
+ *  flips 'Gate-out' → 'Pre Gate-in' (at the destination) in the very same
+ *  action that gates it out, so by the time any screen re-renders there is no
+ *  live status left to read "this car just left THIS site" off of — the
+ *  origin yard's own "Gate-out" KPI read 0 forever no matter how many cars
+ *  its gate actually scanned out, because the only status that ever meant
+ *  "departed" belonged to a row that had, in the same tick, already become
+ *  someone else's Pre Gate-in. These two cells are the origin's own separate
+ *  record of the scan, independent of wherever the car's row lives now. */
+export const GATE_OUT_ORIGIN_SITE_KEY = 'Gate Out From Site'
+export const GATE_OUT_ORIGIN_AT_KEY = 'Gate Out From At'
+
+/** The most recent 09:30 boundary at or before `now` — the same daily cycle
+ *  the Pre Gate-out → Gate-out flush already runs on (see pastGateOutFlush). */
+function lastFlushBoundary(now: number): number {
+  const d = new Date(now)
+  const b = new Date(d.getFullYear(), d.getMonth(), d.getDate(), GATE_OUT_FLUSH_H, GATE_OUT_FLUSH_M, 0, 0)
+  if (b.getTime() > now) b.setDate(b.getDate() - 1)
+  return b.getTime()
+}
+
+/** Did this car gate out FROM `siteId` since the last flush boundary — even
+ *  though it may already read as Pre Gate-in somewhere else by now (see
+ *  GATE_OUT_ORIGIN_SITE_KEY)? Ages out on its own after the next flush, so a
+ *  car that later gates in and works its way back out again is judged by
+ *  its NEXT gate-out, not a stale marker from days ago. */
+export function departedFromSite(c: Record<string, string>, siteId: string | undefined, now: number = Date.now()): boolean {
+  if (!siteId || c[GATE_OUT_ORIGIN_SITE_KEY] !== siteId) return false
+  const at = parseInt(c[GATE_OUT_ORIGIN_AT_KEY] || '', 10)
+  return Number.isFinite(at) && at > 0 && at >= lastFlushBoundary(now)
+}
+
 /** epoch(ms) a Pre-Gate-out car was scanned out — from the "Gate Out Time" cell,
  *  else parsed from the "dd/mm/yyyy hh:mm" display stamp. 0 if unknown. */
 export function gateOutScanMs(c: Record<string, string>): number {
