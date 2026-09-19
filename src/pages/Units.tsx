@@ -15,13 +15,12 @@ import { useYard } from '../store/useYard'
 import { useTracking, useTrackingRows, useVisibleColumns } from '../store/useTracking'
 import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, LOCATION_KEY, MAX_FILTERS, DEFAULT_FILTER_COLS, agingPmDays, cleanStorage, storageDays, isDateColumn, fmtSerialToDate, type ColGroup, type Column } from '../lib/trackingColumns'
 import { yardLocFull, byYardLocation } from '../lib/groupingImport'
-import { CAR_STATUS_META, deriveCarStatus, IN_YARD_STATUSES, PARKED_STATUSES, isWaitingRepair, finalColor, vinOfStatusColor, taxStatusColor, departedFromSite, gateOutOriginAt, fmtGateOutStamp, gateOutScanMs, departedWindowStart, DEPARTED_DAYS } from '../lib/carStatus'
-import { tripsOf } from '../lib/tripHistory'
+import { CAR_STATUS_META, deriveCarStatus, IN_YARD_STATUSES, PARKED_STATUSES, isWaitingRepair, finalColor, vinOfStatusColor, taxStatusColor, fmtGateOutStamp, gateOutScanMs } from '../lib/carStatus'
 import { rowsToCsv, type TrackRow, type RowEvent } from '../lib/excelTracking'
 import { isAccessoryCheckEntry } from '../lib/finalCheckList'
 import { printFindList } from '../lib/groupingPrint'
 import { matchVins, toFindListRows } from '../lib/findCar'
-import { rowsForSite, siteWorksWith } from '../lib/siteScope'
+import { rowsForSite, siteWorksWith, departureFromSite, departedFromSite } from '../lib/siteScope'
 import { zoneLabel } from '../components/CarDiagramMultiView'
 import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirst, REPAIR_STATUSES, canonRepairStatus } from '../lib/damageLabel'
 import { resolvePart, resolveDefect } from '../lib/masterDefect'
@@ -251,8 +250,9 @@ export function Units() {
   // car that has since closed another round elsewhere still shows THIS one),
   // which is exactly the row as this yard last saw it.
   const asDeparted = (r: TrackRow): TrackRow => {
-    const at = gateOutOriginAt(r.cells)
-    const trip = tripsOf(r.cells).find((t) => t.cells['Gate Out Time'] === String(at))
+    const d = departureFromSite(r.cells, currentSite, sites)
+    const at = d?.at ?? 0
+    const trip = d?.trip
     return {
       ...r,
       cells: {
@@ -270,16 +270,15 @@ export function Units() {
    *  are right about their own gate. Used wherever a list deliberately reaches
    *  past this yard (the pasted Mylist, VIN lookups). */
   const rowsFromHere = useMemo(
-    () => allRows.map((r) => (departedFromSite(r.cells, currentSite ?? undefined, Date.now(), 0) ? asDeparted(r) : r)),
+    () => allRows.map((r) => (departedFromSite(r.cells, currentSite, sites) ? asDeparted(r) : r)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [allRows, currentSite],
+    [allRows, currentSite, sites],
   )
   const departedRows = useMemo(() => {
     if (!currentSite) return []
-    const since = departedWindowStart()
     const inSite = new Set(rows.map((r) => r.vin))
     return allRows
-      .filter((r) => !inSite.has(r.vin) && departedFromSite(r.cells, currentSite, Date.now(), since))
+      .filter((r) => !inSite.has(r.vin) && departedFromSite(r.cells, currentSite, sites))
       .map(asDeparted)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allRows, rows, currentSite])
@@ -393,7 +392,7 @@ export function Units() {
     const listed = new Set(siteRows.map((r) => r.vin))
     return allRows
       .filter((r) => !listed.has(r.vin))
-      .map((r) => ({ r: departedFromSite(r.cells, currentSite, Date.now(), 0) ? asDeparted(r) : r, vin: normKey(r.vin) }))
+      .map((r) => ({ r: departedFromSite(r.cells, currentSite, sites) ? asDeparted(r) : r, vin: normKey(r.vin) }))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allRows, siteRows, currentSite])
   const outsideRows = useMemo(() => {
@@ -551,7 +550,7 @@ export function Units() {
             <span className="mx-1">·</span><b style={{ color: 'var(--brand)' }}>{tabRows.length.toLocaleString()}</b> shown
           </div>
           {departedShown > 0 && (
-            <span className="badge shrink-0" title={`รถที่ยิง Gate-out ออกจากลานนี้ภายใน ${DEPARTED_DAYS} วันล่าสุด — ไม่ได้จอดอยู่แล้ว (ไม่นับใน total) แต่ยังดูได้ว่าออกวันไหนกี่โมง ที่ช่อง "Gate Out time stamp"`}
+            <span className="badge shrink-0" title={'รถที่ยิง Gate-out ออกจากลานนี้ไปแล้ว — ไม่ได้จอดอยู่ (ไม่นับใน total) แต่ยังดูได้ว่าออกวันไหนกี่โมง ที่ช่อง Car Status'}
               style={{ color: '#64748b', background: 'rgba(100,116,139,0.14)' }}>
               ออกไปแล้ว {departedShown.toLocaleString()}
             </span>

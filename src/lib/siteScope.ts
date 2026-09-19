@@ -5,6 +5,8 @@
  */
 import type { Site } from '../types'
 import type { TrackRow } from './excelTracking'
+import { tripsOf, type TripSnapshot } from './tripHistory'
+import { GATE_OUT_ORIGIN_SITE_KEY, gateOutOriginAt } from './carStatus'
 
 const norm = (s?: string) => (s ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
 
@@ -105,4 +107,68 @@ export function deliveryDestinationSite(deliveryLocation: string, sites: Site[])
   const dl = stripAll(deliveryLocation)
   if (!dl) return undefined
   return sites.find((s) => [s.name, s.code].filter(Boolean).map((x) => stripAll(x as string)).some((k) => k.length >= 4 && dl.includes(k)))
+}
+
+/**
+ * When this car last went out through `siteId`'s gate — and the round that
+ * ended with it, which is the car as this yard last saw it.
+ *
+ * TWO records answer this, newest wins:
+ *
+ *  · the ORIGIN MARKER written at the scan (GATE_OUT_ORIGIN_SITE_KEY). Exact,
+ *    but it only exists for departures scanned since that shipped.
+ *  · the CLOSED ROUND itself (tripHistory). Every yard-to-yard move closes a
+ *    round, and the snapshot keeps the yard the car was standing in when it
+ *    did — so this reaches back through every departure the yard ever made,
+ *    including all the ones from before the marker existed. Without it the
+ *    Gate-out card counted only the newly-marked departures and read 132
+ *    where the yard itself could count 196 cars gone.
+ *
+ * Returns null when this car never left this yard.
+ */
+export function departureFromSite(
+  cells: Record<string, string>, siteId: string | null | undefined, sites: Site[],
+): { at: number; trip?: TripSnapshot } | null {
+  if (!siteId) return null
+  const trips = tripsOf(cells)
+  // the marker names a site id outright — no name matching needed
+  if (cells[GATE_OUT_ORIGIN_SITE_KEY] === siteId) {
+    const at = gateOutOriginAt(cells)
+    if (at > 0) return { at, trip: trips.find((t) => t.cells['Gate Out Time'] === String(at)) }
+  }
+  const site = sites.find((s) => s.id === siteId)
+  if (!site) return null
+  const keys = siteKeys(site)
+  let best: { at: number; trip: TripSnapshot } | null = null
+  for (const t of trips) {
+    if (!keys.includes(norm(t.yard))) continue
+    // the round's own gate-out stamp, else the moment it was closed — a round
+    // only ever closes because the car had already gone
+    const at = parseInt(t.cells['Gate Out Time'] || '', 10)
+    const ms = Number.isFinite(at) && at > 0 ? at : t.closedAt
+    if (ms > 0 && (!best || ms > best.at)) best = { at: ms, trip: t }
+  }
+  return best
+}
+
+/**
+ * Has this car gone out through `siteId`'s gate — and not come back?
+ *
+ * No time window by default, on purpose. A departure is a FACT, not news that
+ * expires: a car that left last month has still left, and the yard counts it
+ * among the cars it has sent out. Windowing this is what made the Gate-out
+ * card disagree with the yard's own reckoning twice over — 113 against 176
+ * when it counted one 09:30 flush cycle, then 132 against 196 when it counted
+ * a week. "Come back" is the caller's half of the question: a car standing in
+ * this yard again is not away, however many times it has left before (see the
+ * rowInSite guard on the Dashboard, and departedRows in the Unit List).
+ *
+ * `since` narrows it to departures after a moment, for a caller that really
+ * does want "lately".
+ */
+export function departedFromSite(
+  cells: Record<string, string>, siteId: string | null | undefined, sites: Site[], since = 0,
+): boolean {
+  const d = departureFromSite(cells, siteId, sites)
+  return !!d && d.at >= since
 }

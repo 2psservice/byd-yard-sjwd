@@ -10,7 +10,8 @@ import * as db from '../lib/db'
 import { onSync, sendSync } from '../lib/syncBus'
 import { useYard } from './useYard'
 import { useTracking } from './useTracking' // one-way: tracking never imports ops
-import { hasLeftGate, deriveCarStatus, isGateOutStamp, gateOutScanMs, departedFromSite } from '../lib/carStatus'
+import { hasLeftGate, deriveCarStatus, isGateOutStamp, gateOutScanMs } from '../lib/carStatus'
+import { departedFromSite } from '../lib/siteScope'
 import { PM_KEYS } from '../lib/trackingColumns'
 import type { TrackRow } from '../lib/excelTracking'
 import { quotaSafeStorage } from '../lib/persistStorage'
@@ -1507,7 +1508,7 @@ export function seqCarGone(i: QueueItem, q?: WorkQueue): boolean {
   // No time window: a run is asking "has this car left MY gate yet", and the
   // answer does not expire. Without this, a run whose item flags were lost
   // (a corrected sheet re-uploaded over it) could never count those cars again.
-  return !!q?.site && departedFromSite(cells, q.site, Date.now(), 0)
+  return !!q?.site && departedFromSite(cells, q.site, useYard.getState().sites, 0)
 }
 
 /**
