@@ -86,6 +86,28 @@ export function isLapsedPlan(v: string | undefined | null, now: Date = new Date(
   return (today0 - plan0) / 86400000 > graceDays
 }
 
+/**
+ * เวลาที่แถวนี้บอกว่า "รถเข้าลาน" ล่าสุด — epoch ms (0 = ไม่มีข้อมูล)
+ *
+ * ops-scan ประทับ 'Gate In Time' เป็น epoch ms ตอนยิงเข้าลาน ส่วนไฟล์ชีตเขียน
+ * เป็นวันที่แบบ DD/MM/YYYY ('Gate In (Rayong yard)' หรือ 'Gate In Date')
+ */
+export function gateInEvidenceAt(c: Record<string, string>): number {
+  const ms = parseInt((c['Gate In Time'] || '').trim(), 10)
+  if (Number.isFinite(ms) && ms > 0) return ms
+  const d = parseDMY(c['Gate In (Rayong yard)'] || '') ?? parseDMY(c['Gate In Date'] || '')
+  return d ? d.getTime() : 0
+}
+
+/** มีการรับรถเข้าลาน "ตั้งแต่วันแผนรับเป็นต้นไป" ไหม — ถ้ามี แผนที่เลยกำหนด
+ *  นั้นไม่ได้เกิดขึ้น (หรือรถวนกลับเข้ามาใหม่) จึงห้ามเดาว่ารถออกไปแล้ว */
+function gateInAfterPlan(c: Record<string, string>): boolean {
+  const plan = parseDMY(c['Gate Out time stamp'] || '')
+  if (!plan) return false
+  const at = gateInEvidenceAt(c)
+  return at > 0 && at >= plan.getTime()
+}
+
 /** Daily flush hour for Pre Gate-out → Gate-out (09:30 local). */
 export const GATE_OUT_FLUSH_H = 9
 export const GATE_OUT_FLUSH_M = 30
@@ -168,7 +190,14 @@ export function deriveCarStatus(c: Record<string, string>): string {
   if (/total\s*loss/i.test(c['Vin Of Status'] || '')) return 'Total loss'
   // a pickup plan whose date lapsed > 2 days ago ⇒ the car was collected → Gate-out,
   // overriding the stale "In Yard" the importer stamped before the plan date passed
-  if (isLapsedPlan(c['Gate Out time stamp'])) return 'Gate-out'
+  //
+  // ...เว้นแต่มีการ "ยิง Gate-in" ที่หน้าลานหลังวันแผนนั้น การเดาต้องแพ้หลักฐานตรง:
+  // การยิงเข้าลานคือคนยืนดูรถคันนั้นอยู่จริงในวันนั้น ส่วนแผนรับเป็นแค่กระดาษที่
+  // เลยกำหนดมา รถ yard-to-yard มักแบกแผนรับเก่าของลานต้นทางติดมาด้วย พอยิงเข้า
+  // ลานที่ปลายทาง สถานะที่คำนวณได้ยังเป็น Gate-out อยู่ ตัวเก็บกวาดใน App จึงเด้ง
+  // รถออกจากลาน (DEPARTED) ภายใน 1 นาที แล้วทุกสถานีก็ขึ้นว่า "รถยังไม่ Gate-in"
+  // ทั้งที่พนักงานเพิ่งยิงไปเองเมื่อครู่
+  if (isLapsedPlan(c['Gate Out time stamp']) && !gateInAfterPlan(c)) return 'Gate-out'
   const explicit = (c['Car Status'] || '').trim()
   // Pre Gate-out: ops-scan gate-out parks the car in preload until the daily 09:30
   // flush, when it becomes a real Gate-out (unless it was confirmed Preload first).

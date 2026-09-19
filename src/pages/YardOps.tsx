@@ -5236,7 +5236,7 @@ function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', s
   const wrongSite = useWrongSiteHint()
   const { loadFromIdb } = useTracking()
   const { addDamage, updateRepairStatus, toast, importUnits } = useYard()
-  const { block: blockGate, modal: gateModal } = useNotGatedIn()
+  const { block: blockGate, blockWith, modal: gateModal } = useNotGatedIn()
   const [vin, setVin] = useState<string | null>(null)
   const [showAdd, setShowAdd] = useState(false)
   // guards the async save below. A ref, not state: the cloud read can outlast
@@ -5363,10 +5363,21 @@ function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', s
     // needsArrival) — and the sheet alone can read "In Yard" from an import
     // that no one ever scanned. Only fall back to the sheet when this device
     // has no unit for the car at all (units load from the cloud, rows from IDB).
+    const modelOf = () => fu?.modelName ?? fr?.cells['Model name'] ?? fr?.cells['Model'] ?? ''
+    // "ออกจากลานไปแล้ว" ต้องถามก่อน "ยังไม่เคยเข้าลาน" — รถที่ gate-out ไปแล้ว
+    // ถูกปล่อยเป็น DEPARTED เหมือนกัน ถ้าไม่แยกสองเรื่องนี้ หน้าจอจะบอกเหตุผล
+    // ผิด (ไล่ไปยิง Gate-in ทั้งที่รถไม่ได้อยู่ในลานแล้ว) เหมือนที่ Re-location
+    // แยกไว้อยู่แล้ว
+    if (fr && hasGoneOut(fr.cells)) {
+      blockWith(found, modelOf(), 'รถออกจากลานแล้ว',
+        <>รถคันนี้ <b style={{ color: '#dc2626' }}>Gate-out</b> ไปแล้ว จึงไม่มีงานสถานีให้ทำอีก<br />
+          หากรถกลับเข้าลาน ต้องทำ <b>Gate-in</b> ใหม่ก่อน</>)
+      return
+    }
     const gated = fu
       ? (fu.status !== 'EXPECTED' && fu.status !== 'DEPARTED')
       : !!fr && isGatedInStatus(fr.cells['Car Status'])
-    if (!gated) { blockGate(found, fu?.modelName ?? fr?.cells['Model name'] ?? fr?.cells['Model'] ?? ''); return }
+    if (!gated) { blockGate(found, modelOf()); return }
     setVin(found); setShowAdd(false)
     recordRecent(`${recentKey}:search`, found)
   }
