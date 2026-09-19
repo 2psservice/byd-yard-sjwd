@@ -1992,9 +1992,26 @@ function WalkView() {
    * all, so the gate simply could not take the car in. The sheet is the truth
    * about where a car stands; a stale unit row is not.
    */
-  const sheetSaysPreGateIn = (vin: string): boolean => {
+  /**
+   * Is this car still OUTSIDE this yard — i.e. the scan is an arrival?
+   *
+   * The arrival card is the only one that checks รุ่น/สี against the sheet
+   * before it lets a car in, so every car that has not come in yet has to land
+   * on it. The sheet saying "Pre Gate-in" is the usual sign, but a car shuttled
+   * in from another yard also arrives carrying the unit record it had THERE —
+   * EXPECTED (re-filed by the transfer) or DEPARTED (gated out and never
+   * re-registered here). Those went to the plain unit card instead, which
+   * gates a car in on one tap with nothing checked, and showed the old yard's
+   * "ออกไปแล้ว" over a car standing at this one. A car already parked here
+   * (PARKED / GATE_IN) is NOT an arrival and still takes the unit card, where
+   * blockIfAlreadyGated guards against a second gate-in.
+   */
+  const needsArrival = (vin: string): boolean => {
     const r = trackingRows.find(x => x.vin === vin)
-    return !!r && deriveCarStatus(r.cells) === 'Pre Gate-in'
+    if (!r) return false // no sheet row here → nothing to check the car against
+    if (deriveCarStatus(r.cells) === 'Pre Gate-in') return true
+    const u = units.find(x => x.vin === vin)
+    return !!u && (u.status === 'EXPECTED' || u.status === 'DEPARTED')
   }
   /** Open the arrival card for a car the sheet says is still waiting. */
   const openWaiting = (vin: string) => { setVin(null); setShowDmg(false); setTrackingVin(vin) }
@@ -2008,7 +2025,7 @@ function WalkView() {
     //    that can actually gate it in
     let u = units.find(x => x.vin === v)
     if (u) {
-      if (sheetSaysPreGateIn(u.vin)) { openWaiting(u.vin); return }
+      if (needsArrival(u.vin)) { openWaiting(u.vin); return }
       if (blockIfAlreadyGated(u)) return
       setVin(u.vin); setShowDmg(false); return
     }
@@ -2020,7 +2037,7 @@ function WalkView() {
     if (v.length <= 8) {
       const unitHits = units.filter(x => x.vin.toUpperCase().endsWith(v))
       if (unitHits.length === 1) {
-        if (sheetSaysPreGateIn(unitHits[0].vin)) { openWaiting(unitHits[0].vin); return }
+        if (needsArrival(unitHits[0].vin)) { openWaiting(unitHits[0].vin); return }
         if (blockIfAlreadyGated(unitHits[0])) return
         setVin(unitHits[0].vin); setShowDmg(false); return
       }
@@ -2220,7 +2237,14 @@ function WalkView() {
         const damaged = isDamaged(trackRow.cells)
         // OK / NG straight beside the field it is judging — the operator reads
         // "ATTO 1" off the screen, looks at the car, and answers on that line.
+        // still to come in: the sheet says so, OR this yard has no parked record
+        // of the car yet — a shuttle from another yard arrives with that yard's
+        // unit record (EXPECTED / DEPARTED) and sometimes a sheet already flipped
+        // to "In Yard" by an import, and it still has to be checked in properly
+        // here or it never gets a slot (see needsArrival).
+        const uHere = units.find((u) => u.vin === trackRow.vin)
         const isPre = (trackRow.cells['Car Status'] ?? 'Pre Gate-in') === 'Pre Gate-in'
+          || !uHere || uHere.status === 'EXPECTED' || uHere.status === 'DEPARTED'
         const MatchPick = ({ value, onPick, what }: {
           value: 'OK' | 'NG' | null; onPick: (v: 'OK' | 'NG') => void; what: string
         }) => (
