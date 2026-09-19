@@ -693,6 +693,25 @@ if (typeof document !== 'undefined') {
   window.addEventListener('pagehide', releaseParkedCam)
 }
 
+// ── เครื่องแรงน้อย = ขอภาพเล็กลงตั้งแต่ต้นทาง ────────────────────────────────
+// เครื่องหน้างานจริงคือ Realme C13 (ชิป Helio G35 · แรม 3–4 GB · จอ 720×1600)
+// ซึ่งเป็นรุ่นที่ "ร้อนแล้วค้าง" ที่สุด จอมันกว้างแค่ 720 จุด การขอภาพ 1920×1080
+// จึงแปลว่าให้เซนเซอร์+ชิปภาพทำงานระดับ 1080p แล้วย่อทิ้งลงเหลือ 720p เพื่อ
+// แสดงผล = งานเปล่า ๆ 2.25 เท่าของที่ตามองเห็นจริง ตลอดเวลาที่กล้องเปิด
+// 1280×720 ตรงกับจอพอดี ยังละเอียดเกินพอสำหรับ QR บนกระจก (ที่ระยะจ่อปกติได้
+// ราว 4 จุดต่อ 1 โมดูล ส่วนเกณฑ์อ่านออกคือ ~2) แต่ตัดภาระทั้งสาย (เซนเซอร์ →
+// ย่อภาพ → วาดพรีวิว → ถอดรหัส) เหลือ 44% ของเดิม
+// เครื่องที่แรงพอ (แรมมากกว่า 4 GB และจอละเอียดกว่า 720p) ยังได้ 1080p เท่าเดิม
+const isLowEndDevice = (): boolean => {
+  try {
+    const mem = (navigator as Navigator & { deviceMemory?: number }).deviceMemory
+    if (typeof mem === 'number' && mem > 0 && mem <= 4) return true
+    // จอที่แสดงผลได้ไม่เกิน ~720p อยู่แล้ว — ขอภาพใหญ่กว่านั้นไม่ได้อะไรคืนมา
+    const short = Math.min(screen.width, screen.height) * (window.devicePixelRatio || 1)
+    return short > 0 && short <= 800
+  } catch { return false }
+}
+
 // keyboard-wedge dedupe: two VinInputs on one screen both hear the burst —
 // only the first may fire it
 let lastWedgeAt = 0
@@ -876,7 +895,14 @@ function VinInput({
     // กล้องต้องหาโหมดใหม่/สลับโหมด ซึ่งช้ากว่าการใช้โหมดเริ่มต้นของเซนเซอร์มาก —
     // ตัวถอดรหัสเราจำกัดจังหวะถอดเองอยู่แล้ว (120/130ms ต่อรอบ) ไม่ว่ากล้องจะส่ง
     // เฟรมมาถี่แค่ไหน จึงไม่ได้อาศัย frameRate ของกล้องเพื่อลดภาระถอดรหัสจริงๆ
-    const VIDEO: MediaTrackConstraints = { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+    //
+    // และบนเครื่องแรงน้อย (ดู isLowEndDevice) ลดลงอีกขั้นเป็น 1280×720 ซึ่งเป็น
+    // โหมดมาตรฐานที่กล้องแทบทุกตัวมีอยู่แล้ว จึงไม่เจอปัญหา "ต้องสลับโหมด" แบบ
+    // ตอนใส่ frameRate — และตรงกับความละเอียดจอของเครื่องรุ่นนั้นพอดี
+    const CAPTURE = isLowEndDevice()
+      ? { width: { ideal: 1280 }, height: { ideal: 720 } }
+      : { width: { ideal: 1920 }, height: { ideal: 1080 } }
+    const VIDEO: MediaTrackConstraints = { facingMode: { ideal: 'environment' }, ...CAPTURE }
 
     // ขอกล้องแบบ "ให้ติดจริง": เว้นระยะให้ระบบปล่อยกล้องรอบก่อนให้เสร็จ แล้วถ้า
     // ยังถูกปฏิเสธ (NotReadableError = เครื่องยังยึดกล้องอยู่ / ขอค่าที่ทำไม่ได้)
@@ -930,7 +956,8 @@ function VinInput({
     // markedly better than JS decoding at glare / angle / focus hunting. Detects
     // straight off the <video> ~8×/sec.
     const startNative = async (video: HTMLVideoElement): Promise<boolean> => {
-      const BD = (window as unknown as { BarcodeDetector?: { new (o: { formats: string[] }): { detect: (v: HTMLVideoElement) => Promise<{ rawValue?: string }[]> }; getSupportedFormats?: () => Promise<string[]> } }).BarcodeDetector
+      type Src = HTMLVideoElement | HTMLCanvasElement
+      const BD = (window as unknown as { BarcodeDetector?: { new (o: { formats: string[] }): { detect: (v: Src) => Promise<{ rawValue?: string }[]> }; getSupportedFormats?: () => Promise<string[]> } }).BarcodeDetector
       if (!BD) return false
       try {
         const supported = (await BD.getSupportedFormats?.()) ?? []
@@ -938,19 +965,50 @@ function VinInput({
         if (!want.includes('qr_code')) return false
         if (cancelled) return true
         const det = new BD({ formats: want })
+        // ตั้งค่าเลนส์ก่อนเริ่มวนถอดรหัส เพื่อให้รู้ตั้งแต่รอบแรกว่าเครื่องนี้
+        // ซูมด้วยเลนส์ได้ไหม (ถ้าไม่ได้ = ต้องซูมด้วยการตัดภาพแทน)
+        setupTrack(video, true)
+        // ตัดกลางภาพตามกรอบเล็ง แล้วส่งเฉพาะส่วนนั้นให้ตัวอ่าน — เดิมทางนี้ส่ง
+        // ภาพเต็มเฟรมเสมอ เครื่องที่ซูมเลนส์ไม่ได้ (Realme C13 เป็นหนึ่งในนั้น)
+        // จึงไม่มีซูมให้ใช้เลย QR บนกระจกที่กว้างไม่กี่สิบจุดก็จับไม่ติดสักที
+        // ต้องเดินเข้าไปจ่อใกล้ ๆ การตัดภาพขยายขนาดโค้ดเทียบกับเฟรมได้ตามสไลเดอร์
+        // และยังทำให้ตัวอ่านมีจุดให้ไล่น้อยลงด้วย = เร็วขึ้น ไม่ได้หนักขึ้น
+        const canvas = document.createElement('canvas')
+        const ctx = canvas.getContext('2d')
+        let cropOk = true
         let lastT = -1
-        const iv = setInterval(async () => {
-          if (video.readyState < 2) return
+        let tick = 0
+        // busy: บนชิปเบา ๆ det.detect() รอบหนึ่งอาจกินเวลาเกิน 120ms งานเลยซ้อน
+        // กันเป็นแถว ยิ่งซ้อนยิ่งช้า ยิ่งร้อน — รอบก่อนยังไม่เสร็จ ก็ข้ามรอบนี้ไป
+        let busy = false
+        const iv = setInterval(() => {
+          if (busy || video.readyState < 2) return
           // เฟรมเดิมถอดซ้ำก็ได้ผลเดิม — ข้ามไป ลดงานเครื่องโดยไม่ช้าลงเลย
           if (video.currentTime === lastT) return
           lastT = video.currentTime
-          try {
-            const codes = await det.detect(video)
-            if (codes.length) hit(codes[0].rawValue)
-          } catch { /* detector hiccup — next tick */ }
+          let src: Src = video
+          const vw = video.videoWidth, vh = video.videoHeight
+          const factor = dzRef.current
+          // ทุก ๆ รอบที่ 3 ดูภาพเต็มเฟรมด้วย เผื่อโค้ดใหญ่หรือไม่ได้อยู่กลางกรอบ
+          if (cropOk && ctx && vw && vh && !opticalRef.current && factor > 1 && ++tick % 3 !== 0) {
+            const cw = Math.round(vw / factor), ch = Math.round(vh / factor)
+            canvas.width = cw; canvas.height = ch
+            ctx.drawImage(video, (vw - cw) >> 1, (vh - ch) >> 1, cw, ch, 0, 0, cw, ch)
+            src = canvas
+          }
+          busy = true
+          void (async () => {
+            try {
+              const codes = await det.detect(src)
+              if (codes.length) hit(codes[0].rawValue)
+            } catch {
+              // เครื่องไหนอ่านจาก canvas ไม่ได้ ก็เลิกตัดภาพไปเลยทั้งรอบนี้
+              // ดีกว่าวนพังเงียบ ๆ จนสแกนไม่ติดสักครั้ง
+              if (src !== video) cropOk = false
+            } finally { busy = false }
+          })()
         }, 120)
         controlsRef.current = { stop: () => clearInterval(iv) }
-        setupTrack(video, false) // native detector reads the full frame — no crop zoom
         return true
       } catch { return false } // permission error falls through to ZXing for its message
     }
