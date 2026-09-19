@@ -104,15 +104,6 @@ export const GATE_OUT_FLUSH_M = 30
 export const GATE_OUT_ORIGIN_SITE_KEY = 'Gate Out From Site'
 export const GATE_OUT_ORIGIN_AT_KEY = 'Gate Out From At'
 
-/** The most recent 09:30 boundary at or before `now` — the same daily cycle
- *  the Pre Gate-out → Gate-out flush already runs on (see pastGateOutFlush). */
-function lastFlushBoundary(now: number): number {
-  const d = new Date(now)
-  const b = new Date(d.getFullYear(), d.getMonth(), d.getDate(), GATE_OUT_FLUSH_H, GATE_OUT_FLUSH_M, 0, 0)
-  if (b.getTime() > now) b.setDate(b.getDate() - 1)
-  return b.getTime()
-}
-
 /** epoch(ms) this car was scanned out of the yard named by its origin marker,
  *  0 when it carries none (see GATE_OUT_ORIGIN_SITE_KEY). */
 export function gateOutOriginAt(c: Record<string, string>): number {
@@ -120,21 +111,34 @@ export function gateOutOriginAt(c: Record<string, string>): number {
   return Number.isFinite(at) && at > 0 ? at : 0
 }
 
+/**
+ * How far back "ออกจากลานนี้ไปแล้ว" reaches — ONE window, shared by every
+ * screen that reports departures: the Dashboard's Gate-out card, the Unit
+ * List's departed rows, and the card's own drill-down.
+ *
+ * It used to differ per screen — the card counted a single 09:30 flush cycle
+ * while the list carried a week — so the card read 113 of the very same cars
+ * the list showed 176 of, and the yard could not tell which number was
+ * missing cars. A departure is not news that expires at 09:30: a car that
+ * left yesterday has still left. Cars older than this stay findable by VIN.
+ */
+export const DEPARTED_DAYS = 7
+export const departedWindowStart = (now: number = Date.now()) => now - DEPARTED_DAYS * 86_400_000
+
 /** Did this car gate out FROM `siteId` — even though it may already read as
  *  Pre Gate-in somewhere else by now (see GATE_OUT_ORIGIN_SITE_KEY)?
  *
- *  `since` bounds how far back to look, and is what the window MEANS on each
- *  screen: the Dashboard's Gate-out KPI counts one flush cycle ("ออกไปวันนี้
- *  กี่คัน", the default), while the Unit List lists several days of them so
- *  the office can still check WHEN a car left. A marker is overwritten by the
- *  car's next gate-out, so an old one only ever describes the last yard this
- *  car actually left. */
+ *  `since` bounds how far back to look; the default is the shared window
+ *  above. Pass 0 to ask "has it EVER left this yard" (a VIN lookup, or a
+ *  delivery run asking whether its own car has gone). A marker is overwritten
+ *  by the car's next gate-out, so an old one only ever describes the last
+ *  yard this car actually left. */
 export function departedFromSite(
   c: Record<string, string>, siteId: string | undefined, now: number = Date.now(), since?: number,
 ): boolean {
   if (!siteId || c[GATE_OUT_ORIGIN_SITE_KEY] !== siteId) return false
   const at = gateOutOriginAt(c)
-  return at > 0 && at >= (since ?? lastFlushBoundary(now))
+  return at > 0 && at >= (since ?? departedWindowStart(now))
 }
 
 /** "DD/MM/YYYY HH:mm" — the stamp the gate writes into "Gate Out time stamp". */

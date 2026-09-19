@@ -15,7 +15,7 @@ import { useYard } from '../store/useYard'
 import { useTracking, useTrackingRows, useVisibleColumns } from '../store/useTracking'
 import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, LOCATION_KEY, MAX_FILTERS, DEFAULT_FILTER_COLS, agingPmDays, cleanStorage, storageDays, isDateColumn, fmtSerialToDate, type ColGroup, type Column } from '../lib/trackingColumns'
 import { yardLocFull, byYardLocation } from '../lib/groupingImport'
-import { CAR_STATUS_META, deriveCarStatus, IN_YARD_STATUSES, PARKED_STATUSES, isWaitingRepair, finalColor, vinOfStatusColor, taxStatusColor, departedFromSite, gateOutOriginAt, fmtGateOutStamp, gateOutScanMs } from '../lib/carStatus'
+import { CAR_STATUS_META, deriveCarStatus, IN_YARD_STATUSES, PARKED_STATUSES, isWaitingRepair, finalColor, vinOfStatusColor, taxStatusColor, departedFromSite, gateOutOriginAt, fmtGateOutStamp, gateOutScanMs, departedWindowStart, DEPARTED_DAYS } from '../lib/carStatus'
 import { tripsOf } from '../lib/tripHistory'
 import { rowsToCsv, type TrackRow, type RowEvent } from '../lib/excelTracking'
 import { isAccessoryCheckEntry } from '../lib/finalCheckList'
@@ -220,14 +220,6 @@ const VIN_LOOKUP_MIN = 5
 /** Cap on out-of-yard matches folded into the list — a VIN lookup wants one car;
  *  this only bounds a short partial that happens to match many. */
 const OUTSIDE_MAX = 50
-/** How many days of this yard's gate-outs the list carries alongside the cars
- *  still standing in it. A yard-to-yard departure leaves the yard's own list
- *  the instant it is scanned out (its row re-files as Pre Gate-in at the
- *  destination), so without this the office had no way to check WHICH cars
- *  went out, on what day, at what time. A week covers "ออกไปเมื่อไหร่" for
- *  any car still being asked about; older ones are still found by VIN search. */
-const DEPARTED_DAYS = 7
-
 // Filter bar: Unit Nbr + Grouping are pinned; every other filter is a COLUMN
 // chosen from the column manager (up to MAX_FILTERS). The config now lives in
 // the tracking store (persisted + part of the shared "default view" preset).
@@ -284,7 +276,7 @@ export function Units() {
   )
   const departedRows = useMemo(() => {
     if (!currentSite) return []
-    const since = Date.now() - DEPARTED_DAYS * 86_400_000
+    const since = departedWindowStart()
     const inSite = new Set(rows.map((r) => r.vin))
     return allRows
       .filter((r) => !inSite.has(r.vin) && departedFromSite(r.cells, currentSite, Date.now(), since))
