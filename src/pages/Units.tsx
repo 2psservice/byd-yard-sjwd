@@ -15,7 +15,8 @@ import { useYard } from '../store/useYard'
 import { useTracking, useTrackingRows, useVisibleColumns } from '../store/useTracking'
 import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, LOCATION_KEY, MAX_FILTERS, DEFAULT_FILTER_COLS, agingPmDays, cleanStorage, storageDays, isDateColumn, fmtSerialToDate, type ColGroup, type Column } from '../lib/trackingColumns'
 import { yardLocFull, byYardLocation } from '../lib/groupingImport'
-import { CAR_STATUS_META, deriveCarStatus, IN_YARD_STATUSES, PARKED_STATUSES, isWaitingRepair, finalColor, vinOfStatusColor, taxStatusColor } from '../lib/carStatus'
+import { CAR_STATUS_META, deriveCarStatus, IN_YARD_STATUSES, PARKED_STATUSES, isWaitingRepair, finalColor, vinOfStatusColor, taxStatusColor, departedFromSite, gateOutOriginAt, fmtGateOutStamp, gateOutScanMs } from '../lib/carStatus'
+import { tripsOf } from '../lib/tripHistory'
 import { rowsToCsv, type TrackRow, type RowEvent } from '../lib/excelTracking'
 import { isAccessoryCheckEntry } from '../lib/finalCheckList'
 import { printFindList } from '../lib/groupingPrint'
@@ -219,6 +220,13 @@ const VIN_LOOKUP_MIN = 5
 /** Cap on out-of-yard matches folded into the list — a VIN lookup wants one car;
  *  this only bounds a short partial that happens to match many. */
 const OUTSIDE_MAX = 50
+/** How many days of this yard's gate-outs the list carries alongside the cars
+ *  still standing in it. A yard-to-yard departure leaves the yard's own list
+ *  the instant it is scanned out (its row re-files as Pre Gate-in at the
+ *  destination), so without this the office had no way to check WHICH cars
+ *  went out, on what day, at what time. A week covers "ออกไปเมื่อไหร่" for
+ *  any car still being asked about; older ones are still found by VIN search. */
+const DEPARTED_DAYS = 7
 
 // Filter bar: Unit Nbr + Grouping are pinned; every other filter is a COLUMN
 // chosen from the column manager (up to MAX_FILTERS). The config now lives in
@@ -239,6 +247,47 @@ export function Units() {
   // including the shared-shuttle cars still waiting to be claimed here, which
   // the Dashboard's Pre Gate-in card counts and drills down into
   const rows = useMemo(() => rowsForSite(allRows, currentSite, sites), [allRows, currentSite, sites])
+
+  // ── cars this yard GATED OUT — listed here as they were when they left ────
+  // A yard-to-yard departure drops out of rowsForSite the instant it is
+  // scanned out: the same action re-files the row as Pre Gate-in at the
+  // destination and moves its `site` there, and startNewTrip lifts the whole
+  // visit — gate-out stamp, grouping, dealer location — off the row into
+  // __trips. So the live row says nothing about the departure, and this yard
+  // could not answer "which cars went out, and when". Rebuilt from the round
+  // that ENDED with this gate-out (matched by the marker's own timestamp, so a
+  // car that has since closed another round elsewhere still shows THIS one),
+  // which is exactly the row as this yard last saw it.
+  const asDeparted = (r: TrackRow): TrackRow => {
+    const at = gateOutOriginAt(r.cells)
+    const trip = tripsOf(r.cells).find((t) => t.cells['Gate Out Time'] === String(at))
+    return {
+      ...r,
+      cells: {
+        ...r.cells,
+        ...(trip?.cells ?? {}),
+        'Car Status': 'Gate-out',
+        'Gate Out Time': String(at),
+        'Gate Out time stamp': trip?.cells['Gate Out time stamp'] || fmtGateOutStamp(at),
+      },
+    }
+  }
+  const departedRows = useMemo(() => {
+    if (!currentSite) return []
+    const since = Date.now() - DEPARTED_DAYS * 86_400_000
+    const inSite = new Set(rows.map((r) => r.vin))
+    return allRows
+      .filter((r) => !inSite.has(r.vin) && departedFromSite(r.cells, currentSite, Date.now(), since))
+      .map(asDeparted)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allRows, rows, currentSite])
+  /** The whole list this yard shows: still here, plus just-gone. The counters
+   *  above the grid stay on `rows` — "total / OK / Waiting" is the yard's
+   *  standing work, and a car that left is no longer any of it. */
+  const siteRows = useMemo(
+    () => (departedRows.length ? [...rows, ...departedRows] : rows),
+    [rows, departedRows],
+  )
   const visCols = useVisibleColumns()
   const { lastImport, loadFromIdb } = useTracking()
   // computed yard-location code (prefix-block+ช่อง+ลำดับ, e.g. "N-R1402"), for the Location column.
@@ -287,19 +336,19 @@ export function Units() {
 
   const grabDistinct = (key: string) => {
     const set = new Set<string>()
-    for (const r of rows) { const v = r.cells[key]; if (v) set.add(v) }
+    for (const r of siteRows) { const v = r.cells[key]; if (v) set.add(v) }
     return [...set].sort()
   }
   // distinct value list for a filter column ('Car Status' uses the derived
   // lifecycle status, not the raw cell, so gate-out logic stays consistent)
   const distinctFor = (key: string): string[] => {
     if (key === 'Car Status') {
-      const present = new Set(rows.map((r) => deriveCarStatus(r.cells)))
+      const present = new Set(siteRows.map((r) => deriveCarStatus(r.cells)))
       return CAR_STATUS_VALUES.filter((v) => present.has(v))
     }
     if (key === LOCATION_KEY) {
       const set = new Set<string>()
-      for (const r of rows) { const v = locOf(r); if (v) set.add(v) }
+      for (const r of siteRows) { const v = locOf(r); if (v) set.add(v) }
       return [...set].sort()
     }
     return grabDistinct(key)
@@ -311,21 +360,21 @@ export function Units() {
   // allUnits feeds locOf() for the Location options — without it the
   // dropdown kept a stale list after an Update-Location import / park confirm
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, activeFilterCols, allUnits])
+  }, [siteRows, activeFilterCols, allUnits])
 
   const liveOpts = useMemo(() => {
     const o: Record<string, string[]> = {}
     for (const key of SELECT_DATA_KEYS) o[key] = grabDistinct(key)
     return o
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows])
+  }, [siteRows])
   const optionsFor = (col: Column): string[] =>
     [...new Set([...(col.options ?? []), ...(liveOpts[col.key] ?? [])])].sort()
 
   // pre-normalized search blob per row (built once per dataset, not per keystroke)
   const searchIndex = useMemo(
-    () => rows.map((r) => normKey([r.vin, ...SEARCH_KEYS.map((k) => r.cells[k] || '')].join(' '))),
-    [rows],
+    () => siteRows.map((r) => normKey([r.vin, ...SEARCH_KEYS.map((k) => r.cells[k] || '')].join(' '))),
+    [siteRows],
   )
 
   // Every VIN this device knows that is NOT in the active yard's list, indexed
@@ -334,11 +383,17 @@ export function Units() {
   // nothing at all, even though the ⌘K palette (which never scopes by yard)
   // listed it. A VIN identifies ONE car worldwide, so typing a whole one (or
   // its last 5+) is never an ask for "a car in this yard": it names that car.
+  // …and one this yard gated out LONGER ago than the list itself carries still
+  // reads here as the departure it was, not as whatever it has since become
+  // somewhere else — same rule, just reached by VIN instead of by browsing.
   const outsideIndex = useMemo(() => {
     if (!currentSite) return []
-    const inSite = new Set(rows.map((r) => r.vin))
-    return allRows.filter((r) => !inSite.has(r.vin)).map((r) => ({ r, vin: normKey(r.vin) }))
-  }, [allRows, rows, currentSite])
+    const listed = new Set(siteRows.map((r) => r.vin))
+    return allRows
+      .filter((r) => !listed.has(r.vin))
+      .map((r) => ({ r: departedFromSite(r.cells, currentSite, Date.now(), 0) ? asDeparted(r) : r, vin: normKey(r.vin) }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allRows, siteRows, currentSite])
   const outsideRows = useMemo(() => {
     const query = normKey(q)
     // 5 = the "เลขท้าย 5 ตัว" every scan station already accepts. Shorter than
@@ -371,7 +426,7 @@ export function Units() {
       if (vinFilterSet && !vinFilterSet.has(r.vin)) return false
       return true
     }
-    let arr = rows.filter((r, i) => (!query || searchIndex[i].includes(query)) && passesRest(r))
+    let arr = siteRows.filter((r, i) => (!query || searchIndex[i].includes(query)) && passesRest(r))
     if (outsideRows.length) arr = arr.concat(outsideRows.filter(passesRest))
     arr = [...arr].sort((a, b) => {
       if (sortKey === 'No') { // "Last update" column → sort by timestamp (No order as tiebreaker)
@@ -383,7 +438,7 @@ export function Units() {
       return av < bv ? -sortDir : av > bv ? sortDir : 0
     })
     return arr
-  }, [rows, searchIndex, outsideRows, q, fGroup, colFilters, activeFilterCols, allUnits, unitPreset, vinFilterSet, sortKey, sortDir])
+  }, [siteRows, searchIndex, outsideRows, q, fGroup, colFilters, activeFilterCols, allUnits, unitPreset, vinFilterSet, sortKey, sortDir])
 
   // how many of the rows on screen came from outside this yard — surfaced next
   // to the counters so nobody reads a gated-out car as standing in the yard
@@ -392,6 +447,14 @@ export function Units() {
     const vins = new Set(outsideRows.map((r) => r.vin))
     return filtered.reduce((n, r) => n + (vins.has(r.vin) ? 1 : 0), 0)
   }, [filtered, outsideRows])
+
+  // …and how many left THIS yard — same reason, one step stronger: these are
+  // on screen because the yard gated them out, not because they stand in it
+  const departedShown = useMemo(() => {
+    if (!departedRows.length) return 0
+    const vins = new Set(departedRows.map((r) => r.vin))
+    return filtered.reduce((n, r) => n + (vins.has(r.vin) ? 1 : 0), 0)
+  }, [filtered, departedRows])
 
   const toggleSort = (key: string) => {
     if (sortKey === key) patchView({ sortDir: (sortDir * -1) as SortDir })
@@ -423,8 +486,13 @@ export function Units() {
   // on screen. Same rule the Mylist's own IR button already prints by.
   const printTargets = useMemo(() => {
     const ticked = tabRows.filter((r) => sel.has(r.vin))
-    return ticked.length ? ticked : tabRows
-  }, [tabRows, sel])
+    if (ticked.length) return ticked
+    // nothing ticked = the list on screen, MINUS the cars that already left:
+    // a sticker for a car that is no longer in the yard is paper on the floor.
+    // Ticking one explicitly still prints it (a reprint is a real errand).
+    const gone = new Set(departedRows.map((r) => r.vin))
+    return gone.size ? tabRows.filter((r) => !gone.has(r.vin)) : tabRows
+  }, [tabRows, sel, departedRows])
 
   const clearFilters = () => { patchView({ q: '', fGroup: '', colFilters: {} }); setUnitPreset(null); setUnitVinFilter(null) }
   const anyFilter = !!q || !!fGroup || !!unitPreset || !!unitVinFilter
@@ -479,6 +547,12 @@ export function Units() {
             <span className="mx-1">·</span><b style={{ color: 'var(--st-pending)' }}>{counts.wait.toLocaleString()}</b> Waiting
             <span className="mx-1">·</span><b style={{ color: 'var(--brand)' }}>{tabRows.length.toLocaleString()}</b> shown
           </div>
+          {departedShown > 0 && (
+            <span className="badge shrink-0" title={`รถที่ยิง Gate-out ออกจากลานนี้ภายใน ${DEPARTED_DAYS} วันล่าสุด — ไม่ได้จอดอยู่แล้ว (ไม่นับใน total) แต่ยังดูได้ว่าออกวันไหนกี่โมง ที่ช่อง "Gate Out time stamp"`}
+              style={{ color: '#64748b', background: 'rgba(100,116,139,0.14)' }}>
+              ออกไปแล้ว {departedShown.toLocaleString()}
+            </span>
+          )}
           {outsideShown > 0 && (
             <span className="badge shrink-0" title="ค้นเจอจากเลขวิน แต่รถไม่ได้อยู่ในรายการของลานนี้ (เช่น Gate-out ไปแล้ว หรืออยู่ลานอื่น)"
               style={{ color: 'var(--st-pending)', background: 'rgba(234,179,8,0.14)' }}>
@@ -554,12 +628,12 @@ export function Units() {
 
       {/* body */}
       <div className="flex gap-2 flex-1 min-h-0">
-        {rows.length === 0 ? (
+        {siteRows.length === 0 ? (
           <EmptyState />
         ) : tab === 'units' ? (
           <DataGrid rows={filtered} visCols={visCols} sel={sel} setSel={setSel}
             sortKey={sortKey} sortDir={sortDir} toggleSort={toggleSort} optionsFor={optionsFor}
-            footer={<GridFooter sel={sel} shown={filtered.length} total={rows.length} lastImport={lastImport} />} />
+            footer={<GridFooter sel={sel} shown={filtered.length} total={siteRows.length} lastImport={lastImport} />} />
         ) : tab === 'grouping' ? (
           <GroupingView rows={filtered} visCols={visCols} sel={sel} setSel={setSel}
             sortKey={sortKey} sortDir={sortDir} toggleSort={toggleSort} optionsFor={optionsFor} />
@@ -890,6 +964,11 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
                 <div className="gcell" style={{ width: GUTTER }} />
                 {visCols.map((c) => (
                   <Cell key={c.key} col={c} value={c.key === 'Car Status' ? carStatus : c.key === 'No' ? fmtUpdated(r.updatedAt) : c.key === LOCATION_KEY ? locFor(r) : c.key === 'Aging PM' ? fmtAgingPm(r.cells) : c.key === 'storage Yard' ? fmtStorage(r.cells) : isDateColumn(c.key, c.label) ? fmtSerialToDate(r.cells[c.key]) : (r.cells[c.key] ?? '')}
+                    // "ออกไปเมื่อไหร่" beside the badge: the gate-out columns are
+                    // not in the default view, and a car that left is exactly the
+                    // one nobody can walk out and look at — the time it went has
+                    // to be readable where the status already is.
+                    note={c.key === 'Car Status' && carStatus === 'Gate-out' ? fmtGateOutShort(r.cells) : undefined}
                     dim={(c.key === 'Final Status' || c.key === 'Status Tax') && carStatus === 'Gate-out'} />
                 ))}
               </div>
@@ -1425,8 +1504,19 @@ function EmptyState() {
   )
 }
 
+/** "19/09 04:19" — when a gated-out car went through the gate, read from the
+ *  row's own scan stamp (the departed rows put the closed round's stamp back,
+ *  see asDeparted). Blank when the sheet never carried one. */
+function fmtGateOutShort(cells: Record<string, string>): string {
+  const ms = gateOutScanMs(cells)
+  if (!ms) return ''
+  const d = new Date(ms)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getDate())}/${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
 // ============================ cell (display-only — edits happen via right-click) ============================
-function Cell({ col, value, dim }: { col: Column; value: string; dim?: boolean }) {
+function Cell({ col, value, note, dim }: { col: Column; value: string; note?: string; dim?: boolean }) {
   let content: React.ReactNode
   if (!value) content = <span style={{ color: '#aab4c2' }}>—</span>
   else if (col.key === 'Color') {
@@ -1440,7 +1530,10 @@ function Cell({ col, value, dim }: { col: Column; value: string; dim?: boolean }
       : <span style={{ opacity: dim ? 0.4 : 1 }}>{value}</span>
   } else if (col.key === 'Car Status') {
     const meta = CAR_STATUS_META[value]
-    content = meta ? <span className="gbadge" style={{ color: meta.color, background: meta.bg }}>{value}</span> : <span>{value}</span>
+    const badge = meta ? <span className="gbadge" style={{ color: meta.color, background: meta.bg }}>{value}</span> : <span>{value}</span>
+    content = note
+      ? <span className="inline-flex items-center gap-1.5 min-w-0">{badge}<span className="tabular text-[11px] whitespace-nowrap" style={{ color: 'var(--muted)' }}>{note}</span></span>
+      : badge
   } else if (col.key === 'Vin Of Status') {
     const vc = vinOfStatusColor(value)
     content = vc ? <span className="gbadge" style={{ color: vc.color, background: vc.bg }}>{value}</span> : <span>{value}</span>
@@ -1454,7 +1547,7 @@ function Cell({ col, value, dim }: { col: Column; value: string; dim?: boolean }
   else content = <span>{value}</span>
 
   return (
-    <div className="gcell" style={{ width: col.width }} title={value}>
+    <div className="gcell" style={{ width: col.width }} title={note ? `${value} · ${note}` : value}>
       {content}
     </div>
   )
