@@ -10,7 +10,7 @@ import * as db from '../lib/db'
 import { onSync, sendSync } from '../lib/syncBus'
 import { useYard } from './useYard'
 import { useTracking } from './useTracking' // one-way: tracking never imports ops
-import { hasLeftGate, deriveCarStatus, isGateOutStamp, gateOutScanMs } from '../lib/carStatus'
+import { hasLeftGate, deriveCarStatus, isGateOutStamp, gateOutScanMs, departedFromSite } from '../lib/carStatus'
 import { PM_KEYS } from '../lib/trackingColumns'
 import type { TrackRow } from '../lib/excelTracking'
 import { quotaSafeStorage } from '../lib/persistStorage'
@@ -789,11 +789,21 @@ export const useOps = create<OpsState>()(
         const existing = get().queues.find((q) => (q.name ?? '').toLowerCase() === n.toLowerCase())
         if (existing) {
           // re-uploading the same sequence: replace its items, keep the id.
+          // The MANIFEST is what the new sheet redefines — the day's work is
+          // not. A car this run already sent out stays sent: carry its own
+          // progress over by VIN, or a corrected sheet dropped mid-run resets
+          // the board to 0 and every car already gone reads as still waiting.
+          const was = new Map(existing.items.map((i) => [i.vin, i]))
+          const merged = rows.map((it) => {
+            const p = was.get(it.vin)
+            return p ? { ...it, done: p.done, gatedOut: p.gatedOut, doneAt: p.doneAt, doneBy: p.doneBy, stage: p.stage,
+              atWashAt: p.atWashAt, atLaneAt: p.atLaneAt, deliveredBy: p.deliveredBy, returnedBy: p.returnedBy, returnedAt: p.returnedAt } : it
+          })
           // Clear any leftover `type` too — a name collision with an old
           // arrival lot (same shipment, uploaded once as Pre Gate-in and
           // once as Grouping to Dealer) must not leave this delivery run
           // still reading as a GATEIN lot on the Dashboard (see isPreGateInQueue).
-          set((s) => ({ queues: s.queues.map((q) => (q.id === existing.id ? { ...q, kind: 'sequence', type: undefined, items: rows, createdBy: by, createdAt: now } : q)) }))
+          set((s) => ({ queues: s.queues.map((q) => (q.id === existing.id ? { ...q, kind: 'sequence', type: undefined, items: merged, createdBy: by, createdAt: now } : q)) }))
           pushQueue(get, existing.id)
           return existing.id
         }
@@ -1270,11 +1280,6 @@ function everLeftGate(r: TrackRow): boolean {
  * of that run, so the cars stay visible (shown "Gate-out") and the progress
  * counts up 1/17 → 17/17 instead of the total shrinking. Display-only.
  */
-// เวลาห่างสูงสุดที่ยังถือว่า "การกระทำเดียวกัน" — gate-out ยิง item.doneAt แล้ว
-// startNewTrip ยิง row.updatedAt ต่อกันทันทีแบบ synchronous (ห่างกันแค่หลัก
-// มิลลิวินาที) ส่วนรถที่ "กลับมาใหม่" จริงๆ ห่างกันเป็นชั่วโมง/วันขึ้นไปเสมอ
-const SAME_TRANSFER_ACTION_MS = 15_000
-
 export function useActiveQueues(): WorkQueue[] {
   const queues = useOps((s) => s.queues)
   const rows = useTracking((s) => s.rows)
@@ -1327,18 +1332,16 @@ export function useActiveQueues(): WorkQueue[] {
      */
     const partIsHistory = (q: WorkQueue, i: QueueItem): boolean => {
       if (!waiting.has(i.vin)) return false
-      if (i.gatedOut) {
-        // ปกติกฎนี้จับรถที่ "กลับมาใหม่" วันหลัง (re-import) — แต่การย้ายข้าม
-        // yard อัตโนมัติ (#472/#473) ก็ทำให้ item ตัวนี้ gatedOut=true พร้อมกับ
-        // แถวรถกลายเป็น Pre Gate-in "ในการกระทำเดียวกัน" (ห่างกันแค่มิลลิ
-        // วินาที ไม่ใช่คนละวัน) — ถ้าเวลาห่างกันสั้นขนาดนั้น แปลว่าคิวงานนี้
-        // คือคิวที่เพิ่ง gate-out รถออกไปจริงๆ ไม่ใช่ประวัติเก่าที่ควรตัดทิ้ง
-        // ต้องนับต่อ ไม่งั้นยอด "X/Y" ของคิวงานที่กำลังไล่ยิงอยู่จะหดแทนที่จะ
-        // ไต่ขึ้น (ดู startNewTrip keepQueueProgress)
-        const updatedAt = rows[i.vin]?.updatedAt ?? 0
-        if (updatedAt - (i.doneAt ?? 0) < SAME_TRANSFER_ACTION_MS) return false
-        return true
-      }
+      // คิวงานส่งมอบคือ "ใบรายการ" ของเที่ยวนั้น — จำนวนคันต้องคงที่ ห้ามหด
+      // รถที่ยิงออกไปแล้วคือความคืบหน้าของคิวนี้เอง (gate-out คือขั้นสุดท้าย
+      // ของมัน) ไม่ใช่ประวัติเก่าที่ต้องตัดทิ้ง — เคยตัดด้วยกฎ "ห่างกันเกิน
+      // 15 วิ ถือว่าเป็นคนละรอบ" ซึ่งพังทันทีที่ปลายทางแตะแถวนั้นต่อ (ยิง
+      // gate-in, ลง PDI, sync) เพราะ updatedAt เดินหนี doneAt ไปเรื่อย ๆ
+      // ผลคือคิว 252 คันเหลือ 187 ทั้งที่ไม่มีใครเอารถออกจากใบรายการเลย
+      // รถที่ "กลับมาใหม่" จริง ๆ ถูกถอดออกตั้งแต่ตอนปิดรอบแล้ว
+      // (releaseFinishedRound ใน startNewTrip) ไม่ต้องมาตัดซ้ำตรงนี้
+      if (isSequenceQueue(q)) return false
+      if (i.gatedOut) return true
       const leftAt = leftAtOf.get(i.vin)
       if (leftAt === undefined) return false   // ไม่เคยออกจากลาน → ไม่ใช่รถกลับเข้ามาใหม่
       if (leftAt > 0) return Math.max(q.createdAt || 0, i.addedAt || 0) <= leftAt
@@ -1491,10 +1494,20 @@ export function stationProgress(q: WorkQueue) {
  * read the live status, showed "62/62 คัน · เหลือ 0" while the flags said
  * otherwise and the run stayed on the board with nothing left to do.
  */
-export function seqCarGone(i: QueueItem): boolean {
+export function seqCarGone(i: QueueItem, q?: WorkQueue): boolean {
   if (i.gatedOut || i.done) return true
   const cells = useTracking.getState().rows[i.vin]?.cells
-  return !!cells && hasLeftGate(cells)
+  if (!cells) return false
+  if (hasLeftGate(cells)) return true
+  // …and a yard-to-yard departure, which leaves NO live gate-out status behind
+  // to read: the same scan re-files the car as Pre Gate-in at the destination
+  // (see GATE_OUT_ORIGIN_SITE_KEY). Judged against THIS run's own yard, so a
+  // car that once left another yard and is now standing in this one — on this
+  // run, waiting to be sent — is not mistaken for a car that has already gone.
+  // No time window: a run is asking "has this car left MY gate yet", and the
+  // answer does not expire. Without this, a run whose item flags were lost
+  // (a corrected sheet re-uploaded over it) could never count those cars again.
+  return !!q?.site && departedFromSite(cells, q.site, Date.now(), 0)
 }
 
 /**
@@ -1516,7 +1529,7 @@ export function isQueueComplete(q: WorkQueue): boolean {
   // made a finished lot flicker on and off the boards (see queueProgress).
   if (isPreGateInQueue(q)) { const { total, done } = queueProgress(q); return done >= total }
   // …and a delivery run when its cars have all LEFT, by the same reasoning
-  if (isSequenceQueue(q)) return q.items.every(seqCarGone)
+  if (isSequenceQueue(q)) return q.items.every((i) => seqCarGone(i, q))
   return q.items.every((i) => i.done)
 }
 

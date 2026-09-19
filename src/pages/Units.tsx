@@ -272,6 +272,16 @@ export function Units() {
       },
     }
   }
+  /** Every row this device knows, read from THIS yard's point of view: one it
+   *  gated out reads "Gate-out" with the time it went, while the very same car
+   *  on the destination yard's screen keeps its live "Pre Gate-in". Both yards
+   *  are right about their own gate. Used wherever a list deliberately reaches
+   *  past this yard (the pasted Mylist, VIN lookups). */
+  const rowsFromHere = useMemo(
+    () => allRows.map((r) => (departedFromSite(r.cells, currentSite ?? undefined, Date.now(), 0) ? asDeparted(r) : r)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [allRows, currentSite],
+  )
   const departedRows = useMemo(() => {
     if (!currentSite) return []
     const since = Date.now() - DEPARTED_DAYS * 86_400_000
@@ -478,9 +488,10 @@ export function Units() {
   // ticked VINs were not in the Units tab's 1-row filtered list, and the button
   // reported "ไม่มีรถให้พิมพ์".
   const mylistText = useUnitsView((s) => s.mylistText)
+  // the pasted list reads from this yard's point of view too (see rowsFromHere)
   const tabRows = useMemo(
-    () => (tab === 'mylist' ? matchVins(mylistText, allRows).found : filtered),
-    [tab, mylistText, allRows, filtered],
+    () => (tab === 'mylist' ? matchVins(mylistText, rowsFromHere).found : filtered),
+    [tab, mylistText, rowsFromHere, filtered],
   )
   // ticked cars win; nothing ticked (or nothing ticked ON THIS TAB) = the list
   // on screen. Same rule the Mylist's own IR button already prints by.
@@ -641,7 +652,7 @@ export function Units() {
           // EVERY row this device knows, not just the active yard's: a pasted
           // list is always a set of exact cars, and the whole point of pasting
           // one is to reach cars the yard list no longer carries (gated out).
-          <MylistView allRows={allRows} visCols={visCols} sel={sel} setSel={setSel}
+          <MylistView allRows={rowsFromHere} visCols={visCols} sel={sel} setSel={setSel}
             sortKey={sortKey} sortDir={sortDir} toggleSort={toggleSort} optionsFor={optionsFor} />
         )}
 

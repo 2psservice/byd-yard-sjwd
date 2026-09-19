@@ -35,14 +35,17 @@ export function SeqQueuePicker({ queues, units, trackingRows, queuedLabel }: {
   // decides whether the whole run is finished (seqCarGone → isQueueComplete):
   // while this card had its own looser copy, a run could read "เหลือ 0" here
   // and still count as unfinished, so it never left the board.
-  const isGone = (i: QueueItem) => seqCarGone(i)
+  // …and by THIS run's yard for a yard-to-yard send, which leaves no live
+  // gate-out status behind at all (see seqCarGone) — the run must be handed
+  // over so it can ask about its own gate, not just any gate.
+  const isGone = (i: QueueItem, q: WorkQueue) => seqCarGone(i, q)
   const openSeq = openId ? queues.find((q) => q.id === openId) ?? null : null
   const seqCars = useMemo(() => {
     if (!openSeq) return [] as { vin: string; model: string; color: string; grouping: string; location: string; lane: string; stage: string; done: boolean; ts?: number; tsLabel?: string; by?: string }[]
     return openSeq.items.map((i) => {
       const u = units.find((x) => x.vin === i.vin)
       const row = trackingRows.find((r) => r.vin === i.vin)
-      const gone = isGone(i)
+      const gone = isGone(i, openSeq)
       // most-recent stage timestamp for the history line (gate-out → preload → wash)
       const step = gone || i.gatedOut ? { ts: i.doneAt, label: 'gate out', by: i.doneBy }
         : i.atLaneAt ? { ts: i.atLaneAt, label: 'preload', by: i.returnedBy }
@@ -77,7 +80,7 @@ export function SeqQueuePicker({ queues, units, trackingRows, queuedLabel }: {
     <div className="space-y-2.5 fade-up">
       {queues.map((q) => {
         const total = q.items.length
-        const done = q.items.reduce((n, i) => n + (isGone(i) || i.done ? 1 : 0), 0)
+        const done = q.items.reduce((n, i) => n + (isGone(i, q) || i.done ? 1 : 0), 0)
         const isOpen = openId === q.id
         return (
           <div key={q.id} className="panel overflow-hidden">
