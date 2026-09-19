@@ -194,7 +194,7 @@ export function Dashboard() {
   const s = useMemo(() => {
     // ── real imported data (tracking rows) — driven by Car Status ──
     if (fromTracking) {
-      let inYard = 0, parked = 0, gatein = 0, expected = 0, preGateOut = 0, preload = 0, damaged = 0
+      let inYard = 0, parked = 0, gatein = 0, expected = 0, preGateOut = 0, gateOut = 0, preload = 0, damaged = 0
       const byStatus = new Map<string, number>()
       const byModel = new Map<string, number>()
       for (const r of trackingRows) {
@@ -204,8 +204,9 @@ export function Dashboard() {
         byModel.set(mod, (byModel.get(mod) ?? 0) + 1)
         if (cs === 'Pre Gate-in') expected++
         else if (cs === 'Pre Gate-out') preGateOut++   // ops-scan gate-out, awaiting 09:30 flush
+        else if (cs === 'Gate-out') gateOut++          // actually departed — the yard-to-yard sweep also lands here briefly before it re-files as Pre Gate-in elsewhere
         else if (cs === 'Preload') preload++            // confirmed still on-site in preload lane
-        else if (cs !== 'Gate-out') {                   // actively in the yard
+        else {                   // actively in the yard
           inYard++
           if (cs === 'Gate-in') gatein++
           if (PARKED_STATUSES.has(cs)) parked++
@@ -216,7 +217,7 @@ export function Dashboard() {
       }
       const mix = [...byModel.entries()].map(([m, n]) => ({ m, n })).sort((a, b) => b.n - a.n).slice(0, 8)
       const statusBreakdown = CAR_STATUS_ORDER.map((st) => ({ st, n: byStatus.get(st) ?? 0 })).filter((x) => x.n > 0)
-      return { total: trackingRows.length, inYard, parked, gatein, expected, preGateOut, preload, damaged, occupied: parked, cap: inYard, mix, byZone: [] as [string, { used: number; cap: number }][], statusBreakdown }
+      return { total: trackingRows.length, inYard, parked, gatein, expected, preGateOut, gateOut, preload, damaged, occupied: parked, cap: inYard, mix, byZone: [] as [string, { used: number; cap: number }][], statusBreakdown }
     }
 
     // ── sample / operational fallback ──
@@ -245,6 +246,7 @@ export function Dashboard() {
       gatein: units.filter((u) => u.status === 'GATE_IN').length,
       expected: units.filter((u) => u.status === 'EXPECTED').length,
       preGateOut: 0,
+      gateOut: units.filter((u) => u.status === 'DEPARTED').length,
       preload: units.filter((u) => u.status === 'LOADED').length,
       damaged: units.filter((u) => u.damages.length > 0).length,
       occupied: occupied.length,
@@ -374,7 +376,7 @@ export function Dashboard() {
         right={<LiveClock />}
       />
 
-      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3 mb-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 mb-4">
         <Stat label={t('inYard')} value={<Num n={s.inYard} />} accent="var(--brand)" icon={<Car size={17} />}
           image="/side.png" imageVariant="side"
           onClick={kpiClick(t('inYard'), 'var(--brand)', u => ['GATE_IN','ASSIGNED','PARKED'].includes(u.status), 'inYard')} />
@@ -404,6 +406,9 @@ export function Dashboard() {
         <Stat label="Pre Gate-out" value={<Num n={s.preGateOut} />} accent="#f59e0b" icon={<LogOut size={17} />}
           sub={lang === 'th' ? 'รอออก (flush 09:30)' : 'awaiting 09:30'} image="/car-top.png" imageVariant="top"
           onClick={kpiClick('Pre Gate-out', '#f59e0b', () => false, 'preGateOut')} />
+        <Stat label="Gate-out" value={<Num n={s.gateOut} />} accent="#64748b" icon={<LogOut size={17} />}
+          sub={lang === 'th' ? 'ออกจากลานแล้ว' : 'departed'} image="/car-top.png" imageVariant="top"
+          onClick={kpiClick('Gate-out', '#64748b', u => u.status === 'DEPARTED', 'gateOut')} />
         <Stat label="Preload" value={<Num n={s.preload} />} accent="#0d9488" icon={<Truck size={17} />}
           sub={lang === 'th' ? 'จอดรอรถมารับ' : 'in preload'} image="/side.png" imageVariant="side"
           onClick={kpiClick('Preload', '#0d9488', u => u.status === 'LOADED', 'preload')} />

@@ -107,7 +107,7 @@ function masterPairs(list: { en: string; th: string }[], used: Set<string>): { v
 }
 
 // dashboard quick-filter presets (card → Unit List), matching the dashboard's KPI logic
-const PRESET_LABEL: Record<string, string> = { inYard: 'In Yard', parked: 'Parked', gatein: 'Gate In', expected: 'Pre Gate-in', damage: 'Waiting Repair', preGateOut: 'Pre Gate-out', preload: 'Preload' }
+const PRESET_LABEL: Record<string, string> = { inYard: 'In Yard', parked: 'Parked', gatein: 'Gate In', expected: 'Pre Gate-in', damage: 'Waiting Repair', preGateOut: 'Pre Gate-out', gateOut: 'Gate-out', preload: 'Preload' }
 // Summary-table cell preset: "sum:<Model>|<Final Status>" ('' = blank-status
 // bucket, '*' = any — used by the รวม row/column totals). The match must mirror
 // YardSummary's counting exactly (same model derivation + in-yard scope) so the
@@ -164,6 +164,7 @@ const presetMatch = (preset: string, r: TrackRow): boolean => {
     case 'gatein':     return cs === 'Gate-in'
     case 'expected':   return cs === 'Pre Gate-in'
     case 'preGateOut': return cs === 'Pre Gate-out'
+    case 'gateOut':    return cs === 'Gate-out'
     case 'preload':    return cs === 'Preload'
     // match the Dashboard "Damage" KPI exactly: waiting-repair cars that are
     // still IN YARD (a gated-out / preload / pre-gate-in car waiting repair is

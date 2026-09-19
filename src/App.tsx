@@ -226,6 +226,11 @@ export default function App() {
           if (dest.id === curSite) continue // already there — a real dealer that happens to share a yard's name, or already transferred
           if (deriveCarStatus(r.cells) !== 'Gate-out') continue // hasn't actually left yet
           useTracking.getState().startNewTrip(vin, { yard: dest.name })
+          // แปะเข้าคิวงาน Gate-in ที่ปลายทางด้วย (เหมือนที่ YardOps doGateOut ทำ
+          // ตอนกดปุ่มโดยตรง) ไม่งั้นรถที่ผ่านทางนี้ (เช่น re-import ไฟล์) จะไป
+          // โผล่เป็น "(รอ Gate-in · ยังไม่มีคิวงาน)" ที่การ์ด Pre Gate-in แทน
+          const originName = sites.find((s) => s.id === curSite)?.name ?? curSite ?? ''
+          useOps.getState().createGateInQueue(`Shuttle ${originName} to ${dest.name}`, [vin], undefined, dest.id)
         }
       }
 
