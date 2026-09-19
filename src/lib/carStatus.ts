@@ -113,15 +113,35 @@ function lastFlushBoundary(now: number): number {
   return b.getTime()
 }
 
-/** Did this car gate out FROM `siteId` since the last flush boundary — even
- *  though it may already read as Pre Gate-in somewhere else by now (see
- *  GATE_OUT_ORIGIN_SITE_KEY)? Ages out on its own after the next flush, so a
- *  car that later gates in and works its way back out again is judged by
- *  its NEXT gate-out, not a stale marker from days ago. */
-export function departedFromSite(c: Record<string, string>, siteId: string | undefined, now: number = Date.now()): boolean {
-  if (!siteId || c[GATE_OUT_ORIGIN_SITE_KEY] !== siteId) return false
+/** epoch(ms) this car was scanned out of the yard named by its origin marker,
+ *  0 when it carries none (see GATE_OUT_ORIGIN_SITE_KEY). */
+export function gateOutOriginAt(c: Record<string, string>): number {
   const at = parseInt(c[GATE_OUT_ORIGIN_AT_KEY] || '', 10)
-  return Number.isFinite(at) && at > 0 && at >= lastFlushBoundary(now)
+  return Number.isFinite(at) && at > 0 ? at : 0
+}
+
+/** Did this car gate out FROM `siteId` — even though it may already read as
+ *  Pre Gate-in somewhere else by now (see GATE_OUT_ORIGIN_SITE_KEY)?
+ *
+ *  `since` bounds how far back to look, and is what the window MEANS on each
+ *  screen: the Dashboard's Gate-out KPI counts one flush cycle ("ออกไปวันนี้
+ *  กี่คัน", the default), while the Unit List lists several days of them so
+ *  the office can still check WHEN a car left. A marker is overwritten by the
+ *  car's next gate-out, so an old one only ever describes the last yard this
+ *  car actually left. */
+export function departedFromSite(
+  c: Record<string, string>, siteId: string | undefined, now: number = Date.now(), since?: number,
+): boolean {
+  if (!siteId || c[GATE_OUT_ORIGIN_SITE_KEY] !== siteId) return false
+  const at = gateOutOriginAt(c)
+  return at > 0 && at >= (since ?? lastFlushBoundary(now))
+}
+
+/** "DD/MM/YYYY HH:mm" — the stamp the gate writes into "Gate Out time stamp". */
+export function fmtGateOutStamp(ms: number): string {
+  const d = new Date(ms)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
 /** epoch(ms) a Pre-Gate-out car was scanned out — from the "Gate Out Time" cell,
