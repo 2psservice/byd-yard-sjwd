@@ -2968,7 +2968,9 @@ function DriverView() {
   }
 
   // ── delivery-sequence queues visible to the driver (browse + progress) ──
-  const seqQueues = useMemo(() => queues.filter(q => isSequenceQueue(q) && !isEmptyQueue(q) && !isQueueComplete(q)), [queues])
+  // รันที่ถูกเก็บเข้าคลังแล้วต้องหายไปจากกระดานทุกหน้า ไม่ใช่แค่หน้า Operation
+  const seqClosed = useOps(s => s.closed)
+  const seqQueues = useMemo(() => queues.filter(q => isSequenceQueue(q) && !isEmptyQueue(q) && !isQueueComplete(q) && !seqClosed[q.id]), [queues, seqClosed])
   // the driver moves cars for EVERY station, so they see all work queues
   // (PDI / PM / FINAL CHECK / งานพิเศษ) — unlike the stations, which are
   // strictly scoped to their own type.
@@ -4228,7 +4230,9 @@ function GateOutView() {
 
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
 
-  const seqQueues = useMemo(() => queues.filter(q => isSequenceQueue(q) && !isEmptyQueue(q) && !isQueueComplete(q)), [queues])
+  // รันที่ถูกเก็บเข้าคลังแล้วต้องหายไปจากสถานี Gate-out ด้วย
+  const seqClosed = useOps(s => s.closed)
+  const seqQueues = useMemo(() => queues.filter(q => isSequenceQueue(q) && !isEmptyQueue(q) && !isQueueComplete(q) && !seqClosed[q.id]), [queues, seqClosed])
   const row = vin ? (trackingRows.find(r => r.vin === vin) ?? null) : null
   const seqHit = useMemo(() => findSeqItem(vin, queues), [vin, queues])
   // where the car actually stands, so the gate can go fetch it — the yard name
