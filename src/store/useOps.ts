@@ -10,7 +10,7 @@ import * as db from '../lib/db'
 import { onSync, sendSync } from '../lib/syncBus'
 import { useYard } from './useYard'
 import { useTracking } from './useTracking' // one-way: tracking never imports ops
-import { hasLeftGate, deriveCarStatus, isGateOutStamp, gateOutScanMs } from '../lib/carStatus'
+import { hasLeftGate, deriveCarStatus, isGateOutStamp, gateOutScanMs, GATE_OUT_ORIGIN_SITE_KEY } from '../lib/carStatus'
 import { departedFromSite } from '../lib/siteScope'
 import { PM_KEYS } from '../lib/trackingColumns'
 import type { TrackRow } from '../lib/excelTracking'
@@ -1102,12 +1102,19 @@ function reconcileGateOuts() {
     // หรือมี import เขียนทับแถว รอยนั้นก็หมดไป แล้วคิวงานที่จบไปแล้วก็เด้ง
     // กลับมาพร้อมเลข "เหลือ N" ทั้งที่รถออกไปตั้งแต่เมื่อวาน
     // จึงต้องอ่านหลักฐานนี้ด้วย "ตอนที่ยังมีอยู่" แล้วตราลงบนรายการให้ถาวร
-    const leftYard = (vin: string): boolean => {
+    // since = นับเฉพาะการออกจากลาน "ตั้งแต่เวลานี้เป็นต้นไป" — คิวส่งรถถามว่า
+    // "รถออกประตูของรันนี้ไปหรือยัง" คำตอบไม่มีวันหมดอายุ (since = 0) ส่วนคิว
+    // สถานีถามว่า "งานที่สั่งไว้รอบนี้ยังต้องทำอยู่ไหม" การออกจากลานเมื่อรอบ
+    // ก่อน (รถเคยไป แล้วกลับมาใหม่ แล้วถูกสั่งงานใหม่) ต้องไม่มาปิดงานรอบนี้
+    const leftYard = (vin: string, since = 0): boolean => {
       if (gone.has(vin)) return true
-      if (!isSequenceQueue(q) || !q.site) return false
+      if (!q.site) return false
       const cells = rows[vin]?.cells
-      return !!cells && departedFromSite(cells, q.site, sites, 0)
+      return !!cells && departedFromSite(cells, q.site, sites, since)
     }
+    // "รถคันนี้ออกจากลานของคิวนี้ไปแล้ว" — คิวของยาร์ดนี้จึงหมดหน้าที่กับมัน
+    const itemLeftYard = (i: QueueItem) =>
+      isSequenceQueue(q) ? leftYard(i.vin) : leftYard(i.vin, i.addedAt ?? 0)
     // Pre Gate-in must be resolved the SAME way every other screen resolves it
     // (queue type first, name only as the legacy fallback). Testing the name
     // alone broke the moment an admin renamed an arrival lot to something
@@ -1129,7 +1136,7 @@ function reconcileGateOuts() {
     let items = q.items.map((i) => {
       // ตราว่า "ออกไปแล้ว" ลงบนรายการทันทีที่เห็นหลักฐาน — คำตอบนี้ต้องถูก
       // ถอนคืนไม่ได้อีก ไม่ว่าชีตจะถูกเขียนทับหรือรถจะไปยิงเข้าลานที่ปลายทาง
-      if (leftYard(i.vin) && !(i.done && i.gatedOut)) {
+      if (itemLeftYard(i) && !(i.done && i.gatedOut)) {
         changed = true
         return { ...i, gatedOut: true, done: true, doneAt: i.doneAt ?? Date.now() }
       }
@@ -1168,7 +1175,11 @@ function reconcileGateOuts() {
       }
       if (ladder && !i.done && !i.manualUndoneAt) {
         const r = rows[i.vin]
-        if (r) {
+        // แยกยาร์ด แยกงาน: ช่อง PDI / PM / FINAL บนชีตเป็นช่องกลางช่องเดียว
+        // ใครลงวันที่ก็เห็นเหมือนกันหมดทุกยาร์ด ถ้ารถย้ายไปอยู่ยาร์ดอื่นแล้ว
+        // งานที่ยาร์ดนั้นทำ ต้องไม่ย้อนกลับมาติ๊กคิวของยาร์ดนี้ว่าเสร็จ
+        const otherYard = !!q.site && !!r?.site && r.site !== q.site
+        if (r && !otherYard) {
           // a ladder date written on the car's gate-in day, with no station
           // record behind it, is the gate-in artifact described above — never
           // let it re-tick this queue
@@ -1309,8 +1320,13 @@ export function useActiveQueues(): WorkQueue[] {
     const waiting = new Set<string>()          // อยู่ที่ Pre Gate-in ตอนนี้
     const leftAtOf = new Map<string, number>() // vin → เวลาที่ออกจากลานครั้งล่าสุด (0 = ไม่รู้)
     const now = Date.now()
+    // รถที่ "เคยถูกยิงออกจากยาร์ดใดยาร์ดหนึ่ง" — คัดหยาบ ๆ ด้วยรอยที่ประทับไว้
+    // (เช็กช่องเดียว) แล้วค่อยไปถามละเอียดทีหลังว่าออกจากลานของคิวไหน จะได้ไม่
+    // ต้องแกะประวัติเที่ยวรถของทุกคันในทุกครั้งที่หน้าจอรีเฟรช
+    const maybeLeft = new Set<string>()
     for (const vin in rows) {
       const r = rows[vin]
+      if (r.cells[GATE_OUT_ORIGIN_SITE_KEY]) maybeLeft.add(vin)
       if (hasLeftGate(r.cells)) { gone.add(vin); continue }
       if (deriveCarStatus(r.cells) !== 'Pre Gate-in') continue
       waiting.add(vin)
@@ -1324,7 +1340,7 @@ export function useActiveQueues(): WorkQueue[] {
         leftAtOf.set(vin, t > now ? 0 : t) // 0 = ไม่รู้เวลา → ใช้เกณฑ์ i.done แทน
       }
     }
-    if (!gone.size && !waiting.size) return queues
+    if (!gone.size && !waiting.size && !maybeLeft.size) return queues
     /**
      * Is this car's part in THIS run already history?
      *
@@ -1368,8 +1384,19 @@ export function useActiveQueues(): WorkQueue[] {
       if (leftAt > 0) return Math.max(q.createdAt || 0, i.addedAt || 0) <= leftAt
       return !!i.done
     }
+    // แยกยาร์ด แยกงาน: รถที่ออกจากลานของคิวนี้ไปแล้ว งานของลานนี้จบไปกับมัน
+    // gone (ด้านบน) อ่าน "สถานะสด" ซึ่งใช้กับการส่งข้ามยาร์ดไม่ได้เลย — พอรถ
+    // ไปยิงเข้าลานที่ปลายทาง สถานะกลางกลับมาเป็น In Yard ทั้งที่ลานต้นทางจบ
+    // งานไปแล้ว คิวสถานีของลานต้นทางจึงเห็นมันเป็นงานค้างขึ้นมาใหม่
+    // นับเฉพาะการออกที่เกิด "หลังจาก" รถถูกสั่งงานรอบนี้ รถที่เคยออกไปเมื่อรอบ
+    // ก่อนแล้วกลับเข้ามาใหม่และถูกสั่งงานใหม่ ต้องไม่ถูกตัดทิ้งไปด้วย
+    const sites = useYard.getState().sites
+    const leftThisYard = (q: WorkQueue, i: QueueItem) =>
+      maybeLeft.has(i.vin) && !!q.site &&
+      departedFromSite(rows[i.vin]?.cells ?? {}, q.site, sites, i.addedAt ?? 0)
     return queues.map((q) => {
-      const drop = (i: QueueItem) => partIsHistory(q, i) || (!isSequenceQueue(q) && gone.has(i.vin))
+      const drop = (i: QueueItem) =>
+        partIsHistory(q, i) || (!isSequenceQueue(q) && (gone.has(i.vin) || leftThisYard(q, i)))
       // a delivery run KEEPS its gated-out cars — gate-out is its final stage and
       // its progress must count up 1/17 → 17/17, not shrink
       return q.items.some(drop) ? { ...q, items: q.items.filter((i) => !drop(i)) } : q
