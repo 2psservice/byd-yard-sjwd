@@ -706,6 +706,11 @@ type NativeDetectorCtor = {
   getSupportedFormats?: () => Promise<string[]>
 }
 let nativeDetectorPromise: Promise<NativeDetector | null> | null = null
+let detectorIdleTimer: ReturnType<typeof setTimeout> | null = null
+// ไม่ได้แตะกล้องนานขนาดนี้ = เลิกใช้แล้ว คืนตัวอ่าน (และโมดูลสแกนที่มันจองไว้)
+// ให้ระบบ — บนเครื่องแรม 3–4 GB ทุกอย่างที่ถือค้างไว้เปล่า ๆ คือหน่วยความจำที่
+// แอปอื่นต้องแย่งคืน แล้วจบที่ระบบฆ่าแอปเราทิ้งตอนสลับกลับมา
+const DETECTOR_IDLE_MS = 10 * 60_000
 async function buildNativeDetector(): Promise<NativeDetector | null> {
   const BD = (window as unknown as { BarcodeDetector?: NativeDetectorCtor }).BarcodeDetector
   if (!BD) return null // iPhone / เบราว์เซอร์ที่ไม่มีตัวอ่านของระบบ → ไปทาง ZXing
@@ -716,28 +721,54 @@ async function buildNativeDetector(): Promise<NativeDetector | null> {
     return new BD({ formats: want })
   } catch { return null }
 }
+/** ทิ้งตัวอ่านที่แคชไว้ — ครั้งหน้าที่ต้องใช้จะสร้างใหม่เองอัตโนมัติ
+ *  เรียกเมื่อ (ก) มันพังกลางทาง (ข) ไม่ได้ใช้กล้องมานานแล้ว (ค) แอปถูกพับไป */
+function releaseNativeDetector(): void {
+  nativeDetectorPromise = null
+  if (detectorIdleTimer) { clearTimeout(detectorIdleTimer); detectorIdleTimer = null }
+}
+/** นับถอยหลังคืนตัวอ่าน — เริ่มนับใหม่ทุกครั้งที่มีการใช้งานกล้อง */
+function keepDetectorAlive(): void {
+  if (detectorIdleTimer) clearTimeout(detectorIdleTimer)
+  detectorIdleTimer = setTimeout(releaseNativeDetector, DETECTOR_IDLE_MS)
+}
 function getNativeDetector(): Promise<NativeDetector | null> {
   if (!nativeDetectorPromise) {
     nativeDetectorPromise = buildNativeDetector().then((d) => {
       // ไม่แคช "ความล้มเหลว" — ครั้งหน้าที่เปิดกล้องให้ลองใหม่ได้ (Play Services
-      // อาจยังโหลดโมดูลสแกนไม่เสร็จตอนที่เราถามไปครั้งแรก)
-      if (!d) nativeDetectorPromise = null
+      // อาจยังโหลดโมดูลสแกนไม่เสร็จตอนที่ถามไปครั้งแรก)
+      if (!d) releaseNativeDetector()
       return d
     })
   }
+  keepDetectorAlive()
   return nativeDetectorPromise
 }
+// พับแอปไปทำอย่างอื่น = คืนทั้งกล้องและตัวอ่านให้ระบบทันที ไม่ต้องรอครบ 10 นาที
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') releaseNativeDetector() })
+  window.addEventListener('pagehide', releaseNativeDetector)
+}
+// ตัวอ่านพังติดกันกี่รอบถึงจะถือว่า "ใช้ไม่ได้แล้ว" แล้วทิ้งไปถอยไปใช้ทาง ZXing
+// (Play Services อัปเดตกลางวัน / โมดูลสแกนถูกถอดออกจากหน่วยความจำ = detect()
+// โยน error ทุกรอบ ของเดิมจะวนพังเงียบ ๆ ไปเรื่อย ๆ โดยไม่มีอะไรขึ้นบนจอเลย)
+const NATIVE_FAIL_LIMIT = 4
 
-// ── จังหวะถอดรหัส: ปรับตามความเร็วจริงของเครื่อง ────────────────────────────
+// ── จังหวะถอดรหัส: ปรับตามความเร็วจริงของเครื่อง + มีเพดานกันร้อน ───────────
 // ของเดิมล็อกไว้ค่าเดียว (120/130ms) ซึ่งตั้งเผื่อเครื่องที่ช้าที่สุดเอาไว้แล้ว
 // เครื่องที่ถอดเสร็จใน 25ms จึงนั่งรออีก ~95ms เปล่า ๆ ทุกรอบ ส่วนเครื่องที่ช้า
 // กว่ารอบวนก็ยิงรัวจนแทบไม่ได้พัก (ยิ่งร้อน ยิ่งถอดช้าลงอีก)
-// กติกาใหม่: ถอดเสร็จแล้วพักเป็น "สัดส่วนของเวลาที่เพิ่งใช้ไป" — เครื่องเร็วพัก
-// สั้น (ยิงถี่ขึ้น = จ่อแล้วติดไวขึ้น) เครื่องช้าพักนานขึ้นตามตัว (ซีพียูเหลือ
-// ให้ระบบ = เย็นลง = รอบถัดไปถอดเร็วขึ้น)
-const SCAN_MIN_GAP = 50   // เร็วสุด — กล้องส่งภาพ ~30 เฟรม/วินาทีอยู่แล้ว ถี่กว่านี้ไม่ได้อะไรเพิ่ม
-const SCAN_MAX_GAP = 220  // ช้าสุด — กันเครื่องที่ร้อนจัดทิ้งช่วงนานเกินจนรู้สึกว่าไม่สแกน
-const SCAN_REST = 0.6     // พักเท่ากับ 60% ของเวลาที่ใช้ถอดรอบที่แล้ว
+//
+// กติกาใหม่มีเพดานสองชั้น ทั้งคู่กันเครื่องร้อน:
+//  1. เพดานความถี่  — ห้ามยิงเกิน SCAN_MAX_RATE ครั้ง/วินาที ไม่ว่าเครื่องจะเร็ว
+//     แค่ไหน (กล้องส่งภาพ ~30 เฟรม/วินาทีอยู่แล้ว ถี่กว่านี้คือเผาซีพียูเปล่า)
+//  2. เพดานเวลาทำงาน — พัก "ไม่น้อยกว่า" เวลาที่เพิ่งใช้ถอดไป ซีพียูจึงถูกใช้
+//     ไม่เกินครึ่งหนึ่งของเวลาจริงเสมอ เครื่องยิ่งช้า (= ยิ่งร้อน) ยิ่งพักนาน
+//     ตามตัวเอง ของเดิมพักแค่ 60% ของเวลาถอด = ใช้ซีพียูได้ถึง 62%
+const SCAN_MAX_RATE = 18                              // ครั้ง/วินาที — เพดานตายตัว
+const SCAN_MIN_GAP = Math.round(1000 / SCAN_MAX_RATE) // ≈ 56ms
+const SCAN_MAX_GAP = 250   // ช้าสุด — กันเครื่องร้อนจัดทิ้งช่วงนานจนรู้สึกว่าไม่สแกน
+const SCAN_REST = 1.0      // พัก ≥ เวลาที่ใช้ถอด → ใช้ซีพียูไม่เกิน 50% ของเวลา
 const nextScanGap = (tookMs: number) =>
   Math.min(SCAN_MAX_GAP, Math.max(SCAN_MIN_GAP, Math.round(tookMs * SCAN_REST)))
 
@@ -1010,6 +1041,16 @@ function VinInput({
         // ตามความเร็วจริงของเครื่องได้ (ดู nextScanGap)
         let timer: ReturnType<typeof setTimeout> | null = null
         let stopped = false
+        let fails = 0
+        // ปิดวงจรแล้วคืนของทุกอย่าง — ภาพเฟรมสุดท้ายที่ค้างอยู่ใน canvas ต้องถูก
+        // ล้างและคืนหน่วยความจำทันที (ตั้ง width/height = 0 คือการบอกเบราว์เซอร์
+        // ให้ทิ้ง buffer จริง ๆ ไม่ใช่แค่รอ GC มาเก็บทีหลัง) — เฟรม 1280×720
+        // หนึ่งใบกินราว 3.5 MB ซึ่งไม่ใช่เรื่องเล็กบนเครื่องแรม 3–4 GB
+        const shutdown = () => {
+          stopped = true
+          if (timer) { clearTimeout(timer); timer = null }
+          try { ctx?.clearRect(0, 0, canvas.width, canvas.height); canvas.width = 0; canvas.height = 0 } catch { /* ถูกทิ้งไปแล้ว */ }
+        }
         const again = (gap: number) => { if (!stopped) timer = setTimeout(round, gap) }
         const round = async () => {
           if (stopped) return
@@ -1022,22 +1063,37 @@ function VinInput({
           // ทุก ๆ รอบที่ 3 ดูภาพเต็มเฟรมด้วย เผื่อโค้ดใหญ่หรือไม่ได้อยู่กลางกรอบ
           if (cropOk && ctx && vw && vh && !opticalRef.current && factor > 1 && ++tick % 3 !== 0) {
             const cw = Math.round(vw / factor), ch = Math.round(vh / factor)
-            canvas.width = cw; canvas.height = ch
+            // การตั้ง width/height ใหม่ทุกครั้งล้างภาพเก่าทิ้งให้เองอยู่แล้ว แต่ถ้า
+            // ขนาดเท่าเดิม (ซูมไม่เปลี่ยน) เบราว์เซอร์จะไม่ล้างให้ ต้องล้างเอง
+            // ไม่งั้นถ้า drawImage รอบนี้พลาด จะเหลือภาพของรถคันก่อนค้างให้ถอด
+            if (canvas.width === cw && canvas.height === ch) ctx.clearRect(0, 0, cw, ch)
+            else { canvas.width = cw; canvas.height = ch }
             ctx.drawImage(video, (vw - cw) >> 1, (vh - ch) >> 1, cw, ch, 0, 0, cw, ch)
             src = canvas
           }
           const t0 = performance.now()
           try {
             const codes = await det.detect(src)
+            fails = 0
             if (codes.length) hit(codes[0].rawValue) // สแกนติด → ปิดจอกล้อง → stopped
           } catch {
-            // เครื่องไหนอ่านจาก canvas ไม่ได้ ก็เลิกตัดภาพไปเลยทั้งรอบนี้
-            // ดีกว่าวนพังเงียบ ๆ จนสแกนไม่ติดสักครั้ง
-            if (src !== video) cropOk = false
+            // อ่านจาก canvas ไม่ได้ → เลิกตัดภาพ กลับไปส่งภาพเต็มเฟรมแทน
+            if (src !== video) { cropOk = false }
+            // พังติดกันหลายรอบทั้งที่ส่งภาพเต็มเฟรมแล้ว = ตัวอ่านใช้ไม่ได้จริง
+            // (Play Services อัปเดตกลางวัน / โมดูลสแกนถูกถอดออกจากหน่วยความจำ)
+            // ทิ้งตัวที่แคชไว้ให้สร้างใหม่รอบหน้า แล้วรอบนี้ถอยไปใช้ ZXing ต่อ
+            // ทันที ดีกว่าวนพังเงียบ ๆ จนพนักงานยืนจ่อกล้องอยู่อย่างนั้น
+            else if (++fails >= NATIVE_FAIL_LIMIT) {
+              console.warn('[scan] ตัวอ่านของระบบพังติดกันหลายรอบ — ทิ้งแล้วถอยไปใช้ ZXing')
+              shutdown()
+              releaseNativeDetector()
+              if (!cancelled) void startZxing(video)
+              return
+            }
           }
           again(nextScanGap(performance.now() - t0))
         }
-        controlsRef.current = { stop: () => { stopped = true; if (timer) clearTimeout(timer) } }
+        controlsRef.current = { stop: shutdown }
         void round()
         return true
       } catch { return false } // permission error falls through to ZXing for its message
@@ -1094,6 +1150,13 @@ function VinInput({
       // 80ms เอาไว้ เครื่องที่ถอดเสร็จใน 20ms จึงนั่งรอเปล่า ๆ อีก 110ms ทุกรอบ
       let timer: ReturnType<typeof setTimeout> | null = null
       let stopped = false
+      // ปิดวงจรแล้วคืนของ — เหมือนทาง Android: ล้างภาพเฟรมสุดท้ายและคืน buffer
+      // ทันที ไม่ปล่อยให้ค้างรอ GC (ทางนี้ยังถือ ImageData จาก getImageData ด้วย)
+      const shutdown = () => {
+        stopped = true
+        if (timer) { clearTimeout(timer); timer = null }
+        try { ctx?.clearRect(0, 0, canvas.width, canvas.height); canvas.width = 0; canvas.height = 0 } catch { /* ถูกทิ้งไปแล้ว */ }
+      }
       const again = (gap: number) => { if (!stopped) timer = setTimeout(round, gap) }
       const round = async () => {
         if (stopped) return
@@ -1111,8 +1174,12 @@ function VinInput({
         // cap the decode surface at ~1024 px wide — plenty for the wasm engine,
         // and each frame decodes in tens of ms instead of hundreds on iPhone
         const scale = Math.min(1, 1024 / cw)
-        canvas.width = Math.max(2, Math.round(cw * scale))
-        canvas.height = Math.max(2, Math.round(ch * scale))
+        const dw = Math.max(2, Math.round(cw * scale))
+        const dh = Math.max(2, Math.round(ch * scale))
+        // ขนาดเท่าเดิม = เบราว์เซอร์ไม่ล้างภาพเก่าให้ ต้องล้างเอง ไม่งั้นถ้า
+        // drawImage รอบนี้พลาด จะเหลือภาพของรถคันก่อนค้างอยู่ให้ถอดซ้ำ
+        if (canvas.width === dw && canvas.height === dh) ctx.clearRect(0, 0, dw, dh)
+        else { canvas.width = dw; canvas.height = dh }
         ctx.drawImage(video, (vw - cw) >> 1, (vh - ch) >> 1, cw, ch, 0, 0, canvas.width, canvas.height)
         const t0 = performance.now()
         try {
@@ -1125,7 +1192,7 @@ function VinInput({
         // แล้วแต่เครื่องและความร้อน — พักตามตัวเลขจริงของรอบที่เพิ่งผ่านไป
         again(nextScanGap(performance.now() - t0))
       }
-      controlsRef.current = { stop: () => { stopped = true; if (timer) clearTimeout(timer) } }
+      controlsRef.current = { stop: shutdown }
       setupTrack(video, true)
       void round()
     }
