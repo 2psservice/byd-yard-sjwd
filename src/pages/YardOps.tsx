@@ -2127,10 +2127,27 @@ function WalkView() {
   // first. The tracking sheet is the fast-syncing source of truth: if it says
   // this VIN already gated in and hasn't gone out since, refuse the scan here
   // instead of trusting the stale local unit, and self-heal the cache.
+  /**
+   * ชีตบันทึกไว้ไหมว่า "รถคันนี้ถูกยิงเข้าลานนี้แล้ว ในรอบนี้"
+   *
+   * ใช้ช่อง 'Gate In Time' ซึ่งมีแต่การยิงที่หน้าประตูเท่านั้นที่เขียน (เป็น
+   * เวลาเป็นตัวเลข) และเป็นช่องที่ผูกกับ "รอบการมาเยือน" รอบนี้ — พอรถออกจาก
+   * ลาน ช่องนี้ถูกเก็บเข้าประวัติรอบนั้นไปด้วย จึงไม่มีทางค้างจากรอบก่อน
+   *
+   * จงใจไม่ใช้แค่ช่องสถานะ "In Yard" เพราะไฟล์ import เขียนคำนี้ทับรถที่ไม่มี
+   * ใครยิงเข้าลานเลยก็ได้ — รถแบบนั้นต้องได้ไปการ์ดรับรถเพื่อยิงเข้าจริง ๆ
+   */
+  const scannedInHere = (cells: Record<string, string>): boolean => {
+    const at = parseInt((cells['Gate In Time'] || '').trim(), 10)
+    return Number.isFinite(at) && at > 0 && !hasGoneOut(cells)
+  }
+
   const blockIfAlreadyGated = (u: Unit): boolean => {
-    if (u.status !== 'EXPECTED') return false
+    // DEPARTED ด้วย ไม่ใช่แค่ EXPECTED — รถที่ shuttle มาจากยาร์ดอื่นพกรายการ
+    // ของยาร์ดเดิมมาเป็น DEPARTED ซึ่งก็เป็นรายการที่ล้าสมัยแบบเดียวกัน
+    if (u.status !== 'EXPECTED' && u.status !== 'DEPARTED') return false
     const row = trackingRows.find(r => r.vin === u.vin)
-    if (!row || !isGatedInStatus(row.cells['Car Status']) || hasGoneOut(row.cells)) return false
+    if (!row || !scannedInHere(row.cells)) return false
     fetchUnitFallback(u.vin) // correct the stale local cache in the background
     const gitCell = row.cells['Gate In Time']
     const at = gitCell ? new Date(parseInt(gitCell)) : null
@@ -2173,6 +2190,16 @@ function WalkView() {
     const r = trackingRows.find(x => x.vin === vin)
     if (!r) return false // no sheet row here → nothing to check the car against
     if (deriveCarStatus(r.cells) === 'Pre Gate-in') return true
+    // ยิงเข้าลานนี้ไปแล้วในรอบนี้ = ไม่ใช่การมาถึง ต่อให้รายการรถในเครื่องนี้
+    // ยังค้างเป็น EXPECTED/DEPARTED อยู่ก็ตาม
+    //
+    // นี่คืออาการที่หน้างานเจอ: ยิง gate-in คันหนึ่งผ่านแล้ว ไปยิงคันอื่น พอ
+    // กลับมายิงคันเดิมอีกครั้ง การ์ดรับรถขึ้นมาใหม่เหมือนยังไม่เคยเข้าลาน
+    // เพราะรายการรถบนเครื่องนี้ (ซิงก์ผ่านคลาวด์ ช้ากว่าชีตที่ซิงก์ผ่าน
+    // IndexedDB ทันที) ยังไม่ทันอัปเดต หรือถูกตัวเก็บกวาดตั้งกลับเป็น EXPECTED
+    // ชีตเป็นฝ่ายที่รู้เร็วกว่าและเป็นหลักฐานการยิงจริง จึงต้องเชื่อชีตก่อน
+    // แล้วปล่อยให้ blockIfAlreadyGated เป็นคนบอกว่า "Gate-in ไปแล้วเมื่อไหร่"
+    if (scannedInHere(r.cells)) return false
     const u = units.find(x => x.vin === vin)
     return !!u && (u.status === 'EXPECTED' || u.status === 'DEPARTED')
   }
