@@ -27,7 +27,7 @@ import { resolvePart, resolveDefect } from '../lib/masterDefect'
 import { useMasterDefect } from '../store/useMasterDefect'
 import { refreshUnitFocus } from '../lib/unitFocus'
 import { cx, PhotoLightbox } from '../components/ui'
-import { useQueues, queueTypeOf } from '../store/useOps'
+import { useSiteQueues, queueTypeOf } from '../store/useOps'
 import { useUnitsView } from '../store/useUnitsView'
 import { buildWorkRows, buildEventLog, readingsHist as libReadingsHist, histOf, fmtHistAt, filledDates, PDI_DATE_KEYS, PM_DATE_KEYS } from '../lib/carHistory'
 
@@ -1814,7 +1814,11 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
   const [editForm, setEditForm] = useState(BLANK_DMG_FORM)
   const [tab, setTab] = useState<'overview' | 'work' | 'timeline' | 'location' | 'pdi' | 'final' | 'pm' | 'damages' | 'event'>('overview')
   const [lightbox, setLightbox] = useState<{ photos: string[]; index: number } | null>(null)
-  const queues = useQueues()
+  // แยกยาร์ด แยกงาน: ประวัติของรถบนหน้านี้แสดงเฉพาะงานของ "ยาร์ดที่กำลังยืนอยู่"
+  // ของเดิมดึงคิวงานของทุกยาร์ดมาเรียงรวมเป็นไทม์ไลน์เดียว งานของลานต้นทางกับ
+  // ลานปลายทางจึงปนกันอยู่ในหน้าเดียวโดยไม่มีอะไรแยกให้ — อ่านแล้วเหมือนยาร์ด
+  // หนึ่งไปทำงานให้อีกยาร์ดหนึ่ง ทั้งที่เป็นคนละรอบคนละลานกัน
+  const queues = useSiteQueues()
   // distinct values per column from all loaded units → combobox dropdown suggestions
   const dmgOpts = useMemo(() => {
     const S = { position: new Set<string>(), defect: new Set<string>(), catNG: new Set<string>(), catRepair: new Set<string>(), incharge: new Set<string>(), note: new Set<string>() }

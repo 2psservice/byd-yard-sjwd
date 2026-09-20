@@ -269,8 +269,15 @@ export default function App() {
           // แปะเข้าคิวงาน Gate-in ที่ปลายทางด้วย (เหมือนที่ YardOps doGateOut ทำ
           // ตอนกดปุ่มโดยตรง) ไม่งั้นรถที่ผ่านทางนี้ (เช่น re-import ไฟล์) จะไป
           // โผล่เป็น "(รอ Gate-in · ยังไม่มีคิวงาน)" ที่การ์ด Pre Gate-in แทน
+          // ชื่อคิวต้องขึ้นต้นด้วยยาร์ด "เจ้าของคิว" เสมอ — คิวนี้เป็นล็อตรับรถ
+          // ของยาร์ดปลายทาง (site = dest.id) ไม่ใช่ของต้นทาง แต่ชื่อเดิม
+          // "Shuttle 3D LCB to 60 RAI" อ่านแล้วเหมือนเป็นงานของ 3D LCB
+          // พอมันถูกปิดตอนยิง gate-in ที่ปลายทาง บันทึกเหตุการณ์จึงดูเหมือน
+          // ยาร์ดต้นทางถูก gate-in ตามไปด้วย ทั้งที่ไม่มีอะไรของต้นทางถูกแตะเลย
+          // รูปแบบ "(ยาร์ด · …)" ยังตรงกับล็อตรับรถที่มาจากการ import ด้วย
+          // บันทึกเหตุการณ์จึงอ่านว่า "Gate-in เสร็จ · (…)" ตามความจริง
           const originName = sites.find((s) => s.id === curSite)?.name ?? curSite ?? ''
-          useOps.getState().createGateInQueue(`Shuttle ${originName} to ${dest.name}`, [vin], undefined, dest.id)
+          useOps.getState().createGateInQueue(`(${dest.name} · shuttle · จาก ${originName})`, [vin], undefined, dest.id)
         }
       }
 
