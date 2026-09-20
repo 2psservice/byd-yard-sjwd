@@ -1090,8 +1090,24 @@ function reconcileGateOuts() {
     }
     groupsOfRun.set(q.id, gs)
   }
+  const sites = useYard.getState().sites
   const dirty: string[] = []
   const next = queues.map((q) => {
+    // ── "รถคันนี้ออกจากลานนี้ไปแล้วหรือยัง" สำหรับคิวส่งรถ ────────────────
+    // gone (ด้านบน) อ่านจาก "สถานะสด" ของชีตเท่านั้น ซึ่งใช้ไม่ได้กับการส่งรถ
+    // ข้ามยาร์ด: การยิงครั้งเดียวกันนั้นเปลี่ยนแถวรถเป็น Pre Gate-in ของยาร์ด
+    // ปลายทางทันที ไม่เหลือสถานะ "Gate-out" ให้ใครอ่านเลยสักวินาทีเดียว
+    // หลักฐานที่เหลืออยู่คือรอยที่ประทับว่า "ออกจากยาร์ดไหน เมื่อไหร่"
+    // (departedFromSite) ซึ่ง "หายได้" ทีหลัง — พอรถไปถึงปลายทางแล้วยิงเข้าลาน
+    // หรือมี import เขียนทับแถว รอยนั้นก็หมดไป แล้วคิวงานที่จบไปแล้วก็เด้ง
+    // กลับมาพร้อมเลข "เหลือ N" ทั้งที่รถออกไปตั้งแต่เมื่อวาน
+    // จึงต้องอ่านหลักฐานนี้ด้วย "ตอนที่ยังมีอยู่" แล้วตราลงบนรายการให้ถาวร
+    const leftYard = (vin: string): boolean => {
+      if (gone.has(vin)) return true
+      if (!isSequenceQueue(q) || !q.site) return false
+      const cells = rows[vin]?.cells
+      return !!cells && departedFromSite(cells, q.site, sites, 0)
+    }
     // Pre Gate-in must be resolved the SAME way every other screen resolves it
     // (queue type first, name only as the legacy fallback). Testing the name
     // alone broke the moment an admin renamed an arrival lot to something
@@ -1111,7 +1127,9 @@ function reconcileGateOuts() {
     const ladder = isStationQueue ? LADDER_OF[queueTypeOf(q)] : undefined
     let changed = false
     let items = q.items.map((i) => {
-      if (gone.has(i.vin) && !(i.done && i.gatedOut)) {
+      // ตราว่า "ออกไปแล้ว" ลงบนรายการทันทีที่เห็นหลักฐาน — คำตอบนี้ต้องถูก
+      // ถอนคืนไม่ได้อีก ไม่ว่าชีตจะถูกเขียนทับหรือรถจะไปยิงเข้าลานที่ปลายทาง
+      if (leftYard(i.vin) && !(i.done && i.gatedOut)) {
         changed = true
         return { ...i, gatedOut: true, done: true, doneAt: i.doneAt ?? Date.now() }
       }
@@ -1218,7 +1236,9 @@ function reconcileGateOuts() {
       const added: QueueItem[] = []
       for (const vin in rows) {
         const g = group.get(vin)
-        if (!g || held.has(vin) || gone.has(vin)) continue
+        // รถที่ออกจากลานนี้ไปแล้ว ห้ามถูกดูดกลับเข้าคิวงานอีก — รวมถึงรถที่
+        // ส่งข้ามยาร์ดไปแล้ว ซึ่งไม่เหลือสถานะ "Gate-out" ให้ gone จับได้
+        if (!g || held.has(vin) || leftYard(vin)) continue
         if (runOfGroup.get(g) !== q.id) continue
         if (q.site && rows[vin].site && rows[vin].site !== q.site) continue
         const mate = q.items.find((i) => (i.group || group.get(i.vin)) === g)
