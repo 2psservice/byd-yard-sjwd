@@ -199,10 +199,20 @@ export function Dashboard() {
   const trackingLoaded = useTracking((st) => st.loaded)
   const units = useMemo(() => {
     const mine = currentSite ? allUnits.filter((u) => u.site === currentSite) : allUnits
-    if (!trackingLoaded) return mine
-    const known = new Set(allTrackingRows.map((r) => r.vin))
-    return mine.filter((u) => known.has(u.vin))
-  }, [allUnits, currentSite, allTrackingRows, trackingLoaded])
+    // ยังโหลดแถวไม่เสร็จ หรือทั้งระบบไม่มีแถวเลย (โหมดข้อมูลตัวอย่าง) → นับตามเดิม
+    // ไม่งั้นการ์ดจะกระพริบเป็น 0 ทั้งหน้าระหว่างโหลด และหน้าเดโมจะว่างเปล่า
+    if (!trackingLoaded || allTrackingRows.length === 0) return mine
+    // นับเฉพาะรถที่มี "แถวข้อมูลของยาร์ดนี้" รองรับเท่านั้น
+    //
+    // รถผีมีสองแบบ และทั้งสองแบบตัวเก็บกวาดย้ายยาร์ดให้ไม่ได้:
+    //  • ไม่มีแถวข้อมูลเลยสักแถวในระบบ — ไม่มีอะไรบอกว่าควรไปอยู่ไหน
+    //  • มีแถว แต่แถวนั้นไม่ได้เป็นของยาร์ดนี้ (แถวไม่มีป้ายยาร์ด หรือชี้ไป
+    //    ยาร์ดอื่น) — กฎย้ายยาร์ดต้องการให้แถวมีป้ายยาร์ดชัดเจนก่อน
+    // ทั้งคู่ไปโผล่เป็นตัวเลขบนการ์ด Pre Gate-in และ Damage ของยาร์ดที่ไม่เคย
+    // นำเข้าข้อมูลอะไรเลย ต้องไม่ถูกนับ
+    const here = new Set(trackingRows.map((r) => r.vin))
+    return mine.filter((u) => here.has(u.vin))
+  }, [allUnits, currentSite, trackingRows, allTrackingRows, trackingLoaded])
   const fromTracking = trackingRows.length > 0
   const t = makeT(lang)
   const [popup, setPopup] = useState<PopupDef | null>(null)
