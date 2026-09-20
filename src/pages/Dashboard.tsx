@@ -188,13 +188,41 @@ export function Dashboard() {
   // candidate (see isPreGateInCandidate), so the "Pre Gate-in" headline never
   // reads 0 while the per-lot progress card below shows the same cars pending.
   const trackingRows = useMemo(() => rowsForSite(allTrackingRows, currentSite, sites), [allTrackingRows, currentSite, sites])
-  const units = useMemo(
-    () => (currentSite ? allUnits.filter((u) => u.site === currentSite) : allUnits),
-    [allUnits, currentSite],
-  )
+  // ── ไม่นับ "รถผี" ─────────────────────────────────────────────────────────
+  // รายการรถที่ไม่มีแถวข้อมูลรองรับเลยสักแถวในทั้งระบบ คือเศษที่ค้างจากการนำเข้า
+  // เก่าหรือยาร์ดที่ถูกล้างไปแล้ว — ไม่มีที่มา ใช้งานอะไรไม่ได้ และตัวเก็บกวาด
+  // ก็ย้ายยาร์ดให้ไม่ได้ด้วย เพราะไม่มีชีตบอกว่ารถควรไปอยู่ที่ไหน
+  // มันไปโผล่เป็นตัวเลขบนการ์ด Pre Gate-in และ Damage ของยาร์ดที่ไม่เคยนำเข้า
+  // ข้อมูลอะไรเลย ต้องไม่ถูกนับ
+  // เช็ก loaded ก่อนเสมอ — ระหว่างที่แถวชีตยังโหลดไม่เสร็จ รถทุกคันจะดูเหมือน
+  // ไม่มีแถวรองรับ ถ้าตัดทิ้งตอนนั้นการ์ดจะกระพริบเป็น 0 ทั้งหน้า
+  const trackingLoaded = useTracking((st) => st.loaded)
+  const units = useMemo(() => {
+    const mine = currentSite ? allUnits.filter((u) => u.site === currentSite) : allUnits
+    if (!trackingLoaded) return mine
+    const known = new Set(allTrackingRows.map((r) => r.vin))
+    return mine.filter((u) => known.has(u.vin))
+  }, [allUnits, currentSite, allTrackingRows, trackingLoaded])
   const fromTracking = trackingRows.length > 0
   const t = makeT(lang)
   const [popup, setPopup] = useState<PopupDef | null>(null)
+
+  // ── Gate-out: นับ "รถที่ออกจากยาร์ดนี้" เสมอ ─────────────────────────────
+  // ของเดิมคำนวณอยู่ข้างในสาขา "ยาร์ดนี้มีแถวชีตของตัวเอง" เท่านั้น ยาร์ดที่รถ
+  // ออกไปหมดแล้ว (ไม่เหลือแถวของตัวเองสักแถว เพราะแถวย้ายตามรถไปยาร์ดปลายทาง)
+  // จึงตกไปใช้สาขาสำรองที่นับจากรายการรถ แล้วได้ 0 ทั้งที่รถออกไปหลายร้อยคัน
+  // ย้ายออกมาไว้ข้างนอกให้ทั้งสองสาขาใช้ตัวเดียวกัน
+  const gateOutRows = useMemo(() => {
+    const live = trackingRows.filter((r) => deriveCarStatus(r.cells) === 'Gate-out')
+    if (!currentSite) return live
+    // การส่งรถข้ามยาร์ดไม่ทิ้งสถานะ Gate-out ไว้ให้อ่านเลย (แถวถูกย้ายไปเป็น
+    // Pre Gate-in ของปลายทางในจังหวะเดียวกัน) — ต้องไล่จากรอยที่ประทับไว้ว่า
+    // "ออกจากยาร์ดไหน เมื่อไหร่" ข้ามทุกแถวที่เครื่องนี้รู้จัก
+    const seen = new Set(live.map((r) => r.vin))
+    const transferred = allTrackingRows.filter((r) =>
+      !seen.has(r.vin) && !rowInSite(r, currentSite, sites) && departedFromSite(r.cells, currentSite, sites))
+    return [...live, ...transferred]
+  }, [trackingRows, allTrackingRows, currentSite, sites])
 
   const s = useMemo(() => {
     // ── real imported data (tracking rows) — driven by Car Status ──
@@ -232,12 +260,7 @@ export function Dashboard() {
       // the same departures — a card counting only since 09:30 read 113 of the
       // cars the list showed 176 of, and a car that left yesterday had simply
       // vanished from the count.
-      const seen = new Set(liveGateOutRows.map((r) => r.vin))
-      const transferredOutRows = currentSite
-        ? allTrackingRows.filter((r) =>
-            !seen.has(r.vin) && !rowInSite(r, currentSite, sites) && departedFromSite(r.cells, currentSite, sites))
-        : []
-      const gateOutRows = [...liveGateOutRows, ...transferredOutRows]
+      void liveGateOutRows // เก็บไว้เพื่อให้ลูปด้านบนอ่านง่าย — ตัวนับจริงอยู่ที่ gateOutRows ด้านนอก
       const mix = [...byModel.entries()].map(([m, n]) => ({ m, n })).sort((a, b) => b.n - a.n).slice(0, 8)
       const statusBreakdown = CAR_STATUS_ORDER.map((st) => ({ st, n: byStatus.get(st) ?? 0 })).filter((x) => x.n > 0)
       return { total: trackingRows.length, inYard, parked, gatein, expected, preGateOut, gateOut: gateOutRows.length, gateOutRows, preload, damaged, occupied: parked, cap: inYard, mix, byZone: [] as [string, { used: number; cap: number }][], statusBreakdown }
@@ -269,8 +292,9 @@ export function Dashboard() {
       gatein: units.filter((u) => u.status === 'GATE_IN').length,
       expected: units.filter((u) => u.status === 'EXPECTED').length,
       preGateOut: 0,
-      gateOut: units.filter((u) => u.status === 'DEPARTED').length,
-      gateOutRows: [] as TrackRow[],
+      // ยาร์ดที่รถออกไปหมดแล้วก็ต้องเห็นยอด Gate-out ของตัวเอง ไม่ใช่ 0
+      gateOut: gateOutRows.length,
+      gateOutRows,
       preload: units.filter((u) => u.status === 'LOADED').length,
       damaged: units.filter((u) => u.damages.length > 0).length,
       occupied: occupied.length,
@@ -279,7 +303,7 @@ export function Dashboard() {
       byZone: [...byZone.entries()],
       statusBreakdown: [] as { st: string; n: number }[],
     }
-  }, [fromTracking, trackingRows, units, blocks])
+  }, [fromTracking, trackingRows, units, blocks, gateOutRows])
 
   // VINs that are real (from Excel) — used to exclude sample units from live events
   const trackingVins = useMemo(() => new Set(trackingRows.map(r => r.vin)), [trackingRows])
