@@ -14,7 +14,7 @@ import {
 import { useYard, useUnits, useTrips, useBlocks, attachPendingDamages } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { isDamaged, deriveCarStatus, hasLeftGate, IN_YARD_STATUSES, CAR_STATUS_META, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY } from '../lib/carStatus'
-import { useOps, useActiveQueues, activeProcess, stageOf, isSequenceQueue, isPreGateInQueue, seqStageOf, isQueueComplete, isEmptyQueue, isStationWorkComplete, queueTypeOf, stampStationDate, stationProgress, drivingNow, gateInArrived, gateInPendingItems } from '../store/useOps'
+import { useOps, useActiveQueues, useSiteQueues, activeProcess, stageOf, isSequenceQueue, isPreGateInQueue, seqStageOf, isQueueComplete, isEmptyQueue, isStationWorkComplete, queueTypeOf, stampStationDate, stationProgress, drivingNow, gateInArrived, gateInPendingItems } from '../store/useOps'
 import type { WorkQueue, QueueItem, QueueType, QueueStage } from '../store/useOps'
 import { CarTopView } from '../components/CarTopView'
 import { LogoMark } from '../components/Logo'
@@ -84,11 +84,6 @@ function useSiteUnits(): Unit[] {
   const currentSite = useYard((s) => s.currentSite)
   // untagged units (mid-migration) count as the active site rather than vanishing
   return useMemo(() => (currentSite ? all.filter((u) => !u.site || u.site === currentSite) : all), [all, currentSite])
-}
-function useSiteQueues(): WorkQueue[] {
-  const all = useActiveQueues() // already excludes gated-out cars; then scope to this yard
-  const currentSite = useYard((s) => s.currentSite)
-  return useMemo(() => (currentSite ? all.filter((q) => !q.site || q.site === currentSite) : all), [all, currentSite])
 }
 /** Explains a failed scan: if the VIN exists but belongs to another yard,
  *  name that yard instead of the misleading "ไม่พบ VIN". */
@@ -4435,8 +4430,11 @@ function GateOutView() {
       // จะเห็นแค่ "(รอ Gate-in · ยังไม่มีคิวงาน)" เหมือนรถลอยไม่มีที่มา —
       // createGateInQueue หาคิวชื่อเดียวกันที่ยังเปิดอยู่แล้วแปะเพิ่ม ไม่สร้างซ้ำ
       // ทุกครั้งที่มีรถย้ายมาอีกคัน (เหมือนคิวงาน Pre Gate-in ปกติจากการ import)
+      // ชื่อคิวขึ้นต้นด้วยยาร์ด "เจ้าของคิว" เสมอ — คิวนี้เป็นของปลายทาง
+      // (ดูเหตุผลเต็มที่ App.tsx จุดเดียวกัน) ชื่อเดิมอ่านแล้วเหมือนเป็นงาน
+      // ของยาร์ดต้นทาง ทำให้บันทึกเหตุการณ์ดูเหมือนต้นทางถูก gate-in ตามไปด้วย
       const originName = sites.find(s => s.id === currentSite)?.name ?? currentSite ?? ''
-      createGateInQueue(`Shuttle ${originName} to ${transferDest!.name}`, [row.vin], currentUser, transferDest!.id)
+      createGateInQueue(`(${transferDest!.name} · shuttle · จาก ${originName})`, [row.vin], currentUser, transferDest!.id)
     }
     setSessionOut(prev => [...prev, row.vin]) // this Note session did real work
     setDone({ vin: row.vin, label: isYardTransfer ? 'Gate-out' : 'Pre Gate-out' }); setVin(null)

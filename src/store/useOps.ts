@@ -1286,6 +1286,19 @@ export function useQueues(): WorkQueue[] {
   return useOps((s) => s.queues)
 }
 
+/**
+ * คิวงานของ "ยาร์ดที่กำลังยืนอยู่" — แยกยาร์ด แยกงาน
+ *
+ * กฎนี้เคยอยู่แยกกันในแต่ละหน้า ย้ายมาไว้ที่เดียวเพื่อไม่ให้เพี้ยนจากกันได้อีก
+ * (หน้ารายละเอียดรถเคยใช้ useQueues ซึ่งเป็นคิวของทุกยาร์ด ประวัติของลานต้นทาง
+ *  กับลานปลายทางจึงปนกันอยู่ในไทม์ไลน์เดียว)
+ */
+export function useSiteQueues(): WorkQueue[] {
+  const all = useActiveQueues() // already excludes gated-out cars; then scope to this yard
+  const currentSite = useYard((s) => s.currentSite)
+  return useMemo(() => (currentSite ? all.filter((q) => !q.site || q.site === currentSite) : all), [all, currentSite])
+}
+
 // "this car's gate work is finished" lives in carStatus.ts (hasLeftGate) so the
 // reconciler, the queue cards and the station badges cannot drift apart again.
 
