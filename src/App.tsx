@@ -200,10 +200,19 @@ export default function App() {
       const strayed = new Map<string, string[]>() // siteId ปลายทาง → รายชื่อ vin
       for (const vin in units) {
         const u = units[vin]
-        if (u.block == null && u.row == null && u.slot == null) continue
         const r = rows[vin]
         if (!r) continue
-        if (deriveCarStatus(r.cells) === 'Gate-out') { gone.push(vin); continue }
+        // กฎ "ปล่อยช่องจอดคืน" ใช้กับรถที่กินช่องอยู่เท่านั้น — รถที่ไม่มีช่อง
+        // ก็ไม่มีอะไรให้ปล่อย
+        const positioned = u.block != null || u.row != null || u.slot != null
+        if (positioned && deriveCarStatus(r.cells) === 'Gate-out') { gone.push(vin); continue }
+        // ส่วนกฎ "ยาร์ดต้องตรงกับชีต" ใช้กับรถทุกคัน ไม่ว่าจะมีช่องจอดหรือไม่
+        //
+        // ของเดิมข้ามรถที่ไม่มีช่องจอดไปตั้งแต่ต้นลูป ซึ่งกลายเป็นหลุมดำ: ตัว
+        // ย้ายยาร์ด (moveUnitsToSite) เก็บช่องจอดทิ้งเสมอตอนย้าย รถที่ถูกย้าย
+        // มาแล้วครั้งหนึ่งจึงไม่มีช่องจอดอีกเลย และจะไม่ถูกตรวจซ้ำตลอดไป —
+        // พอชีตย้ายรถไปยาร์ดอื่นทีหลัง รถค้างอยู่ยาร์ดเดิมถาวร กลายเป็นรถผี
+        // ที่โผล่บนการ์ด Pre Gate-in และ Damage ของยาร์ดที่ไม่เคยนำเข้าข้อมูล
         if (r.site && u.site && r.site !== u.site) {
           const list = strayed.get(r.site) ?? []
           list.push(vin)
