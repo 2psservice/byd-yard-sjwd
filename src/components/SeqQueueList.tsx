@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
-import { ListChecks, ChevronLeft, Clock } from 'lucide-react'
-import { seqStageOf, seqCarGone } from '../store/useOps'
+import { ListChecks, ChevronLeft, Clock, Archive } from 'lucide-react'
+import { seqStageOf, seqCarGone, useOps } from '../store/useOps'
+import { useYard } from '../store/useYard'
 import { yardLocCode, yardLocFull, byYardLocation } from '../lib/groupingImport'
 import type { WorkQueue, QueueItem } from '../store/useOps'
 import type { Unit } from '../types'
@@ -29,6 +30,13 @@ export function SeqQueuePicker({ queues, units, trackingRows, queuedLabel }: {
   queues: WorkQueue[]; units: Unit[]; trackingRows: TrackRow[]; queuedLabel?: string
 }) {
   const [openId, setOpenId] = useState<string | null>(null)
+  // ปิดงานเองได้จากตรงนี้ — รันที่หน้างานยิงออกครบแล้วแต่ระบบยังนับไม่ครบ (เช่น
+  // รถถูกยิงจากรันอื่น หรือหลักฐานการส่งข้ามยาร์ดถูกไฟล์ import เขียนทับไปแล้ว)
+  // จะค้างอยู่บนกระดานตลอดไป เพราะปุ่ม "ปิดงาน" ที่หน้า Operation ขึ้นให้เฉพาะ
+  // รันที่ครบ 100% เท่านั้น ไม่มีทางออกให้หน้างานเลย
+  const closeQueue = useOps((s) => s.closeQueue)
+  const currentUser = useYard((s) => s.currentUser)
+  const toast = useYard((s) => s.toast)
   // a car counts as gated-out by its LIVE status — so cars gated out any way
   // (sequence flow, plain gate-out, import) show "gate out" and count toward
   // progress, even if the queue item's own flag was never set. THE SAME rule
@@ -84,18 +92,38 @@ export function SeqQueuePicker({ queues, units, trackingRows, queuedLabel }: {
         const isOpen = openId === q.id
         return (
           <div key={q.id} className="panel overflow-hidden">
-            <button className="w-full px-4 py-3 flex items-center gap-3 text-left" onClick={() => setOpenId(isOpen ? null : q.id)}>
-              <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: 'var(--brand-soft,#eef4ff)', color: 'var(--brand)' }}>
-                <ListChecks size={17} />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="font-bold text-[12.5px]" style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{q.name}</div>
-                <div className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
-                  <b style={{ color: 'var(--text)' }}>{done}/{total}</b> คัน · เหลือ <b style={{ color: '#d97706' }}>{total - done}</b>
+            <div className="flex items-stretch">
+              <button className="min-w-0 flex-1 pl-4 py-3 flex items-center gap-3 text-left" onClick={() => setOpenId(isOpen ? null : q.id)}>
+                <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: 'var(--brand-soft,#eef4ff)', color: 'var(--brand)' }}>
+                  <ListChecks size={17} />
                 </div>
-              </div>
-              <ChevronLeft size={16} style={{ color: 'var(--muted)', transform: isOpen ? 'rotate(90deg)' : 'rotate(-90deg)', transition: 'transform .15s' }} />
-            </button>
+                <div className="min-w-0 flex-1">
+                  <div className="font-bold text-[12.5px]" style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{q.name}</div>
+                  <div className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
+                    <b style={{ color: 'var(--text)' }}>{done}/{total}</b> คัน · เหลือ <b style={{ color: '#d97706' }}>{total - done}</b>
+                  </div>
+                </div>
+                <ChevronLeft size={16} style={{ color: 'var(--muted)', transform: isOpen ? 'rotate(90deg)' : 'rotate(-90deg)', transition: 'transform .15s' }} />
+              </button>
+              {/* เก็บรันที่จบหน้างานแล้วเข้าคลัง — ดูย้อนหลังได้จากปฏิทิน
+                  และเปิดกลับมาได้ที่หน้า Operation ถ้ากดพลาด */}
+              <button
+                title="เก็บงานนี้เข้าคลัง"
+                className="px-3 shrink-0 flex items-center"
+                style={{ color: 'var(--muted)' }}
+                onClick={() => {
+                  const left = total - done
+                  const warn = left > 0
+                    ? `\n\nยังเหลืออยู่ ${left} คันที่ระบบนับว่ายังไม่ออก — ถ้าหน้างานยิงออกครบแล้ว กดตกลงได้เลย`
+                    : ''
+                  if (!window.confirm(`เก็บ "${q.name}" เข้าคลัง?${warn}\n\n(ดูย้อนหลังได้จากปฏิทิน · เปิดกลับมาได้ที่หน้า Operation)`)) return
+                  closeQueue(q.id, currentUser)
+                  setOpenId(null)
+                  toast('ok', 'เก็บงานเข้าคลังแล้ว')
+                }}>
+                <Archive size={15} />
+              </button>
+            </div>
             {isOpen && (
               <div className="border-t hairline divide-y" style={{ borderColor: 'var(--line)' }}>
                 {seqCars.map((c) => {
