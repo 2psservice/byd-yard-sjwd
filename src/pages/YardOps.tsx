@@ -693,6 +693,54 @@ if (typeof document !== 'undefined') {
   window.addEventListener('pagehide', releaseParkedCam)
 }
 
+// ── ตัวอ่านบาร์โค้ดของระบบ (Android): สร้างครั้งเดียวแล้วใช้ทั้งวัน ──────────
+// ของเดิมถาม getSupportedFormats() แล้ว new BarcodeDetector() ใหม่ "ทุกครั้ง"
+// ที่กดเปิดกล้อง ทั้งสองอย่างวิ่งผ่าน Google Play Services และไปคั่นอยู่ตรงกลาง
+// ระหว่าง "ภาพขึ้นแล้ว" กับ "เริ่มสแกนได้" พอดี — ซึ่งคือเวลาที่เหลืออยู่ก้อน
+// สุดท้าย หลังจากการ "จอดกล้อง" ตัดเวลาขอกล้องออกไปจนเกือบหมดแล้ว
+// ตัวอ่านตัวเดียวใช้กับกล้องกี่รอบก็ได้ (ส่งภาพเข้าไปตอน detect() ทุกครั้งอยู่แล้ว)
+type NativeSrc = HTMLVideoElement | HTMLCanvasElement
+type NativeDetector = { detect: (v: NativeSrc) => Promise<{ rawValue?: string }[]> }
+type NativeDetectorCtor = {
+  new (o: { formats: string[] }): NativeDetector
+  getSupportedFormats?: () => Promise<string[]>
+}
+let nativeDetectorPromise: Promise<NativeDetector | null> | null = null
+async function buildNativeDetector(): Promise<NativeDetector | null> {
+  const BD = (window as unknown as { BarcodeDetector?: NativeDetectorCtor }).BarcodeDetector
+  if (!BD) return null // iPhone / เบราว์เซอร์ที่ไม่มีตัวอ่านของระบบ → ไปทาง ZXing
+  try {
+    const supported = (await BD.getSupportedFormats?.()) ?? []
+    const want = ['qr_code', 'code_128', 'code_39', 'ean_13', 'data_matrix'].filter(f => supported.includes(f))
+    if (!want.includes('qr_code')) return null
+    return new BD({ formats: want })
+  } catch { return null }
+}
+function getNativeDetector(): Promise<NativeDetector | null> {
+  if (!nativeDetectorPromise) {
+    nativeDetectorPromise = buildNativeDetector().then((d) => {
+      // ไม่แคช "ความล้มเหลว" — ครั้งหน้าที่เปิดกล้องให้ลองใหม่ได้ (Play Services
+      // อาจยังโหลดโมดูลสแกนไม่เสร็จตอนที่เราถามไปครั้งแรก)
+      if (!d) nativeDetectorPromise = null
+      return d
+    })
+  }
+  return nativeDetectorPromise
+}
+
+// ── จังหวะถอดรหัส: ปรับตามความเร็วจริงของเครื่อง ────────────────────────────
+// ของเดิมล็อกไว้ค่าเดียว (120/130ms) ซึ่งตั้งเผื่อเครื่องที่ช้าที่สุดเอาไว้แล้ว
+// เครื่องที่ถอดเสร็จใน 25ms จึงนั่งรออีก ~95ms เปล่า ๆ ทุกรอบ ส่วนเครื่องที่ช้า
+// กว่ารอบวนก็ยิงรัวจนแทบไม่ได้พัก (ยิ่งร้อน ยิ่งถอดช้าลงอีก)
+// กติกาใหม่: ถอดเสร็จแล้วพักเป็น "สัดส่วนของเวลาที่เพิ่งใช้ไป" — เครื่องเร็วพัก
+// สั้น (ยิงถี่ขึ้น = จ่อแล้วติดไวขึ้น) เครื่องช้าพักนานขึ้นตามตัว (ซีพียูเหลือ
+// ให้ระบบ = เย็นลง = รอบถัดไปถอดเร็วขึ้น)
+const SCAN_MIN_GAP = 50   // เร็วสุด — กล้องส่งภาพ ~30 เฟรม/วินาทีอยู่แล้ว ถี่กว่านี้ไม่ได้อะไรเพิ่ม
+const SCAN_MAX_GAP = 220  // ช้าสุด — กันเครื่องที่ร้อนจัดทิ้งช่วงนานเกินจนรู้สึกว่าไม่สแกน
+const SCAN_REST = 0.6     // พักเท่ากับ 60% ของเวลาที่ใช้ถอดรอบที่แล้ว
+const nextScanGap = (tookMs: number) =>
+  Math.min(SCAN_MAX_GAP, Math.max(SCAN_MIN_GAP, Math.round(tookMs * SCAN_REST)))
+
 // keyboard-wedge dedupe: two VinInputs on one screen both hear the burst —
 // only the first may fire it
 let lastWedgeAt = 0
@@ -780,6 +828,10 @@ function VinInput({
   // lands without the worker ever tapping the input first.
   const onScanRef = useRef(onScan)
   onScanRef.current = onScan
+  // อุ่นตัวอ่านบาร์โค้ดไว้ตั้งแต่เข้าหน้าสถานี — ถาม Play Services ครั้งเดียว
+  // จบตั้งแต่ตอนนี้ พอกดปุ่มกล้องจริงจะเริ่มสแกนได้ทันทีที่ภาพขึ้น ไม่ต้องรอ
+  // ขั้นตอนนี้คั่นกลาง (ไม่ได้แตะกล้องเลย จึงไม่เปลืองแบตและไม่ทำให้เครื่องร้อน)
+  useEffect(() => { void getNativeDetector() }, [])
   useEffect(() => {
     let buf = ''
     let last = 0
@@ -934,17 +986,12 @@ function VinInput({
 
     // Path 1 — native BarcodeDetector (Android Chrome): hardware-accelerated and
     // markedly better than JS decoding at glare / angle / focus hunting. Detects
-    // straight off the <video> ~8×/sec.
+    // straight off the <video>, as often as the chip can keep up (see nextScanGap).
     const startNative = async (video: HTMLVideoElement): Promise<boolean> => {
-      type Src = HTMLVideoElement | HTMLCanvasElement
-      const BD = (window as unknown as { BarcodeDetector?: { new (o: { formats: string[] }): { detect: (v: Src) => Promise<{ rawValue?: string }[]> }; getSupportedFormats?: () => Promise<string[]> } }).BarcodeDetector
-      if (!BD) return false
+      // ตัวอ่านถูกสร้างไว้แล้วตั้งแต่เข้าหน้าสถานี — ตรงนี้จึงได้ของทันที
+      const det = await getNativeDetector()
+      if (!det || cancelled) return !!det
       try {
-        const supported = (await BD.getSupportedFormats?.()) ?? []
-        const want = ['qr_code', 'code_128', 'code_39', 'ean_13', 'data_matrix'].filter(f => supported.includes(f))
-        if (!want.includes('qr_code')) return false
-        if (cancelled) return true
-        const det = new BD({ formats: want })
         // ตั้งค่าเลนส์ก่อนเริ่มวนถอดรหัส เพื่อให้รู้ตั้งแต่รอบแรกว่าเครื่องนี้
         // ซูมด้วยเลนส์ได้ไหม (ถ้าไม่ได้ = ต้องซูมด้วยการตัดภาพแทน)
         setupTrack(video, true)
@@ -958,15 +1005,18 @@ function VinInput({
         let cropOk = true
         let lastT = -1
         let tick = 0
-        // busy: บนชิปเบา ๆ det.detect() รอบหนึ่งอาจกินเวลาเกิน 120ms งานเลยซ้อน
-        // กันเป็นแถว ยิ่งซ้อนยิ่งช้า ยิ่งร้อน — รอบก่อนยังไม่เสร็จ ก็ข้ามรอบนี้ไป
-        let busy = false
-        const iv = setInterval(() => {
-          if (busy || video.readyState < 2) return
-          // เฟรมเดิมถอดซ้ำก็ได้ผลเดิม — ข้ามไป ลดงานเครื่องโดยไม่ช้าลงเลย
-          if (video.currentTime === lastT) return
+        // วนแบบ "ถอดเสร็จแล้วค่อยนัดรอบถัดไป" ไม่ใช่ตั้งนาฬิกาปลุกทุก 120ms
+        // ตายตัว — งานจึงซ้อนกันไม่ได้เลยโดยไม่ต้องมีตัวกัน และจังหวะพักปรับ
+        // ตามความเร็วจริงของเครื่องได้ (ดู nextScanGap)
+        let timer: ReturnType<typeof setTimeout> | null = null
+        let stopped = false
+        const again = (gap: number) => { if (!stopped) timer = setTimeout(round, gap) }
+        const round = async () => {
+          if (stopped) return
+          // ยังไม่มีภาพ / เฟรมเดิมถอดซ้ำก็ได้ผลเดิม — ข้ามไปแวะดูใหม่เร็ว ๆ
+          if (video.readyState < 2 || video.currentTime === lastT) { again(SCAN_MIN_GAP); return }
           lastT = video.currentTime
-          let src: Src = video
+          let src: NativeSrc = video
           const vw = video.videoWidth, vh = video.videoHeight
           const factor = dzRef.current
           // ทุก ๆ รอบที่ 3 ดูภาพเต็มเฟรมด้วย เผื่อโค้ดใหญ่หรือไม่ได้อยู่กลางกรอบ
@@ -976,19 +1026,19 @@ function VinInput({
             ctx.drawImage(video, (vw - cw) >> 1, (vh - ch) >> 1, cw, ch, 0, 0, cw, ch)
             src = canvas
           }
-          busy = true
-          void (async () => {
-            try {
-              const codes = await det.detect(src)
-              if (codes.length) hit(codes[0].rawValue)
-            } catch {
-              // เครื่องไหนอ่านจาก canvas ไม่ได้ ก็เลิกตัดภาพไปเลยทั้งรอบนี้
-              // ดีกว่าวนพังเงียบ ๆ จนสแกนไม่ติดสักครั้ง
-              if (src !== video) cropOk = false
-            } finally { busy = false }
-          })()
-        }, 120)
-        controlsRef.current = { stop: () => clearInterval(iv) }
+          const t0 = performance.now()
+          try {
+            const codes = await det.detect(src)
+            if (codes.length) hit(codes[0].rawValue) // สแกนติด → ปิดจอกล้อง → stopped
+          } catch {
+            // เครื่องไหนอ่านจาก canvas ไม่ได้ ก็เลิกตัดภาพไปเลยทั้งรอบนี้
+            // ดีกว่าวนพังเงียบ ๆ จนสแกนไม่ติดสักครั้ง
+            if (src !== video) cropOk = false
+          }
+          again(nextScanGap(performance.now() - t0))
+        }
+        controlsRef.current = { stop: () => { stopped = true; if (timer) clearTimeout(timer) } }
+        void round()
         return true
       } catch { return false } // permission error falls through to ZXing for its message
     }
@@ -1037,13 +1087,20 @@ function VinInput({
       const canvas = document.createElement('canvas')
       const ctx = canvas.getContext('2d', { willReadFrequently: true })
       let tick = 0
-      let busy = false
       let lastT = -1
-      const iv = setInterval(() => {
-        if (busy || !ctx || video.readyState < 2) return
-        if (video.currentTime === lastT) return // เฟรมเดิม — ไม่ต้องถอดซ้ำ
+      // วนแบบ "ถอดเสร็จแล้วค่อยนัดรอบถัดไป" เหมือนทาง Android — งานซ้อนกันไม่ได้
+      // โดยไม่ต้องมีตัวกัน และจังหวะพักปรับตามความเร็วจริงของเครื่อง (nextScanGap)
+      // ของเดิมล็อกไว้ที่ 130ms ตายตัว ซึ่งตั้งเผื่อ iPhone รุ่นเก่าที่ถอดนาน
+      // 80ms เอาไว้ เครื่องที่ถอดเสร็จใน 20ms จึงนั่งรอเปล่า ๆ อีก 110ms ทุกรอบ
+      let timer: ReturnType<typeof setTimeout> | null = null
+      let stopped = false
+      const again = (gap: number) => { if (!stopped) timer = setTimeout(round, gap) }
+      const round = async () => {
+        if (stopped) return
+        if (!ctx || video.readyState < 2) { again(SCAN_MIN_GAP); return }
+        if (video.currentTime === lastT) { again(SCAN_MIN_GAP); return } // เฟรมเดิม — ไม่ต้องถอดซ้ำ
         const vw = video.videoWidth, vh = video.videoHeight
-        if (!vw || !vh) return
+        if (!vw || !vh) { again(SCAN_MIN_GAP); return }
         lastT = video.currentTime
         // crop factor: with lens zoom the frame is already magnified → a mild
         // 1.6× aim-box crop; without it the slider's digital zoom drives it
@@ -1057,23 +1114,20 @@ function VinInput({
         canvas.width = Math.max(2, Math.round(cw * scale))
         canvas.height = Math.max(2, Math.round(ch * scale))
         ctx.drawImage(video, (vw - cw) >> 1, (vh - ch) >> 1, cw, ch, 0, 0, canvas.width, canvas.height)
-        busy = true
-        void (async () => {
-          try {
-            let text: string | null = null
-            if (wasmRead) text = await wasmRead(ctx.getImageData(0, 0, canvas.width, canvas.height))
-            else { try { text = jsReader!.decodeFromCanvas(canvas).getText() } catch { /* none */ } }
-            if (text) hit(text)
-          } catch { /* decoder hiccup — next tick */ }
-          finally { busy = false }
-        })()
-        // 90 → 130ms: ทาง ZXing (iPhone) ถอดรหัสด้วย CPU แบบ tryHarder ซึ่งกิน
-        // เวลา 30–80ms ต่อรอบ ที่ 90ms จึงกินซีพียูเกือบเต็มเส้นตลอดเวลา = ร้อน
-        // และหน้าจอกระตุก ที่ 130ms ยังได้ ~7 ครั้ง/วินาที (คนจ่อกล้องนิ่งเป็น
-        // วินาที) แต่เบาลงราว 30% — และเครื่องที่ไม่ร้อนถอดได้เร็วกว่าเครื่องร้อน
-      }, 130)
-      controlsRef.current = { stop: () => clearInterval(iv) }
+        const t0 = performance.now()
+        try {
+          let text: string | null = null
+          if (wasmRead) text = await wasmRead(ctx.getImageData(0, 0, canvas.width, canvas.height))
+          else { try { text = jsReader!.decodeFromCanvas(canvas).getText() } catch { /* none */ } }
+          if (text) hit(text)
+        } catch { /* decoder hiccup — next round */ }
+        // ทาง ZXing ถอดรหัสด้วยซีพียูแบบ tryHarder ซึ่งกินเวลา 20–80ms ต่อรอบ
+        // แล้วแต่เครื่องและความร้อน — พักตามตัวเลขจริงของรอบที่เพิ่งผ่านไป
+        again(nextScanGap(performance.now() - t0))
+      }
+      controlsRef.current = { stop: () => { stopped = true; if (timer) clearTimeout(timer) } }
       setupTrack(video, true)
+      void round()
     }
 
     // ── ขอกล้อง "ครั้งเดียว" ต่อการเปิดหนึ่งครั้ง ───────────────────────────
