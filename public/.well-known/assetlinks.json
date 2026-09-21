@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.sjwd.yardcontrol",
+      "sha256_cert_fingerprints": [
+        "15:5B:F1:2C:61:C5:5A:4D:78:D7:19:39:60:46:24:AC:85:00:79:38:FF:CA:E8:AD:B6:5C:E2:88:20:8F:23:B2"
+      ]
+    }
+  }
+]

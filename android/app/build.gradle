@@ -1,0 +1,49 @@
+plugins {
+    id 'com.android.application'
+}
+
+// เลขเวอร์ชันมาจาก workflow (หมายเลขรอบ build) — build ในเครื่องได้ค่า 1
+def versionCodeEnv = System.getenv('ANDROID_VERSION_CODE')
+def versionNameEnv = System.getenv('ANDROID_VERSION_NAME')
+// รหัส keystore: ตั้งเป็น secret ANDROID_KEYSTORE_PASSWORD ใน GitHub ได้ ถ้าไม่ตั้งใช้ค่าเริ่มต้น
+// (ไฟล์ keystore อยู่ใน repo ที่ android/keystore/ — repo ส่วนตัว ใช้เซ็น APK ภายในบริษัทเท่านั้น)
+def ksPassword = System.getenv('ANDROID_KEYSTORE_PASSWORD') ?: 'sjwd-yard-2026'
+
+android {
+    namespace 'com.sjwd.yardcontrol'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.sjwd.yardcontrol'
+        minSdk 21
+        targetSdk 35
+        versionCode versionCodeEnv ? versionCodeEnv.toInteger() : 1
+        versionName versionNameEnv ?: '1.0'
+    }
+
+    signingConfigs {
+        release {
+            storeFile file('../keystore/sjwd-yard.jks')
+            storePassword ksPassword
+            keyAlias 'sjwd'
+            keyPassword ksPassword
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig signingConfigs.release
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    // Trusted Web Activity launcher จาก Google — เปิดเว็บแอปด้วย Chrome เต็มจอ
+    implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.5.0'
+}
