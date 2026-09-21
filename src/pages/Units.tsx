@@ -15,12 +15,12 @@ import { useYard } from '../store/useYard'
 import { useTracking, useTrackingRows, useVisibleColumns } from '../store/useTracking'
 import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, LOCATION_KEY, MAX_FILTERS, DEFAULT_FILTER_COLS, agingPmDays, cleanStorage, storageDays, isDateColumn, fmtSerialToDate, type ColGroup, type Column } from '../lib/trackingColumns'
 import { yardLocFull, byYardLocation } from '../lib/groupingImport'
-import { CAR_STATUS_META, deriveCarStatus, IN_YARD_STATUSES, PARKED_STATUSES, isWaitingRepair, finalColor, vinOfStatusColor, taxStatusColor, fmtGateOutStamp, gateOutScanMs } from '../lib/carStatus'
+import { CAR_STATUS_META, deriveCarStatus, IN_YARD_STATUSES, PARKED_STATUSES, isWaitingRepair, finalColor, vinOfStatusColor, taxStatusColor, gateOutScanMs } from '../lib/carStatus'
 import { rowsToCsv, type TrackRow, type RowEvent } from '../lib/excelTracking'
 import { isAccessoryCheckEntry } from '../lib/finalCheckList'
 import { printFindList } from '../lib/groupingPrint'
 import { matchVins, toFindListRows } from '../lib/findCar'
-import { rowsForSite, siteWorksWith, departureFromSite, departedFromSite } from '../lib/siteScope'
+import { rowsForSite, siteWorksWith, departedFromSite, departedViewFrom, DEPARTURE_SETTLE_MS } from '../lib/siteScope'
 import { zoneLabel } from '../components/CarDiagramMultiView'
 import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirst, REPAIR_STATUSES, canonRepairStatus } from '../lib/damageLabel'
 import { resolvePart, resolveDefect } from '../lib/masterDefect'
@@ -248,22 +248,9 @@ export function Units() {
   // could not answer "which cars went out, and when". Rebuilt from the round
   // that ENDED with this gate-out (matched by the marker's own timestamp, so a
   // car that has since closed another round elsewhere still shows THIS one),
-  // which is exactly the row as this yard last saw it.
-  const asDeparted = (r: TrackRow): TrackRow => {
-    const d = departureFromSite(r.cells, currentSite, sites)
-    const at = d?.at ?? 0
-    const trip = d?.trip
-    return {
-      ...r,
-      cells: {
-        ...r.cells,
-        ...(trip?.cells ?? {}),
-        'Car Status': 'Gate-out',
-        'Gate Out Time': String(at),
-        'Gate Out time stamp': trip?.cells['Gate Out time stamp'] || fmtGateOutStamp(at),
-      },
-    }
-  }
+  // which is exactly the row as this yard last saw it (departedViewFrom —
+  // shared with the detail panel, so the grid and the panel it opens agree).
+  const asDeparted = (r: TrackRow): TrackRow => departedViewFrom(r, currentSite, sites) ?? r
   /** Every row this device knows, read from THIS yard's point of view: one it
    *  gated out reads "Gate-out" with the time it went, while the very same car
    *  on the destination yard's screen keeps its live "Pre Gate-in". Both yards
@@ -1784,12 +1771,33 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
   // defect with no photo at all. Same one-row fetch the other focused screens
   // already do; local pending defects are re-attached, never lost.
   useEffect(() => { if (vin) refreshUnitFocus(vin) }, [vin])
-  const row = useTracking((s) => s.rows[vin])
+  const liveRow = useTracking((s) => s.rows[vin])
   const columns = useTracking((s) => s.columns)
   const lang = useYard((s) => s.lang)
-  const unit = useYard((s) => s.units[vin])
+  const liveUnit = useYard((s) => s.units[vin])
   const sites = useYard((s) => s.sites)
   const currentSite = useYard((s) => s.currentSite)
+  // แยกยาร์ด แยกงาน: รถที่ลานนี้ยิงออกไปแล้ว (และไม่ได้กลับมายืนอยู่ในลานนี้)
+  // เปิดดูจากลานนี้ต้องเห็น "อย่างที่ลานนี้เห็นครั้งสุดท้าย" — ของเดิมอ่านแถวสด
+  // ซึ่งเป็นของลานปลายทางไปแล้ว: พอปลายทางยิง Gate-in วันที่/ผู้ตรวจ/สถานะ
+  // บนหน้านี้ของลานต้นทางก็เปลี่ยนตาม ทั้งที่งานของต้นทางจบไปแล้วตอนรถออก
+  const departed = useMemo(
+    () => (liveRow && !siteWorksWith(liveRow, currentSite, sites) ? departedViewFrom(liveRow, currentSite, sites) : null),
+    [liveRow, currentSite, sites],
+  )
+  const row = departed ?? liveRow
+  // ข้อมูลของ unit ที่ปลายทางเขียนทับหลังรถออก (เวลา/ผู้ยิง Gate-in ช่องจอด
+  // และ defect ที่ปลายทางบันทึก) ตัดออกด้วยเหตุผลเดียวกัน
+  const unit = useMemo(() => {
+    if (!departed || !liveUnit) return liveUnit
+    const cutoff = parseInt(departed.cells['Gate Out Time'] || '0', 10) + DEPARTURE_SETTLE_MS
+    const regated = !!liveUnit.gateInAt && liveUnit.gateInAt > cutoff
+    return {
+      ...liveUnit,
+      ...(regated ? { gateInAt: undefined, gateInBy: undefined, parkedAt: undefined, block: undefined, row: undefined, slot: undefined } : {}),
+      damages: (liveUnit.damages ?? []).filter((d) => d.at <= cutoff),
+    }
+  }, [departed, liveUnit])
   const allDamages = unit?.damages ?? []
   // What this car's DEFECT views list. A "Control Stock Sheet" tick counts what
   // shipped WITH the car (คู่มือ · สมุดรับประกัน · กรอบป้ายทะเบียน · ถาดท้ายรถ) —
