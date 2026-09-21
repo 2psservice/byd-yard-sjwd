@@ -109,10 +109,25 @@ export function gateInEvidenceAt(c: Record<string, string>): number {
  */
 export const CAR_STATUS_KEY = 'Car Status'
 export const CAR_STATUS_SET_AT_KEY = 'Car Status Set At'
+/** ลานที่คนคนนั้นยืนอยู่ตอนยืนยันสถานะ — คำยืนยันเป็นของลานนั้นลานเดียว
+ *  (ยิง Gate-in ที่ปลายทาง = คำยืนยันของลานปลายทาง ไม่ใช่ของลานต้นทาง) */
+export const CAR_STATUS_SET_SITE_KEY = 'Car Status Set Site'
 
 function statusSetAt(c: Record<string, string>): number {
   const at = parseInt((c[CAR_STATUS_SET_AT_KEY] || '').trim(), 10)
   return Number.isFinite(at) && at > 0 ? at : 0
+}
+
+/**
+ * ลานนี้มีคนยืนยันไว้เมื่อไหร่ว่า "รถยังอยู่ในลาน" — epoch ms (0 = ไม่มี)
+ *
+ * นับเฉพาะคำยืนยันที่เกิดขึ้น "ที่ลานนี้" และเป็นสถานะที่แปลว่ารถยังอยู่
+ * (ตั้งเป็น Gate-out / Pre Gate-out ไม่ใช่การบอกว่ารถอยู่ จึงไม่นับ)
+ */
+export function inYardAssertedAt(c: Record<string, string>, siteId: string | null | undefined): number {
+  if (!siteId || (c[CAR_STATUS_SET_SITE_KEY] || '').trim() !== siteId) return 0
+  if (RELEASED_STATUSES.has((c[CAR_STATUS_KEY] || '').trim())) return 0
+  return statusSetAt(c)
 }
 
 /** มีใคร "ยืนยันสถานะของรถคันนี้" ตั้งแต่วันแผนรับเป็นต้นไปไหม
