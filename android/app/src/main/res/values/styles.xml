@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.SJWD" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <!-- หน้าจอชั่วครู่ก่อน Chrome ขึ้น: พื้นสีแบรนด์ ไม่มีชื่อเรื่อง -->
+    <style name="Theme.SJWD.Launcher">
+        <item name="android:windowBackground">@color/brand</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:statusBarColor">@color/brand</item>
+        <item name="android:navigationBarColor">@color/brand</item>
+    </style>
+</resources>

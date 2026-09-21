@@ -1,0 +1,11 @@
+// SJWD Yard Control — Android wrapper (Trusted Web Activity)
+//
+// แอปนี้ไม่ได้บรรจุโค้ดเว็บไว้ข้างใน แต่เปิดเว็บแอปตัวจริงที่
+// https://byd-yard-sjwd.pages.dev ด้วยเครื่องยนต์ของ Chrome แบบเต็มจอ (ไม่มีแถบ URL)
+// ข้อดี: อัปเดตแอปยังมาจากเว็บอัตโนมัติเหมือนเดิม (ปุ่ม "🚀 อัปเดตเลย") ไม่ต้อง
+// ติดตั้ง APK ใหม่ทุกครั้งที่แก้โค้ด — APK นี้สร้างใหม่เฉพาะตอนเปลี่ยนไอคอน/ชื่อ/โดเมน
+//
+// build บน GitHub Actions (.github/workflows/android.yml) → ไฟล์ APK อยู่ที่ Releases
+plugins {
+    id 'com.android.application' version '8.7.3' apply false
+}

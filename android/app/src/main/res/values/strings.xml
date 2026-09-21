@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SJWD Yard Control</string>
+    <!-- บอก Chrome ว่าแอปนี้เป็นเจ้าของเว็บโดเมนนี้ (คู่กับ /.well-known/assetlinks.json บนเว็บ) -->
+    <string name="asset_statements">
+        [{ \"relation\": [\"delegate_permission/common.handle_all_urls\"],
+           \"target\": { \"namespace\": \"web\", \"site\": \"https://byd-yard-sjwd.pages.dev\" } }]
+    </string>
+</resources>
