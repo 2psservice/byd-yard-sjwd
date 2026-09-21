@@ -5,8 +5,8 @@
  */
 import type { Site } from '../types'
 import type { TrackRow } from './excelTracking'
-import { tripsOf, type TripSnapshot } from './tripHistory'
-import { GATE_OUT_ORIGIN_SITE_KEY, gateOutOriginAt, inYardAssertedAt } from './carStatus'
+import { tripsOf, TRIPS_CELL, TRIP_SCOPED_KEYS, type TripSnapshot } from './tripHistory'
+import { GATE_OUT_ORIGIN_SITE_KEY, gateOutOriginAt, inYardAssertedAt, fmtGateOutStamp } from './carStatus'
 
 const norm = (s?: string) => (s ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
 
@@ -180,4 +180,38 @@ export function departedFromSite(
 ): boolean {
   const d = departureFromSite(cells, siteId, sites)
   return !!d && d.at >= since
+}
+
+/**
+ * รถที่ลานนี้ยิงออกไปแล้ว มองจากลานนี้ = "รถอย่างที่ลานนี้เห็นครั้งสุดท้าย"
+ *
+ * แถวสดของรถเป็นของลานที่รถไปอยู่ตอนนี้ (ปลายทางยิง Gate-in ทับวันที่/ผู้ตรวจ
+ * แล้วเริ่มงาน PDI/PM ของตัวเอง) แยกยาร์ด แยกงาน — ข้อมูลรอบที่จบไปแล้วของลาน
+ * ต้นทางต้องไม่ขยับตามงานของปลายทาง จึงประกอบแถวขึ้นใหม่จากรอบที่ปิดไป:
+ *  · ช่องรายเที่ยวทั้งหมดของแถวสดถูกถอดออกก่อน (ไม่ใช่แค่ทับด้วยของรอบเก่า —
+ *    ช่องที่รอบเก่าไม่มี เช่นผู้ตรวจ Gate-in ที่ปลายทางเพิ่งเขียน จะทะลุมาแทน)
+ *  · แล้วใส่ช่องของรอบที่จบไปกลับเข้าไป · ชื่อลาน = ลานนี้ · สถานะ = Gate-out
+ *  · ประวัติการแก้ไขและรอบที่ปิดไป ตัดที่เวลาที่รถออก (เผื่อไว้นิดหน่อยให้
+ *    รายการที่การยิงออกครั้งนั้นเองเขียนต่อท้ายในวินาทีถัดมา)
+ * คืน null ถ้าลานนี้ไม่มีบันทึกว่ารถออกไป
+ */
+export const DEPARTURE_SETTLE_MS = 60_000
+
+export function departedViewFrom(r: TrackRow, siteId: string | null | undefined, sites: Site[]): TrackRow | null {
+  const d = departureFromSite(r.cells, siteId, sites)
+  if (!d) return null
+  const cutoff = d.at + DEPARTURE_SETTLE_MS
+  const cells: Record<string, string> = { ...r.cells }
+  for (const k of TRIP_SCOPED_KEYS) delete cells[k]
+  Object.assign(cells, d.trip?.cells ?? {})
+  const site = sites.find((s) => s.id === siteId)
+  if (d.trip?.yard) cells['Location yard'] = d.trip.yard
+  else if (site) cells['Location yard'] = site.name
+  cells['Car Status'] = 'Gate-out'
+  cells['Gate Out Time'] = String(d.at)
+  cells['Gate Out time stamp'] = d.trip?.cells['Gate Out time stamp'] || fmtGateOutStamp(d.at)
+  const trips = tripsOf(r.cells).filter((t) => t.closedAt <= cutoff)
+  if (trips.length) cells[TRIPS_CELL] = JSON.stringify(trips)
+  else delete cells[TRIPS_CELL]
+  return { ...r, cells, history: (r.history ?? []).filter((h) => h.at <= cutoff) }
 }
