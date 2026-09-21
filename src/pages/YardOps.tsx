@@ -27,7 +27,7 @@ import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirs
 import { candidates } from '../lib/parkingEngine'
 import { slotToLatLng } from '../lib/geo'
 import { cx, PhotoLightbox } from '../components/ui'
-import { rowInSite, rowsForSite, deliveryDestinationSite, siteIdForLocation } from '../lib/siteScope'
+import { rowInSite, rowsForSite, siteWorksWith, deliveryDestinationSite, siteIdForLocation } from '../lib/siteScope'
 import { compressImage } from '../lib/photo'
 import StationSheet from '../components/StationSheet'
 import StockAccessoryCheck from '../components/StockAccessoryCheck'
@@ -1978,7 +1978,7 @@ function WalkView() {
   const { gateIn, importUnits, addDamage, updateDamage, markTrailerArrived, toast, currentUser } = useYard()
   const allTrackingRows = useTrackingRows()
   const wrongSite = useWrongSiteHint()
-  const { loadFromIdb, updateCell, claimPreGateInCandidate } = useTracking()
+  const { loadFromIdb, updateCell, claimPreGateInCandidate, transferToYard } = useTracking()
   const { toggleDone } = useOps()
   const { blockWith, modal: gateModal } = useNotGatedIn()
   const queues = useSiteQueues()
@@ -2084,7 +2084,9 @@ function WalkView() {
   }, [selectedQueue, trackingRows, allUnits, ngVins])
 
   const unit = vin ? units.find(u => u.vin === vin) ?? null : null
-  const trackRow = trackingVin ? (trackingRows.find(r => r.vin === trackingVin) ?? null) : null
+  // อ่านจากแถวทั้งหมด ไม่ใช่แค่ของยาร์ดนี้ — รถของยาร์ดอื่นที่มาถึงประตูนี้ก็ต้อง
+  // ขึ้นการ์ดรับรถได้ (ดู foreignRowOf) trackingVin ถูกตั้งจากการสแกนเท่านั้น
+  const trackRow = trackingVin ? (allTrackingRows.find(r => r.vin === trackingVin) ?? null) : null
   const recent = useMemo(() => {
     // keyed by VIN so a vehicle that lives in BOTH stores (gate-in registers it
     // as a yard unit too) only shows once — prefer the tracking row (richer info)
@@ -2201,10 +2203,32 @@ function WalkView() {
   /** Open the arrival card for a car the sheet says is still waiting. */
   const openWaiting = (vin: string) => { setVin(null); setShowDmg(false); setTrackingVin(vin) }
 
+  /**
+   * รถของ "ยาร์ดอื่น" ที่มาถึงประตูนี้ — แถวมีอยู่ในเครื่อง แต่เป็นของยาร์ดอื่น
+   *
+   * ของเดิมสแกนแล้วได้แค่ป้ายเตือน "อยู่ site อื่น" (หรือถ้ารายการรถของยาร์ดนี้
+   * มีคันนั้นค้างอยู่ ก็หลุดไปยิงรับแบบไม่แตะชีตเลย) หน้างานจึงยิงรับรถที่ย้าย
+   * มาไม่ได้ หรือยิงได้แต่ยาร์ดเดิมกลับกลายเป็น In Yard ตาม — กฎ "แยกยาร์ด
+   * แยกงาน": รถมาถึงประตูนี้ = ออกจากยาร์ดเดิมแล้ว ยิงรับที่นี่ต้องปิดรอบที่นั่น
+   * (อ่านเป็น Gate-out) และเริ่มรอบใหม่ที่นี่ (ดู doTrackingGateIn / transferToYard)
+   */
+  const foreignRowOf = (v: string): TrackRow | undefined => {
+    if (!currentSite) return undefined
+    let r = allTrackingRows.find(x => x.vin === v)
+    if (!r && v.length <= 8) {
+      const hits = allTrackingRows.filter(x => x.vin.endsWith(v))
+      if (hits.length === 1) r = hits[0]
+    }
+    return r && !siteWorksWith(r, currentSite, sites) ? r : undefined
+  }
+
   const onScanRef = useRef<(v: string) => void>(() => {})
   const scanNotFound = useCloudNotFound(onScanRef)
   const onScan = (v: string) => {
     setTrackingVin(null)
+    // 0. รถของยาร์ดอื่นมาถึงประตูนี้ → การ์ดรับรถ (ตรวจรุ่น/สี แล้วยิงรับ = ย้ายมายาร์ดนี้)
+    const foreign = foreignRowOf(v)
+    if (foreign) { openWaiting(foreign.vin); return }
     // 1. exact yard unit — unless the sheet says the car is waiting to come IN,
     //    in which case this is a returning car and the arrival card is the one
     //    that can actually gate it in
@@ -2248,6 +2272,12 @@ function WalkView() {
     if (!trackRow) return
     const now = new Date()
     const d = `${now.getDate().toString().padStart(2, '0')}/${(now.getMonth() + 1).toString().padStart(2, '0')}/${now.getFullYear()}`
+    // รถของยาร์ดอื่น: ยิงรับที่นี่ = รถออกจากยาร์ดเดิม (ที่นั่นอ่านเป็น Gate-out
+    // และเก็บข้อมูลรอบนั้นไว้ไม่ขยับตามเราอีก) แล้วเริ่มรอบใหม่ที่นี่ — ต้องย้าย
+    // ก่อนเขียนอะไรลงแถว ไม่งั้นวันที่/ผู้ตรวจของเราไปทับรอบของยาร์ดเดิม
+    // (แถวที่ยังไม่มีเจ้าของ = shared-shuttle candidate ไม่ใช่ของยาร์ดอื่น →
+    //  ปล่อยให้ claimPreGateInCandidate ด้านล่างเป็นคนรับตามเดิม)
+    if (currentSite && !siteWorksWith(trackRow, currentSite, sites)) transferToYard(trackRow.vin, currentSite, { queue: false })
     // a shared-shuttle candidate (see isPreGateInCandidate) has no site yet —
     // THIS scan is what decides it for real. Claim it before anything else
     // writes to the row, so every other candidate yard's board drops it too.
