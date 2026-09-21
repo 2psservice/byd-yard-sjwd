@@ -3,6 +3,8 @@ import { Car, Hourglass, AlertTriangle, Truck, Activity, X, Search, LogOut, Penc
 import * as db from '../lib/db'
 import { useYard, useUnits, useBlocks } from '../store/useYard'
 import { useTrackingRows, useTracking } from '../store/useTracking'
+import { useVisits } from '../store/useVisits'
+import { visitToTrackRow } from '../lib/visits'
 import { makeT } from '../i18n'
 import { ZONE_COLOR } from '../lib/sampleData'
 import { deriveCarStatus, CAR_STATUS_META, CAR_STATUS_ORDER, PARKED_STATUSES, isWaitingRepair } from '../lib/carStatus'
@@ -222,6 +224,7 @@ export function Dashboard() {
   // ออกไปหมดแล้ว (ไม่เหลือแถวของตัวเองสักแถว เพราะแถวย้ายตามรถไปยาร์ดปลายทาง)
   // จึงตกไปใช้สาขาสำรองที่นับจากรายการรถ แล้วได้ 0 ทั้งที่รถออกไปหลายร้อยคัน
   // ย้ายออกมาไว้ข้างนอกให้ทั้งสองสาขาใช้ตัวเดียวกัน
+  const visitsMap = useVisits((st) => st.visits)
   const gateOutRows = useMemo(() => {
     const live = trackingRows.filter((r) => deriveCarStatus(r.cells) === 'Gate-out')
     if (!currentSite) return live
@@ -229,10 +232,19 @@ export function Dashboard() {
     // Pre Gate-in ของปลายทางในจังหวะเดียวกัน) — ต้องไล่จากรอยที่ประทับไว้ว่า
     // "ออกจากยาร์ดไหน เมื่อไหร่" ข้ามทุกแถวที่เครื่องนี้รู้จัก
     const seen = new Set(live.map((r) => r.vin))
-    const transferred = allTrackingRows.filter((r) =>
-      !seen.has(r.vin) && !rowInSite(r, currentSite, sites) && departedFromSite(r.cells, currentSite, sites))
-    return [...live, ...transferred]
-  }, [trackingRows, allTrackingRows, currentSite, sites])
+    const here = new Set(trackingRows.map((r) => r.vin))
+    const out = [...live]
+    // แถวรอบจริงของยาร์ดนี้ (lib/visits) — รถที่ออกไปแล้วและยังไม่ได้กลับมา
+    for (const v of Object.values(visitsMap)) {
+      if (v.site !== currentSite || here.has(v.vin) || seen.has(v.vin)) continue
+      seen.add(v.vin); out.push(visitToTrackRow(v))
+    }
+    for (const r of allTrackingRows) {
+      if (seen.has(r.vin) || rowInSite(r, currentSite, sites) || !departedFromSite(r.cells, currentSite, sites)) continue
+      seen.add(r.vin); out.push(r)
+    }
+    return out
+  }, [trackingRows, allTrackingRows, currentSite, sites, visitsMap])
 
   const s = useMemo(() => {
     // ── real imported data (tracking rows) — driven by Car Status ──

@@ -13,11 +13,13 @@
  */
 import type { TrackRow } from './excelTracking'
 import type { Unit } from '../types'
+import type { Visit } from './visits'
 
 const DB_NAME = 'sjwd-yard'
-const DB_VERSION = 2
+const DB_VERSION = 3 // v3: + "visits" (แถวรอบที่ปิดแล้ว keyed by id)
 const STORE = 'rows'
 const UNITS = 'units'
+const VISITS = 'visits'
 
 let dbp: Promise<IDBDatabase> | null = null
 
@@ -29,6 +31,7 @@ function openDB(): Promise<IDBDatabase> {
       const db = req.result
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'vin' })
       if (!db.objectStoreNames.contains(UNITS)) db.createObjectStore(UNITS, { keyPath: 'vin' })
+      if (!db.objectStoreNames.contains(VISITS)) db.createObjectStore(VISITS, { keyPath: 'id' })
     }
     req.onsuccess = () => {
       // if the connection closes later (versionchange / browser eviction),
@@ -138,6 +141,30 @@ export async function idbDeleteUnits(vins: string[]): Promise<void> {
     const t = db.transaction(UNITS, 'readwrite')
     const store = t.objectStore(UNITS)
     for (const v of vins) store.delete(v)
+    t.oncomplete = () => resolve()
+    t.onerror = () => reject(t.error)
+    t.onabort = () => reject(t.error ?? new Error('idb transaction aborted'))
+  })
+}
+
+// ── visits store (แถวรอบที่ปิดแล้ว — ดู lib/visits) ────────────────────────────
+
+export async function idbGetAllVisits(): Promise<Visit[]> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const req = tx(db, 'readonly', VISITS).getAll()
+    req.onsuccess = () => resolve(req.result as Visit[])
+    req.onerror = () => reject(req.error)
+  })
+}
+
+export async function idbPutVisits(visits: Visit[]): Promise<void> {
+  if (!visits.length) return
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(VISITS, 'readwrite')
+    const store = t.objectStore(VISITS)
+    for (const v of visits) store.put(v)
     t.oncomplete = () => resolve()
     t.onerror = () => reject(t.error)
     t.onabort = () => reject(t.error ?? new Error('idb transaction aborted'))

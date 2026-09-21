@@ -40,6 +40,9 @@ export interface TrackRow {
   history?: RowEvent[] // field-edit audit trail, newest last, capped (see updateCell/bulkUpdate)
   deletedAt?: number // tombstone: when set, this VIN was deleted — kept so every device
                      // learns of the deletion and never re-uploads a stale local copy
+  /** ตั้งเมื่อแถวนี้คือ "แถวรอบที่ปิดแล้ว" ของยาร์ดต้นทาง (ดู lib/visits) — ไม่ใช่
+   *  แถวสดของรถ การแก้ไขต้องวิ่งไปที่แถวรอบ ไม่ใช่แถวสดของยาร์ดปลายทาง */
+  visitId?: string
 }
 
 /** One defect/NG record from the Defect-Yard / Defect-Factory sheets. */

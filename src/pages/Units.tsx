@@ -29,6 +29,8 @@ import { refreshUnitFocus } from '../lib/unitFocus'
 import { cx, PhotoLightbox } from '../components/ui'
 import { useSiteQueues, queueTypeOf } from '../store/useOps'
 import { useUnitsView } from '../store/useUnitsView'
+import { useVisits } from '../store/useVisits'
+import { visitToTrackRow, type Visit } from '../lib/visits'
 import { buildWorkRows, buildEventLog, readingsHist as libReadingsHist, histOf, fmtHistAt, filledDates, PDI_DATE_KEYS, PM_DATE_KEYS } from '../lib/carHistory'
 
 const DMG_SRC: Record<string, string> = { walkaround: 'Walk-around', pdi: 'PDI', mechanic: 'ช่าง', update: 'Update', yardDefect: 'Defect-Yard', factoryDefect: 'Defect-Factory', whaleDefect: 'Defect-Whale', manual: 'เพิ่มเอง' }
@@ -244,14 +246,28 @@ export function Units() {
   // which is exactly the row as this yard last saw it (departedViewFrom —
   // shared with the detail panel, so the grid and the panel it opens agree).
   const asDeparted = (r: TrackRow): TrackRow => departedViewFrom(r, currentSite, sites) ?? r
+  // แยกยาร์ด แยกงาน ขั้นที่ 1: รถที่ออกจากยาร์ดนี้ไปแล้ว = "แถวรอบ" จริงของยาร์ดนี้
+  // (lib/visits) แก้ได้ที่แถวนั้นตรง ๆ ไม่แตะแถวสดของยาร์ดปลายทาง · คันที่ยังไม่มีแถวรอบ
+  // (ตัวแปลงย้อนหลังยังไม่ทัน / เครื่องยังไม่ซิงก์) ประกอบจากก้อน __trips ไปก่อน (อ่านอย่างเดียว)
+  const visitsMap = useVisits((st) => st.visits)
   const departedRows = useMemo(() => {
     if (!currentSite) return []
     const inSite = new Set(rows.map((r) => r.vin))
-    return allRows
-      .filter((r) => !inSite.has(r.vin) && departedFromSite(r.cells, currentSite, sites))
-      .map(asDeparted)
+    const latest = new Map<string, Visit>()
+    for (const v of Object.values(visitsMap)) {
+      if (v.site !== currentSite || inSite.has(v.vin)) continue
+      const cur = latest.get(v.vin)
+      if (!cur || v.round > cur.round) latest.set(v.vin, v)
+    }
+    const out: TrackRow[] = [...latest.values()].map(visitToTrackRow)
+    const have = new Set(out.map((r) => r.vin))
+    for (const r of allRows) {
+      if (inSite.has(r.vin) || have.has(r.vin) || !departedFromSite(r.cells, currentSite, sites)) continue
+      out.push(asDeparted(r))
+    }
+    return out
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allRows, rows, currentSite])
+  }, [allRows, rows, currentSite, visitsMap])
   /** The whole list this yard shows: still here, plus just-gone. The counters
    *  above the grid stay on `rows` — "total / OK / Waiting" is the yard's
    *  standing work, and a car that left is no longer any of it. */
@@ -259,7 +275,9 @@ export function Units() {
     () => (departedRows.length ? [...rows, ...departedRows] : rows),
     [rows, departedRows],
   )
-  const departedVins = useMemo(() => new Set(departedRows.map((r) => r.vin)), [departedRows])
+  /** รถที่ออกไปแล้วซึ่งมีแถวรอบ → แก้ได้ที่แถวรอบ · ที่ยังไม่มี → ดูได้อย่างเดียว */
+  const visitOf = useMemo(() => new Map(departedRows.filter((r) => r.visitId).map((r) => [r.vin, r.visitId as string])), [departedRows])
+  const lockedVins = useMemo(() => new Set(departedRows.filter((r) => !r.visitId).map((r) => r.vin)), [departedRows])
   const visCols = useVisibleColumns()
   const { lastImport, loadFromIdb } = useTracking()
   // computed yard-location code (prefix-block+ช่อง+ลำดับ, e.g. "N-R1402"), for the Location column.
@@ -574,7 +592,7 @@ export function Units() {
           <EmptyState />
         ) : tab === 'units' ? (
           <DataGrid rows={filtered} visCols={visCols} sel={sel} setSel={setSel}
-            sortKey={sortKey} sortDir={sortDir} toggleSort={toggleSort} optionsFor={optionsFor} locked={departedVins}
+            sortKey={sortKey} sortDir={sortDir} toggleSort={toggleSort} optionsFor={optionsFor} locked={lockedVins} visitOf={visitOf}
             footer={<GridFooter sel={sel} shown={filtered.length} total={siteRows.length} lastImport={lastImport} />} />
         ) : tab === 'grouping' ? (
           <GroupingView rows={filtered} visCols={visCols} sel={sel} setSel={setSel}
@@ -599,12 +617,21 @@ interface GridProps {
   rows: TrackRow[]; visCols: Column[]; sel: Set<string>; setSel: React.Dispatch<React.SetStateAction<Set<string>>>
   sortKey: string; sortDir: SortDir; toggleSort: (k: string) => void; optionsFor: (c: Column) => string[]
   footer?: React.ReactNode
-  /** รถที่ออกจากยาร์ดนี้ไปแล้ว — ดูได้ แก้ไม่ได้ (ข้อมูลสดเป็นของยาร์ดปลายทาง) */
+  /** รถที่ออกจากยาร์ดนี้ไปแล้วและยังไม่มีแถวรอบ — ดูได้ แก้ไม่ได้ */
   locked?: Set<string>
+  /** รถที่ออกไปแล้วซึ่งมีแถวรอบของยาร์ดนี้: vin → visit id — การแก้ไขวิ่งไปที่แถวรอบ */
+  visitOf?: Map<string, string>
 }
 
-function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, optionsFor, footer, locked }: GridProps) {
-  const bulkUpdate = useTracking((s) => s.bulkUpdate)
+function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, optionsFor, footer, locked, visitOf }: GridProps) {
+  const bulkUpdateLive = useTracking((s) => s.bulkUpdate)
+  // แถวรอบของยาร์ดนี้แก้ที่ store ของแถวรอบ · แถวสดแก้ที่ tracking — ไม่ปนกัน
+  const bulkUpdate = (targets: string[], key: string, value: string) => {
+    const visitIds = targets.map((v) => visitOf?.get(v)).filter((x): x is string => !!x)
+    const live = targets.filter((v) => !visitOf?.has(v))
+    if (visitIds.length) useVisits.getState().bulkUpdate(visitIds, key, value)
+    if (live.length) bulkUpdateLive(live, key, value)
+  }
   const deleteRows = useTracking((s) => s.deleteRows)
   const columns = useTracking((s) => s.columns)
   const reorderColumn = useTracking((s) => s.reorderColumn)
@@ -796,7 +823,10 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
           : `ลบ VIN นี้ออกจากระบบถาวร?\n${vin}\n(ลบทั้งในเครื่องและ cloud — ย้อนกลับไม่ได้)`,
       )
       if (ok) {
-        deleteRows(targets)
+        // แถวรอบของยาร์ดนี้ไม่ใช่แถวสด — ลบจากที่นี่ไม่ได้ (จะไปลบรถของยาร์ดปลายทาง)
+        const liveTargets = targets.filter((v) => !visitOf?.has(v))
+        if (liveTargets.length !== targets.length) toast('err', `ข้ามรถที่ออกจากยาร์ดนี้ไปแล้ว ${targets.length - liveTargets.length} คัน — ลบได้เฉพาะรถของยาร์ดนี้`)
+        if (liveTargets.length) deleteRows(liveTargets)
         setSel(new Set())
         toast('ok', `ลบ ${n} คันออกจากระบบแล้ว`)
       }
@@ -1750,9 +1780,17 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
   // เปิดดูจากลานนี้ต้องเห็น "อย่างที่ลานนี้เห็นครั้งสุดท้าย" — ของเดิมอ่านแถวสด
   // ซึ่งเป็นของลานปลายทางไปแล้ว: พอปลายทางยิง Gate-in วันที่/ผู้ตรวจ/สถานะ
   // บนหน้านี้ของลานต้นทางก็เปลี่ยนตาม ทั้งที่งานของต้นทางจบไปแล้วตอนรถออก
+  const visitRow = useVisits((st) => {
+    if (!currentSite) return null
+    let best: Visit | null = null
+    for (const v of Object.values(st.visits)) if (v.vin === vin && v.site === currentSite && (!best || v.round > best.round)) best = v
+    return best
+  })
   const departed = useMemo(
-    () => (liveRow && !siteWorksWith(liveRow, currentSite, sites) ? departedViewFrom(liveRow, currentSite, sites) : null),
-    [liveRow, currentSite, sites],
+    () => (liveRow && !siteWorksWith(liveRow, currentSite, sites)
+      ? (visitRow ? visitToTrackRow(visitRow) : departedViewFrom(liveRow, currentSite, sites))
+      : null),
+    [liveRow, visitRow, currentSite, sites],
   )
   const row = departed ?? liveRow
   // ข้อมูลของ unit ที่ปลายทางเขียนทับหลังรถออก (เวลา/ผู้ยิง Gate-in ช่องจอด

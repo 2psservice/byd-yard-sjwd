@@ -13,6 +13,8 @@ import { onSync, sendSync, type RowMsg, type RowsPayload } from '../lib/syncBus'
 import { useYard } from './useYard'
 import { siteForRow, siteIdForLocation, coInspectionAccepts, departedFromSite, CANDIDATE_SITES_KEY } from '../lib/siteScope'
 import { TRIPS_CELL, TRIP_SCOPED_KEYS, tripsOf, type TripSnapshot } from '../lib/tripHistory'
+import { useVisits } from './useVisits'
+import { visitFromTrip, type Visit } from '../lib/visits'
 import { CAR_STATUS_ORDER, CAR_STATUS_KEY, CAR_STATUS_SET_AT_KEY, CAR_STATUS_SET_SITE_KEY, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY, RELEASED_STATUSES, deriveCarStatus, isGateOutStamp, gateOutScanMs, gateInEvidenceAt, inYardAssertedAt, fmtGateOutStamp } from '../lib/carStatus'
 import type { Site } from '../types'
 import { isOpenDefect } from '../lib/damageLabel'
@@ -371,6 +373,7 @@ function applyYardMove(next: TrackRow, key: string, columns: Column[], by: strin
   if (!neverHere) {
     const moved = transferRow(next, target, by, sites)
     if (moved) {
+      useVisits.getState().add([moved.visit])
       useYard.getState().moveUnitsToSite([next.vin], target)
       if (!moved.arrived) queueArrivalAt(next.vin, target, next.site ?? siteIdForLocation(next.cells, sites))
       return moved.out
@@ -391,9 +394,11 @@ function applyYardMove(next: TrackRow, key: string, columns: Column[], by: strin
  */
 function closeRoundRow(
   r: TrackRow, next: { yard?: string; gateInDate?: string; movingDate?: string; lot?: string }, by: string, sites: Site[],
-): { out: TrackRow; closing: number; movedTo?: string } {
+): { out: TrackRow; closing: number; movedTo?: string; visit: Visit } {
   const trips = tripsOf(r.cells)
   const closing = trips.length + 1 // the round that ends here
+  // ยาร์ดเจ้าของรอบที่กำลังปิด — ป้ายยาร์ดของแถว ณ ตอนนี้ (ก่อนที่แถวจะย้ายไปปลายทาง)
+  const originSite = r.site ?? siteIdForLocation(r.cells, sites)
   // lift every cell of the round being closed OFF the row, so the next
   // round cannot read one of them as its own
   const cells = { ...r.cells }
@@ -426,7 +431,10 @@ function closeRoundRow(
   const target = siteIdForLocation(cells, sites)
   let movedTo: string | undefined
   if (target && target !== out.site) { out = { ...out, site: target }; movedTo = target }
-  return { out, closing, movedTo }
+  // แถวรอบของยาร์ดต้นทาง (แยกยาร์ด แยกงาน ขั้นที่ 1 — ดู lib/visits): เป็นแถวจริง
+  // ของยาร์ดนั้น ตั้งแต่วินาทีที่รอบปิด ไม่ต้องประกอบย้อนหลังจากก้อน __trips อีก
+  const visit = visitFromTrip(r.vin, snap, r.cells, r.history, sites, originSite)
+  return { out, closing, movedTo, visit }
 }
 
 /** ช่องที่ "การยิงรับรถ" เขียน — ถ้าปลายทางยิงรับไปแล้วก่อนที่แถวจะย้ายตาม
@@ -452,7 +460,7 @@ const ARRIVAL_KEYS = ['Gate In Time', 'Gate In Inspector', 'Gate In (Rayong yard
  */
 function transferRow(
   r: TrackRow, destSiteId: string, by: string, sites: Site[], at?: number,
-): { out: TrackRow; arrived: boolean } | null {
+): { out: TrackRow; arrived: boolean; visit: Visit } | null {
   const dest = sites.find((s) => s.id === destSiteId)
   if (!dest) return null
   const origin = r.site ?? siteIdForLocation(r.cells, sites)
@@ -470,7 +478,7 @@ function transferRow(
     cells[GATE_OUT_ORIGIN_SITE_KEY] = origin
     cells[GATE_OUT_ORIGIN_AT_KEY] = String(departAt)
   }
-  const { out: closed } = closeRoundRow({ ...r, cells }, { yard: dest.name }, by, sites)
+  const { out: closed, visit } = closeRoundRow({ ...r, cells }, { yard: dest.name }, by, sites)
   let out: TrackRow = closed.site === destSiteId ? closed : { ...closed, site: destSiteId }
   if (arrived) {
     const c = { ...out.cells, ...carry }
@@ -478,7 +486,7 @@ function transferRow(
     if (!cs || cs === 'Pre Gate-in' || RELEASED_STATUSES.has(cs)) c[CAR_STATUS_KEY] = 'In Yard'
     out = { ...out, cells: c }
   }
-  return { out: { ...out, updatedAt: Date.now() }, arrived }
+  return { out: { ...out, updatedAt: Date.now() }, arrived, visit }
 }
 
 /** แปะรถเข้าล็อตรับรถ "(ปลายทาง · shuttle · จาก ต้นทาง)" ของยาร์ดปลายทาง —
@@ -877,7 +885,8 @@ export const useTracking = create<TrackingState>()(
         const r = get().rows[vin]
         if (!r) return 0
         const { currentUser: by, sites } = useYard.getState()
-        const { out, closing, movedTo } = closeRoundRow(r, next, by, sites)
+        const { out, closing, movedTo, visit } = closeRoundRow(r, next, by, sites)
+        useVisits.getState().add([visit])
         if (movedTo) useYard.getState().moveUnitsToSite([vin], movedTo)
         set({ rows: { ...get().rows, [vin]: out } })
         idbPut(out).catch(() => {})
@@ -904,6 +913,7 @@ export const useTracking = create<TrackingState>()(
         const origin = r.site ?? siteIdForLocation(r.cells, sites)
         const moved = transferRow(r, destSiteId, by, sites, opts?.at)
         if (!moved) return false
+        useVisits.getState().add([moved.visit])
         set({ rows: { ...get().rows, [vin]: moved.out } })
         idbPut(moved.out).catch(() => {})
         pushRows([moved.out])
