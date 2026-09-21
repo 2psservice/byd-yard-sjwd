@@ -7,10 +7,10 @@ import { SelectSiteModal } from './components/SelectSiteModal'
 import { OpsShell } from './components/OpsShell'
 import { useYard, useMe, isOpsOnlyRole } from './store/useYard'
 import { useTrackingRows, useTracking } from './store/useTracking'
-import { useOps } from './store/useOps'
+import { useOps, queueTypeOf } from './store/useOps'
 import { startSyncBus, stopSyncBus } from './lib/syncBus'
 import { startKeyboardGuard } from './lib/keyboardGuard'
-import { deriveCarStatus, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY, CAR_STATUS_SET_SITE_KEY, gateOutScanMs, inYardAssertedAt } from './lib/carStatus'
+import { deriveCarStatus, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY, CAR_STATUS_SET_SITE_KEY, gateOutScanMs, gateInEvidenceAt, inYardAssertedAt } from './lib/carStatus'
 import { yardLocCode, LAST_LOCATION_KEY } from './lib/groupingImport'
 import { deliveryDestinationSite, siteIdForLocation } from './lib/siteScope'
 import { matchModel } from './lib/sampleData'
@@ -206,8 +206,23 @@ export default function App() {
       // ยาร์ดเดิมอ่านเป็น Gate-out ตามจริง ปลายทางเก็บการยิงรับของตัวเองไว้
       // (ดู transferRow) — ต้องทำก่อนกฎ "ยาร์ดต้องตรงกับชีต" ด้านล่าง ซึ่งจะ
       // ดึงรายการรถกลับมายาร์ดเดิมและลบหลักฐานข้อ (2) ทิ้ง
+      // หลักฐานข้อ (3)–(4) มีไว้เผื่อเครื่องที่ยิงรับยังเป็นเวอร์ชันเก่า ซึ่งไม่จด
+      // ว่า "ใครยืนยัน ที่ยาร์ดไหน" (ข้อ 1) และตัวเก็บกวาดของเครื่องเก่าก็ดึงรายการ
+      // รถกลับยาร์ดเดิมจนหลักฐานข้อ (2) หาย — แต่แถวยังบอกได้ว่า "ยิงรับหลังจากออก
+      // ไปแล้ว" (Gate In Time ใหม่กว่า Gate Out Time) เหลือแค่ต้องรู้ว่ายาร์ดไหน:
+      //  (3) ล็อตรับรถของยาร์ดอื่นติ๊กคันนี้ว่ารับแล้ว หลังรถออก
+      //  (4) ปลายทางส่งมอบ (Dealer Location) ในไฟล์ grouping สะกดชื่อยาร์ดของเราเอง
       {
         const sites = useYard.getState().sites
+        const queues = useOps.getState().queues
+        const gateInLotAfter = (vin: string, here: string, left: number): string | undefined => {
+          for (const q of queues) {
+            if (!q.site || q.site === here || queueTypeOf(q) !== 'GATEIN') continue
+            const it = q.items.find((i) => i.vin === vin)
+            if (it?.done && (it.doneAt ?? 0) > left) return q.site
+          }
+          return undefined
+        }
         for (const vin in rows) {
           const r = rows[vin]
           const here = r.site ?? siteIdForLocation(r.cells, sites)
@@ -220,6 +235,10 @@ export default function App() {
           else if (left > 0) {
             const u = units[vin]
             if (u?.site && u.site !== here && (u.gateInAt ?? 0) > left) dest = u.site
+            else if (gateInEvidenceAt(r.cells) > left && deriveCarStatus(r.cells) !== 'Gate-out') {
+              dest = gateInLotAfter(vin, here, left)
+                ?? (() => { const d = deliveryDestinationSite(r.cells['Dealer Location'] || '', sites); return d && d.id !== here ? d.id : undefined })()
+            }
           }
           if (dest && sites.some((s) => s.id === dest)) useTracking.getState().transferToYard(vin, dest)
         }
