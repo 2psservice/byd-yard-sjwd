@@ -8,6 +8,7 @@ import { OpsShell } from './components/OpsShell'
 import { useYard, useMe, isOpsOnlyRole } from './store/useYard'
 import { useTrackingRows, useTracking } from './store/useTracking'
 import { useOps, queueTypeOf } from './store/useOps'
+import { useVisits } from './store/useVisits'
 import { startSyncBus, stopSyncBus } from './lib/syncBus'
 import { startKeyboardGuard } from './lib/keyboardGuard'
 import { deriveCarStatus, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY, CAR_STATUS_KEY, CAR_STATUS_SET_SITE_KEY, gateOutScanMs, gateInEvidenceAt, inYardAssertedAt, statusSetAt } from './lib/carStatus'
@@ -172,7 +173,23 @@ export default function App() {
   // load real tracking data from IndexedDB on startup
   // tracking rows AND the yard-plan units both boot from IndexedDB — the plan
   // paints its cars from the local cache before any network answer
-  useEffect(() => { loadFromIdb(); useYard.getState().loadUnitsFromIdb() }, [loadFromIdb])
+  useEffect(() => { loadFromIdb(); useYard.getState().loadUnitsFromIdb(); useVisits.getState().load().catch(() => {}) }, [loadFromIdb])
+  // แยกยาร์ด แยกงาน ขั้นที่ 1: รอบที่ปิดไปแล้วซึ่งยังซ่อนอยู่ในก้อน __trips ของแถวสด
+  // → สร้างเป็นแถวรอบจริงของยาร์ดต้นทาง (ทำซ้ำได้ ไม่สร้างซ้ำ) — รันหลังแถวสดโหลดแล้ว
+  // และรันซ้ำหลังซิงก์คลาวด์ครั้งแรก เผื่อแถวที่เพิ่งมาถึง
+  useEffect(() => {
+    if (!trackingLoaded) return
+    const run = () => {
+      const rows = Object.values(useTracking.getState().rows)
+      const sites = useYard.getState().sites
+      if (!rows.length || !sites.length) return
+      const n = useVisits.getState().migrateFromTrips(rows, sites)
+      if (n) console.info(`[visits] migrated ${n} closed round(s)`)
+    }
+    run()
+    const t = setTimeout(run, 30_000)
+    return () => clearTimeout(t)
+  }, [trackingLoaded])
 
   // ── a gated-out car must not keep holding a parking slot ──────────────────
   // Cars leave through several paths (ops-scan + 09:30 flush, Co-Inspection

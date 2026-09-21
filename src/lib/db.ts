@@ -1124,3 +1124,60 @@ export async function clearTrackingRows(): Promise<void> {
   const { error } = await supabase.from('tracking_rows').delete().neq('vin', '')
   if (error) console.error('[db] clearTrackingRows', error)
 }
+
+// ── visits (แถวรอบที่ปิดแล้ว — ตาราง supabase-visits.sql) ───────────────────────
+
+import type { Visit } from './visits'
+
+function visitToRow(v: Visit) {
+  return {
+    id: v.id, vin: v.vin, round: v.round, site_id: v.site ?? null,
+    cells: v.cells, history: v.history ?? [],
+    closed_at: v.closedAt ? new Date(v.closedAt).toISOString() : null,
+    gate_out_at: v.gateOutAt ? new Date(v.gateOutAt).toISOString() : null,
+    updated_at: new Date(v.updatedAt || Date.now()).toISOString(),
+  }
+}
+function rowToVisit(r: any): Visit {
+  return {
+    id: String(r.id), vin: String(r.vin), round: Number(r.round) || 1, site: r.site_id ?? undefined,
+    cells: (r.cells as Record<string, string>) ?? {}, history: (r.history as Visit['history']) ?? [],
+    closedAt: r.closed_at ? new Date(r.closed_at).getTime() : 0,
+    gateOutAt: r.gate_out_at ? new Date(r.gate_out_at).getTime() : 0,
+    updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : 0,
+  }
+}
+
+/** null = fetch failed (table not created yet / offline) — caller keeps local state. */
+export async function fetchVisits(): Promise<Visit[] | null> {
+  if (!isConfigured()) return null
+  const out: Visit[] = []
+  const PAGE = 1000
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase.from('visits').select('*').order('id').range(from, from + PAGE - 1)
+    if (error) { console.error('[db] fetchVisits', error); return null }
+    for (const r of data ?? []) out.push(rowToVisit(r))
+    if (!data || data.length < PAGE) break
+  }
+  return out
+}
+
+/** true = landed (or nothing to do) · false = table missing / failed (caller keeps local copy and retries later) */
+export async function upsertVisits(visits: Visit[]): Promise<boolean> {
+  if (!isConfigured() || !visits.length) return true
+  const rows = visits.map(visitToRow)
+  for (let i = 0; i < rows.length; i += 200) {
+    const chunk = rows.slice(i, i + 200)
+    let landed = false
+    for (let attempt = 0; attempt < 3 && !landed; attempt++) {
+      const { error } = await supabase.from('visits').upsert(chunk, { onConflict: 'id' })
+      if (!error) { landed = true; break }
+      // ตารางยังไม่ถูกสร้าง (supabase-visits.sql) — ไม่ต้องลองซ้ำ บอกผู้เรียกให้เก็บไว้ก่อน
+      if (isMissingColumn(error)) { console.warn('[db] upsertVisits: visits table missing?', error); return false }
+      console.error('[db] upsertVisits', error)
+      await sleep(400 * (attempt + 1))
+    }
+    if (!landed) return false
+  }
+  return true
+}
