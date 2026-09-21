@@ -1870,7 +1870,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
     .filter((x) => x.item && types.includes(queueTypeOf(x.q)))
 
   // ── unified "Event" log — shared with the field Check station (lib/carHistory)
-  const eventLog = buildEventLog(row, allDamages, queues, vin, zoneLabel, (id) => sites.find((s) => s.id === id)?.name ?? id)
+  const eventLog = buildEventLog(row, allDamages, queues, vin, zoneLabel)
 
   const heroFields: [string, string, string][] = [
     ['MODEL', head, '#ffffff'],
@@ -2458,8 +2458,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                       <div className="flex items-center gap-2 flex-wrap text-[11.5px] mb-0.5">
                         <span className="font-bold" style={{ color: 'var(--text)' }}>{e.by}</span>
                         {e.station && <span className="badge" style={{ color: 'var(--brand)', background: 'var(--brand-soft)', fontSize: 10.5 }}>{e.station}</span>}
-                        {e.where && <span className="badge" title="ยาร์ดที่เครื่องซึ่งเขียนรายการนี้เลือกอยู่" style={{ color: 'var(--muted)', background: 'var(--chip)', fontSize: 10.5 }}>ที่ {e.where}</span>}
-                        <span style={{ color: 'var(--faint)' }}>{fmtDT(e.at)}{e.build ? <span className="font-mono" title="เวอร์ชันแอปของเครื่องที่เขียน"> · build {e.build}</span> : null}</span>
+                        <span style={{ color: 'var(--faint)' }}>{fmtDT(e.at)}</span>
                       </div>
                       <div className="text-[13px]">{e.text}</div>
                     </div>

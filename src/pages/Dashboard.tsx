@@ -613,7 +613,7 @@ function LiveClock() {
   return (
     <div className="text-right">
       <div className="display text-[26px] font-bold tabular leading-none">{p(now.getHours())}:{p(now.getMinutes())}<span style={{ color: 'var(--faint)' }}>:{p(now.getSeconds())}</span></div>
-      <div className="text-[11px] mt-1 flex items-center gap-1.5 justify-end" style={{ color: 'var(--st-yard)' }}><span className="live">●</span> SJWD Yard Control <span className="font-mono" title="เวอร์ชันแอปของเครื่องนี้" style={{ color: 'var(--faint)' }}>· build {__BUILD__}</span></div>
+      <div className="text-[11px] mt-1 flex items-center gap-1.5 justify-end" style={{ color: 'var(--st-yard)' }}><span className="live">●</span> SJWD Yard Control</div>
     </div>
   )
 }
