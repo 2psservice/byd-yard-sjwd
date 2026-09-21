@@ -27,7 +27,7 @@ import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirs
 import { candidates } from '../lib/parkingEngine'
 import { slotToLatLng } from '../lib/geo'
 import { cx, PhotoLightbox } from '../components/ui'
-import { rowInSite, rowsForSite, siteWorksWith, deliveryDestinationSite, siteIdForLocation } from '../lib/siteScope'
+import { rowInSite, rowsForSite, siteWorksWith, departedFromSite, rowYardName, deliveryDestinationSite, siteIdForLocation } from '../lib/siteScope'
 import { compressImage } from '../lib/photo'
 import StationSheet from '../components/StationSheet'
 import StockAccessoryCheck from '../components/StockAccessoryCheck'
@@ -2013,7 +2013,10 @@ function WalkView() {
 
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
   // reset every check per scanned car
-  useEffect(() => { setModelOk(null); setColorOk(null) }, [trackingVin])
+  // รถที่ "ออกจากยาร์ดนี้ไปแล้ว" (แถวสดอยู่ยาร์ดอื่น) โผล่ที่ประตูนี้อีก — ต้องยืนยัน
+  // ก่อนว่ารถกลับมาจริง ไม่ใช่เครื่องเลือก Site ผิด (ยิงรับ = ดึงรถกลับมายาร์ดนี้)
+  const [returnOk, setReturnOk] = useState(false)
+  useEffect(() => { setModelOk(null); setColorOk(null); setReturnOk(false) }, [trackingVin])
 
   // safety net: a Pre Gate-in car this station doesn't cover with any queue —
   // same fix as the admin Gate In/Out board's virtual card (PR #263). A device
@@ -2476,7 +2479,10 @@ function WalkView() {
           </div>
         )
         const mismatch = [modelOk === 'NG' && 'รุ่นรถ', colorOk === 'NG' && 'สีรถ'].filter(Boolean) as string[]
-        const verified = modelOk === 'OK' && colorOk === 'OK'
+        const leftHere = !!currentSite && !siteWorksWith(trackRow, currentSite, sites) && departedFromSite(trackRow.cells, currentSite, sites)
+        const nowAt = leftHere ? (rowYardName(trackRow, sites) || 'ยาร์ดอื่น') : ''
+        const hereName = sites.find((s) => s.id === currentSite)?.name ?? ''
+        const verified = modelOk === 'OK' && colorOk === 'OK' && (!leftHere || returnOk)
         // ── which arrival lot did this car come on? ──
         // The gate scans a VIN and gets a car, but the work is organised by lot
         // ("BIG MOTOR SALE 23 U") — the operator has to know which group the car
@@ -2611,6 +2617,19 @@ function WalkView() {
                       </div>
                     </div>
                   )}
+                  {leftHere && (
+                    <label className="block rounded-2xl p-3 text-[12.5px] leading-relaxed cursor-pointer"
+                      style={{ background: 'rgba(234,179,8,0.10)', color: '#92400e', border: '1px solid rgba(234,179,8,0.35)' }}>
+                      <div className="flex items-center gap-1.5 text-[13px] font-semibold">
+                        <AlertTriangle size={15} /> รถคันนี้ออกจาก {hereName} ไปแล้ว — ตอนนี้อยู่ที่ {nowAt}
+                      </div>
+                      <div className="mt-1">ยิงรับที่นี่ = ดึงรถกลับมาเป็นของ {hereName} และปิดรอบที่ {nowAt} · ถ้าคุณอยู่ที่ {nowAt} ให้เปลี่ยน Site ของเครื่องก่อน</div>
+                      <div className="mt-2 flex items-center gap-2 font-semibold">
+                        <input type="checkbox" checked={returnOk} onChange={(e) => setReturnOk(e.target.checked)} />
+                        ยืนยันว่ารถคันนี้กลับมาที่ {hereName} จริง
+                      </div>
+                    </label>
+                  )}
                   {/* the gate now checks the car against the sheet and nothing
                       else: verify รุ่น, verify สี, confirm. The walk-around
                       damage step was taken out at the yard's request — defects
@@ -2625,6 +2644,7 @@ function WalkView() {
                       : { background: 'var(--chip)', color: 'var(--faint)', cursor: 'not-allowed' }}>
                     <CheckCircle2 size={20} /> {
                       mismatch.length ? 'Gate-in ไม่ได้ — ข้อมูลไม่ตรง'
+                        : (leftHere && !returnOk && modelOk === 'OK' && colorOk === 'OK') ? 'ยืนยันก่อนว่ารถกลับมาที่ยาร์ดนี้จริง'
                         : !verified ? 'ยืนยันรุ่นและสีก่อน'
                         : 'Confirm Gate in'
                     }

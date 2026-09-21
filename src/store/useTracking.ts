@@ -298,8 +298,28 @@ const MAX_ROW_HISTORY = 100
 // how close together two Location moves on the SAME car by the SAME actor
 // have to land to count as one physical cascade rather than two real moves
 const LOCATION_BURST_MS = 90_000
-function withHistoryEntry(r: TrackRow, key: string, value: string, columns: Column[], by: string, src?: 'scan'): TrackRow {
+/** ทุกรายการประวัติจดว่าเขียนจากเครื่องที่เลือกยาร์ดไหน เวอร์ชันอะไร */
+function stampEvent(e: RowEvent): RowEvent {
+  const site = useYard.getState().currentSite ?? undefined
+  return { ...e, ...(site ? { site } : {}), build: __BUILD__ }
+}
+
+function withHistoryEntry(r: TrackRow, key: string, value: string, columns: Column[], by: string, src?: 'scan' | 'admin'): TrackRow {
   const from = r.cells[key] ?? ''
+  // ── กฎเด็ดขาด: ยาร์ดที่บันทึกว่ารถออกไปแล้ว ห้ามเปลี่ยนสถานะรถคันนั้นกลับเป็น
+  // "อยู่ในลาน" เอง — งานของยาร์ดนั้นจบแล้ว แถวสดเป็นของยาร์ดที่รถไปอยู่ ทางเดียว
+  // ที่รถจะกลับมาได้คือประตูของยาร์ดนี้ยิงรับใหม่ (ซึ่งย้ายรถกลับมาก่อนแล้วค่อยเขียน
+  // ดู transferToYard) การเขียนจากสถานี/ตัวช่วยอื่น ๆ ที่หลงมาถึงตรงนี้ถูกปฏิเสธ
+  // และจดไว้ในประวัติว่าใคร ที่ยาร์ดไหน เครื่องเวอร์ชันอะไร พยายามเขียน
+  if (key === CAR_STATUS_KEY && !RELEASED_STATUSES.has(value) && src !== 'admin') {
+    const { currentSite, sites } = useYard.getState()
+    if (currentSite && r.site !== currentSite && departedFromSite(r.cells, currentSite, sites)) {
+      const label = columns.find((c) => c.key === key)?.label ?? key
+      const entry = stampEvent({ at: Date.now(), by, field: label, from, to: value,
+        note: 'ปฏิเสธ — รถออกจากยาร์ดนี้ไปแล้ว ยาร์ดนี้เปลี่ยนสถานะเองไม่ได้' })
+      return { ...r, history: [...(r.history ?? []), entry].slice(-MAX_ROW_HISTORY) }
+    }
+  }
   const cells = { ...r.cells, [key]: value }
   // จดไว้ว่า "มีคนในแอปยืนยันสถานะของรถคันนี้เมื่อไหร่" — ทุกทางที่เขียนช่องนี้
   // ผ่านแอป (แอดมินแก้เอง · ยิงที่ประตู · สถานีบันทึกงาน) ลงมาที่จุดนี้ทั้งหมด
@@ -318,16 +338,16 @@ function withHistoryEntry(r: TrackRow, key: string, value: string, columns: Colu
     const { currentSite, sites } = useYard.getState()
     if (currentSite) {
       cells[CAR_STATUS_SET_SITE_KEY] = currentSite
-      // ลานนี้บันทึกไว้ว่ารถออกไปแล้ว แต่คนที่ยืนอยู่ตรงนี้ยืนยันว่ารถยังอยู่
-      // ⇒ บันทึกเก่าผิด ลานนี้รับรถกลับเข้าลาน ถ้าไม่ย้ายแถวกลับมาด้วย แถวยัง
-      // ค้างอยู่ลานอื่น รถจะหายไปจากทุกหน้าจอของลานนี้แทนที่จะกลับมาเป็น In Yard
-      if (!RELEASED_STATUSES.has(value) && r.site !== currentSite
+      // แอดมินแก้ตรง ๆ (ทาง bulkUpdate เท่านั้น — สถานีหน้างานถูกปฏิเสธไปแล้วด้านบน):
+      // ลานนี้บันทึกไว้ว่ารถออกไปแล้ว แต่แอดมินยืนยันว่ารถยังอยู่ ⇒ บันทึกเก่าผิด
+      // ลานนี้รับรถกลับเข้าลาน ถ้าไม่ย้ายแถวกลับมาด้วย รถจะหายไปจากทุกหน้าจอ
+      if (src === 'admin' && !RELEASED_STATUSES.has(value) && r.site !== currentSite
           && departedFromSite(r.cells, currentSite, sites)) site = currentSite
     }
   }
   if (from === value) return { ...r, cells, site } // unchanged value — still write, skip the log entry
   const label = columns.find((c) => c.key === key)?.label ?? key
-  const entry: RowEvent = { at: Date.now(), by, field: label, from, to: value, ...(src ? { src } : {}) }
+  const entry: RowEvent = stampEvent({ at: Date.now(), by, field: label, from, to: value, ...(src === 'scan' ? { src } : {}) })
   return { ...r, cells, site, history: [...(r.history ?? []), entry].slice(-MAX_ROW_HISTORY) }
 }
 
@@ -409,7 +429,7 @@ function closeRoundRow(
   if (next.gateInDate) cells['Gate In Date'] = next.gateInDate
   if (next.movingDate) cells['moving date'] = next.movingDate
   if (next.lot) cells['Lot transfer'] = next.lot
-  const entry: RowEvent = { at: Date.now(), by, field: 'รอบที่', from: String(closing), to: String(closing + 1) }
+  const entry: RowEvent = stampEvent({ at: Date.now(), by, field: 'รอบที่', from: String(closing), to: String(closing + 1) })
   let out: TrackRow = { ...r, cells, history: [...(r.history ?? []), entry].slice(-MAX_ROW_HISTORY), updatedAt: Date.now() }
   // coming back to a DIFFERENT yard moves the car there (same rule as
   // applyYardMove, which this path bypasses by writing cells directly)
@@ -1179,7 +1199,7 @@ export const useTracking = create<TrackingState>()(
         for (const vin of vins) {
           const r = rows[vin]
           if (!r) continue
-          const next: TrackRow = { ...applyYardMove(withHistoryEntry(r, key, value, columns, by), key, columns, by), updatedAt: now }
+          const next: TrackRow = { ...applyYardMove(withHistoryEntry(r, key, value, columns, by, 'admin'), key, columns, by), updatedAt: now }
           rows[vin] = next
           changed.push(next)
           if (reannouncedArrival(r, next)) reannounced.push(vin)
