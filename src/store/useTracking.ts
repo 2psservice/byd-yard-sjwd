@@ -175,6 +175,10 @@ interface TrackingState {
    *  รอบใหม่ที่ปลายทาง — ดู transferRow. `at` = เวลาที่ออก ถ้าแถวไม่มีรอยยิงออก
    *  คืน true เมื่อย้ายจริง (false = อยู่ที่นั่นอยู่แล้ว / ไม่รู้จักยาร์ด) */
   transferToYard: (vin: string, destSiteId: string, opts?: { at?: number; queue?: boolean }) => boolean
+  /** แอดมินยืนยันว่ารถ "ไม่เคยอยู่" ยาร์ด purgeSiteId (ข้อมูลมั่ว): ล้างทุกร่องรอยของยาร์ดนั้น
+   *  (ป้ายออก · รอบที่ปิด · แถวรอบ) แล้วให้แถวสดเป็นของ destSiteId — ไม่ปิดรอบ ไม่สร้างประวัติปลอม
+   *  คืนจำนวนแถวที่แตะ */
+  reassignToYard: (vins: string[], destSiteId: string, purgeSiteId: string) => number
   commitCoInspection: (res: ParseResult) => { updated: number; added: number; skipped: number; gateOut: number; moved: number; otherYard: number }
   /** Set a cell and log it. `src: 'scan'` marks the write as a FIELD STATION
    *  action (ops-scan), which is what lets a report tell a real recording apart
@@ -921,6 +925,45 @@ export const useTracking = create<TrackingState>()(
         // ปลายทางยิงรับไปแล้ว → ไม่ต้องรอรับอีก; ยังไม่ยิง → เข้าล็อตรับรถของปลายทาง
         if (!moved.arrived && opts?.queue !== false) queueArrivalAt(vin, destSiteId, origin)
         return true
+      },
+
+      reassignToYard: (vins, destSiteId, purgeSiteId) => {
+        const { sites, currentUser: by } = useYard.getState()
+        const dest = sites.find((x) => x.id === destSiteId)
+        const purge = sites.find((x) => x.id === purgeSiteId)
+        if (!dest || !purge) return 0
+        const purgeNames = new Set([purge.name, purge.code].filter(Boolean).map((x) => String(x).trim().toLowerCase().replace(/\s+/g, ' ')))
+        const rows = { ...get().rows }
+        const changed: TrackRow[] = []
+        const visitIds: string[] = []
+        const now = Date.now()
+        for (const vin of vins) {
+          const r = rows[vin]
+          if (!r) continue
+          const cells = { ...r.cells }
+          if (cells[GATE_OUT_ORIGIN_SITE_KEY] === purgeSiteId) { delete cells[GATE_OUT_ORIGIN_SITE_KEY]; delete cells[GATE_OUT_ORIGIN_AT_KEY] }
+          const trips = tripsOf(cells)
+          const kept = trips.filter((t) => !purgeNames.has((t.yard ?? '').trim().toLowerCase().replace(/\s+/g, ' ')))
+          for (const t of trips) if (!kept.includes(t)) visitIds.push(`${vin}#${t.round}`)
+          if (kept.length) cells[TRIPS_CELL] = JSON.stringify(kept); else delete cells[TRIPS_CELL]
+          cells['Location yard'] = dest.name
+          const entry: RowEvent = { at: now, by, field: 'Location yard', from: r.cells['Location yard'] ?? '', to: dest.name }
+          const next: TrackRow = { ...r, cells, site: destSiteId, updatedAt: now, history: [...(r.history ?? []), entry].slice(-MAX_ROW_HISTORY) }
+          rows[vin] = next; changed.push(next)
+        }
+        if (!changed.length) return 0
+        set({ rows })
+        idbBulkPut(changed).catch(() => {})
+        pushRows(changed)
+        // แถวรอบของยาร์ดที่ลบร่องรอย — รวมทั้งที่ตัวแปลงเคยสร้างไว้จากรอบเหล่านั้น
+        const vs = useVisits.getState().visits
+        for (const vin of vins) for (const v of Object.values(vs)) if (v.vin === vin && v.site === purgeSiteId) visitIds.push(v.id)
+        useVisits.getState().remove([...new Set(visitIds)])
+        // รายการรถ (unit) ที่ยังติดป้ายยาร์ดนั้น → ย้ายตาม (ที่อยู่ปลายทางแล้วไม่ถูกแตะ)
+        const units = useYard.getState().units
+        const stray = vins.filter((vin) => units[vin]?.site === purgeSiteId)
+        if (stray.length) useYard.getState().moveUnitsToSite(stray, destSiteId)
+        return changed.length
       },
 
       // Co-Inspection import: MERGE the file's columns into existing VINs (update

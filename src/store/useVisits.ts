@@ -8,7 +8,7 @@
 import { create } from 'zustand'
 import type { Site } from '../types'
 import type { TrackRow, RowEvent } from '../lib/excelTracking'
-import { idbGetAllVisits, idbPutVisits } from '../lib/idb'
+import { idbGetAllVisits, idbPutVisits, idbDeleteVisits } from '../lib/idb'
 import * as db from '../lib/db'
 import { onSync, sendSync } from '../lib/syncBus'
 import { useYard } from './useYard'
@@ -29,6 +29,8 @@ interface VisitsState {
   bulkUpdate: (ids: string[], key: string, value: string) => void
   /** แปลงย้อนหลัง: ทุกรอบที่ปิดใน __trips ของแถวสดที่ยังไม่มีแถวรอบ → สร้าง (ทำซ้ำได้) */
   migrateFromTrips: (rows: TrackRow[], sites: Site[]) => number
+  /** ลบแถวรอบ (แอดมินยืนยันว่ารถไม่เคยอยู่ยาร์ดนั้น — ดู useTracking.reassignToYard) */
+  remove: (ids: string[]) => void
 }
 
 /** VIN ที่ push ขึ้นคลาวด์ไม่สำเร็จ — ลองใหม่ตอนโหลดครั้งถัดไป */
@@ -107,6 +109,16 @@ export const useVisits = create<VisitsState>()((set, get) => ({
     set({ visits })
     idbPutVisits(changed).catch(() => {})
     void push(changed, set)
+  },
+
+  remove: (ids) => {
+    const visits = { ...get().visits }
+    const gone = ids.filter((id) => !!visits[id])
+    if (!gone.length) return
+    for (const id of gone) delete visits[id]
+    set({ visits })
+    idbDeleteVisits(gone).catch(() => {})
+    db.deleteVisits(gone).then((ok) => { if (ok) sendSync('visits') }).catch(() => {})
   },
 
   migrateFromTrips: (rows, sites) => {

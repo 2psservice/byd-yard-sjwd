@@ -1181,3 +1181,13 @@ export async function upsertVisits(visits: Visit[]): Promise<boolean> {
   }
   return true
 }
+
+/** true = landed · false = failed (caller keeps a tombstone-free local delete; the next load re-pulls the cloud copy) */
+export async function deleteVisits(ids: string[]): Promise<boolean> {
+  if (!isConfigured() || !ids.length) return true
+  for (let i = 0; i < ids.length; i += 200) {
+    const { error } = await supabase.from('visits').delete().in('id', ids.slice(i, i + 200))
+    if (error) { console.error('[db] deleteVisits', error); return false }
+  }
+  return true
+}
