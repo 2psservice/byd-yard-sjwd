@@ -54,7 +54,7 @@ export const TRIP_SCOPED_KEYS: string[] = [
   'Move from  3', 'Transfer 3', 'Move from  4', 'Transfer 4',
   // this visit's inspection work
   // 'Car Status Set At' — เวลาที่มีคนยืนยันสถานะรอบนี้ ต้องไม่ค้างข้ามรอบ
-  'Car Status Set At',
+  'Car Status Set At', 'Car Status Set Site',
   'Status', 'Vin Of Status', 'Final Status', 'Final check date', 'OK date', 'PIC (PDI)',
   '% SOC', 'Tire Pressure', 'Aging PM',
   ...PDI_KEYS, ...PM_KEYS,

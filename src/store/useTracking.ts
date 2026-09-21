@@ -11,9 +11,9 @@ import * as db from '../lib/db'
 import { supabase } from '../lib/supabase'
 import { onSync, sendSync, type RowMsg, type RowsPayload } from '../lib/syncBus'
 import { useYard } from './useYard'
-import { siteForRow, siteIdForLocation, coInspectionAccepts, CANDIDATE_SITES_KEY } from '../lib/siteScope'
+import { siteForRow, siteIdForLocation, coInspectionAccepts, departedFromSite, CANDIDATE_SITES_KEY } from '../lib/siteScope'
 import { TRIPS_CELL, TRIP_SCOPED_KEYS, tripsOf, type TripSnapshot } from '../lib/tripHistory'
-import { CAR_STATUS_ORDER, CAR_STATUS_KEY, CAR_STATUS_SET_AT_KEY, deriveCarStatus, isGateOutStamp } from '../lib/carStatus'
+import { CAR_STATUS_ORDER, CAR_STATUS_KEY, CAR_STATUS_SET_AT_KEY, CAR_STATUS_SET_SITE_KEY, RELEASED_STATUSES, deriveCarStatus, isGateOutStamp } from '../lib/carStatus'
 import { isOpenDefect } from '../lib/damageLabel'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 
@@ -300,11 +300,24 @@ function withHistoryEntry(r: TrackRow, key: string, value: string, columns: Colu
   // ผ่านแอป (แอดมินแก้เอง · ยิงที่ประตู · สถานีบันทึกงาน) ลงมาที่จุดนี้ทั้งหมด
   // ส่วนการนำเข้าไฟล์ประกอบแถวขึ้นมาเองไม่ผ่านทางนี้ จึงแยกได้ว่าค่ามาจากคนหรือไฟล์
   // ใช้ให้คำยืนยันของคนชนะการเดาจาก "แผนรับที่เลยกำหนด" (ดู deriveCarStatus)
-  if (key === CAR_STATUS_KEY) cells[CAR_STATUS_SET_AT_KEY] = String(Date.now())
-  if (from === value) return { ...r, cells } // unchanged value — still write, skip the log entry
+  // …และจดด้วยว่ายืนยันจาก "ลานไหน" — คำยืนยันเป็นของลานนั้นลานเดียว
+  let site = r.site
+  if (key === CAR_STATUS_KEY) {
+    cells[CAR_STATUS_SET_AT_KEY] = String(Date.now())
+    const { currentSite, sites } = useYard.getState()
+    if (currentSite) {
+      cells[CAR_STATUS_SET_SITE_KEY] = currentSite
+      // ลานนี้บันทึกไว้ว่ารถออกไปแล้ว แต่คนที่ยืนอยู่ตรงนี้ยืนยันว่ารถยังอยู่
+      // ⇒ บันทึกเก่าผิด ลานนี้รับรถกลับเข้าลาน ถ้าไม่ย้ายแถวกลับมาด้วย แถวยัง
+      // ค้างอยู่ลานอื่น รถจะหายไปจากทุกหน้าจอของลานนี้แทนที่จะกลับมาเป็น In Yard
+      if (!RELEASED_STATUSES.has(value) && r.site !== currentSite
+          && departedFromSite(r.cells, currentSite, sites)) site = currentSite
+    }
+  }
+  if (from === value) return { ...r, cells, site } // unchanged value — still write, skip the log entry
   const label = columns.find((c) => c.key === key)?.label ?? key
   const entry: RowEvent = { at: Date.now(), by, field: label, from, to: value, ...(src ? { src } : {}) }
-  return { ...r, cells, history: [...(r.history ?? []), entry].slice(-MAX_ROW_HISTORY) }
+  return { ...r, cells, site, history: [...(r.history ?? []), entry].slice(-MAX_ROW_HISTORY) }
 }
 
 /** The sheet column that says which yard a car belongs to. */

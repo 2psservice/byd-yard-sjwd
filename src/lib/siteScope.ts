@@ -6,7 +6,7 @@
 import type { Site } from '../types'
 import type { TrackRow } from './excelTracking'
 import { tripsOf, type TripSnapshot } from './tripHistory'
-import { GATE_OUT_ORIGIN_SITE_KEY, gateOutOriginAt } from './carStatus'
+import { GATE_OUT_ORIGIN_SITE_KEY, gateOutOriginAt, inYardAssertedAt } from './carStatus'
 
 const norm = (s?: string) => (s ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
 
@@ -130,11 +130,20 @@ export function departureFromSite(
   cells: Record<string, string>, siteId: string | null | undefined, sites: Site[],
 ): { at: number; trip?: TripSnapshot } | null {
   if (!siteId) return null
+  // ลานนี้เองยืนยันทีหลังว่ารถยังอยู่ในลาน ⇒ บันทึก "ออกไปแล้ว" ของลานนี้ผิด
+  // และถูกแก้แล้ว — คำยืนยันของคนที่ยืนอยู่ตรงนั้นชนะบันทึกเก่าของลานตัวเอง
+  // (เป็นทางเดียวที่แอดมินจะแก้รถที่ค้างสถานะ Gate-out ให้ถูกได้ ดู asDeparted
+  //  ในหน้ารายการรถ ซึ่งทับช่อง Car Status เป็น Gate-out ตายตัว)
+  // คำยืนยันของลานอื่นไม่เกี่ยว — ยิง Gate-in ที่ปลายทางคือคำยืนยันของปลายทาง
+  // ลานต้นทางต้องยังจำได้ว่าตัวเองยิงรถออกไปเมื่อไหร่
+  const asserted = inYardAssertedAt(cells, siteId)
+  const stillHere = (d: { at: number; trip?: TripSnapshot } | null) =>
+    d && asserted > d.at ? null : d
   const trips = tripsOf(cells)
   // the marker names a site id outright — no name matching needed
   if (cells[GATE_OUT_ORIGIN_SITE_KEY] === siteId) {
     const at = gateOutOriginAt(cells)
-    if (at > 0) return { at, trip: trips.find((t) => t.cells['Gate Out Time'] === String(at)) }
+    if (at > 0) return stillHere({ at, trip: trips.find((t) => t.cells['Gate Out Time'] === String(at)) })
   }
   const site = sites.find((s) => s.id === siteId)
   if (!site) return null
@@ -148,7 +157,7 @@ export function departureFromSite(
     const ms = Number.isFinite(at) && at > 0 ? at : t.closedAt
     if (ms > 0 && (!best || ms > best.at)) best = { at: ms, trip: t }
   }
-  return best
+  return stillHere(best)
 }
 
 /**
