@@ -20,6 +20,12 @@ export interface RowEvent {
    *  — the position-heal treats these as ground truth over file imports and
    *  auto-park. Absent on older entries and on non-scan writers. */
   src?: 'scan'
+  /** ยาร์ดที่เครื่องซึ่งเขียนรายการนี้เลือกอยู่ + เวอร์ชันแอปของเครื่องนั้น —
+   *  ไว้ไล่ย้อนว่า "ใคร ที่ยาร์ดไหน เครื่องเวอร์ชันอะไร" เป็นคนเปลี่ยนสถานะ */
+  site?: string
+  build?: string
+  /** คำอธิบายพิเศษ เช่น การเขียนที่ถูกปฏิเสธเพราะขัดกฎแยกยาร์ด */
+  note?: string
 }
 
 /** Was this Location history line written by a FIELD SCAN (driver parking /
