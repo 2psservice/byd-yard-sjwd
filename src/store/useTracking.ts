@@ -298,8 +298,18 @@ const MAX_ROW_HISTORY = 100
 // how close together two Location moves on the SAME car by the SAME actor
 // have to land to count as one physical cascade rather than two real moves
 const LOCATION_BURST_MS = 90_000
-function withHistoryEntry(r: TrackRow, key: string, value: string, columns: Column[], by: string, src?: 'scan'): TrackRow {
+function withHistoryEntry(r: TrackRow, key: string, value: string, columns: Column[], by: string, src?: 'scan' | 'admin'): TrackRow {
   const from = r.cells[key] ?? ''
+  // ── กฎเด็ดขาด: ยาร์ดที่บันทึกว่ารถออกไปแล้ว ห้ามเปลี่ยนสถานะรถคันนั้นกลับเป็น
+  // "อยู่ในลาน" เอง — แถวสดเป็นของยาร์ดที่รถไปอยู่ (ปลายทางยิงรับ Pre Gate-in →
+  // In Yard ที่นั่น) การเขียนสถานะในลานจากสถานี/ตัวช่วยบนเครื่องที่เลือก Site เป็น
+  // ต้นทาง ถูกทิ้งเฉย ๆ ไม่แตะแถว — ก่อนหน้านี้การเขียนแบบนี้ "ดึง" รถกลับต้นทาง
+  // (กฎ #504) ทำให้ต้นทางกลายเป็น In Yard ตามปลายทาง ทางแอดมิน (bulkUpdate) เท่านั้น
+  // ที่ยังดึงกลับได้
+  if (key === CAR_STATUS_KEY && !RELEASED_STATUSES.has(value) && src !== 'admin') {
+    const { currentSite, sites } = useYard.getState()
+    if (currentSite && r.site !== currentSite && departedFromSite(r.cells, currentSite, sites)) return r
+  }
   const cells = { ...r.cells, [key]: value }
   // จดไว้ว่า "มีคนในแอปยืนยันสถานะของรถคันนี้เมื่อไหร่" — ทุกทางที่เขียนช่องนี้
   // ผ่านแอป (แอดมินแก้เอง · ยิงที่ประตู · สถานีบันทึกงาน) ลงมาที่จุดนี้ทั้งหมด
@@ -321,13 +331,13 @@ function withHistoryEntry(r: TrackRow, key: string, value: string, columns: Colu
       // ลานนี้บันทึกไว้ว่ารถออกไปแล้ว แต่คนที่ยืนอยู่ตรงนี้ยืนยันว่ารถยังอยู่
       // ⇒ บันทึกเก่าผิด ลานนี้รับรถกลับเข้าลาน ถ้าไม่ย้ายแถวกลับมาด้วย แถวยัง
       // ค้างอยู่ลานอื่น รถจะหายไปจากทุกหน้าจอของลานนี้แทนที่จะกลับมาเป็น In Yard
-      if (!RELEASED_STATUSES.has(value) && r.site !== currentSite
+      if (src === 'admin' && !RELEASED_STATUSES.has(value) && r.site !== currentSite
           && departedFromSite(r.cells, currentSite, sites)) site = currentSite
     }
   }
   if (from === value) return { ...r, cells, site } // unchanged value — still write, skip the log entry
   const label = columns.find((c) => c.key === key)?.label ?? key
-  const entry: RowEvent = { at: Date.now(), by, field: label, from, to: value, ...(src ? { src } : {}) }
+  const entry: RowEvent = { at: Date.now(), by, field: label, from, to: value, ...(src === 'scan' ? { src } : {}) }
   return { ...r, cells, site, history: [...(r.history ?? []), entry].slice(-MAX_ROW_HISTORY) }
 }
 
@@ -1179,7 +1189,7 @@ export const useTracking = create<TrackingState>()(
         for (const vin of vins) {
           const r = rows[vin]
           if (!r) continue
-          const next: TrackRow = { ...applyYardMove(withHistoryEntry(r, key, value, columns, by), key, columns, by), updatedAt: now }
+          const next: TrackRow = { ...applyYardMove(withHistoryEntry(r, key, value, columns, by, 'admin'), key, columns, by), updatedAt: now }
           rows[vin] = next
           changed.push(next)
           if (reannouncedArrival(r, next)) reannounced.push(vin)
