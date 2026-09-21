@@ -20,7 +20,7 @@ import { rowsToCsv, type TrackRow, type RowEvent } from '../lib/excelTracking'
 import { isAccessoryCheckEntry } from '../lib/finalCheckList'
 import { printFindList } from '../lib/groupingPrint'
 import { matchVins, toFindListRows } from '../lib/findCar'
-import { rowsForSite, siteWorksWith, departedFromSite, departedViewFrom, DEPARTURE_SETTLE_MS } from '../lib/siteScope'
+import { rowsForSite, siteWorksWith, departedFromSite, departedViewFrom, whereElse, rowYardName, DEPARTURE_SETTLE_MS } from '../lib/siteScope'
 import { zoneLabel } from '../components/CarDiagramMultiView'
 import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirst, REPAIR_STATUSES, canonRepairStatus } from '../lib/damageLabel'
 import { resolvePart, resolveDefect } from '../lib/masterDefect'
@@ -212,13 +212,6 @@ type Tab = 'grouping' | 'units' | 'mylist'
  *  these two screens can hold the whole yard (18k rows) — one stray click with
  *  nothing ticked would queue a print job nobody can stop at the printer. */
 const IR_PRINT_MAX = 200
-/** Shortest Unit-Nbr text treated as "find me THIS car" rather than a browse —
- *  the same เลขท้าย 5 ตัว every scan station accepts. Below it the search stays
- *  inside the active yard. */
-const VIN_LOOKUP_MIN = 5
-/** Cap on out-of-yard matches folded into the list — a VIN lookup wants one car;
- *  this only bounds a short partial that happens to match many. */
-const OUTSIDE_MAX = 50
 // Filter bar: Unit Nbr + Grouping are pinned; every other filter is a COLUMN
 // chosen from the column manager (up to MAX_FILTERS). The config now lives in
 // the tracking store (persisted + part of the shared "default view" preset).
@@ -251,16 +244,6 @@ export function Units() {
   // which is exactly the row as this yard last saw it (departedViewFrom —
   // shared with the detail panel, so the grid and the panel it opens agree).
   const asDeparted = (r: TrackRow): TrackRow => departedViewFrom(r, currentSite, sites) ?? r
-  /** Every row this device knows, read from THIS yard's point of view: one it
-   *  gated out reads "Gate-out" with the time it went, while the very same car
-   *  on the destination yard's screen keeps its live "Pre Gate-in". Both yards
-   *  are right about their own gate. Used wherever a list deliberately reaches
-   *  past this yard (the pasted Mylist, VIN lookups). */
-  const rowsFromHere = useMemo(
-    () => allRows.map((r) => (departedFromSite(r.cells, currentSite, sites) ? asDeparted(r) : r)),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [allRows, currentSite, sites],
-  )
   const departedRows = useMemo(() => {
     if (!currentSite) return []
     const inSite = new Set(rows.map((r) => r.vin))
@@ -366,36 +349,13 @@ export function Units() {
     [siteRows],
   )
 
-  // Every VIN this device knows that is NOT in the active yard's list, indexed
-  // once. A car drops out of a yard's list when its row stops naming that yard
-  // — which is exactly what a gate-out does — so searching its VIN here found
-  // nothing at all, even though the ⌘K palette (which never scopes by yard)
-  // listed it. A VIN identifies ONE car worldwide, so typing a whole one (or
-  // its last 5+) is never an ask for "a car in this yard": it names that car.
-  // …and one this yard gated out LONGER ago than the list itself carries still
-  // reads here as the departure it was, not as whatever it has since become
-  // somewhere else — same rule, just reached by VIN instead of by browsing.
-  const outsideIndex = useMemo(() => {
+  // แยกยาร์ด แยกงาน: ตารางนี้แสดงเฉพาะรถของยาร์ดที่ยืนอยู่ (รวมรถที่ออกจากยาร์ดนี้
+  // ไปแล้ว ซึ่งโชว์เป็น Gate-out) เลขวินที่ค้นแล้วไม่อยู่ในนี้ ตอบได้แค่ว่า "อยู่ใน
+  // Site ไหน" — ของเดิมดึงแถวของยาร์ดอื่นเข้ามาในตารางเลย (ป้าย "นอกลานนี้")
+  const elsewhere = useMemo(() => {
     if (!currentSite) return []
-    const listed = new Set(siteRows.map((r) => r.vin))
-    return allRows
-      .filter((r) => !listed.has(r.vin))
-      .map((r) => ({ r: departedFromSite(r.cells, currentSite, sites) ? asDeparted(r) : r, vin: normKey(r.vin) }))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allRows, siteRows, currentSite])
-  const outsideRows = useMemo(() => {
-    const query = normKey(q)
-    // 5 = the "เลขท้าย 5 ตัว" every scan station already accepts. Shorter than
-    // that is a browse, not a lookup, and must not drag other yards in.
-    if (query.length < VIN_LOOKUP_MIN) return []
-    const out: TrackRow[] = []
-    for (const x of outsideIndex) {
-      if (!x.vin.includes(query)) continue
-      out.push(x.r)
-      if (out.length >= OUTSIDE_MAX) break
-    }
-    return out
-  }, [outsideIndex, q])
+    return whereElse(q, allRows, new Set(siteRows.map((r) => r.vin)), sites)
+  }, [q, allRows, siteRows, currentSite, sites])
 
   const filtered = useMemo(() => {
     const query = normKey(q)
@@ -416,7 +376,6 @@ export function Units() {
       return true
     }
     let arr = siteRows.filter((r, i) => (!query || searchIndex[i].includes(query)) && passesRest(r))
-    if (outsideRows.length) arr = arr.concat(outsideRows.filter(passesRest))
     arr = [...arr].sort((a, b) => {
       if (sortKey === 'No') { // "Last update" column → sort by timestamp (No order as tiebreaker)
         const d = (a.updatedAt ?? 0) - (b.updatedAt ?? 0)
@@ -427,15 +386,8 @@ export function Units() {
       return av < bv ? -sortDir : av > bv ? sortDir : 0
     })
     return arr
-  }, [siteRows, searchIndex, outsideRows, q, fGroup, colFilters, activeFilterCols, allUnits, unitPreset, vinFilterSet, sortKey, sortDir])
+  }, [siteRows, searchIndex, q, fGroup, colFilters, activeFilterCols, allUnits, unitPreset, vinFilterSet, sortKey, sortDir])
 
-  // how many of the rows on screen came from outside this yard — surfaced next
-  // to the counters so nobody reads a gated-out car as standing in the yard
-  const outsideShown = useMemo(() => {
-    if (!outsideRows.length) return 0
-    const vins = new Set(outsideRows.map((r) => r.vin))
-    return filtered.reduce((n, r) => n + (vins.has(r.vin) ? 1 : 0), 0)
-  }, [filtered, outsideRows])
 
   // …and how many left THIS yard — same reason, one step stronger: these are
   // on screen because the yard gated them out, not because they stand in it
@@ -467,10 +419,10 @@ export function Units() {
   // ticked VINs were not in the Units tab's 1-row filtered list, and the button
   // reported "ไม่มีรถให้พิมพ์".
   const mylistText = useUnitsView((s) => s.mylistText)
-  // the pasted list reads from this yard's point of view too (see rowsFromHere)
+  // the pasted list reads this yard's rows only (see MylistView)
   const tabRows = useMemo(
-    () => (tab === 'mylist' ? matchVins(mylistText, rowsFromHere).found : filtered),
-    [tab, mylistText, rowsFromHere, filtered],
+    () => (tab === 'mylist' ? matchVins(mylistText, siteRows).found : filtered),
+    [tab, mylistText, siteRows, filtered],
   )
   // ticked cars win; nothing ticked (or nothing ticked ON THIS TAB) = the list
   // on screen. Same rule the Mylist's own IR button already prints by.
@@ -543,10 +495,10 @@ export function Units() {
               ออกไปแล้ว {departedShown.toLocaleString()}
             </span>
           )}
-          {outsideShown > 0 && (
-            <span className="badge shrink-0" title="ค้นเจอจากเลขวิน แต่รถไม่ได้อยู่ในรายการของลานนี้ (เช่น Gate-out ไปแล้ว หรืออยู่ลานอื่น)"
+          {elsewhere.length > 0 && (
+            <span className="badge shrink-0" title="เลขวินนี้ไม่อยู่ในยาร์ดที่ยืนอยู่ — ข้อมูลของรถเป็นของยาร์ดนั้น ดูหรือแก้จากที่นี่ไม่ได้"
               style={{ color: 'var(--st-pending)', background: 'rgba(234,179,8,0.14)' }}>
-              นอกลานนี้ {outsideShown.toLocaleString()}
+              ไม่พบในยาร์ดนี้ — {elsewhere.map((e) => `…${e.vin.slice(-6)} อยู่ใน Site ${e.yard}`).join(' · ')}
             </span>
           )}
           <button className={cx('btn py-1', filtersOpen && 'btn-blue')} onClick={() => patchView({ filtersOpen: !filtersOpen })}>
@@ -631,7 +583,7 @@ export function Units() {
           // EVERY row this device knows, not just the active yard's: a pasted
           // list is always a set of exact cars, and the whole point of pasting
           // one is to reach cars the yard list no longer carries (gated out).
-          <MylistView allRows={rowsFromHere} visCols={visCols} sel={sel} setSel={setSel}
+          <MylistView rows={siteRows} allRows={allRows} visCols={visCols} sel={sel} setSel={setSel}
             sortKey={sortKey} sortDir={sortDir} toggleSort={toggleSort} optionsFor={optionsFor} />
         )}
 
@@ -1341,7 +1293,7 @@ function GroupingView({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort
 }
 
 // ============================ Units Mylist (paste VINs) ============================
-function MylistView({ allRows, visCols, sel, setSel, sortKey, sortDir, toggleSort, optionsFor }: Omit<GridProps, 'rows'> & { allRows: TrackRow[] }) {
+function MylistView({ rows, allRows, visCols, sel, setSel, sortKey, sortDir, toggleSort, optionsFor }: GridProps & { allRows: TrackRow[] }) {
   // the pasted VIN list survives leaving the page (persisted view store)
   const text = useUnitsView((s) => s.mylistText)
   const setText = (v: string) => useUnitsView.getState().patch({ mylistText: v })
@@ -1350,13 +1302,21 @@ function MylistView({ allRows, visCols, sel, setSel, sortKey, sortDir, toggleSor
   const currentSite = useYard((s) => s.currentSite)
   const toast = useYard((s) => s.toast)
   const siteName = sites.find((s) => s.id === currentSite)?.name ?? ''
-  const { found, notFound, asked } = useMemo(() => matchVins(text, allRows), [text, allRows])
-  // cars the paste reached that this yard's list does not carry — flagged so a
-  // gated-out (or other-yard) car is never read as standing in this yard
-  const outsideCount = useMemo(
-    () => found.reduce((n, r) => n + (siteWorksWith(r, currentSite, sites) ? 0 : 1), 0),
-    [found, currentSite, sites],
-  )
+  // แยกยาร์ด แยกงาน: จับคู่ได้เฉพาะรถของยาร์ดที่ยืนอยู่ (รวมรถที่ออกจากยาร์ดนี้
+  // ไปแล้ว) เลขที่ไม่เจอในนี้แต่มีอยู่ที่ยาร์ดอื่น ตอบแค่ว่า "อยู่ใน Site ไหน"
+  const { found, notFound, asked } = useMemo(() => matchVins(text, rows), [text, rows])
+  const elsewhere = useMemo(() => {
+    if (!currentSite || !notFound.length) return [] as { tok: string; yard: string }[]
+    const listed = new Set(rows.map((r) => r.vin))
+    const out: { tok: string; yard: string }[] = []
+    for (const tok of notFound) {
+      const r = allRows.find((x) => !listed.has(x.vin) && (x.vin === tok || x.vin.endsWith(tok)))
+      if (r) out.push({ tok, yard: rowYardName(r, sites) || 'ยาร์ดอื่น' })
+    }
+    return out
+  }, [notFound, rows, allRows, currentSite, sites])
+  const elsewhereToks = useMemo(() => new Set(elsewhere.map((e) => e.tok)), [elsewhere])
+  const trulyMissing = useMemo(() => notFound.filter((t) => !elsewhereToks.has(t)), [notFound, elsewhereToks])
 
   // build ใบหารถ rows (yard location code + fallbacks), for print / Excel export
   const findRows = useMemo(
@@ -1414,11 +1374,11 @@ function MylistView({ allRows, visCols, sel, setSel, sortKey, sortDir, toggleSor
         <div className="flex items-center gap-3 mt-1.5 text-[12px] flex-wrap">
           <span style={{ color: 'var(--muted)' }}>ค้นหา <b className="tabular">{asked}</b> รายการ</span>
           <span style={{ color: 'var(--st-yard)' }}>พบ <b className="tabular">{found.length}</b> คัน</span>
-          {notFound.length > 0 && <span style={{ color: 'var(--st-damage)' }}>ไม่พบ <b className="tabular">{notFound.length}</b></span>}
-          {outsideCount > 0 && (
-            <span className="badge" title="เจอจากเลขวิน แต่รถไม่ได้อยู่ในรายการของลานนี้ (เช่น Gate-out ไปแล้ว หรืออยู่ลานอื่น)"
+          {trulyMissing.length > 0 && <span style={{ color: 'var(--st-damage)' }}>ไม่พบ <b className="tabular">{trulyMissing.length}</b></span>}
+          {elsewhere.length > 0 && (
+            <span className="badge" title="เลขวินนี้ไม่อยู่ในยาร์ดที่ยืนอยู่ — ข้อมูลของรถเป็นของยาร์ดนั้น ดูหรือแก้จากที่นี่ไม่ได้"
               style={{ color: 'var(--st-pending)', background: 'rgba(234,179,8,0.14)' }}>
-              นอกลานนี้ {outsideCount}
+              ไม่พบในยาร์ดนี้ {elsewhere.length}
             </span>
           )}
           <div className="ml-auto flex items-center gap-1.5">
@@ -1434,7 +1394,8 @@ function MylistView({ allRows, visCols, sel, setSel, sortKey, sortDir, toggleSor
             {text && <button className="btn btn-ghost py-1" onClick={() => setText('')}><X size={13} /> ล้าง</button>}
           </div>
         </div>
-        {notFound.length > 0 && <div className="text-[11px] mt-1 vin clip" style={{ color: 'var(--faint)' }}>ไม่พบ: {notFound.slice(0, 12).join(', ')}{notFound.length > 12 ? ` +${notFound.length - 12}` : ''}</div>}
+        {elsewhere.length > 0 && <div className="text-[11px] mt-1 vin clip" style={{ color: 'var(--st-pending)' }}>ไม่พบในยาร์ดนี้: {elsewhere.slice(0, 8).map((e) => `${e.tok} (อยู่ใน Site ${e.yard})`).join(', ')}{elsewhere.length > 8 ? ` +${elsewhere.length - 8}` : ''}</div>}
+        {trulyMissing.length > 0 && <div className="text-[11px] mt-1 vin clip" style={{ color: 'var(--faint)' }}>ไม่พบ: {trulyMissing.slice(0, 12).join(', ')}{trulyMissing.length > 12 ? ` +${trulyMissing.length - 12}` : ''}</div>}
       </div>
       {asked === 0
         ? <div className="panel-solid flex-1 flex items-center justify-center text-[13px]" style={{ color: 'var(--faint)' }}>วาง VIN เต็มหรือ 5 ตัวท้ายในกล่องด้านบนเพื่อค้นหา แล้วออก "ใบหารถ" เป็น Excel/PDF ได้</div>

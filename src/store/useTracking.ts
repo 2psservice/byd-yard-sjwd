@@ -146,7 +146,7 @@ interface TrackingState {
   subscribeRealtime: () => void
   unsubscribeRealtime: () => void
   importFile: (file: File) => Promise<ParseResult>
-  commitImport: (res: ParseResult) => void
+  commitImport: (res: ParseResult) => { added: number; otherYard: number }
   /** A "shared shuttle" manifest — VINs headed toward 2+ candidate yards with
    *  no way yet to say which one each lands at. Rows land as Pre Gate-in with
    *  NO site tag (see CANDIDATE_SITES_KEY) — Gate-in at any candidate site
@@ -790,8 +790,14 @@ export const useTracking = create<TrackingState>()(
         const now = Date.now()
         const { sites, currentSite } = useYard.getState()
         const added: TrackRow[] = []
+        let otherYard = 0
         for (const r of res.rows) {
           if (rows[r.vin]) continue
+          // แยกยาร์ด แยกงาน: ไฟล์ที่นำเข้าที่ยาร์ดนี้ เอาเข้าได้เฉพาะรถของยาร์ดนี้
+          // (ช่องยาร์ดว่าง = ของยาร์ดนี้) แถวที่ระบุยาร์ดอื่นข้ามทั้งแถว ไม่สร้างแถว
+          // ไม่สร้างคิวให้ยาร์ดนั้น — ยาร์ดนั้นต้องนำเข้าเองที่หน้างานของตัวเอง
+          const named = siteIdForLocation(r.cells, sites)
+          if (currentSite && named && named !== currentSite) { otherYard++; continue }
           const stamped = { ...r, updatedAt: now, site: siteForRow(r.cells, sites, currentSite) }
           rows[r.vin] = stamped; added.push(stamped)
         }
@@ -816,6 +822,7 @@ export const useTracking = create<TrackingState>()(
           loaded: true,
           lastImport: { inYard: added.length, total: res.total, gatedOut: res.gatedOut, at: Date.now() },
         })
+        return { added: added.length, otherYard }
       },
 
       commitPreGateInCandidates: (incoming, candidateSiteIds) => {

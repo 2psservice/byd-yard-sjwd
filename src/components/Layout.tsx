@@ -7,7 +7,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useYard } from '../store/useYard'
 import { useTrackingRows, useTracking } from '../store/useTracking'
 import { deriveCarStatus, IN_YARD_STATUSES } from '../lib/carStatus'
-import { rowInSite } from '../lib/siteScope'
+import { rowInSite, rowsForSite, whereElse } from '../lib/siteScope'
 import { makeT } from '../i18n'
 import type { View } from '../types'
 import { Segmented, cx } from './ui'
@@ -285,7 +285,12 @@ function CommandPalette({ onClose, onGo }: { onClose: () => void; onGo: (v: View
   // ~15k rows on every store tick while realtime streamed in
   const lang = useYard((s) => s.lang)
   const setFocus = useYard((s) => s.setFocus)
-  const rows = useTrackingRows() // every VIN in the system (imported + added), not just gated-in units
+  const allRows = useTrackingRows()
+  const sites = useYard((s) => s.sites)
+  const currentSite = useYard((s) => s.currentSite)
+  // แยกยาร์ด แยกงาน: ค้นได้เฉพาะรถของยาร์ดที่ยืนอยู่ — เลขวินของยาร์ดอื่นตอบแค่
+  // ว่า "อยู่ใน Site ไหน" ไม่เปิดข้อมูลให้ (ของเดิมค้นได้ทั้งระบบและเปิดได้เลย)
+  const rows = useMemo(() => rowsForSite(allRows, currentSite, sites), [allRows, currentSite, sites])
   const t = useMemo(() => makeT(lang), [lang])
   const [q, setQ] = useState('')
 
@@ -293,7 +298,7 @@ function CommandPalette({ onClose, onGo }: { onClose: () => void; onGo: (v: View
     const query = q.trim().toUpperCase()
     const navMatches = NAV.filter((n) => t(n.view).toUpperCase().includes(query) || n.view.toUpperCase().includes(query))
       .map((n) => ({ kind: 'nav' as const, view: n.view, icon: n.icon, label: t(n.view) }))
-    if (!query) return { nav: navMatches, units: [] as { vin: string; model: string; status: string }[] }
+    if (!query) return { nav: navMatches, units: [] as { vin: string; model: string; status: string }[], elsewhere: [] as { vin: string; yard: string }[] }
     const unitMatches = rows
       .filter((r) =>
         r.vin.toUpperCase().includes(query) ||
@@ -301,8 +306,9 @@ function CommandPalette({ onClose, onGo }: { onClose: () => void; onGo: (v: View
         (r.cells['Color'] || '').toUpperCase().includes(query))
       .slice(0, 8)
       .map((r) => ({ vin: r.vin, model: r.cells['Model name'] || r.cells['Model'] || '—', status: r.cells['Car Status'] || 'Pre Gate-in' }))
-    return { nav: navMatches, units: unitMatches }
-  }, [q, rows, t])
+    const elsewhere = currentSite ? whereElse(query, allRows, new Set(rows.map((r) => r.vin)), sites) : []
+    return { nav: navMatches, units: unitMatches, elsewhere }
+  }, [q, rows, allRows, currentSite, sites, t])
 
   const openUnit = (vin: string) => { setFocus(vin); onGo('units'); onClose() }
 
@@ -329,7 +335,17 @@ function CommandPalette({ onClose, onGo }: { onClose: () => void; onGo: (v: View
               ))}
             </>
           )}
-          {q.trim() && results.units.length === 0 && (
+          {results.elsewhere.length > 0 && (
+            <div className="px-2 py-2 text-[12.5px]" style={{ color: 'var(--muted)' }}>
+              {results.elsewhere.map((e) => (
+                <div key={e.vin} className="flex items-center gap-2 py-0.5">
+                  <span className="vin text-[12.5px]">{e.vin}</span>
+                  <span className="badge ml-auto shrink-0" style={{ background: 'rgba(234,179,8,0.14)', color: 'var(--st-pending)' }}>ไม่พบในยาร์ดนี้ — อยู่ใน Site {e.yard}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {q.trim() && results.units.length === 0 && results.elsewhere.length === 0 && (
             <div className="text-[12.5px] px-2 py-3 text-center" style={{ color: 'var(--faint)' }}>ไม่พบ VIN ที่ตรงกับ “{q.trim()}”</div>
           )}
           <div className="text-[11px] font-bold px-2 py-1.5 mt-1" style={{ color: 'var(--faint)' }}>MENU</div>
