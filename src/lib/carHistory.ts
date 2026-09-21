@@ -88,7 +88,7 @@ export function buildWorkRows(row: TrackRow, unit: Unit | undefined, columns: Co
   return { rows, done: rows.filter((w) => w.done).length }
 }
 
-export interface CarEvent { at: number; by: string; station?: string; text: string; accent?: string; where?: string; build?: string }
+export interface CarEvent { at: number; by: string; station?: string; text: string; accent?: string }
 
 const DAMAGE_STATION_FALLBACK: Record<string, string> = {
   walkaround: 'Gate-in', pdi: 'PDI', mechanic: 'ช่าง (Mechanic)', update: 'Update Damage', walkcheck: 'Walk Around Check',
@@ -106,7 +106,7 @@ export const stationLabelOf = (d: Pick<Damage, 'station' | 'source'>) =>
  *  newest first. `areaLabel` maps a damage area to its display name (zoneLabel). */
 export function buildEventLog(
   row: TrackRow, damages: Damage[], queues: WorkQueue[], vin: string,
-  areaLabel: (a: string) => string, siteName: (id: string) => string = (id) => id,
+  areaLabel: (a: string) => string,
 ): CarEvent[] {
   const c = row.cells
   const log: CarEvent[] = []
@@ -123,13 +123,7 @@ export function buildEventLog(
   }
   for (const h of row.history ?? []) {
     if (h.field === '__damage') { log.push({ at: h.at, by: h.by, station: 'Damage', text: h.to, accent: '#dc2626' }); continue }
-    log.push({
-      at: h.at, by: h.by,
-      text: `แก้ไข ${h.field}: ${h.from || '(ว่าง)'} → ${h.to}${h.note ? ` — ${h.note}` : ''}`,
-      ...(h.note ? { accent: '#dc2626' } : {}),
-      ...(h.site ? { where: siteName(h.site) } : {}),
-      ...(h.build ? { build: h.build } : {}),
-    })
+    log.push({ at: h.at, by: h.by, text: `แก้ไข ${h.field}: ${h.from || '(ว่าง)'} → ${h.to}` })
   }
   for (const d of damages) {
     const station = stationLabelOf(d)
