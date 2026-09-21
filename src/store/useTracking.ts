@@ -11,7 +11,7 @@ import * as db from '../lib/db'
 import { supabase } from '../lib/supabase'
 import { onSync, sendSync, type RowMsg, type RowsPayload } from '../lib/syncBus'
 import { useYard } from './useYard'
-import { siteForRow, siteIdForLocation, coInspectionAccepts, departedFromSite, CANDIDATE_SITES_KEY } from '../lib/siteScope'
+import { siteForRow, siteIdForLocation, coInspectionAccepts, departedFromSite, siteWorksWith, rowYardName, CANDIDATE_SITES_KEY } from '../lib/siteScope'
 import { TRIPS_CELL, TRIP_SCOPED_KEYS, tripsOf, type TripSnapshot } from '../lib/tripHistory'
 import { useVisits } from './useVisits'
 import { visitFromTrip, type Visit } from '../lib/visits'
@@ -179,7 +179,10 @@ interface TrackingState {
    *  (ป้ายออก · รอบที่ปิด · แถวรอบ) แล้วให้แถวสดเป็นของ destSiteId — ไม่ปิดรอบ ไม่สร้างประวัติปลอม
    *  คืนจำนวนแถวที่แตะ */
   reassignToYard: (vins: string[], destSiteId: string, purgeSiteId: string) => number
-  commitCoInspection: (res: ParseResult) => { updated: number; added: number; skipped: number; gateOut: number; moved: number; otherYard: number }
+  /** แอดมินยืนยันว่ารถ "ยังจอดอยู่ยาร์ดนี้" ทั้งที่อ่านเป็น Gate-out → ยกเลิกการออก
+   *  ล้างหลักฐานการออกของรอบนี้แล้วตั้งเป็น In Yard (ดู undoGateOut ด้านล่าง) */
+  undoGateOut: (vins: string[], siteId: string) => { restored: number; elsewhere: string[] }
+  commitCoInspection: (res: ParseResult) => { updated: number; added: number; skipped: number; gateOut: number; moved: number; otherYard: number; heldInYard: number }
   /** Set a cell and log it. `src: 'scan'` marks the write as a FIELD STATION
    *  action (ops-scan), which is what lets a report tell a real recording apart
    *  from an import or an office edit — the only thing that may be printed as
@@ -966,6 +969,61 @@ export const useTracking = create<TrackingState>()(
         return changed.length
       },
 
+      /**
+       * ยกเลิก Gate-out — รถที่ขึ้นเป็น "ออกจากลานแล้ว" ทั้งที่ยังจอดอยู่ที่นี่
+       *
+       * สถานะ Gate-out มาได้หลายทางโดยไม่มีใครยิงที่ประตูเลย: ไฟล์ที่อัปโหลดมี
+       * วันที่ออกติดมา · แผนรับที่เลยกำหนดเกิน 2 วัน (ระบบเดาว่ารถถูกมารับไปแล้ว) ·
+       * บันทึกเก่าว่าเคยออกจากลานนี้ พอข้อมูลผิด รถที่จอดอยู่จริงก็หายจากงานทุก
+       * สถานี และไปโผล่ในการ์ด Gate-out แทน
+       *
+       * ที่นี่ลบเฉพาะ "หลักฐานการออกของรอบนี้" — วันที่/เวลาออกที่อ้างว่าออกจริง
+       * และป้ายว่าออกจากลานนี้ ส่วนแผนรับ (ข้อความ "แผนรับวันที่ …") เก็บไว้
+       * เพราะเป็นแผน ไม่ใช่บันทึกว่าออกไปแล้ว แล้วประทับคำยืนยันของคนที่ยืนอยู่
+       * ลานนี้ว่ารถอยู่ — คำยืนยันนี้ชนะทั้งการเดาจากแผนที่เลยกำหนด และบันทึก
+       * เก่าว่าเคยออก (ดู departureFromSite) รถจึงหลุดจากการ์ด Gate-out ทันที
+       *
+       * รอบที่ปิดไปแล้วและแถวรอบไม่ถูกแตะ — เป็นประวัติจริงของลานนี้ และการ์ด
+       * ไม่นับมันอยู่แล้วเมื่อรถกลับมาเป็นรถของลานนี้
+       *
+       * แถวที่รอบสดเป็นของยาร์ดอื่น = รถไปอยู่ที่นั่นจริง ไม่แตะ คืนชื่อยาร์ดไป
+       * บอกแทน (จะดึงกลับต้องไปทำที่ยาร์ดนั้น หรือใช้เมนูย้ายยาร์ด)
+       */
+      undoGateOut: (vins, siteId) => {
+        const { sites, currentUser: by } = useYard.getState()
+        const site = sites.find((x) => x.id === siteId)
+        if (!site) return { restored: 0, elsewhere: [] }
+        const rows = { ...get().rows }
+        const changed: TrackRow[] = []
+        const elsewhere: string[] = []
+        const now = Date.now()
+        for (const vin of vins) {
+          const r = rows[vin]
+          if (!r) continue
+          if (!siteWorksWith(r, siteId, sites)) { elsewhere.push(`${vin} (${rowYardName(r, sites) || 'ยาร์ดอื่น'})`); continue }
+          const was = deriveCarStatus(r.cells)
+          const cells = { ...r.cells }
+          if (cells[GATE_OUT_ORIGIN_SITE_KEY] === siteId) { delete cells[GATE_OUT_ORIGIN_SITE_KEY]; delete cells[GATE_OUT_ORIGIN_AT_KEY] }
+          delete cells['Gate Out Time']
+          // เฉพาะวันที่ล้วน ๆ ที่แปลว่า "ออกไปแล้ว" — ข้อความแผนรับไม่ใช่ จึงคงไว้
+          if (isGateOutStamp(cells['Gate Out time stamp'])) delete cells['Gate Out time stamp']
+          if (isGateOutStamp(cells['Gate Out Date'])) delete cells['Gate Out Date']
+          cells[CAR_STATUS_KEY] = 'In Yard'
+          cells[CAR_STATUS_SET_AT_KEY] = String(now)
+          cells[CAR_STATUS_SET_SITE_KEY] = siteId
+          if (siteIdForLocation(cells, sites) !== siteId) cells['Location yard'] = site.name
+          const entry: RowEvent = { at: now, by, field: CAR_STATUS_KEY, from: was, to: 'In Yard' }
+          const next: TrackRow = { ...r, cells, site: siteId, updatedAt: now, history: [...(r.history ?? []), entry].slice(-MAX_ROW_HISTORY) }
+          rows[vin] = next; changed.push(next)
+        }
+        if (changed.length) {
+          set({ rows })
+          idbBulkPut(changed).catch(() => {})
+          pushRows(changed)
+        }
+        return { restored: changed.length, elsewhere }
+      },
+
       // Co-Inspection import: MERGE the file's columns into existing VINs (update
       // PDI / RE PDI / OK date / Final check / PM… cells) and add any new VINs.
       // Never overwrites a car's live operational "Car Status", and only non-empty
@@ -989,8 +1047,19 @@ export const useTracking = create<TrackingState>()(
         // already ≥ In Yard so the daily merge doesn't demote a car that is
         // mid-inspection back to 'In Yard' and erase its NG flag.
         const stageOf = (s: string) => { const i = ORDER.indexOf(s); return i < 0 ? IN_YARD_STAGE : i }
+        // ไฟล์บอกว่ารถออกไปแล้ว แต่มีคนที่ยืนอยู่ยาร์ดนี้ยืนยัน "ทีหลัง" ว่ารถยังจอด
+        // อยู่ (แอดมินกดยกเลิก Gate-out — ดู undoGateOut) ⇒ คำยืนยันของคนชนะไฟล์
+        // ไฟล์หลักมีบรรทัดเดียวต่อคัน วันที่ออกเก่าจึงติดมาทุกครั้งที่อัปโหลด ถ้าไม่
+        // กันไว้ รถที่เพิ่งแก้ให้ถูกจะถูกตีกลับเป็น Gate-out ทุกเช้าที่อัปไฟล์
+        // (ไฟล์ที่ออก "ทีหลัง" คำยืนยันยังชนะเหมือนเดิม — รถออกไปจริงหลังคนดูครั้งนั้น)
+        const assertedAfterFileGateOut = (stored: Record<string, string>, fileOutAt: number): boolean => {
+          const asserted = inYardAssertedAt(stored, currentSite)
+          return asserted > 0 && asserted > fileOutAt
+        }
+        let heldInYard = 0 // รถที่คำยืนยันของยาร์ดนี้กันไฟล์ไว้ ไม่ถูกตีกลับเป็น Gate-out
         const promote = (cells: Record<string, string>): boolean => {
           if (isGateOutStamp(cells['Gate Out time stamp'])) {
+            if (assertedAfterFileGateOut(cells, gateOutScanMs(cells))) { heldInYard++; return false }
             if (cells['Car Status'] !== 'Gate-out') { cells['Car Status'] = 'Gate-out'; return true }
             return false
           }
@@ -1112,6 +1181,8 @@ export const useTracking = create<TrackingState>()(
           if (existing.site && currentSite && existing.site !== currentSite) { otherYard++; continue }
           // รอยยิงออกในไฟล์เก่ากว่าการยิงรับของรอบนี้ = ของรอบที่จบไปแล้ว ไม่ใช่รอบนี้
           if (gateOutScanMs(r.cells) > 0 && gateOutScanMs(r.cells) < gateInEvidenceAt(existing.cells)) { otherYard++; continue }
+          // แอดมินยืนยันทีหลังว่ารถยังจอดอยู่ยาร์ดนี้ → ไฟล์ตีกลับเป็น Gate-out ไม่ได้
+          if (assertedAfterFileGateOut(existing.cells, gateOutScanMs(r.cells))) { heldInYard++; continue }
           const cells = { ...existing.cells }
           let didChange = false
           for (const [k, v] of Object.entries(r.cells)) {
@@ -1135,7 +1206,7 @@ export const useTracking = create<TrackingState>()(
           loaded: true,
           lastImport: { inYard: updated + added, total: res.total, gatedOut: res.gatedOut, at: now },
         })
-        return { updated, added, skipped, gateOut, moved, otherYard }
+        return { updated, added, skipped, gateOut, moved, otherYard, heldInYard }
       },
 
       updateCell: (vin, key, value, src) => {
