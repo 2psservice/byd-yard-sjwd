@@ -173,7 +173,7 @@ interface TrackingState {
    *  รอบใหม่ที่ปลายทาง — ดู transferRow. `at` = เวลาที่ออก ถ้าแถวไม่มีรอยยิงออก
    *  คืน true เมื่อย้ายจริง (false = อยู่ที่นั่นอยู่แล้ว / ไม่รู้จักยาร์ด) */
   transferToYard: (vin: string, destSiteId: string, opts?: { at?: number; queue?: boolean }) => boolean
-  commitCoInspection: (res: ParseResult) => { updated: number; added: number; skipped: number; gateOut: number; moved: number }
+  commitCoInspection: (res: ParseResult) => { updated: number; added: number; skipped: number; gateOut: number; moved: number; otherYard: number }
   /** Set a cell and log it. `src: 'scan'` marks the write as a FIELD STATION
    *  action (ops-scan), which is what lets a report tell a real recording apart
    *  from an import or an office edit — the only thing that may be printed as
@@ -307,7 +307,13 @@ function withHistoryEntry(r: TrackRow, key: string, value: string, columns: Colu
   // ใช้ให้คำยืนยันของคนชนะการเดาจาก "แผนรับที่เลยกำหนด" (ดู deriveCarStatus)
   // …และจดด้วยว่ายืนยันจาก "ลานไหน" — คำยืนยันเป็นของลานนั้นลานเดียว
   let site = r.site
-  if (key === CAR_STATUS_KEY) {
+  if (key === CAR_STATUS_KEY && RELEASED_STATUSES.has(value)) {
+    // "ออกไปแล้ว" ไม่ใช่คำยืนยันว่ารถอยู่ในลาน — ล้างรอยยืนยันทิ้ง จะได้ถือเป็น
+    // กฎได้ว่า "ถ้ายังมีรอยยืนยัน = ค่าล่าสุดที่แอปเขียนคือสถานะในลาน" ไฟล์ที่มา
+    // เขียน Gate-out ทับทีหลัง (ไม่ผ่านทางนี้) จึงถูกจับได้ (ดูตัวเก็บกวาดใน App)
+    delete cells[CAR_STATUS_SET_AT_KEY]
+    delete cells[CAR_STATUS_SET_SITE_KEY]
+  } else if (key === CAR_STATUS_KEY) {
     cells[CAR_STATUS_SET_AT_KEY] = String(Date.now())
     const { currentSite, sites } = useYard.getState()
     if (currentSite) {
@@ -935,6 +941,7 @@ export const useTracking = create<TrackingState>()(
         let added = 0
         let skipped = 0
         let moved = 0 // held cars the file re-assigns to another yard → tag corrected
+        let otherYard = 0 // rows whose live round belongs to another yard → left untouched
         for (const r of res.rows) {
           // yard scoping: only rows for the active site (or unplaced) — others belong to another yard
           if (!coInspectionAccepts(r.cells, sites, currentSite)) {
@@ -944,6 +951,10 @@ export const useTracking = create<TrackingState>()(
             // the yard the file names. Without this it stays stuck in the active yard's
             // list forever, because this import skips it on every run.
             const stale = rows[r.vin]
+            // แยกยาร์ด แยกงาน: ไฟล์ที่นำเข้าที่ยาร์ดนี้ แตะได้เฉพาะแถวของยาร์ดนี้
+            // (หรือแถวที่ยังไม่มีเจ้าของ) — แถวที่รอบสดเป็นของยาร์ดอื่นไม่ใช่ของเรา
+            // ไฟล์เก่าของยาร์ดนี้จึงลากรถที่ย้ายไปแล้วกลับมา/ถอดป้ายทิ้งไม่ได้อีก
+            if (stale && stale.site && currentSite && stale.site !== currentSite) { otherYard++; skipped++; continue }
             if (stale) {
               const ly = (r.cells['Location yard'] ?? '').trim()
               const trueSite = siteIdForLocation(r.cells, sites) // undefined ⇒ a yard with no Site
@@ -963,19 +974,29 @@ export const useTracking = create<TrackingState>()(
             continue
           }
           const existing = rows[r.vin]
+          if (existing && existing.site && currentSite && existing.site !== currentSite) {
+            // รอบสดของรถคันนี้เป็นของยาร์ดอื่น — ไฟล์ของยาร์ดนี้แตะไม่ได้ (ดูด้านบน)
+            otherYard++; skipped++; continue
+          }
           if (existing) {
             const cells = { ...existing.cells }
             let didChange = false
             for (const [k, v] of Object.entries(r.cells)) {
-              if (k === 'Car Status') continue // don't blindly copy the file's status
+              if (k === 'Car Status' || k === GATE_OUT_TS) continue // don't blindly copy the file's status / handled below
               if (v != null && v !== '' && cells[k] !== v) { cells[k] = v; didChange = true }
             }
             // "Gate Out time stamp" is AUTHORITATIVE in the master sheet, so it must be
             // able to CLEAR. The non-empty-only overlay above can never erase a stale
             // stamp, which would pin a transferred-in car to Gate-out forever.
+            //
+            // ...ยกเว้นรอยยิงออกที่ "เก่ากว่าการยิงรับของรอบนี้" — ไฟล์หลักมีบรรทัดเดียว
+            // ต่อคัน จึงยังแบกวันที่ออกจากยาร์ดก่อนติดมาด้วย รถที่ยิงรับเข้ารอบใหม่
+            // แล้วต้องไม่ถูกไฟล์ตีกลับเป็น Gate-out ด้วยวันที่ของรอบที่จบไปแล้ว
             if (GATE_OUT_TS in r.cells) {
               const incoming = (r.cells[GATE_OUT_TS] ?? '').trim()
-              if ((cells[GATE_OUT_TS] ?? '') !== incoming) { cells[GATE_OUT_TS] = incoming; didChange = true }
+              const staleStamp = isGateOutStamp(incoming)
+                && gateOutScanMs({ [GATE_OUT_TS]: incoming }) < gateInEvidenceAt(cells)
+              if (!staleStamp && (cells[GATE_OUT_TS] ?? '') !== incoming) { cells[GATE_OUT_TS] = incoming; didChange = true }
             }
             if (promote(cells)) didChange = true
             // a car that moved yards carries a NEW "Location yard" → re-tag it to that
@@ -1015,6 +1036,12 @@ export const useTracking = create<TrackingState>()(
             gateOut++
             continue
           }
+          // แยกยาร์ด แยกงาน: แถวที่รอบสดเป็นของยาร์ดอื่น ไฟล์ของยาร์ดนี้แตะไม่ได้ —
+          // การออกจากยาร์ดนี้ของรถคันนั้นอยู่ในรอบที่ปิดไปแล้ว (ประวัติของยาร์ดนี้เอง)
+          // ไม่มีอะไรต้องเขียนลงรอบสดของยาร์ดอื่น
+          if (existing.site && currentSite && existing.site !== currentSite) { otherYard++; continue }
+          // รอยยิงออกในไฟล์เก่ากว่าการยิงรับของรอบนี้ = ของรอบที่จบไปแล้ว ไม่ใช่รอบนี้
+          if (gateOutScanMs(r.cells) > 0 && gateOutScanMs(r.cells) < gateInEvidenceAt(existing.cells)) { otherYard++; continue }
           const cells = { ...existing.cells }
           let didChange = false
           for (const [k, v] of Object.entries(r.cells)) {
@@ -1038,7 +1065,7 @@ export const useTracking = create<TrackingState>()(
           loaded: true,
           lastImport: { inYard: updated + added, total: res.total, gatedOut: res.gatedOut, at: now },
         })
-        return { updated, added, skipped, gateOut, moved }
+        return { updated, added, skipped, gateOut, moved, otherYard }
       },
 
       updateCell: (vin, key, value, src) => {

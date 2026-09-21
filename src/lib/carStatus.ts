@@ -113,7 +113,7 @@ export const CAR_STATUS_SET_AT_KEY = 'Car Status Set At'
  *  (ยิง Gate-in ที่ปลายทาง = คำยืนยันของลานปลายทาง ไม่ใช่ของลานต้นทาง) */
 export const CAR_STATUS_SET_SITE_KEY = 'Car Status Set Site'
 
-function statusSetAt(c: Record<string, string>): number {
+export function statusSetAt(c: Record<string, string>): number {
   const at = parseInt((c[CAR_STATUS_SET_AT_KEY] || '').trim(), 10)
   return Number.isFinite(at) && at > 0 ? at : 0
 }

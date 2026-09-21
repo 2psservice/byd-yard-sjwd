@@ -276,6 +276,7 @@ export function Units() {
     () => (departedRows.length ? [...rows, ...departedRows] : rows),
     [rows, departedRows],
   )
+  const departedVins = useMemo(() => new Set(departedRows.map((r) => r.vin)), [departedRows])
   const visCols = useVisibleColumns()
   const { lastImport, loadFromIdb } = useTracking()
   // computed yard-location code (prefix-block+ช่อง+ลำดับ, e.g. "N-R1402"), for the Location column.
@@ -621,7 +622,7 @@ export function Units() {
           <EmptyState />
         ) : tab === 'units' ? (
           <DataGrid rows={filtered} visCols={visCols} sel={sel} setSel={setSel}
-            sortKey={sortKey} sortDir={sortDir} toggleSort={toggleSort} optionsFor={optionsFor}
+            sortKey={sortKey} sortDir={sortDir} toggleSort={toggleSort} optionsFor={optionsFor} locked={departedVins}
             footer={<GridFooter sel={sel} shown={filtered.length} total={siteRows.length} lastImport={lastImport} />} />
         ) : tab === 'grouping' ? (
           <GroupingView rows={filtered} visCols={visCols} sel={sel} setSel={setSel}
@@ -646,9 +647,11 @@ interface GridProps {
   rows: TrackRow[]; visCols: Column[]; sel: Set<string>; setSel: React.Dispatch<React.SetStateAction<Set<string>>>
   sortKey: string; sortDir: SortDir; toggleSort: (k: string) => void; optionsFor: (c: Column) => string[]
   footer?: React.ReactNode
+  /** รถที่ออกจากยาร์ดนี้ไปแล้ว — ดูได้ แก้ไม่ได้ (ข้อมูลสดเป็นของยาร์ดปลายทาง) */
+  locked?: Set<string>
 }
 
-function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, optionsFor, footer }: GridProps) {
+function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, optionsFor, footer, locked }: GridProps) {
   const bulkUpdate = useTracking((s) => s.bulkUpdate)
   const deleteRows = useTracking((s) => s.deleteRows)
   const columns = useTracking((s) => s.columns)
@@ -721,9 +724,14 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
   // ---------- right-click context menu ----------
   const onContextMenu = (e: React.MouseEvent, vin: string, idx: number) => {
     e.preventDefault()
+    // แยกยาร์ด แยกงาน: รถที่ออกจากยาร์ดนี้ไปแล้ว งานของยาร์ดนี้จบแล้ว — แถวสดเป็น
+    // ของยาร์ดปลายทาง การแก้จากที่นี่จะไปลงข้อมูลของเขา (และแก้ช่องยาร์ดจะดึงรถ
+    // ของเขากลับมา) จึงดูได้อย่างเดียว
+    if (locked?.has(vin)) { toast('err', 'รถคันนี้ออกจากยาร์ดนี้แล้ว — ข้อมูลเป็นของยาร์ดปลายทาง แก้จากที่นี่ไม่ได้'); return }
     let targets: string[]
-    if (sel.has(vin) && sel.size > 0) targets = [...sel]
+    if (sel.has(vin) && sel.size > 0) targets = [...sel].filter((v) => !locked?.has(v))
     else { setSel(new Set([vin])); targets = [vin] }
+    if (!targets.length) return
     lastIdx.current = idx
     const x = Math.min(e.clientX, window.innerWidth - 248)
     const y = Math.min(e.clientY, window.innerHeight - 420)
