@@ -68,11 +68,19 @@ export const useVisits = create<VisitsState>()((set, get) => ({
       const cur = merged[v.id]
       if (!cur || (cur.updatedAt ?? 0) < (v.updatedAt ?? 0)) { merged[v.id] = v; fresher.push(v) }
     }
+    // คลาวด์เป็นตัวตัดสินว่าแถวรอบไหน "ยังมีอยู่": แถวที่เครื่องนี้มีแต่คลาวด์ไม่มี
+    // และไม่ได้เป็นของที่เครื่องนี้เพิ่งสร้างแล้วส่งไม่สำเร็จ (pending) = ถูกลบจาก
+    // เครื่องอื่น (แอดมินยืนยันว่ารถไม่เคยอยู่ยาร์ดนั้น) → ทิ้งตาม ห้ามส่งกลับขึ้นไป
+    // ไม่งั้นเครื่องที่ยังถือสำเนาเก่าจะปลุกแถวที่ลบไปแล้วขึ้นมาใหม่ · ของที่เพิ่งสร้าง
+    // ตอนออฟไลน์แล้วเปิดแอปใหม่ (pending หาย) ตัวแปลงย้อนหลังสร้างให้ใหม่จาก
+    // ก้อน __trips ที่ยังอยู่ในแถวสด จึงไม่หาย
+    const cloudIds = new Set(cloud.map((v) => v.id))
+    const dropped: string[] = []
+    for (const id of Object.keys(merged)) if (!cloudIds.has(id) && !pending.has(id)) { delete merged[id]; dropped.push(id) }
     set({ visits: merged, cloudMissing: false })
     if (fresher.length) idbPutVisits(fresher).catch(() => {})
-    // แถวที่เครื่องนี้มีแต่คลาวด์ยังไม่มี (สร้างตอนออฟไลน์ / ตอนตารางยังไม่ถูกสร้าง)
-    const cloudIds = new Set(cloud.map((v) => v.id))
-    const retry = Object.values(merged).filter((v) => !cloudIds.has(v.id) || pending.has(v.id))
+    if (dropped.length) idbDeleteVisits(dropped).catch(() => {})
+    const retry = Object.values(merged).filter((v) => pending.has(v.id))
     if (retry.length) void push(retry, set)
   },
 

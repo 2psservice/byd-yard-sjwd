@@ -828,7 +828,8 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
         if (liveTargets.length !== targets.length) toast('err', `ข้ามรถที่ออกจากยาร์ดนี้ไปแล้ว ${targets.length - liveTargets.length} คัน — ลบได้เฉพาะรถของยาร์ดนี้`)
         if (liveTargets.length) deleteRows(liveTargets)
         setSel(new Set())
-        toast('ok', `ลบ ${n} คันออกจากระบบแล้ว`)
+        // นับตามที่ลบได้จริง ไม่ใช่ตามที่เลือก — ไม่งั้นบอกว่า "ลบแล้ว" ทั้งที่ข้ามไป
+        if (liveTargets.length) toast('ok', `ลบ ${liveTargets.length} คันออกจากระบบแล้ว`)
       }
       setMenu(null)
     } })
