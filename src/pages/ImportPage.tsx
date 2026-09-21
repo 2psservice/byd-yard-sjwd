@@ -9,7 +9,7 @@ import { useOps } from '../store/useOps'
 import { downloadTemplate } from '../lib/excel'
 import { parseTrackingWorkbook, parseImportWorkbook, isScanLocationEntry, type ParseResult } from '../lib/excelTracking'
 import { parseLane, parseLaneWorkbook, type LaneParseResult, type LaneRow } from '../lib/laneImport'
-import { coInspectionAccepts, rowInSite, siteForRow } from '../lib/siteScope'
+import { coInspectionAccepts, rowInSite, siteForRow, siteWorksWith } from '../lib/siteScope'
 import { deriveCarStatus, hasLeftGate } from '../lib/carStatus'
 import { pos, blockKeyOfTag, blockTag, resolveBlockByName } from '../lib/format'
 import { yardLocFull } from '../lib/groupingImport'
@@ -289,11 +289,16 @@ export function ImportPage() {
   // attach a stock-sheet NG to yet.
   const accPlan = useMemo(() => {
     if (!accParsed) return null
-    let matched = 0, willRegister = 0, notGatedIn = 0, toAddTotal = 0, alreadyTotal = 0
+    let matched = 0, willRegister = 0, notGatedIn = 0, toAddTotal = 0, alreadyTotal = 0, otherYard = 0
     const rows = accParsed.rows.map((r) => {
-      const u = yardUnits[r.vin]
+      // แยกยาร์ด แยกงาน: ไฟล์ที่นำเข้าที่ยาร์ดนี้ บันทึกได้เฉพาะรถของยาร์ดนี้ —
+      // รถที่ระบบรู้จักแต่อยู่ยาร์ดอื่น ข้ามทั้งคัน (ไม่ใช่ "ยังไม่ Gate-in")
+      const u0 = yardUnits[r.vin]
+      const tr0 = existing[r.vin]
+      const u = u0 && (!u0.site || u0.site === currentSite) ? u0 : undefined
+      const tr = tr0 && siteWorksWith(tr0, currentSite, sites) ? tr0 : undefined
+      if (!u && !tr && (u0 || tr0)) { otherYard++; return { vin: r.vin, status: 'otherYard' as const, toAdd: [] as { label: string; groupTitle: string }[] } }
       if (!u) {
-        const tr = existing[r.vin]
         const gated = tr && deriveCarStatus(tr.cells) !== 'Pre Gate-in'
         if (!gated) { notGatedIn++; return { vin: r.vin, status: 'notGatedIn' as const, toAdd: [] as { label: string; groupTitle: string }[] } }
         willRegister++
@@ -312,8 +317,8 @@ export function ImportPage() {
       return { vin: r.vin, status: 'found' as const, toAdd }
     })
     toAddTotal += rows.filter((r) => r.status === 'willRegister').reduce((n, r) => n + r.toAdd.length, 0)
-    return { rows, matched, willRegister, notGatedIn, toAddTotal, alreadyTotal }
-  }, [accParsed, yardUnits, existing])
+    return { rows, matched, willRegister, notGatedIn, toAddTotal, alreadyTotal, otherYard }
+  }, [accParsed, yardUnits, existing, currentSite, sites])
 
   const confirmAcc = () => {
     if (!accPlan || !accPlan.toAddTotal || accSaving) return
@@ -337,6 +342,7 @@ export function ImportPage() {
     }
     toast('ok', `Update Accessory · บันทึก NG ${added.toLocaleString()} รายการ` +
       (accPlan.notGatedIn ? ` · ข้ามรถที่ยังไม่ Gate-in ${accPlan.notGatedIn.toLocaleString()}` : '') +
+      (accPlan.otherYard ? ` · ข้ามรถของยาร์ดอื่น ${accPlan.otherYard.toLocaleString()}` : '') +
       (accPlan.alreadyTotal ? ` · มีอยู่แล้ว ${accPlan.alreadyTotal.toLocaleString()}` : ''))
     setAccParsed(null); setAccFileName(''); setAccSaving(false)
   }
@@ -431,7 +437,7 @@ export function ImportPage() {
     setCoSaving(true)
     setCoProg({ pct: 0, label: 'กำลังรวมข้อมูลลงตารางหลัก…' })
     try {
-      const { updated, added, skipped, gateOut, moved } = commitCoInspection(coParsed)
+      const { updated, added, skipped, gateOut, moved, otherYard } = commitCoInspection(coParsed)
       // rows AFTER the merge — this file may have just gated cars out, and those
       // count as gone for the defect pass below
       const rowsNow = useTracking.getState().rows
@@ -460,7 +466,8 @@ export function ImportPage() {
           (def.damages ? ` · Defect ${def.damages.toLocaleString()}` : '') +
           (goneSkipped ? ` · ข้ามรถที่ออกไปแล้ว ${goneSkipped.toLocaleString()} รายการ` : '') +
           (moved ? ` · ย้ายไปยาร์ดที่ถูกต้อง ${moved.toLocaleString()}` : '') +
-          (skipped ? ` · ข้ามยาร์ดอื่น ${skipped.toLocaleString()}` : ''),
+          (skipped ? ` · ข้ามยาร์ดอื่น ${skipped.toLocaleString()}` : '') +
+          (otherYard ? ` (รถของยาร์ดอื่น ${otherYard.toLocaleString()} คัน ไม่แตะ)` : ''),
       )
       setCoParsed(null); setCoFileName('')
     } catch (e: any) {

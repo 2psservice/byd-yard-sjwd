@@ -215,3 +215,30 @@ export function departedViewFrom(r: TrackRow, siteId: string | null | undefined,
   else delete cells[TRIPS_CELL]
   return { ...r, cells, history: (r.history ?? []).filter((h) => h.at <= cutoff) }
 }
+
+/** ชื่อยาร์ดที่แถวนี้เป็นของ — ป้ายยาร์ดก่อน ไม่มีค่อยดูช่อง Location yard
+ *  ใช้ตอบคนที่ยืนอยู่ยาร์ดอื่นว่า "รถอยู่ที่ไหน" โดยไม่เปิดข้อมูลของรถให้ */
+export function rowYardName(row: TrackRow, sites: Site[]): string {
+  const s = row.site ? sites.find((x) => x.id === row.site) : undefined
+  return s?.name ?? locationYard(row.cells)
+}
+
+/**
+ * แยกยาร์ด แยกงาน — การค้นหาเห็นเฉพาะรถของยาร์ดที่ยืนอยู่ เลขวินที่ค้นแล้วไม่อยู่
+ * ในรายการของยาร์ดนี้ ตอบได้แค่ว่า "อยู่ใน Site ไหน" ไม่เปิดแถวของยาร์ดนั้นให้ดู
+ * หรือแก้ (ของเดิมดึงแถวของยาร์ดอื่นมาแสดงในตารางเลย)
+ *  `listed` = เลขวินที่ยาร์ดนี้แสดงอยู่แล้ว (รวมรถที่ออกไปแล้วซึ่งยังโชว์เป็น Gate-out)
+ */
+export function whereElse(
+  query: string, allRows: TrackRow[], listed: Set<string>, sites: Site[], max = 5,
+): { vin: string; yard: string }[] {
+  const q = query.trim().toUpperCase().replace(/\s+/g, '')
+  if (q.length < 5) return [] // สั้นกว่าเลขท้าย 5 ตัว = กำลังไล่ดู ไม่ใช่ตามหารถคันหนึ่ง
+  const out: { vin: string; yard: string }[] = []
+  for (const r of allRows) {
+    if (listed.has(r.vin) || !r.vin.includes(q)) continue
+    out.push({ vin: r.vin, yard: rowYardName(r, sites) || 'ยาร์ดอื่น' })
+    if (out.length >= max) break
+  }
+  return out
+}
