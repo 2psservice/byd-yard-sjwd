@@ -10,7 +10,7 @@ import { useTrackingRows, useTracking } from './store/useTracking'
 import { useOps } from './store/useOps'
 import { startSyncBus, stopSyncBus } from './lib/syncBus'
 import { startKeyboardGuard } from './lib/keyboardGuard'
-import { deriveCarStatus, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY } from './lib/carStatus'
+import { deriveCarStatus, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY, CAR_STATUS_SET_SITE_KEY, gateOutScanMs, inYardAssertedAt } from './lib/carStatus'
 import { yardLocCode, LAST_LOCATION_KEY } from './lib/groupingImport'
 import { deliveryDestinationSite, siteIdForLocation } from './lib/siteScope'
 import { matchModel } from './lib/sampleData'
@@ -197,6 +197,34 @@ export default function App() {
       // painted into the lane for good: the plan showed a car that had left.
       // Send the unit where the sheet says the car is — that frees the slot
       // AND lets the destination's gate find it.
+      // ── heal: รถที่ "ยาร์ดอื่นรับเข้าไปแล้ว" แต่แถวยังค้างเป็นของยาร์ดเดิม ──
+      // ก่อนมีตัวย้ายรถกลาง (transferToYard) ปลายทางยิงรับรถของยาร์ดอื่นได้โดย
+      // เขียนทับแถวเดิม: ยาร์ดเดิมจึงเห็นรถกลับมาเป็น In Yard พร้อมวันที่/ผู้ตรวจ
+      // ของปลายทาง ทั้งที่รถออกไปแล้ว หลักฐานที่ยังเหลือบนแถวบอกได้ว่ารถไปอยู่
+      // ยาร์ดไหน: (1) มีคนที่ยาร์ดอื่นยืนยันว่ารถอยู่ในลาน หลังรถออกจากที่นี่
+      // (2) รายการรถ (unit) อยู่ยาร์ดอื่นและถูกยิงรับหลังรถออก → ย้ายให้ถูก:
+      // ยาร์ดเดิมอ่านเป็น Gate-out ตามจริง ปลายทางเก็บการยิงรับของตัวเองไว้
+      // (ดู transferRow) — ต้องทำก่อนกฎ "ยาร์ดต้องตรงกับชีต" ด้านล่าง ซึ่งจะ
+      // ดึงรายการรถกลับมายาร์ดเดิมและลบหลักฐานข้อ (2) ทิ้ง
+      {
+        const sites = useYard.getState().sites
+        for (const vin in rows) {
+          const r = rows[vin]
+          const here = r.site ?? siteIdForLocation(r.cells, sites)
+          if (!here) continue
+          const left = gateOutScanMs(r.cells)
+          const setSite = (r.cells[CAR_STATUS_SET_SITE_KEY] || '').trim()
+          const asserted = setSite && setSite !== here ? inYardAssertedAt(r.cells, setSite) : 0
+          let dest: string | undefined
+          if (asserted > 0 && asserted > left) dest = setSite
+          else if (left > 0) {
+            const u = units[vin]
+            if (u?.site && u.site !== here && (u.gateInAt ?? 0) > left) dest = u.site
+          }
+          if (dest && sites.some((s) => s.id === dest)) useTracking.getState().transferToYard(vin, dest)
+        }
+      }
+
       const strayed = new Map<string, string[]>() // siteId ปลายทาง → รายชื่อ vin
       for (const vin in units) {
         const u = units[vin]

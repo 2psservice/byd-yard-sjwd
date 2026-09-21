@@ -13,7 +13,8 @@ import { onSync, sendSync, type RowMsg, type RowsPayload } from '../lib/syncBus'
 import { useYard } from './useYard'
 import { siteForRow, siteIdForLocation, coInspectionAccepts, departedFromSite, CANDIDATE_SITES_KEY } from '../lib/siteScope'
 import { TRIPS_CELL, TRIP_SCOPED_KEYS, tripsOf, type TripSnapshot } from '../lib/tripHistory'
-import { CAR_STATUS_ORDER, CAR_STATUS_KEY, CAR_STATUS_SET_AT_KEY, CAR_STATUS_SET_SITE_KEY, RELEASED_STATUSES, deriveCarStatus, isGateOutStamp } from '../lib/carStatus'
+import { CAR_STATUS_ORDER, CAR_STATUS_KEY, CAR_STATUS_SET_AT_KEY, CAR_STATUS_SET_SITE_KEY, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY, RELEASED_STATUSES, deriveCarStatus, isGateOutStamp, gateOutScanMs, gateInEvidenceAt, inYardAssertedAt, fmtGateOutStamp } from '../lib/carStatus'
+import type { Site } from '../types'
 import { isOpenDefect } from '../lib/damageLabel'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 
@@ -168,6 +169,10 @@ interface TrackingState {
    *  RIGHT NOW, so this car's just-set done/gatedOut flag must stay put
    *  there instead of being stripped out (see App.tsx / YardOps.tsx). */
   startNewTrip: (vin: string, next: { yard?: string; gateInDate?: string; movingDate?: string; lot?: string; keepQueueProgress?: boolean }) => number
+  /** ย้ายรถไปยาร์ดอื่น: ปิดรอบที่ยาร์ดเดิม (อ่านเป็น Gate-out ที่นั่น) แล้วเปิด
+   *  รอบใหม่ที่ปลายทาง — ดู transferRow. `at` = เวลาที่ออก ถ้าแถวไม่มีรอยยิงออก
+   *  คืน true เมื่อย้ายจริง (false = อยู่ที่นั่นอยู่แล้ว / ไม่รู้จักยาร์ด) */
+  transferToYard: (vin: string, destSiteId: string, opts?: { at?: number; queue?: boolean }) => boolean
   commitCoInspection: (res: ParseResult) => { updated: number; added: number; skipped: number; gateOut: number; moved: number }
   /** Set a cell and log it. `src: 'scan'` marks the write as a FIELD STATION
    *  action (ops-scan), which is what lets a report tell a real recording apart
@@ -341,12 +346,135 @@ function applyYardMove(next: TrackRow, key: string, columns: Column[], by: strin
   const { sites } = useYard.getState()
   const target = siteIdForLocation(next.cells, sites)
   if (!target || target === next.site) return next
+  // รถที่ "เคยอยู่" ยาร์ดเดิมจริง (ยิงเข้าแล้ว / มีงานแล้ว) การย้ายคือรถออกจาก
+  // ยาร์ดเดิม → ปิดรอบที่นั่นให้อ่านเป็น Gate-out แล้วเปิดรอบใหม่ที่ปลายทาง
+  // (ของเดิมแค่เปลี่ยนป้าย ยาร์ดเดิมจึง "หาย" ไม่ใช่ "ออกไปแล้ว" และรอบใหม่
+  // ยังแบกข้อมูลรอบเก่าไปด้วย) — ส่วนรถที่ยังไม่เคยเข้ายาร์ดเดิมเลย (แค่รอรับ
+  // แล้วป้ายผิด) แก้ป้ายเฉย ๆ เหมือนเดิม ไม่ต้องทิ้งบันทึกปลอมว่าเคยออกจากที่นั่น
+  const neverHere = deriveCarStatus(next.cells) === 'Pre Gate-in' && !gateInEvidenceAt(next.cells)
+  if (!neverHere) {
+    const moved = transferRow(next, target, by, sites)
+    if (moved) {
+      useYard.getState().moveUnitsToSite([next.vin], target)
+      if (!moved.arrived) queueArrivalAt(next.vin, target, next.site ?? siteIdForLocation(next.cells, sites))
+      return moved.out
+    }
+  }
   let out: TrackRow = { ...next, site: target }
   // an explicit Car Status wins over every derived signal, so a car that gated
   // out of its old yard reads as Pre Gate-in here without erasing its history
   if (deriveCarStatus(out.cells) !== 'Pre Gate-in') out = withHistoryEntry(out, 'Car Status', 'Pre Gate-in', columns, by)
   useYard.getState().moveUnitsToSite([out.vin], target)
   return out
+}
+
+/**
+ * ปิดรอบปัจจุบันของแถวลงประวัติ (__trips) แล้วเปิดรอบถัดไป — ส่วนที่เป็น
+ * "การคำนวณล้วน" ของ startNewTrip ให้ตัวย้ายยาร์ด (transferRow) ใช้ร่วมกัน
+ * คืนแถวใหม่ · เลขรอบที่ปิด · และยาร์ดที่รอบใหม่ย้ายไป (ถ้าย้าย)
+ */
+function closeRoundRow(
+  r: TrackRow, next: { yard?: string; gateInDate?: string; movingDate?: string; lot?: string }, by: string, sites: Site[],
+): { out: TrackRow; closing: number; movedTo?: string } {
+  const trips = tripsOf(r.cells)
+  const closing = trips.length + 1 // the round that ends here
+  // lift every cell of the round being closed OFF the row, so the next
+  // round cannot read one of them as its own
+  const cells = { ...r.cells }
+  const cleared: Record<string, string> = {}
+  for (const k of TRIP_SCOPED_KEYS) {
+    const v = (cells[k] ?? '').trim()
+    if (v) { cleared[k] = v; delete cells[k] }
+  }
+  const snap: TripSnapshot = {
+    round: closing,
+    gateIn: cleared['Gate In (Rayong yard)'] || cleared['Gate In Date'] || '',
+    gateOut: cleared['Gate Out time stamp'] || cleared['Gate Out Date'] || '',
+    yard: (r.cells['Location yard'] ?? '').trim(),
+    lot: cleared['Lot transfer'] || '',
+    grouping: cleared['Grouping  Number'] || '',
+    closedAt: Date.now(),
+    cells: cleared,
+  }
+  cells[TRIPS_CELL] = JSON.stringify([...trips, snap])
+  // …and the new round begins, waiting at the gate like any other arrival
+  cells['Car Status'] = 'Pre Gate-in'
+  if (next.yard) cells['Location yard'] = next.yard
+  if (next.gateInDate) cells['Gate In Date'] = next.gateInDate
+  if (next.movingDate) cells['moving date'] = next.movingDate
+  if (next.lot) cells['Lot transfer'] = next.lot
+  const entry: RowEvent = { at: Date.now(), by, field: 'รอบที่', from: String(closing), to: String(closing + 1) }
+  let out: TrackRow = { ...r, cells, history: [...(r.history ?? []), entry].slice(-MAX_ROW_HISTORY), updatedAt: Date.now() }
+  // coming back to a DIFFERENT yard moves the car there (same rule as
+  // applyYardMove, which this path bypasses by writing cells directly)
+  const target = siteIdForLocation(cells, sites)
+  let movedTo: string | undefined
+  if (target && target !== out.site) { out = { ...out, site: target }; movedTo = target }
+  return { out, closing, movedTo }
+}
+
+/** ช่องที่ "การยิงรับรถ" เขียน — ถ้าปลายทางยิงรับไปแล้วก่อนที่แถวจะย้ายตาม
+ *  ช่องพวกนี้เป็นของรอบใหม่ ต้องยกตามไป ไม่ใช่ถูกปิดลงประวัติรอบเก่า */
+const ARRIVAL_KEYS = ['Gate In Time', 'Gate In Inspector', 'Gate In (Rayong yard)', 'Gate In Date',
+  CAR_STATUS_KEY, CAR_STATUS_SET_AT_KEY, CAR_STATUS_SET_SITE_KEY]
+
+/**
+ * ย้ายรถไปยาร์ดอื่น = รถ "ออก" จากยาร์ดเดิมและ "เริ่มรอบใหม่" ที่ปลายทาง
+ *
+ * หลักการ "แยกยาร์ด แยกงาน": รถหนึ่งคันอยู่ได้ทีละยาร์ด ยาร์ดเดิมต้องเห็น
+ * Gate-out และข้อมูลของรอบที่ปิดไป (ไม่ขยับตามปลายทางอีก) ส่วนปลายทางเริ่มนับ
+ * ใหม่ทั้งหมด ทางเข้าทุกทางที่ทำให้รถย้ายยาร์ด (ยิงรับที่ปลายทาง · แอดมินแก้
+ * ช่องยาร์ด · ตัวเก็บกวาดเจอรถที่ยาร์ดอื่นรับไปแล้ว) ลงมาที่ตัวนี้ตัวเดียว
+ *
+ *  · จดไว้ที่แถวว่าออกจากยาร์ดไหนเมื่อไหร่ (ป้ายต้นทาง) ถ้ายังไม่มีรอยยิงออก
+ *    จริง ใช้เวลาตอนนี้ — รถอยู่ที่อื่นแล้ว แปลว่าออกไปแล้วโดยนิยาม
+ *  · ถ้าปลายทางยิงรับรถไปแล้ว "ก่อน" แถวจะย้ายตาม (คือกรณีที่ปลายทางรับรถ
+ *    ของยาร์ดอื่นเข้ามาโดยแถวยังค้างเป็นของยาร์ดเดิม) การยิงรับนั้นเป็นของ
+ *    รอบใหม่ — ยกช่องพวกนั้นข้ามมาให้รอบใหม่ ไม่ให้ตกไปอยู่ในประวัติรอบเก่า
+ *    ของยาร์ดเดิม (ยาร์ดเดิมไม่เคยยิงรับรถในวันนั้น)
+ * คืน null ถ้ารถอยู่ยาร์ดนั้นอยู่แล้ว หรือไม่รู้จักยาร์ดปลายทาง
+ */
+function transferRow(
+  r: TrackRow, destSiteId: string, by: string, sites: Site[], at?: number,
+): { out: TrackRow; arrived: boolean } | null {
+  const dest = sites.find((s) => s.id === destSiteId)
+  if (!dest) return null
+  const origin = r.site ?? siteIdForLocation(r.cells, sites)
+  if (origin === destSiteId) return null
+  const cells = { ...r.cells }
+  const departAt = gateOutScanMs(cells) || at || Date.now()
+  const arrived = inYardAssertedAt(cells, destSiteId) > 0 || gateInEvidenceAt(cells) > departAt
+  const carry: Record<string, string> = {}
+  if (arrived) for (const k of ARRIVAL_KEYS) { const v = cells[k]; if (v) { carry[k] = v; delete cells[k] } }
+  if (!isGateOutStamp(cells['Gate Out time stamp'])) {
+    cells['Gate Out time stamp'] = fmtGateOutStamp(departAt)
+    cells['Gate Out Time'] = String(departAt)
+  }
+  if (origin) {
+    cells[GATE_OUT_ORIGIN_SITE_KEY] = origin
+    cells[GATE_OUT_ORIGIN_AT_KEY] = String(departAt)
+  }
+  const { out: closed } = closeRoundRow({ ...r, cells }, { yard: dest.name }, by, sites)
+  let out: TrackRow = closed.site === destSiteId ? closed : { ...closed, site: destSiteId }
+  if (arrived) {
+    const c = { ...out.cells, ...carry }
+    const cs = (c[CAR_STATUS_KEY] || '').trim()
+    if (!cs || cs === 'Pre Gate-in' || RELEASED_STATUSES.has(cs)) c[CAR_STATUS_KEY] = 'In Yard'
+    out = { ...out, cells: c }
+  }
+  return { out: { ...out, updatedAt: Date.now() }, arrived }
+}
+
+/** แปะรถเข้าล็อตรับรถ "(ปลายทาง · shuttle · จาก ต้นทาง)" ของยาร์ดปลายทาง —
+ *  ชื่อเดียวกับที่ doGateOut / ตัวเก็บกวาดใช้ จึงรวมอยู่ล็อตเดียวกัน ไม่แตกคิว */
+function queueArrivalAt(vin: string, destSiteId: string, originSiteId?: string): void {
+  const sites = useYard.getState().sites
+  const dest = sites.find((s) => s.id === destSiteId)
+  if (!dest) return
+  const originName = sites.find((s) => s.id === originSiteId)?.name ?? originSiteId ?? ''
+  import('./useOps')
+    .then((m) => m.useOps.getState().createGateInQueue(`(${dest.name} · shuttle · จาก ${originName})`, [vin], undefined, destSiteId))
+    .catch(() => {})
 }
 
 export const useTracking = create<TrackingState>()(
@@ -725,40 +853,9 @@ export const useTracking = create<TrackingState>()(
       startNewTrip: (vin, next) => {
         const r = get().rows[vin]
         if (!r) return 0
-        const by = useYard.getState().currentUser
-        const trips = tripsOf(r.cells)
-        const closing = trips.length + 1 // the round that ends here
-        // lift every cell of the round being closed OFF the row, so the next
-        // round cannot read one of them as its own
-        const cells = { ...r.cells }
-        const cleared: Record<string, string> = {}
-        for (const k of TRIP_SCOPED_KEYS) {
-          const v = (cells[k] ?? '').trim()
-          if (v) { cleared[k] = v; delete cells[k] }
-        }
-        const snap: TripSnapshot = {
-          round: closing,
-          gateIn: cleared['Gate In (Rayong yard)'] || cleared['Gate In Date'] || '',
-          gateOut: cleared['Gate Out time stamp'] || cleared['Gate Out Date'] || '',
-          yard: (r.cells['Location yard'] ?? '').trim(),
-          lot: cleared['Lot transfer'] || '',
-          grouping: cleared['Grouping  Number'] || '',
-          closedAt: Date.now(),
-          cells: cleared,
-        }
-        cells[TRIPS_CELL] = JSON.stringify([...trips, snap])
-        // …and the new round begins, waiting at the gate like any other arrival
-        cells['Car Status'] = 'Pre Gate-in'
-        if (next.yard) cells['Location yard'] = next.yard
-        if (next.gateInDate) cells['Gate In Date'] = next.gateInDate
-        if (next.movingDate) cells['moving date'] = next.movingDate
-        if (next.lot) cells['Lot transfer'] = next.lot
-        const entry: RowEvent = { at: Date.now(), by, field: 'รอบที่', from: String(closing), to: String(closing + 1) }
-        let out: TrackRow = { ...r, cells, history: [...(r.history ?? []), entry].slice(-MAX_ROW_HISTORY), updatedAt: Date.now() }
-        // coming back to a DIFFERENT yard moves the car there (same rule as
-        // applyYardMove, which this path bypasses by writing cells directly)
-        const target = siteIdForLocation(cells, useYard.getState().sites)
-        if (target && target !== out.site) { out = { ...out, site: target }; useYard.getState().moveUnitsToSite([vin], target) }
+        const { currentUser: by, sites } = useYard.getState()
+        const { out, closing, movedTo } = closeRoundRow(r, next, by, sites)
+        if (movedTo) useYard.getState().moveUnitsToSite([vin], movedTo)
         set({ rows: { ...get().rows, [vin]: out } })
         idbPut(out).catch(() => {})
         pushRows([out])
@@ -775,6 +872,22 @@ export const useTracking = create<TrackingState>()(
             .catch(() => {})
         }
         return closing + 1
+      },
+
+      transferToYard: (vin, destSiteId, opts) => {
+        const r = get().rows[vin]
+        if (!r) return false
+        const { currentUser: by, sites } = useYard.getState()
+        const origin = r.site ?? siteIdForLocation(r.cells, sites)
+        const moved = transferRow(r, destSiteId, by, sites, opts?.at)
+        if (!moved) return false
+        set({ rows: { ...get().rows, [vin]: moved.out } })
+        idbPut(moved.out).catch(() => {})
+        pushRows([moved.out])
+        useYard.getState().moveUnitsToSite([vin], destSiteId)
+        // ปลายทางยิงรับไปแล้ว → ไม่ต้องรอรับอีก; ยังไม่ยิง → เข้าล็อตรับรถของปลายทาง
+        if (!moved.arrived && opts?.queue !== false) queueArrivalAt(vin, destSiteId, origin)
+        return true
       },
 
       // Co-Inspection import: MERGE the file's columns into existing VINs (update
