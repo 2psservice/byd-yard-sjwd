@@ -5,7 +5,7 @@ import {
   ArrowUpDown, ChevronUp, ChevronDown, ChevronRight, Plus, Database,
   FileText, List as ListIcon, ClipboardList, Eye, Copy, MapPin,
   Car, Clock, ShieldCheck, Route, Printer, CheckSquare, Check, History, Pencil,
-  SlidersHorizontal, Lock, Square, ImagePlus,
+  SlidersHorizontal, Lock, Square, ImagePlus, RotateCcw,
 } from 'lucide-react'
 import { compressImage } from '../lib/photo'
 import { CarTopView } from '../components/CarTopView'
@@ -20,7 +20,7 @@ import { rowsToCsv, type TrackRow, type RowEvent } from '../lib/excelTracking'
 import { isAccessoryCheckEntry } from '../lib/finalCheckList'
 import { printFindList } from '../lib/groupingPrint'
 import { matchVins, toFindListRows } from '../lib/findCar'
-import { rowsForSite, siteWorksWith, departedFromSite, departedViewFrom, whereElse, rowYardName, DEPARTURE_SETTLE_MS } from '../lib/siteScope'
+import { rowsForSite, siteWorksWith, departedFromSite, departedViewFrom, whereElse, rowYardName, gateOutReason, DEPARTURE_SETTLE_MS } from '../lib/siteScope'
 import { zoneLabel } from '../components/CarDiagramMultiView'
 import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirst, REPAIR_STATUSES, canonRepairStatus } from '../lib/damageLabel'
 import { resolvePart, resolveDefect } from '../lib/masterDefect'
@@ -1401,6 +1401,22 @@ function MylistView({ rows, allRows, visCols, sel, setSel, sortKey, sortDir, tog
     toast('ok', `ย้าย ${n.toLocaleString()} คันไป ${destName} และล้างร่องรอยของ ${siteName} แล้ว`)
     setMoveOpen(false); setSel(new Set())
   }
+  // ── แอดมินยืนยันว่ารถ "ยังจอดอยู่ยาร์ดนี้" ทั้งที่ขึ้นเป็น Gate-out → ยกเลิกการออก ──
+  // เอาเฉพาะคันที่อ่านได้ว่าออกไปแล้วจริง ๆ พร้อมเหตุผลว่าทำไมถึงขึ้นแบบนั้น
+  const [backOpen, setBackOpen] = useState(false)
+  const backTargets = useMemo(
+    () => irTargets
+      .map((r) => ({ row: r, why: gateOutReason(r.cells, currentSite, sites) }))
+      .filter((x) => !!x.why),
+    [irTargets, currentSite, sites],
+  )
+  const doUndoGateOut = () => {
+    if (!currentSite || !backTargets.length) return
+    const { restored, elsewhere } = useTracking.getState().undoGateOut(backTargets.map((x) => x.row.vin), currentSite)
+    if (restored) toast('ok', `ดึงกลับเป็น In Yard ที่ ${siteName} แล้ว ${restored.toLocaleString()} คัน`)
+    if (elsewhere.length) toast('err', `ข้าม ${elsewhere.length.toLocaleString()} คันที่อยู่ยาร์ดอื่น: ${elsewhere.slice(0, 3).join(', ')}${elsewhere.length > 3 ? ' …' : ''}`)
+    setBackOpen(false); setSel(new Set())
+  }
   const doIrPaper = () => {
     if (!irTargets.length) return
     if (irTargets.length > IR_PRINT_MAX) { toast('err', `เลือกไว้ ${irTargets.length.toLocaleString()} คัน — พิมพ์ได้ครั้งละไม่เกิน ${IR_PRINT_MAX} แผ่น`); return }
@@ -1434,6 +1450,12 @@ function MylistView({ rows, allRows, visCols, sel, setSel, sortKey, sortDir, tog
               title="พิมพ์เฉพาะข้อมูลลงบนกระดาษฟอร์ม IR ที่พิมพ์ไว้ล่วงหน้า (ตรงตำแหน่ง AMS 100%) — 1 แผ่นต่อ 1 คัน · ติ๊กรถก่อนหรือพิมพ์ทุกคันที่ค้นเจอ">
               <Printer size={13} /> พิมพ์กระดาษ IR{irTargets.length && irTargets.length !== found.length ? ` (${irTargets.length})` : ''}
             </button>
+            {currentSite && backTargets.length > 0 && (
+              <button className="btn btn-ghost py-1" onClick={() => setBackOpen(true)}
+                title="รถที่ขึ้นเป็น Gate-out ทั้งที่ยังจอดอยู่ในลานนี้ — ล้างหลักฐานการออกที่ผิดแล้วตั้งกลับเป็น In Yard · ติ๊กรถก่อนหรือทำทุกคันที่ค้นเจอ">
+                <RotateCcw size={13} /> ยกเลิก Gate-out → In Yard ({backTargets.length})
+              </button>
+            )}
             {currentSite && otherSites.length > 0 && (
               <button className="btn btn-ghost py-1" disabled={!found.length} onClick={() => { setMoveDest(otherSites[0]?.id ?? ''); setMoveOpen(true) }}
                 title="รถที่ไม่เคยอยู่ยาร์ดนี้แต่โผล่ในรายการ (ข้อมูลมั่ว) — ล้างร่องรอยของยาร์ดนี้ทิ้งแล้วให้เป็นของยาร์ดอื่น · ติ๊กรถก่อนหรือทำทุกคันที่ค้นเจอ">
@@ -1446,6 +1468,33 @@ function MylistView({ rows, allRows, visCols, sel, setSel, sortKey, sortDir, tog
         {elsewhere.length > 0 && <div className="text-[11px] mt-1 vin clip" style={{ color: 'var(--st-pending)' }}>ไม่พบในยาร์ดนี้: {elsewhere.slice(0, 8).map((e) => `${e.tok} (อยู่ใน Site ${e.yard})`).join(', ')}{elsewhere.length > 8 ? ` +${elsewhere.length - 8}` : ''}</div>}
         {trulyMissing.length > 0 && <div className="text-[11px] mt-1 vin clip" style={{ color: 'var(--faint)' }}>ไม่พบ: {trulyMissing.slice(0, 12).join(', ')}{trulyMissing.length > 12 ? ` +${trulyMissing.length - 12}` : ''}</div>}
       </div>
+      {backOpen && (
+        <div className="fixed inset-0 z-[65] flex items-center justify-center p-4" style={{ background: 'rgba(15,23,42,0.5)' }} onClick={() => setBackOpen(false)}>
+          <div className="panel-solid p-4 w-full max-w-[620px] space-y-3" onClick={(e) => e.stopPropagation()}>
+            <div className="text-[15px] font-extrabold">ยกเลิก Gate-out → กลับเป็น In Yard ที่ {siteName}</div>
+            <div className="text-[13px] leading-relaxed" style={{ color: 'var(--muted)' }}>
+              ใช้กับรถที่ <b>ยังจอดอยู่ในลานนี้จริง</b> แต่ระบบขึ้นเป็น Gate-out — ระบบจะลบ<b>หลักฐานการออกของรอบนี้</b>
+              (วันที่/เวลาออก · บันทึกว่าออกจากลานนี้) แล้วตั้งเป็น In Yard พร้อมจดว่าใครยืนยันเมื่อไหร่
+              <br />คำยืนยันนี้จะ<b>ชนะไฟล์ที่อัปโหลดรอบหน้า</b>ด้วย รถจึงไม่ถูกตีกลับเป็น Gate-out อีก (เว้นแต่มีวันที่ออกใหม่กว่า)
+              <br />แผนรับ (ข้อความ "แผนรับวันที่ …") และรอบที่ปิดไปแล้วไม่ถูกลบ
+              <br /><b style={{ color: 'var(--st-damage)' }}>รถที่ออกจากลานนี้ไปจริงแล้ว ห้ามใช้เมนูนี้</b>
+            </div>
+            <div className="space-y-1 max-h-[240px] overflow-auto pr-1">
+              {backTargets.slice(0, 50).map(({ row, why }) => (
+                <div key={row.vin} className="text-[12px] leading-snug">
+                  <span className="vin font-bold">{row.vin}</span>
+                  <span style={{ color: 'var(--muted)' }}> — {why}</span>
+                </div>
+              ))}
+              {backTargets.length > 50 && <div className="text-[12px]" style={{ color: 'var(--faint)' }}>และอีก {(backTargets.length - 50).toLocaleString()} คัน</div>}
+            </div>
+            <div className="flex justify-end gap-2 pt-1">
+              <button className="btn btn-ghost" onClick={() => setBackOpen(false)}>ยกเลิก</button>
+              <button className="btn btn-blue" disabled={!backTargets.length} onClick={doUndoGateOut}>ยืนยันดึงกลับ {backTargets.length.toLocaleString()} คัน</button>
+            </div>
+          </div>
+        </div>
+      )}
       {moveOpen && (
         <div className="fixed inset-0 z-[65] flex items-center justify-center p-4" style={{ background: 'rgba(15,23,42,0.5)' }} onClick={() => setMoveOpen(false)}>
           <div className="panel-solid glow-ring pop w-full p-5 space-y-3" style={{ maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>

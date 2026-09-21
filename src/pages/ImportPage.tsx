@@ -437,7 +437,7 @@ export function ImportPage() {
     setCoSaving(true)
     setCoProg({ pct: 0, label: 'กำลังรวมข้อมูลลงตารางหลัก…' })
     try {
-      const { updated, added, skipped, gateOut, moved, otherYard } = commitCoInspection(coParsed)
+      const { updated, added, skipped, gateOut, moved, otherYard, heldInYard } = commitCoInspection(coParsed)
       // rows AFTER the merge — this file may have just gated cars out, and those
       // count as gone for the defect pass below
       const rowsNow = useTracking.getState().rows
@@ -467,7 +467,8 @@ export function ImportPage() {
           (goneSkipped ? ` · ข้ามรถที่ออกไปแล้ว ${goneSkipped.toLocaleString()} รายการ` : '') +
           (moved ? ` · ย้ายไปยาร์ดที่ถูกต้อง ${moved.toLocaleString()}` : '') +
           (skipped ? ` · ข้ามยาร์ดอื่น ${skipped.toLocaleString()}` : '') +
-          (otherYard ? ` (รถของยาร์ดอื่น ${otherYard.toLocaleString()} คัน ไม่แตะ)` : ''),
+          (otherYard ? ` (รถของยาร์ดอื่น ${otherYard.toLocaleString()} คัน ไม่แตะ)` : '') +
+          (heldInYard ? ` · คงสถานะในลานไว้ ${heldInYard.toLocaleString()} คัน (แอดมินยืนยันทีหลังว่ารถยังอยู่)` : ''),
       )
       setCoParsed(null); setCoFileName('')
     } catch (e: any) {
