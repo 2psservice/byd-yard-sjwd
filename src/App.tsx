@@ -10,7 +10,7 @@ import { useTrackingRows, useTracking } from './store/useTracking'
 import { useOps, queueTypeOf } from './store/useOps'
 import { startSyncBus, stopSyncBus } from './lib/syncBus'
 import { startKeyboardGuard } from './lib/keyboardGuard'
-import { deriveCarStatus, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY, CAR_STATUS_SET_SITE_KEY, gateOutScanMs, gateInEvidenceAt, inYardAssertedAt } from './lib/carStatus'
+import { deriveCarStatus, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY, CAR_STATUS_KEY, CAR_STATUS_SET_SITE_KEY, gateOutScanMs, gateInEvidenceAt, inYardAssertedAt, statusSetAt } from './lib/carStatus'
 import { yardLocCode, LAST_LOCATION_KEY } from './lib/groupingImport'
 import { deliveryDestinationSite, siteIdForLocation } from './lib/siteScope'
 import { matchModel } from './lib/sampleData'
@@ -240,7 +240,16 @@ export default function App() {
                 ?? (() => { const d = deliveryDestinationSite(r.cells['Dealer Location'] || '', sites); return d && d.id !== here ? d.id : undefined })()
             }
           }
-          if (dest && sites.some((s) => s.id === dest)) useTracking.getState().transferToYard(vin, dest)
+          if (dest && sites.some((s) => s.id === dest)) { useTracking.getState().transferToYard(vin, dest); continue }
+          // (5) ไฟล์เขียน Gate-out ทับคำยืนยันของยาร์ดนี้เอง — แถวยังมีรอยยืนยัน
+          // "รถอยู่ในลาน" ของยาร์ดนี้ (แอปล้างรอยนี้ทุกครั้งที่เขียนสถานะออก ดู
+          // withHistoryEntry) แต่ช่องสถานะกลับเป็น Gate-out และรถถูกยิงรับหลัง
+          // วันที่ออกนั้นแล้ว = วันที่ออกเป็นของรอบก่อน ไฟล์หลักที่มีบรรทัดเดียว
+          // ต่อคันตีรถกลับเป็น Gate-out ด้วยรอบที่จบไปแล้ว → คืนคำยืนยันของคน
+          if ((r.cells[CAR_STATUS_KEY] || '').trim() === 'Gate-out' && setSite === here
+              && left > 0 && statusSetAt(r.cells) > left && gateInEvidenceAt(r.cells) > left) {
+            useTracking.getState().setCellNoHistory(vin, CAR_STATUS_KEY, 'In Yard')
+          }
         }
       }
 

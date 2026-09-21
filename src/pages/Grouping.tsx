@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Layers, Upload, Printer, MapPin, Loader2, FileSpreadsheet, CheckCircle2, AlertTriangle, ListChecks, X, Save, FileText, Pencil, CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useYard, useUnits } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
+import { rowsForSite } from '../lib/siteScope'
 import { useOps, type WorkQueue } from '../store/useOps'
 import { PageHead } from '../components/ui'
 import { parseGroupingWorkbook, siteGroupingConfig, yardLocCode, LAST_LOCATION_KEY } from '../lib/groupingImport'
@@ -43,7 +44,10 @@ export function Grouping() {
   const currentUser = useYard((s) => s.currentUser)
   const setView = useYard((s) => s.setView)
   const units = useUnits()
-  const trackingRows = useTrackingRows()
+  const allTrackingRows = useTrackingRows()
+  // แยกยาร์ด แยกงาน: ไฟล์ grouping ของยาร์ดนี้แปะเลขกลุ่ม/ปลายทางได้เฉพาะรถของ
+  // ยาร์ดนี้ — รถที่ย้ายไปยาร์ดอื่นแล้วแต่ยังโผล่ในไฟล์เก่า ต้องไม่ถูกเขียนทับ
+  const trackingRows = useMemo(() => rowsForSite(allTrackingRows, currentSite, sites), [allTrackingRows, currentSite, sites])
   const bulkUpdate = useTracking((s) => s.bulkUpdate)
   const createSequence = useOps((s) => s.createSequence)
   const setLaneLoads = useOps((s) => s.setLaneLoads)
