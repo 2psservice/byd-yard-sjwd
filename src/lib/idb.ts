@@ -170,3 +170,16 @@ export async function idbPutVisits(visits: Visit[]): Promise<void> {
     t.onabort = () => reject(t.error ?? new Error('idb transaction aborted'))
   })
 }
+
+export async function idbDeleteVisits(ids: string[]): Promise<void> {
+  if (!ids.length) return
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(VISITS, 'readwrite')
+    const store = t.objectStore(VISITS)
+    for (const id of ids) store.delete(id)
+    t.oncomplete = () => resolve()
+    t.onerror = () => reject(t.error)
+    t.onabort = () => reject(t.error ?? new Error('idb transaction aborted'))
+  })
+}

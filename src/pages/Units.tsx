@@ -1388,6 +1388,18 @@ function MylistView({ rows, allRows, visCols, sel, setSel, sortKey, sortDir, tog
     const ticked = found.filter((r) => sel.has(r.vin))
     return ticked.length ? ticked : found
   }, [found, sel])
+  // ── แอดมินยืนยันว่ารถ "ไม่เคยอยู่ยาร์ดนี้" (ข้อมูลมั่ว) → ล้างร่องรอยของยาร์ดนี้แล้วให้เป็นของยาร์ดอื่น ──
+  const [moveOpen, setMoveOpen] = useState(false)
+  const [moveDest, setMoveDest] = useState('')
+  const otherSites = useMemo(() => sites.filter((s) => s.id !== currentSite), [sites, currentSite])
+  const moveTargets = irTargets
+  const doReassign = () => {
+    if (!currentSite || !moveDest || !moveTargets.length) return
+    const n = useTracking.getState().reassignToYard(moveTargets.map((r) => r.vin), moveDest, currentSite)
+    const destName = sites.find((s) => s.id === moveDest)?.name ?? moveDest
+    toast('ok', `ย้าย ${n.toLocaleString()} คันไป ${destName} และล้างร่องรอยของ ${siteName} แล้ว`)
+    setMoveOpen(false); setSel(new Set())
+  }
   const doIrPaper = () => {
     if (!irTargets.length) return
     if (irTargets.length > IR_PRINT_MAX) { toast('err', `เลือกไว้ ${irTargets.length.toLocaleString()} คัน — พิมพ์ได้ครั้งละไม่เกิน ${IR_PRINT_MAX} แผ่น`); return }
@@ -1421,12 +1433,40 @@ function MylistView({ rows, allRows, visCols, sel, setSel, sortKey, sortDir, tog
               title="พิมพ์เฉพาะข้อมูลลงบนกระดาษฟอร์ม IR ที่พิมพ์ไว้ล่วงหน้า (ตรงตำแหน่ง AMS 100%) — 1 แผ่นต่อ 1 คัน · ติ๊กรถก่อนหรือพิมพ์ทุกคันที่ค้นเจอ">
               <Printer size={13} /> พิมพ์กระดาษ IR{irTargets.length && irTargets.length !== found.length ? ` (${irTargets.length})` : ''}
             </button>
+            {currentSite && otherSites.length > 0 && (
+              <button className="btn btn-ghost py-1" disabled={!found.length} onClick={() => { setMoveDest(otherSites[0]?.id ?? ''); setMoveOpen(true) }}
+                title="รถที่ไม่เคยอยู่ยาร์ดนี้แต่โผล่ในรายการ (ข้อมูลมั่ว) — ล้างร่องรอยของยาร์ดนี้ทิ้งแล้วให้เป็นของยาร์ดอื่น · ติ๊กรถก่อนหรือทำทุกคันที่ค้นเจอ">
+                <Route size={13} /> ไม่ใช่รถของยาร์ดนี้ → ย้ายไป…{moveTargets.length && moveTargets.length !== found.length ? ` (${moveTargets.length})` : ''}
+              </button>
+            )}
             {text && <button className="btn btn-ghost py-1" onClick={() => setText('')}><X size={13} /> ล้าง</button>}
           </div>
         </div>
         {elsewhere.length > 0 && <div className="text-[11px] mt-1 vin clip" style={{ color: 'var(--st-pending)' }}>ไม่พบในยาร์ดนี้: {elsewhere.slice(0, 8).map((e) => `${e.tok} (อยู่ใน Site ${e.yard})`).join(', ')}{elsewhere.length > 8 ? ` +${elsewhere.length - 8}` : ''}</div>}
         {trulyMissing.length > 0 && <div className="text-[11px] mt-1 vin clip" style={{ color: 'var(--faint)' }}>ไม่พบ: {trulyMissing.slice(0, 12).join(', ')}{trulyMissing.length > 12 ? ` +${trulyMissing.length - 12}` : ''}</div>}
       </div>
+      {moveOpen && (
+        <div className="fixed inset-0 z-[65] flex items-center justify-center p-4" style={{ background: 'rgba(15,23,42,0.5)' }} onClick={() => setMoveOpen(false)}>
+          <div className="panel-solid glow-ring pop w-full p-5 space-y-3" style={{ maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
+            <div className="display text-[16px] font-bold">ไม่ใช่รถของ {siteName} → ย้ายไปยาร์ดอื่น</div>
+            <div className="text-[13px] leading-relaxed" style={{ color: 'var(--muted)' }}>
+              ใช้กับรถที่ <b>ไม่เคยเข้า {siteName}</b> แต่โผล่ในรายการ (ข้อมูลมั่ว) — ระบบจะ<b>ล้างร่องรอยของ {siteName}</b> ทิ้ง
+              (บันทึกว่าออกจากที่นี่ · รอบที่ปิด · แถวรอบ) แล้วให้แถวรถเป็นของยาร์ดที่เลือก โดยไม่ปิดรอบ ไม่สร้างประวัติปลอม
+              <br />รถที่ยิงเข้ายาร์ดนี้จริงแล้วออกไป <b>ห้ามใช้เมนูนี้</b> (ประวัติของยาร์ดนี้จะหาย)
+            </div>
+            <label className="block text-[12.5px] font-semibold">ย้ายไปยาร์ด
+              <select id="mylist-move-dest" className="input mt-1" value={moveDest} onChange={(e) => setMoveDest(e.target.value)}>
+                {otherSites.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </label>
+            <div className="text-[13px]">จะย้าย <b className="tabular">{moveTargets.length.toLocaleString()}</b> คัน{sel.size ? ' (ที่ติ๊กไว้)' : ' (ทุกคันที่ค้นเจอ)'}</div>
+            <div className="flex justify-end gap-2 pt-1">
+              <button className="btn btn-ghost" onClick={() => setMoveOpen(false)}>ยกเลิก</button>
+              <button className="btn btn-blue" disabled={!moveDest || !moveTargets.length} onClick={doReassign}>ยืนยันย้าย {moveTargets.length.toLocaleString()} คัน</button>
+            </div>
+          </div>
+        </div>
+      )}
       {asked === 0
         ? <div className="panel-solid flex-1 flex items-center justify-center text-[13px]" style={{ color: 'var(--faint)' }}>วาง VIN เต็มหรือ 5 ตัวท้ายในกล่องด้านบนเพื่อค้นหา แล้วออก "ใบหารถ" เป็น Excel/PDF ได้</div>
         : <DataGrid rows={sortRows(found, sortKey, sortDir)} visCols={visCols} sel={sel} setSel={setSel}
