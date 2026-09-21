@@ -13,7 +13,7 @@ import { onSync, sendSync, type RowMsg, type RowsPayload } from '../lib/syncBus'
 import { useYard } from './useYard'
 import { siteForRow, siteIdForLocation, coInspectionAccepts, CANDIDATE_SITES_KEY } from '../lib/siteScope'
 import { TRIPS_CELL, TRIP_SCOPED_KEYS, tripsOf, type TripSnapshot } from '../lib/tripHistory'
-import { CAR_STATUS_ORDER, deriveCarStatus, isGateOutStamp } from '../lib/carStatus'
+import { CAR_STATUS_ORDER, CAR_STATUS_KEY, CAR_STATUS_SET_AT_KEY, deriveCarStatus, isGateOutStamp } from '../lib/carStatus'
 import { isOpenDefect } from '../lib/damageLabel'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 
@@ -296,6 +296,11 @@ const LOCATION_BURST_MS = 90_000
 function withHistoryEntry(r: TrackRow, key: string, value: string, columns: Column[], by: string, src?: 'scan'): TrackRow {
   const from = r.cells[key] ?? ''
   const cells = { ...r.cells, [key]: value }
+  // จดไว้ว่า "มีคนในแอปยืนยันสถานะของรถคันนี้เมื่อไหร่" — ทุกทางที่เขียนช่องนี้
+  // ผ่านแอป (แอดมินแก้เอง · ยิงที่ประตู · สถานีบันทึกงาน) ลงมาที่จุดนี้ทั้งหมด
+  // ส่วนการนำเข้าไฟล์ประกอบแถวขึ้นมาเองไม่ผ่านทางนี้ จึงแยกได้ว่าค่ามาจากคนหรือไฟล์
+  // ใช้ให้คำยืนยันของคนชนะการเดาจาก "แผนรับที่เลยกำหนด" (ดู deriveCarStatus)
+  if (key === CAR_STATUS_KEY) cells[CAR_STATUS_SET_AT_KEY] = String(Date.now())
   if (from === value) return { ...r, cells } // unchanged value — still write, skip the log entry
   const label = columns.find((c) => c.key === key)?.label ?? key
   const entry: RowEvent = { at: Date.now(), by, field: label, from, to: value, ...(src ? { src } : {}) }

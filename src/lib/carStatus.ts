@@ -99,12 +99,31 @@ export function gateInEvidenceAt(c: Record<string, string>): number {
   return d ? d.getTime() : 0
 }
 
-/** มีการรับรถเข้าลาน "ตั้งแต่วันแผนรับเป็นต้นไป" ไหม — ถ้ามี แผนที่เลยกำหนด
- *  นั้นไม่ได้เกิดขึ้น (หรือรถวนกลับเข้ามาใหม่) จึงห้ามเดาว่ารถออกไปแล้ว */
-function gateInAfterPlan(c: Record<string, string>): boolean {
+/**
+ * ช่องที่จดว่า "มีคนในแอปยืนยันสถานะของรถคันนี้ไว้เมื่อไหร่"
+ *
+ * ประทับอัตโนมัติทุกครั้งที่ช่อง Car Status ถูกเขียนผ่านแอป (แอดมินแก้เอง ·
+ * ยิงที่หน้าประตู · สถานีบันทึกงาน) — การนำเข้าไฟล์ไม่ผ่านทางนี้ จึงแยกได้ว่า
+ * ค่านี้มาจาก "คน" หรือมาจาก "ไฟล์"
+ * ผูกกับรอบการมาเยือนรอบนี้ (ดู TRIP_SCOPED_KEYS) จึงไม่ค้างข้ามรอบ
+ */
+export const CAR_STATUS_KEY = 'Car Status'
+export const CAR_STATUS_SET_AT_KEY = 'Car Status Set At'
+
+function statusSetAt(c: Record<string, string>): number {
+  const at = parseInt((c[CAR_STATUS_SET_AT_KEY] || '').trim(), 10)
+  return Number.isFinite(at) && at > 0 ? at : 0
+}
+
+/** มีใคร "ยืนยันสถานะของรถคันนี้" ตั้งแต่วันแผนรับเป็นต้นไปไหม
+ *
+ *  นับสองอย่าง: การยิงรับรถเข้าลาน และการที่มีคนตั้งค่าสถานะไว้เองในแอป
+ *  ถ้ามีอย่างใดอย่างหนึ่ง แปลว่าแผนที่เลยกำหนดนั้นไม่ได้เกิดขึ้น (หรือรถวนกลับ
+ *  เข้ามาใหม่) จึงห้ามเดาทับว่ารถออกไปแล้ว — การเดาต้องแพ้คำยืนยันของคนเสมอ */
+function assertedAfterPlan(c: Record<string, string>): boolean {
   const plan = parseDMY(c['Gate Out time stamp'] || '')
   if (!plan) return false
-  const at = gateInEvidenceAt(c)
+  const at = Math.max(gateInEvidenceAt(c), statusSetAt(c))
   return at > 0 && at >= plan.getTime()
 }
 
@@ -197,7 +216,12 @@ export function deriveCarStatus(c: Record<string, string>): string {
   // ลานที่ปลายทาง สถานะที่คำนวณได้ยังเป็น Gate-out อยู่ ตัวเก็บกวาดใน App จึงเด้ง
   // รถออกจากลาน (DEPARTED) ภายใน 1 นาที แล้วทุกสถานีก็ขึ้นว่า "รถยังไม่ Gate-in"
   // ทั้งที่พนักงานเพิ่งยิงไปเองเมื่อครู่
-  if (isLapsedPlan(c['Gate Out time stamp']) && !gateInAfterPlan(c)) return 'Gate-out'
+  //  เพิ่มอีกข้อ: แอดมินตั้งค่าสถานะไว้เองในแอปก็นับเป็นการยืนยันเช่นกัน —
+  //  ของเดิมกฎนี้ตัดสินก่อนช่อง Car Status แอดมินแก้เป็น In Yard เท่าไหร่ก็ไม่
+  //  เปลี่ยน ไม่มีทางแก้ข้อมูลให้ถูกได้เลย ส่วนกฎนี้มีไว้กันไฟล์ที่ import มา
+  //  แล้วเขียน In Yard ค้างไว้เท่านั้น ซึ่งยังกันได้เหมือนเดิม เพราะการ import
+  //  ไม่ได้ประทับเวลายืนยันสถานะไว้ (ดู assertedAfterPlan)
+  if (isLapsedPlan(c['Gate Out time stamp']) && !assertedAfterPlan(c)) return 'Gate-out'
   const explicit = (c['Car Status'] || '').trim()
   // Pre Gate-out: ops-scan gate-out parks the car in preload until the daily 09:30
   // flush, when it becomes a real Gate-out (unless it was confirmed Preload first).
