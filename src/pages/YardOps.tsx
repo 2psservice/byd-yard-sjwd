@@ -612,174 +612,6 @@ function RecentPanel({ station, accent, onPick }: { station: string; accent: str
  * so the printed Delivery Note scans exactly like a VIN sticker.
  * `autoFocus` is opt-out: with two fields on one screen only one may grab focus.
  */
-// ข้อความตอนกล้องมีปัญหา — จอดำเฉยๆ โดยไม่บอกอะไรคือสิ่งที่หน้างานเจอ
-const CAM_ERR_OPEN = 'เปิดกล้องไม่สำเร็จ — โปรดอนุญาตสิทธิ์กล้องในเบราว์เซอร์ แล้วลองใหม่'
-const CAM_ERR_NO_IMAGE = 'กล้องยังไม่ส่งภาพมา — อาจมีแอปอื่นใช้กล้องอยู่ ลองปิดแอปกล้อง/LINE แล้วกดลองใหม่'
-// เครื่องร้อนจัด/แอปอื่นแย่งกล้อง ระบบจะ "ดึงกล้องคืน" กลางทาง พรีวิวค้างเป็น
-// ภาพนิ่งหรือดำไปเฉยๆ โดยไม่มี error — ต้องจับให้ได้แล้วบอก ไม่ใช่ปล่อยค้าง
-const CAM_ERR_LOST = 'กล้องหลุดกลางทาง — มักเกิดตอนเครื่องร้อนหรือมีแอปอื่นแย่งกล้อง กดเปิดใหม่ได้เลย'
-// พักกล้องเองเมื่อเปิดค้างไว้เฉยๆ หรือสลับไปแอปอื่น — กล้องที่เปิดค้างคือ
-// ตัวทำให้เครื่องร้อนที่สุด และความร้อนคือต้นเหตุของอาการค้าง/จอดำ
-const CAM_PAUSED = 'พักกล้องไว้เพื่อไม่ให้เครื่องร้อน'
-// เปิดกล้องค้างเฉยๆ นานเท่านี้แล้วยังไม่ได้สแกน = ปล่อยกล้องคืนระบบ
-const CAM_IDLE_MS = 90_000
-
-// ── เปิดกล้อง "ครั้งต่อไป" ให้ติดทุกครั้ง ─────────────────────────────────────
-// track.stop() จบทันทีในฝั่งจาวาสคริปต์ แต่ฝั่งระบบ (ตัวขับกล้องของ Android)
-// ยังเก็บกวาดเซสชันเดิมอยู่อีกพักหนึ่ง ถ้าขอกล้องใหม่ทับเข้าไปตอนนั้น จะ "ได้"
-// สตรีมมาจริงแต่ไม่มีเฟรมสักเฟรม = จอดำเงียบๆ แล้วไปโผล่เป็นข้อความ "กล้อง
-// ยังไม่ส่งภาพมา" ตอน 8 วิ ซึ่งตรงกับอาการ "ครั้งแรกได้ ครั้งต่อไปไม่ได้"
-// (สแกนติด → ปิดจอกล้องเอง → พนักงานกดเปิดคันถัดไปทันที = ขอทับพอดี)
-// ระยะที่เว้นให้ระบบเก็บกวาด — เครื่องแต่ละรุ่นใช้เวลาไม่เท่ากัน เดาครั้งเดียว
-// ไม่พอ จึงถอยเพิ่มทีละขั้น (0.45 → 0.9 → 1.35 วิ) จนกว่าจะได้ภาพจริง
-const CAM_COOLDOWN_MS = 450
-const CAM_MAX_AUTO_TRY = 3
-let lastCamStopAt = 0
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
-
-// ── "ปิด" = จอดกล้องไว้ · "เปิด" = หยิบกลับมาใช้ทันที ─────────────────────────
-// หน้างานปิด-เปิดกล้องซ้ำทั้งวัน (สแกนติด → ปิดเอง → เปิดคันถัดไป) ทุกรอบที่
-// ต้องไปขอกล้องจากระบบใหม่คือ ช้า + เสี่ยงชนช่วงที่ระบบยังปล่อยรอบก่อนไม่เสร็จ
-// (= จอดำ) ทางเดียวที่ตัดทั้งสองอย่างพร้อมกันคือ "ไม่ปล่อยเลย" ในช่วงที่ยังทำงาน
-// ต่อเนื่องอยู่: ปิดแล้วเก็บสตรีมเดิมไว้ เปิดใหม่ในช่วงนี้ = ต่อสตรีมเดิมเข้า
-// <video> ทันที ไม่มีคำขอกล้อง ไม่มีการปล่อย ไม่มีอะไรให้ชน
-//
-// ระยะที่จอด (เดิม 8 วิ) สั้นกว่าจังหวะจริงของหน้างาน — เดินไปคันถัดไป จ่อ
-// กล้อง หาบาร์โค้ด กว่าจะสแกนติดคันต่อไปมักเกิน 8 วิ ทำให้ "ทุกครั้ง" กลาย
-// เป็นขอกล้องใหม่ (ช้า) อยู่ดี จึงขยับเป็น 60 วิ ให้ครอบคลุมจังหวะทำงานจริง
-// เกือบทั้งหมด แลกมาด้วยกล้อง (ฮาร์ดแวร์ ไม่ใช่ตัวถอดรหัส) ที่ยังไหลภาพอยู่
-// นานขึ้นหลังปิดจอ — ตัดวงจรทันทีถ้าสลับไปแอปอื่นหรือดับจอ (ไม่รอครบ 60 วิ)
-// เพื่อไม่ให้ร้อนอยู่ในกระเป๋าโดยไม่มีใครใช้งาน — ต่างจาก pre-warm รุ่นก่อนที่
-// เปิดกล้องตั้งแต่เข้าหน้า: อันนี้ไม่แตะกล้องเลยจนกว่าจะกดปุ่มครั้งแรก
-const CAM_PARK_MS = 60_000
-// สตรีมที่จอดไว้ต้อง "มีภาพไหลตลอด" ผ่าน <video> ที่มองไม่เห็น — ถ้าปล่อยลอย
-// ไม่มีใครแสดงผลเลย มือถือหลายรุ่น (โดยเฉพาะ Android บางเครื่อง) จะหยุดส่งเฟรม
-// ให้เพื่อประหยัดพลังงาน ทั้งที่ track ยังรายงานว่า "live" อยู่ พอเอากลับมาแสดง
-// ผลจะเป็นจอดำพักหนึ่งเหมือนกำลังรอกล้องใหม่ — พอๆ กับไม่ได้จอดกล้องไว้เลย
-// (นี่คือสาเหตุที่คาดว่าทำให้ "กดเปิดกล้องแล้วจอดำเหมือนรอ" เกิดขึ้นทุกครั้ง)
-let keepAliveVideo: HTMLVideoElement | null = null
-const getKeepAliveVideo = (): HTMLVideoElement | null => {
-  if (typeof document === 'undefined') return null
-  if (keepAliveVideo) return keepAliveVideo
-  const v = document.createElement('video')
-  v.muted = true
-  v.playsInline = true
-  v.setAttribute('aria-hidden', 'true')
-  v.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none'
-  document.body.appendChild(v)
-  keepAliveVideo = v
-  return v
-}
-let parkedCam: { stream: MediaStream; timer: ReturnType<typeof setTimeout> } | null = null
-const releaseParkedCam = () => {
-  if (!parkedCam) return
-  clearTimeout(parkedCam.timer)
-  parkedCam.stream.getTracks().forEach(t => t.stop())
-  if (keepAliveVideo) keepAliveVideo.srcObject = null
-  parkedCam = null
-  lastCamStopAt = Date.now()
-}
-const parkCam = (stream: MediaStream) => {
-  releaseParkedCam()
-  const kv = getKeepAliveVideo()
-  if (kv) { kv.srcObject = stream; kv.play().catch(() => {}) }
-  parkedCam = { stream, timer: setTimeout(releaseParkedCam, CAM_PARK_MS) }
-}
-// หยิบกล้องที่จอดไว้ — ถ้าระหว่างจอดมันตายไปแล้ว (ระบบยึดคืน) ก็ทิ้งแล้วไปขอใหม่
-const takeParkedCam = (): MediaStream | null => {
-  if (!parkedCam) return null
-  const { stream, timer } = parkedCam
-  clearTimeout(timer); parkedCam = null
-  if (keepAliveVideo) keepAliveVideo.srcObject = null
-  const t = stream.getVideoTracks()[0]
-  // ตายไปแล้ว = ระบบปล่อยฮาร์ดแวร์ไปแล้วตั้งแต่ตอนนั้น ไม่ต้องนับเป็น "เพิ่งปล่อย"
-  if (!t || t.readyState !== 'live') { stream.getTracks().forEach(x => x.stop()); return null }
-  return stream
-}
-if (typeof document !== 'undefined') {
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') releaseParkedCam() })
-  window.addEventListener('pagehide', releaseParkedCam)
-}
-
-// ── ตัวอ่านบาร์โค้ดของระบบ (Android): สร้างครั้งเดียวแล้วใช้ทั้งวัน ──────────
-// ของเดิมถาม getSupportedFormats() แล้ว new BarcodeDetector() ใหม่ "ทุกครั้ง"
-// ที่กดเปิดกล้อง ทั้งสองอย่างวิ่งผ่าน Google Play Services และไปคั่นอยู่ตรงกลาง
-// ระหว่าง "ภาพขึ้นแล้ว" กับ "เริ่มสแกนได้" พอดี — ซึ่งคือเวลาที่เหลืออยู่ก้อน
-// สุดท้าย หลังจากการ "จอดกล้อง" ตัดเวลาขอกล้องออกไปจนเกือบหมดแล้ว
-// ตัวอ่านตัวเดียวใช้กับกล้องกี่รอบก็ได้ (ส่งภาพเข้าไปตอน detect() ทุกครั้งอยู่แล้ว)
-type NativeSrc = HTMLVideoElement | HTMLCanvasElement
-type NativeDetector = { detect: (v: NativeSrc) => Promise<{ rawValue?: string }[]> }
-type NativeDetectorCtor = {
-  new (o: { formats: string[] }): NativeDetector
-  getSupportedFormats?: () => Promise<string[]>
-}
-let nativeDetectorPromise: Promise<NativeDetector | null> | null = null
-let detectorIdleTimer: ReturnType<typeof setTimeout> | null = null
-// ไม่ได้แตะกล้องนานขนาดนี้ = เลิกใช้แล้ว คืนตัวอ่าน (และโมดูลสแกนที่มันจองไว้)
-// ให้ระบบ — บนเครื่องแรม 3–4 GB ทุกอย่างที่ถือค้างไว้เปล่า ๆ คือหน่วยความจำที่
-// แอปอื่นต้องแย่งคืน แล้วจบที่ระบบฆ่าแอปเราทิ้งตอนสลับกลับมา
-const DETECTOR_IDLE_MS = 10 * 60_000
-async function buildNativeDetector(): Promise<NativeDetector | null> {
-  const BD = (window as unknown as { BarcodeDetector?: NativeDetectorCtor }).BarcodeDetector
-  if (!BD) return null // iPhone / เบราว์เซอร์ที่ไม่มีตัวอ่านของระบบ → ไปทาง ZXing
-  try {
-    const supported = (await BD.getSupportedFormats?.()) ?? []
-    const want = ['qr_code', 'code_128', 'code_39', 'ean_13', 'data_matrix'].filter(f => supported.includes(f))
-    if (!want.includes('qr_code')) return null
-    return new BD({ formats: want })
-  } catch { return null }
-}
-/** ทิ้งตัวอ่านที่แคชไว้ — ครั้งหน้าที่ต้องใช้จะสร้างใหม่เองอัตโนมัติ
- *  เรียกเมื่อ (ก) มันพังกลางทาง (ข) ไม่ได้ใช้กล้องมานานแล้ว (ค) แอปถูกพับไป */
-function releaseNativeDetector(): void {
-  nativeDetectorPromise = null
-  if (detectorIdleTimer) { clearTimeout(detectorIdleTimer); detectorIdleTimer = null }
-}
-/** นับถอยหลังคืนตัวอ่าน — เริ่มนับใหม่ทุกครั้งที่มีการใช้งานกล้อง */
-function keepDetectorAlive(): void {
-  if (detectorIdleTimer) clearTimeout(detectorIdleTimer)
-  detectorIdleTimer = setTimeout(releaseNativeDetector, DETECTOR_IDLE_MS)
-}
-function getNativeDetector(): Promise<NativeDetector | null> {
-  if (!nativeDetectorPromise) {
-    nativeDetectorPromise = buildNativeDetector().then((d) => {
-      // ไม่แคช "ความล้มเหลว" — ครั้งหน้าที่เปิดกล้องให้ลองใหม่ได้ (Play Services
-      // อาจยังโหลดโมดูลสแกนไม่เสร็จตอนที่ถามไปครั้งแรก)
-      if (!d) releaseNativeDetector()
-      return d
-    })
-  }
-  keepDetectorAlive()
-  return nativeDetectorPromise
-}
-// พับแอปไปทำอย่างอื่น = คืนทั้งกล้องและตัวอ่านให้ระบบทันที ไม่ต้องรอครบ 10 นาที
-if (typeof document !== 'undefined') {
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') releaseNativeDetector() })
-  window.addEventListener('pagehide', releaseNativeDetector)
-}
-// ตัวอ่านพังติดกันกี่รอบถึงจะถือว่า "ใช้ไม่ได้แล้ว" แล้วทิ้งไปถอยไปใช้ทาง ZXing
-// (Play Services อัปเดตกลางวัน / โมดูลสแกนถูกถอดออกจากหน่วยความจำ = detect()
-// โยน error ทุกรอบ ของเดิมจะวนพังเงียบ ๆ ไปเรื่อย ๆ โดยไม่มีอะไรขึ้นบนจอเลย)
-const NATIVE_FAIL_LIMIT = 4
-
-// ── จังหวะถอดรหัส: ปรับตามความเร็วจริงของเครื่อง + มีเพดานกันร้อน ───────────
-// ของเดิมล็อกไว้ค่าเดียว (120/130ms) ซึ่งตั้งเผื่อเครื่องที่ช้าที่สุดเอาไว้แล้ว
-// เครื่องที่ถอดเสร็จใน 25ms จึงนั่งรออีก ~95ms เปล่า ๆ ทุกรอบ ส่วนเครื่องที่ช้า
-// กว่ารอบวนก็ยิงรัวจนแทบไม่ได้พัก (ยิ่งร้อน ยิ่งถอดช้าลงอีก)
-//
-// กติกาใหม่มีเพดานสองชั้น ทั้งคู่กันเครื่องร้อน:
-//  1. เพดานความถี่  — ห้ามยิงเกิน SCAN_MAX_RATE ครั้ง/วินาที ไม่ว่าเครื่องจะเร็ว
-//     แค่ไหน (กล้องส่งภาพ ~30 เฟรม/วินาทีอยู่แล้ว ถี่กว่านี้คือเผาซีพียูเปล่า)
-//  2. เพดานเวลาทำงาน — พัก "ไม่น้อยกว่า" เวลาที่เพิ่งใช้ถอดไป ซีพียูจึงถูกใช้
-//     ไม่เกินครึ่งหนึ่งของเวลาจริงเสมอ เครื่องยิ่งช้า (= ยิ่งร้อน) ยิ่งพักนาน
-//     ตามตัวเอง ของเดิมพักแค่ 60% ของเวลาถอด = ใช้ซีพียูได้ถึง 62%
-const SCAN_MAX_RATE = 18                              // ครั้ง/วินาที — เพดานตายตัว
-const SCAN_MIN_GAP = Math.round(1000 / SCAN_MAX_RATE) // ≈ 56ms
-const SCAN_MAX_GAP = 250   // ช้าสุด — กันเครื่องร้อนจัดทิ้งช่วงนานจนรู้สึกว่าไม่สแกน
-const SCAN_REST = 1.0      // พัก ≥ เวลาที่ใช้ถอด → ใช้ซีพียูไม่เกิน 50% ของเวลา
-const nextScanGap = (tookMs: number) =>
-  Math.min(SCAN_MAX_GAP, Math.max(SCAN_MIN_GAP, Math.round(tookMs * SCAN_REST)))
-
 // keyboard-wedge dedupe: two VinInputs on one screen both hear the burst —
 // only the first may fire it
 let lastWedgeAt = 0
@@ -809,10 +641,6 @@ function VinInput({
   const [val, setVal] = useState('')
   const [camOpen, setCamOpen] = useState(false)
   const [camErr, setCamErr] = useState('')
-  // พักกล้องเอง (ไม่ใช่ error) — overlay ยังอยู่ แค่ปล่อยกล้องคืนระบบชั่วคราว
-  const [camPaused, setCamPaused] = useState(false)
-  // กดปุ่ม "ลองใหม่" = เปิดกล้องรอบใหม่ (cleanup ของรอบเก่าปล่อยกล้องให้เอง)
-  const [camTry, setCamTry] = useState(0)
   const ref = useRef<HTMLInputElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   // ZXing scanner controls — decodes QR + 1D barcodes (Code128/39, EAN, DataMatrix)
@@ -867,10 +695,6 @@ function VinInput({
   // lands without the worker ever tapping the input first.
   const onScanRef = useRef(onScan)
   onScanRef.current = onScan
-  // อุ่นตัวอ่านบาร์โค้ดไว้ตั้งแต่เข้าหน้าสถานี — ถาม Play Services ครั้งเดียว
-  // จบตั้งแต่ตอนนี้ พอกดปุ่มกล้องจริงจะเริ่มสแกนได้ทันทีที่ภาพขึ้น ไม่ต้องรอ
-  // ขั้นตอนนี้คั่นกลาง (ไม่ได้แตะกล้องเลย จึงไม่เปลืองแบตและไม่ทำให้เครื่องร้อน)
-  useEffect(() => { void getNativeDetector() }, [])
   useEffect(() => {
     let buf = ''
     let last = 0
@@ -896,22 +720,14 @@ function VinInput({
     return () => document.removeEventListener('keydown', onKey, true)
   }, [])
 
-  // Stop the decode loop and detach from the <video>. `park` keeps the stream
-  // alive for a few seconds so the next open is instant; otherwise every
-  // track is stopped for real (OS camera indicator turns off).
-  const stopScan = (park = false) => {
+  // Fully release the camera: stop ZXing's decode loop AND every media track,
+  // then detach from the <video> so the OS camera indicator turns off.
+  const stopScan = () => {
     try { controlsRef.current?.stop() } catch { /* already stopped */ }
     controlsRef.current = null
     const v = videoRef.current
     const s = v?.srcObject as MediaStream | null
-    if (s) {
-      if (park) parkCam(s)
-      else {
-        s.getTracks().forEach(t => t.stop())
-        // จำเวลาที่ปล่อยกล้องไว้ — รอบเปิดถัดไปจะเว้นระยะให้ระบบเก็บกวาดให้เสร็จก่อน
-        lastCamStopAt = Date.now()
-      }
-    }
+    s?.getTracks().forEach(t => t.stop())
     if (v) v.srcObject = null
     trackRef.current = null
     setZoomCap(null); setZoom(1); setTorchCap(false); setTorchOn(false)
@@ -919,21 +735,8 @@ function VinInput({
     setDigitalZoom(false); setDz(z0); dzRef.current = z0; opticalRef.current = false
   }
 
-  // เปิดใหม่ให้เองเงียบๆ ได้ไม่เกิน CAM_MAX_AUTO_TRY ครั้งต่อการกดปุ่ม 1 ครั้ง
-  const autoTryRef = useRef(0)
-  // เวลาที่ "พนักงานกดปุ่ม" — ข้อความเตือนนับจากตรงนี้ ไม่ใช่นับใหม่ทุกครั้งที่
-  // ระบบลองเปิดเอง ไม่งั้นลองไปเรื่อยๆ แล้วคนกดไม่เคยได้รับคำตอบสักที
-  const camAskedAtRef = useRef(0)
-  const beginOpen = () => { autoTryRef.current = 0; camAskedAtRef.current = Date.now(); setCamErr(''); setCamPaused(false) }
-  const openCamera = () => { beginOpen(); setCamOpen(true) }
-  const retryCamera = () => { beginOpen(); setCamTry(n => n + 1) }
-  // ปิดหูปิดตา event "กล้องหลุด" ก่อนที่เราจะเป็นคนสั่งปิดเอง — บางเบราว์เซอร์
-  // ยิง ended/mute ตอน track.stop() ด้วย ถ้าไม่ปิดไว้จะขึ้นข้อความหลุดหลอกๆ
-  // ทุกครั้งที่สแกนติด (สแกนติด = ปิดหน้ากล้องเอง)
-  const hushRef = useRef<() => void>(() => {})
-  // ปิดโดยคน/โดยสแกนติด → จอดไว้ (เปิดคันถัดไปได้ทันที) — ส่วนการปิดเพราะกล้อง
-  // มีปัญหา (ลองใหม่/พัก/สลับแอป) ยังปล่อยจริงเหมือนเดิม
-  const closeCamera = () => { hushRef.current(); stopScan(true); setCamPaused(false); setCamOpen(false) }
+  const openCamera = () => { setCamErr(''); setCamOpen(true) }
+  const closeCamera = () => { stopScan(); setCamOpen(false) }
 
   // Start the scanner whenever the overlay opens. ZXing manages getUserMedia +
   // srcObject + play() + the continuous decode loop internally, which also
@@ -941,57 +744,12 @@ function VinInput({
   useEffect(() => {
     if (!camOpen) return
     let cancelled = false
-    let watchId: ReturnType<typeof setInterval>
-    let idleId: ReturnType<typeof setTimeout>
-    let frameId: ReturnType<typeof setInterval>
-    let vtrack: MediaStreamTrack | null = null
-    // ตัวฟัง "ภาพมาแล้ว" บน <video> — เก็บไว้ถอดออกตอน cleanup
-    let frameListener: { el: HTMLVideoElement; fn: () => void } | null = null
-    // ปิดหูปิดตา event "กล้องหลุด" ก่อนที่ "เรา" จะเป็นคนสั่งหยุดกล้องเอง
-    // (พักกล้อง/สลับแอป) ไม่งั้นจะขึ้นข้อความหลุดทั้งที่เราตั้งใจปิด
-    const hush = () => { if (vtrack) { vtrack.onended = null; vtrack.onmute = null; vtrack.onunmute = null } }
-    hushRef.current = hush
 
-    // ขนาดภาพที่ขอจากกล้อง — ทุกเครื่องเท่ากันที่ 1280×720
-    //
-    // ประวัติ: เดิม 2560×1440 → 1920×1080 → และตอนนี้ 1280×720 เซนเซอร์ +
-    // ชิปภาพ + การวาดพรีวิวเต็มจอทำงานที่ความละเอียดนี้ตลอดเวลาที่กล้องเปิด
-    // นั่นคือต้นเหตุ "มือถือร้อน" แล้วพอร้อนระบบก็หรี่ความเร็วเครื่อง → ค้าง/จอดำ
-    // 720p กินงานราว 44% ของ 1080p และ 20% ของ 1440p
-    //
-    // ยังละเอียดพอเหลือเฟือ: QR บนกระจกที่ระยะจ่อปกติได้ราว 4 จุดต่อ 1 โมดูล
-    // และบาร์โค้ด VIN ยาว ๆ ได้ราว 3 จุดต่อ 1 ขีด ส่วนเกณฑ์อ่านออกคือ ~2
-    // มือถือหน้างานเกือบทั้งหมดจอไม่เกิน 720p อยู่แล้ว ภาพที่ใหญ่กว่านั้นถูกย่อ
-    // ทิ้งเพื่อแสดงผลอยู่ดี — เป็นงานที่จ่ายไปโดยไม่ได้อะไรกลับมา
-    //
-    // ใช้ ideal ล้วน ๆ ไม่ใส่ max เพื่อไม่ให้เครื่องที่ทำค่านี้ไม่ได้เปิดกล้องไม่ขึ้น
-    // และ 1280×720 เป็นโหมดมาตรฐานที่กล้องแทบทุกตัวมีอยู่แล้ว จึงไม่เจอปัญหา
-    // "ต้องสลับโหมด" แบบตอนที่เคยใส่ frameRate: { ideal: 15 } เข้าไป — คราวนั้น
-    // หน้างานแจ้งว่า "ทุกครั้ง" ที่กดเปิดกล้องจะดำเหมือนรอกล้องอยู่พักหนึ่ง
-    // เพราะกล้องหลายรุ่นมีโหมดสตรีมมิ่งเป็นชุดคู่ความละเอียด+เฟรมเรตตายตัว
-    // (ไม่ใช่ปรับผสมกันได้อิสระ) จึงห้ามใส่ frameRate กลับเข้ามาอีก — ตัวถอดรหัส
-    // จำกัดจังหวะถอดเองอยู่แล้ว (120/130ms ต่อรอบ) ไม่ว่ากล้องจะส่งเฟรมมาถี่แค่ไหน
-    const VIDEO: MediaTrackConstraints = {
-      facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 },
-    }
-
-    // ขอกล้องแบบ "ให้ติดจริง": เว้นระยะให้ระบบปล่อยกล้องรอบก่อนให้เสร็จ แล้วถ้า
-    // ยังถูกปฏิเสธ (NotReadableError = เครื่องยังยึดกล้องอยู่ / ขอค่าที่ทำไม่ได้)
-    // ก็ถอยไปขอแบบง่ายที่สุดอีกที ดีกว่าโยน error ใส่หน้าพนักงานตั้งแต่ครั้งเดียว
-    const openStream = async () => {
-      const need = CAM_COOLDOWN_MS * (autoTryRef.current + 1) // ถอยเพิ่มทุกรอบที่ลองเอง
-      const since = Date.now() - lastCamStopAt
-      if (since < need) await sleep(need - since)
-      if (cancelled) throw new Error('cancelled')
-      try {
-        return await navigator.mediaDevices.getUserMedia({ video: VIDEO })
-      } catch (e) {
-        console.warn('[scan] ขอกล้องรอบแรกไม่ผ่าน ลองแบบง่าย', e)
-        await sleep(CAM_COOLDOWN_MS)
-        if (cancelled) throw new Error('cancelled')
-        return await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } } })
-      }
-    }
+    // ขอภาพจริงจากกล้อง — ค่าเริ่มต้น 640×480 ทำให้ QR บนกระจกเหลือกว้างแค่ราว 40
+    // พิกเซล ต่ำกว่าที่ตัวถอดรหัสไหนจะอ่านได้ 1280×720 (720p) พอสำหรับ QR/บาร์โค้ด
+    // VIN ระยะจ่อปกติ และเบากว่า 1440p เดิมราว 80% — เซนเซอร์/ชิปภาพทำงานเบาลง
+    // เครื่องไม่ร้อนเร็วจนถูกหรี่ความเร็ว ซึ่งเป็นต้นเหตุของอาการค้าง/จอดำ
+    const VIDEO: MediaTrackConstraints = { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
 
     // zoom + torch, where the hardware offers them. A slight starting zoom
     // (2×, capped) puts far more pixels on the small sticker code.
@@ -1025,84 +783,30 @@ function VinInput({
 
     // Path 1 — native BarcodeDetector (Android Chrome): hardware-accelerated and
     // markedly better than JS decoding at glare / angle / focus hunting. Detects
-    // straight off the <video>, as often as the chip can keep up (see nextScanGap).
-    const startNative = async (video: HTMLVideoElement): Promise<boolean> => {
-      // ตัวอ่านถูกสร้างไว้แล้วตั้งแต่เข้าหน้าสถานี — ตรงนี้จึงได้ของทันที
-      const det = await getNativeDetector()
-      if (!det || cancelled) return !!det
+    // straight off the <video> ~8×/sec.
+    const startNative = async (): Promise<boolean> => {
+      const BD = (window as unknown as { BarcodeDetector?: { new (o: { formats: string[] }): { detect: (v: HTMLVideoElement) => Promise<{ rawValue?: string }[]> }; getSupportedFormats?: () => Promise<string[]> } }).BarcodeDetector
+      if (!BD) return false
       try {
-        // ตั้งค่าเลนส์ก่อนเริ่มวนถอดรหัส เพื่อให้รู้ตั้งแต่รอบแรกว่าเครื่องนี้
-        // ซูมด้วยเลนส์ได้ไหม (ถ้าไม่ได้ = ต้องซูมด้วยการตัดภาพแทน)
-        setupTrack(video, true)
-        // ตัดกลางภาพตามกรอบเล็ง แล้วส่งเฉพาะส่วนนั้นให้ตัวอ่าน — เดิมทางนี้ส่ง
-        // ภาพเต็มเฟรมเสมอ เครื่องที่ซูมเลนส์ไม่ได้ (Realme C13 เป็นหนึ่งในนั้น)
-        // จึงไม่มีซูมให้ใช้เลย QR บนกระจกที่กว้างไม่กี่สิบจุดก็จับไม่ติดสักที
-        // ต้องเดินเข้าไปจ่อใกล้ ๆ การตัดภาพขยายขนาดโค้ดเทียบกับเฟรมได้ตามสไลเดอร์
-        // และยังทำให้ตัวอ่านมีจุดให้ไล่น้อยลงด้วย = เร็วขึ้น ไม่ได้หนักขึ้น
-        const canvas = document.createElement('canvas')
-        const ctx = canvas.getContext('2d')
-        let cropOk = true
-        let lastT = -1
-        let tick = 0
-        // วนแบบ "ถอดเสร็จแล้วค่อยนัดรอบถัดไป" ไม่ใช่ตั้งนาฬิกาปลุกทุก 120ms
-        // ตายตัว — งานจึงซ้อนกันไม่ได้เลยโดยไม่ต้องมีตัวกัน และจังหวะพักปรับ
-        // ตามความเร็วจริงของเครื่องได้ (ดู nextScanGap)
-        let timer: ReturnType<typeof setTimeout> | null = null
-        let stopped = false
-        let fails = 0
-        // ปิดวงจรแล้วคืนของทุกอย่าง — ภาพเฟรมสุดท้ายที่ค้างอยู่ใน canvas ต้องถูก
-        // ล้างและคืนหน่วยความจำทันที (ตั้ง width/height = 0 คือการบอกเบราว์เซอร์
-        // ให้ทิ้ง buffer จริง ๆ ไม่ใช่แค่รอ GC มาเก็บทีหลัง) — เฟรม 1280×720
-        // หนึ่งใบกินราว 3.5 MB ซึ่งไม่ใช่เรื่องเล็กบนเครื่องแรม 3–4 GB
-        const shutdown = () => {
-          stopped = true
-          if (timer) { clearTimeout(timer); timer = null }
-          try { ctx?.clearRect(0, 0, canvas.width, canvas.height); canvas.width = 0; canvas.height = 0 } catch { /* ถูกทิ้งไปแล้ว */ }
-        }
-        const again = (gap: number) => { if (!stopped) timer = setTimeout(round, gap) }
-        const round = async () => {
-          if (stopped) return
-          // ยังไม่มีภาพ / เฟรมเดิมถอดซ้ำก็ได้ผลเดิม — ข้ามไปแวะดูใหม่เร็ว ๆ
-          if (video.readyState < 2 || video.currentTime === lastT) { again(SCAN_MIN_GAP); return }
-          lastT = video.currentTime
-          let src: NativeSrc = video
-          const vw = video.videoWidth, vh = video.videoHeight
-          const factor = dzRef.current
-          // ทุก ๆ รอบที่ 3 ดูภาพเต็มเฟรมด้วย เผื่อโค้ดใหญ่หรือไม่ได้อยู่กลางกรอบ
-          if (cropOk && ctx && vw && vh && !opticalRef.current && factor > 1 && ++tick % 3 !== 0) {
-            const cw = Math.round(vw / factor), ch = Math.round(vh / factor)
-            // การตั้ง width/height ใหม่ทุกครั้งล้างภาพเก่าทิ้งให้เองอยู่แล้ว แต่ถ้า
-            // ขนาดเท่าเดิม (ซูมไม่เปลี่ยน) เบราว์เซอร์จะไม่ล้างให้ ต้องล้างเอง
-            // ไม่งั้นถ้า drawImage รอบนี้พลาด จะเหลือภาพของรถคันก่อนค้างให้ถอด
-            if (canvas.width === cw && canvas.height === ch) ctx.clearRect(0, 0, cw, ch)
-            else { canvas.width = cw; canvas.height = ch }
-            ctx.drawImage(video, (vw - cw) >> 1, (vh - ch) >> 1, cw, ch, 0, 0, cw, ch)
-            src = canvas
-          }
-          const t0 = performance.now()
+        const supported = (await BD.getSupportedFormats?.()) ?? []
+        const want = ['qr_code', 'code_128', 'code_39', 'ean_13', 'data_matrix'].filter(f => supported.includes(f))
+        if (!want.includes('qr_code')) return false
+        const video = videoRef.current
+        if (!video || cancelled) return false
+        const stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO })
+        if (cancelled) { stream.getTracks().forEach(t => t.stop()); return true }
+        video.srcObject = stream
+        await video.play().catch(() => {})
+        const det = new BD({ formats: want })
+        const iv = setInterval(async () => {
+          if (video.readyState < 2) return
           try {
-            const codes = await det.detect(src)
-            fails = 0
-            if (codes.length) hit(codes[0].rawValue) // สแกนติด → ปิดจอกล้อง → stopped
-          } catch {
-            // อ่านจาก canvas ไม่ได้ → เลิกตัดภาพ กลับไปส่งภาพเต็มเฟรมแทน
-            if (src !== video) { cropOk = false }
-            // พังติดกันหลายรอบทั้งที่ส่งภาพเต็มเฟรมแล้ว = ตัวอ่านใช้ไม่ได้จริง
-            // (Play Services อัปเดตกลางวัน / โมดูลสแกนถูกถอดออกจากหน่วยความจำ)
-            // ทิ้งตัวที่แคชไว้ให้สร้างใหม่รอบหน้า แล้วรอบนี้ถอยไปใช้ ZXing ต่อ
-            // ทันที ดีกว่าวนพังเงียบ ๆ จนพนักงานยืนจ่อกล้องอยู่อย่างนั้น
-            else if (++fails >= NATIVE_FAIL_LIMIT) {
-              console.warn('[scan] ตัวอ่านของระบบพังติดกันหลายรอบ — ทิ้งแล้วถอยไปใช้ ZXing')
-              shutdown()
-              releaseNativeDetector()
-              if (!cancelled) void startZxing(video)
-              return
-            }
-          }
-          again(nextScanGap(performance.now() - t0))
-        }
-        controlsRef.current = { stop: shutdown }
-        void round()
+            const codes = await det.detect(video)
+            if (codes.length) hit(codes[0].rawValue)
+          } catch { /* detector hiccup — next tick */ }
+        }, 120)
+        controlsRef.current = { stop: () => clearInterval(iv) }
+        setupTrack(video, false) // native detector reads the full frame — no crop zoom
         return true
       } catch { return false } // permission error falls through to ZXing for its message
     }
@@ -1112,8 +816,13 @@ function VinInput({
     // pixels), each tick decodes a CENTER CROP of the frame — the aiming box —
     // which multiplies the code's effective size. Every 3rd tick decodes the
     // full frame too, so a large/off-center code still hits.
-    const startZxing = async (video: HTMLVideoElement) => {
-      if (cancelled) return
+    const startZxing = async () => {
+      const video = videoRef.current
+      if (!video || cancelled) return
+      const stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO })
+      if (cancelled) { stream.getTracks().forEach(t => t.stop()); return }
+      video.srcObject = stream
+      await video.play().catch(() => {})
 
       // ── decoder: zxing-wasm (the C++ engine compiled to WebAssembly) — near
       // Android-native accuracy and speed on tiny / glarey windshield codes.
@@ -1146,33 +855,16 @@ function VinInput({
         hints.set(DecodeHintType.TRY_HARDER, true)
         jsReader = new BrowserMultiFormatReader(hints as never)
       }
-      if (cancelled) return // กล้องถูกปล่อยโดย stopScan ใน cleanup อยู่แล้ว
+      if (cancelled) { stream.getTracks().forEach(t => t.stop()); return }
 
       const canvas = document.createElement('canvas')
       const ctx = canvas.getContext('2d', { willReadFrequently: true })
       let tick = 0
-      let lastT = -1
-      // วนแบบ "ถอดเสร็จแล้วค่อยนัดรอบถัดไป" เหมือนทาง Android — งานซ้อนกันไม่ได้
-      // โดยไม่ต้องมีตัวกัน และจังหวะพักปรับตามความเร็วจริงของเครื่อง (nextScanGap)
-      // ของเดิมล็อกไว้ที่ 130ms ตายตัว ซึ่งตั้งเผื่อ iPhone รุ่นเก่าที่ถอดนาน
-      // 80ms เอาไว้ เครื่องที่ถอดเสร็จใน 20ms จึงนั่งรอเปล่า ๆ อีก 110ms ทุกรอบ
-      let timer: ReturnType<typeof setTimeout> | null = null
-      let stopped = false
-      // ปิดวงจรแล้วคืนของ — เหมือนทาง Android: ล้างภาพเฟรมสุดท้ายและคืน buffer
-      // ทันที ไม่ปล่อยให้ค้างรอ GC (ทางนี้ยังถือ ImageData จาก getImageData ด้วย)
-      const shutdown = () => {
-        stopped = true
-        if (timer) { clearTimeout(timer); timer = null }
-        try { ctx?.clearRect(0, 0, canvas.width, canvas.height); canvas.width = 0; canvas.height = 0 } catch { /* ถูกทิ้งไปแล้ว */ }
-      }
-      const again = (gap: number) => { if (!stopped) timer = setTimeout(round, gap) }
-      const round = async () => {
-        if (stopped) return
-        if (!ctx || video.readyState < 2) { again(SCAN_MIN_GAP); return }
-        if (video.currentTime === lastT) { again(SCAN_MIN_GAP); return } // เฟรมเดิม — ไม่ต้องถอดซ้ำ
+      let busy = false
+      const iv = setInterval(() => {
+        if (busy || !ctx || video.readyState < 2) return
         const vw = video.videoWidth, vh = video.videoHeight
-        if (!vw || !vh) { again(SCAN_MIN_GAP); return }
-        lastT = video.currentTime
+        if (!vw || !vh) return
         // crop factor: with lens zoom the frame is already magnified → a mild
         // 1.6× aim-box crop; without it the slider's digital zoom drives it
         const factor = opticalRef.current ? 1.6 : Math.max(1.6, dzRef.current)
@@ -1182,132 +874,34 @@ function VinInput({
         // cap the decode surface at ~1024 px wide — plenty for the wasm engine,
         // and each frame decodes in tens of ms instead of hundreds on iPhone
         const scale = Math.min(1, 1024 / cw)
-        const dw = Math.max(2, Math.round(cw * scale))
-        const dh = Math.max(2, Math.round(ch * scale))
-        // ขนาดเท่าเดิม = เบราว์เซอร์ไม่ล้างภาพเก่าให้ ต้องล้างเอง ไม่งั้นถ้า
-        // drawImage รอบนี้พลาด จะเหลือภาพของรถคันก่อนค้างอยู่ให้ถอดซ้ำ
-        if (canvas.width === dw && canvas.height === dh) ctx.clearRect(0, 0, dw, dh)
-        else { canvas.width = dw; canvas.height = dh }
+        canvas.width = Math.max(2, Math.round(cw * scale))
+        canvas.height = Math.max(2, Math.round(ch * scale))
         ctx.drawImage(video, (vw - cw) >> 1, (vh - ch) >> 1, cw, ch, 0, 0, canvas.width, canvas.height)
-        const t0 = performance.now()
-        try {
-          let text: string | null = null
-          if (wasmRead) text = await wasmRead(ctx.getImageData(0, 0, canvas.width, canvas.height))
-          else { try { text = jsReader!.decodeFromCanvas(canvas).getText() } catch { /* none */ } }
-          if (text) hit(text)
-        } catch { /* decoder hiccup — next round */ }
-        // ทาง ZXing ถอดรหัสด้วยซีพียูแบบ tryHarder ซึ่งกินเวลา 20–80ms ต่อรอบ
-        // แล้วแต่เครื่องและความร้อน — พักตามตัวเลขจริงของรอบที่เพิ่งผ่านไป
-        again(nextScanGap(performance.now() - t0))
-      }
-      controlsRef.current = { stop: shutdown }
+        busy = true
+        void (async () => {
+          try {
+            let text: string | null = null
+            if (wasmRead) text = await wasmRead(ctx.getImageData(0, 0, canvas.width, canvas.height))
+            else { try { text = jsReader!.decodeFromCanvas(canvas).getText() } catch { /* none */ } }
+            if (text) hit(text)
+          } catch { /* decoder hiccup — next tick */ }
+          finally { busy = false }
+        })()
+      }, 90)
+      controlsRef.current = { stop: () => clearInterval(iv) }
       setupTrack(video, true)
-      void round()
     }
 
-    // ── ขอกล้อง "ครั้งเดียว" ต่อการเปิดหนึ่งครั้ง ───────────────────────────
-    // ของเดิมให้ตัวถอดรหัสแต่ละทางไปขอกล้องเองแยกกัน และ catch ของ startNative
-    // กลืน error ที่เกิด "หลัง" ได้กล้องมาแล้ว — สตรีมแรกจึงค้างเปิดอยู่ แล้ว
-    // ZXing ไปขอกล้องตัวเดิมซ้ำอีกคำขอ สองคำขอบนเซนเซอร์เดียวคือสิ่งที่ทำให้
-    // จอดำโดยไม่มีอะไรขึ้นเลย (อาการ "กดรูปกล้องแล้วจอมืด เป็นบางครั้ง")
-    // เปิดที่นี่ครั้งเดียว แล้วส่งสตรีมตัวเดียวกันให้ทางที่ได้ใช้
     ;(async () => {
-      const video = videoRef.current
-      if (!video) { setCamErr(CAM_ERR_OPEN); return }
-      // เฝ้าดูว่ามี "ภาพจริง" ขึ้นไหม ไม่ใช่แค่ขอกล้องผ่าน — ครอบทั้งกรณีระบบ
-      // ไม่ตอบ ตอบช้ามาก และกรณีได้กล้องมาแต่ไม่มีเฟรมสักเฟรม พอภาพมาเมื่อไหร่
-      // ข้อความก็หายเอง (ไม่ต้องกดอะไร)
-      // นับจากตอนพนักงานกดปุ่ม ไม่ใช่นับใหม่ทุกรอบที่ระบบลองเปิดเอง — คนกดปุ่ม
-      // ต้องได้คำตอบภายใน 8 วิเสมอ ไม่ว่าเบื้องหลังจะลองไปกี่รอบ
-      const t0 = camAskedAtRef.current || Date.now()
-      // เดิมรู้ว่า "ภาพมาแล้ว" จากการโพลทุก 300–500ms เท่านั้น — เท่ากับ
-      // บวกเวลารอเปล่าๆ เข้าไปอีกสูงสุดรอบละเท่านั้น ทั้งที่ตัว <video> เอง
-      // "รู้" ทันทีที่มีเฟรมจริง (ยิง loadedmetadata/resize) ฟังตรงนี้แทน
-      // ให้ตัดจบทันทีที่ภาพมาถึง ไม่ต้องรอรอบโพลถัดไป — ลดเวลาจอดำที่ไม่จำเป็น
-      // ไปได้อีกชั้นหนึ่ง (คนละเรื่องกับความช้าจากฮาร์ดแวร์เอง ซึ่งแก้ตรงนี้
-      // ไม่ได้ แต่ก็ไม่ควรบวกความช้าของ "การตรวจจับ" เข้าไปทับอีก)
-      const frameSeen = () => {
-        if (cancelled || !videoRef.current?.videoWidth) return
-        setCamErr(e => (e === CAM_ERR_NO_IMAGE ? '' : e))
-        clearInterval(watchId); clearInterval(frameId)
-      }
-      video.addEventListener('loadedmetadata', frameSeen)
-      video.addEventListener('resize', frameSeen)
-      frameListener = { el: video, fn: frameSeen }
-      watchId = setInterval(() => {
-        if (cancelled) return
-        // ล้างเฉพาะข้อความ "ยังไม่ส่งภาพ" ของตัวเอง — ถ้าระหว่างนี้กล้องหลุด
-        // กลางทาง ข้อความนั้นต้องไม่ถูกลบทิ้งตอนตัวเฝ้าเลิกงาน
-        frameSeen()
-        if (videoRef.current?.videoWidth) return
-        if (Date.now() - t0 > 8000) setCamErr(CAM_ERR_NO_IMAGE)
-      }, 500)
       try {
-        // มีกล้องจอดอยู่ (เพิ่งปิดไปไม่ถึง 8 วิ) → ใช้เลย ไม่ต้องขอ ไม่ต้องรอ
-        const parked = takeParkedCam()
-        if (parked) console.info('[scan] ใช้กล้องที่จอดไว้ — ไม่ต้องขอใหม่')
-        const stream = parked ?? await openStream()
-        if (cancelled) { stream.getTracks().forEach(t => t.stop()); lastCamStopAt = Date.now(); return }
-        video.srcObject = stream
-        await video.play().catch(() => {})
-        // ได้สตรีมมาแล้วแต่ไม่มีเฟรมสักเฟรม = ระบบยังปล่อยกล้องรอบก่อนไม่หมด
-        // ปล่อยทิ้งแล้วเปิดใหม่ให้เองทันที (รอบใหม่จะเว้นระยะให้เอง) — พนักงาน
-        // ไม่ต้องรู้เรื่องนี้ แค่เห็นภาพขึ้น
-        const tFrame = Date.now() // นับจากตอน "ได้กล้องมาแล้ว" ไม่ใช่ตอนเริ่มขอ
-        frameId = setInterval(() => {
-          if (cancelled) return
-          frameSeen()
-          if (videoRef.current?.videoWidth) return
-          if (Date.now() - tFrame < 2200 || autoTryRef.current >= CAM_MAX_AUTO_TRY) return
-          autoTryRef.current++
-          clearInterval(frameId); clearInterval(watchId); clearTimeout(idleId)
-          console.warn('[scan] ได้กล้องแต่ไม่มีภาพ — เปิดใหม่ให้อัตโนมัติ')
-          hush(); stopScan()
-          setCamTry(n => n + 1)
-        }, 300)
-        // ระบบยึดกล้องคืนได้ทุกเมื่อ (เครื่องร้อนจัด · แอปกล้อง/LINE เปิดแทรก) —
-        // เดิมไม่มีใครฟัง พรีวิวเลยค้างเป็นภาพนิ่ง/ดำไปเงียบ ๆ ไม่มีทางรู้
-        vtrack = stream.getVideoTracks()[0] ?? null
-        if (vtrack) {
-          vtrack.onended = () => { if (!cancelled) setCamErr(CAM_ERR_LOST) }
-          vtrack.onmute = () => { if (!cancelled) setCamErr(CAM_ERR_LOST) }
-          vtrack.onunmute = () => { if (!cancelled) setCamErr('') } // ได้กล้องคืนเอง
-        }
-        // เปิดค้างไว้เฉย ๆ ไม่ได้สแกน = เผาเครื่องฟรี ๆ → ปล่อยกล้องคืนระบบ
-        // overlay ยังอยู่ที่เดิม แตะปุ่มเดียวสแกนต่อได้ (สแกนติดจะปิดจอเอง
-        // อยู่แล้ว ตัวจับเวลานี้จึงเริ่มนับใหม่ทุกครั้งที่เปิดกล้อง)
-        idleId = setTimeout(() => {
-          if (cancelled) return
-          hush(); stopScan(); setCamPaused(true)
-        }, CAM_IDLE_MS)
-        if (!(await startNative(video))) await startZxing(video)
+        if (!(await startNative())) await startZxing()
       } catch (e) {
         console.error('[scan] camera', e)
-        if (!cancelled) setCamErr(CAM_ERR_OPEN)
+        if (!cancelled) setCamErr('เปิดกล้องไม่สำเร็จ — โปรดอนุญาตสิทธิ์กล้องในเบราว์เซอร์ แล้วลองใหม่')
       }
     })()
-
-    // สลับไปแอปอื่น / ดับจอทั้งที่หน้ากล้องยังเปิด — Android ปล่อยให้กล้องทำงาน
-    // ต่อในพื้นหลัง เครื่องร้อนอยู่ในกระเป๋าโดยไม่มีใครดู ปล่อยกล้องคืนทันที
-    const release = () => {
-      if (cancelled) return
-      hush(); clearTimeout(idleId); clearInterval(watchId); clearInterval(frameId); stopScan(); setCamPaused(true)
-    }
-    const onVis = () => { if (document.visibilityState === 'hidden') release() }
-    document.addEventListener('visibilitychange', onVis)
-    window.addEventListener('pagehide', release)
-
-    return () => {
-      cancelled = true
-      document.removeEventListener('visibilitychange', onVis)
-      window.removeEventListener('pagehide', release)
-      if (frameListener) {
-        frameListener.el.removeEventListener('loadedmetadata', frameListener.fn)
-        frameListener.el.removeEventListener('resize', frameListener.fn)
-      }
-      clearInterval(watchId); clearInterval(frameId); clearTimeout(idleId); hush(); stopScan()
-    }
-  }, [camOpen, camTry]) // eslint-disable-line react-hooks/exhaustive-deps
+    return () => { cancelled = true; stopScan() }
+  }, [camOpen]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <>
@@ -1347,28 +941,9 @@ function VinInput({
                 <div className="absolute inset-0 border border-white/10 rounded" />
               </div>
             </div>
-            {/* พักกล้องเอง — ไม่ใช่ความผิดพลาด จึงไม่ใช้สีแดง และให้ปุ่มเต็ม ๆ
-                กดง่ายด้วยมือเดียวกลางจอ */}
-            {camPaused && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-8 text-center"
-                style={{ background: 'rgba(0,0,0,0.75)' }}>
-                <span className="text-white text-[15px] font-bold">{CAM_PAUSED}</span>
-                <span className="text-[12.5px]" style={{ color: '#d4d4d8' }}>กล้องถูกปล่อยคืนเครื่องแล้ว แตะเพื่อสแกนต่อ</span>
-                <button onClick={retryCamera}
-                  className="mt-1 px-8 py-3 rounded-2xl text-[15px] font-bold"
-                  style={{ background: accent, color: '#fff' }}>
-                  แตะเพื่อสแกนต่อ
-                </button>
-              </div>
-            )}
-            {camErr && !camPaused && (
+            {camErr && (
               <div className="absolute bottom-8 left-4 right-4 text-center text-[13px] py-2 px-4 rounded-xl" style={{ background: 'rgba(0,0,0,0.7)', color: '#fca5a5' }}>
                 {camErr}
-                <button onClick={retryCamera}
-                  className="mt-2 w-full py-2 rounded-lg text-[13.5px] font-bold"
-                  style={{ background: '#fff', color: '#111' }}>
-                  ลองเปิดกล้องใหม่
-                </button>
               </div>
             )}
           </div>
@@ -1408,10 +983,6 @@ function VinInput({
           )}
           <div className="px-4 pt-2 pb-1 text-center text-white/60 text-[13px] shrink-0">
             {camHint}{zoomCap || digitalZoom ? ' · เลื่อนซูมถ้าโค้ดเล็ก' : ''}
-            {/* build stamp ตรงนี้เพราะหน้ากล้องคือจอที่หน้างานถ่ายส่งมาเสมอ —
-                จะได้รู้ทันทีจากรูปว่าเครื่องนั้นรันโค้ดรอบไหน (เคยไล่แก้ 8 รอบ
-                ทั้งที่เครื่องหน้างานยังค้างอยู่ที่บิลด์เก่าเพราะอัปเดตไม่เข้า) */}
-            <div className="text-[10px] font-mono text-white/30 mt-0.5">build {__BUILD__}</div>
           </div>
           {/* thumb-reach close bar — one tap to leave, no stretching to the top */}
           <div className="px-4 pt-1 shrink-0" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 12px)' }}>
