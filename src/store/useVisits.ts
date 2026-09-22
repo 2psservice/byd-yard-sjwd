@@ -89,8 +89,12 @@ export const useVisits = create<VisitsState>()((set, get) => ({
     const visits = { ...get().visits }
     const changed: Visit[] = []
     for (const v of incoming) {
-      const cur = visits[v.id]
-      if (cur && (cur.updatedAt ?? 0) >= (v.updatedAt ?? 0)) continue
+      // รอบหนึ่งปิดได้ครั้งเดียว: แถวรอบที่มีอยู่แล้วคือบันทึกจริงของครั้งที่รถออก
+      // ห้ามถูกทับด้วยการ "ปิดรอบซ้ำ" — เกิดเมื่อสำเนาเก่าของแถวสด (ที่ยังไม่รู้ว่ารถ
+      // ออกไปแล้ว) ถูกเครื่องอื่นส่งกลับขึ้นคลาวด์ แล้วปลายทางต้องยิงรับซ้ำเพื่อแก้
+      // การยิงซ้ำนั้นปิดรอบเดิมอีกรอบด้วยวันออก "วันนี้" ซึ่งผิด วันออกจริงอยู่ในแถว
+      // รอบที่มีอยู่แล้ว (ตัวแปลงย้อนหลังก็ผ่านทางนี้ และเช็คซ้ำก่อนอยู่แล้ว)
+      if (visits[v.id]) continue
       visits[v.id] = v; changed.push(v)
     }
     if (!changed.length) return
