@@ -1,0 +1,70 @@
+/**
+ * Final Status / Vin Of Status "ตามความจริงหน้างาน" — คำนวณตอนอ่าน ไม่เขียนลงแถว
+ *
+ * ไฟล์ Co บอกสถานะตามที่ BYD รู้ ณ วันที่ออกไฟล์ แต่คนที่ยืนอยู่หน้ารถรู้ดีกว่า:
+ * รถที่มี Defect ตัวถังค้างอยู่ (ประตูบุบ · สีแตก …) คือรถติด NG ไม่ว่าไฟล์จะว่า
+ * OK-Accept ก็ตาม และจะเป็น OK-Repaired / OK-Accept ได้ก็ต่อเมื่อ Defect ปิดครบ
+ *
+ * กติกา (ใช้เฉพาะรถที่ยังอยู่ในลานและ "มี Defect ตัวถัง" อยู่ในระบบ — รถที่ไม่มี
+ * Defect เลยแสดงตามช่องเดิม ไม่เดาอะไรเพิ่ม):
+ *   มี Defect ตัวถังค้าง   → Final Status = Waiting Repair · Vin Of Status = NG
+ *                            (ถ้าช่องเป็น NG แบบอื่นอยู่แล้ว เช่น NG(Allocated) คงไว้)
+ *   Defect ตัวถังปิดครบ    → Final Status: ถ้าช่องเป็น OK-* อยู่แล้วคงไว้ ไม่งั้น
+ *                            OK-Accept เมื่อมีรับสภาพ (ACC) / OK-Repaired เมื่อซ่อมทั้งหมด
+ *                            Vin Of Status: NG ทุกแบบหรือว่าง → FIS Waiting Allocation
+ *                            ค่าอื่นที่ไปไกลกว่านั้นแล้วคงไว้
+ *   ของหาย/ของไม่ครบ (Control Stock Sheet / Additional Accessories) ไม่ใช่ Defect
+ *   ตัวถัง ไม่ทำให้สองช่องนี้เปลี่ยน (ดู isBodyDefect)
+ *
+ * ทำไมไม่เขียนลงแถว: การเขียนทั้งแถวจากหลายเครื่องพร้อมกัน (#518) ทำให้สำเนาเก่า
+ * ทับข้อมูลจริงจนรถสลับยาร์ด ค่าที่คำนวณตอนอ่านไม่มีทางทำแบบนั้น และเปลี่ยนทันที
+ * ที่มีคนบันทึก/ปิด Defect โดยไม่ต้องรอใครเขียน
+ */
+import type { Damage } from '../types'
+import type { TrackRow } from './excelTracking'
+import { deriveCarStatus } from './carStatus'
+import { isBodyDefect, isOpenDefect, canonRepairStatus } from './damageLabel'
+
+export const FINAL_STATUS_KEY = 'Final Status'
+export const VIN_OF_STATUS_KEY = 'Vin Of Status'
+export const OK_FINAL_STATUSES = new Set(['ok-repaired', 'ok-accept'])
+export const NG_VIN_STATUSES = new Set(['ng', 'ng(allocated)', 'heavy ng', 'heavy ng(allocated)', 'heavy ng(accident)'])
+/** ขั้นที่รถอยู่ในลานและอยู่ในกระบวนการตรวจ — Pre Gate-in / ออกแล้ว / Total loss ไม่เกี่ยว */
+const LIVE_STAGES = new Set(['In Yard', 'Moving', 'PDI', 'Ready'])
+/** แผลที่ปิดโดย "รับสภาพ" (ACC BYD / ACC SJWD / ACC REVER / Accept…) ไม่ใช่ซ่อม */
+const isAcceptedDefect = (d: Damage) => !isOpenDefect(d) && canonRepairStatus(d.statusRepair) !== 'Repaired'
+
+export function effectiveInspection(cells: Record<string, string>, damages: Damage[] | undefined): { final: string; vos: string } {
+  const final = (cells[FINAL_STATUS_KEY] ?? '').trim()
+  const vos = (cells[VIN_OF_STATUS_KEY] ?? '').trim()
+  if (!damages?.length) return { final, vos }
+  const body = damages.filter(isBodyDefect)
+  if (!body.length || !LIVE_STAGES.has(deriveCarStatus(cells))) return { final, vos }
+  if (body.some(isOpenDefect)) {
+    return { final: 'Waiting Repair', vos: NG_VIN_STATUSES.has(vos.toLowerCase()) ? vos : 'NG' }
+  }
+  return {
+    final: OK_FINAL_STATUSES.has(final.toLowerCase()) ? final : body.some(isAcceptedDefect) ? 'OK-Accept' : 'OK-Repaired',
+    vos: vos === '' || NG_VIN_STATUSES.has(vos.toLowerCase()) ? 'FIS Waiting Allocation' : vos,
+  }
+}
+
+// แถวเดิม + แผลชุดเดิม → คืนผลเดิม (identity คงที่ ให้ memo ปลายทางไม่ทำงานซ้ำ)
+const cache = new WeakMap<TrackRow, { damages: Damage[] | undefined; out: TrackRow }>()
+
+/** แถวสำหรับแสดงผล: ช่อง Final Status / Vin Of Status เป็นค่าตามความจริงหน้างาน
+ *  คืนแถวเดิม (object เดิม) เมื่อไม่ต้องเปลี่ยนอะไร */
+export function overlayInspection(row: TrackRow, unit: { damages: Damage[] } | undefined): TrackRow {
+  const damages = unit?.damages
+  if (!damages?.length) return row
+  const hit = cache.get(row)
+  if (hit && hit.damages === damages) return hit.out
+  const { final, vos } = effectiveInspection(row.cells, damages)
+  const curFinal = (row.cells[FINAL_STATUS_KEY] ?? '').trim()
+  const curVos = (row.cells[VIN_OF_STATUS_KEY] ?? '').trim()
+  const out = final === curFinal && vos === curVos
+    ? row
+    : { ...row, cells: { ...row.cells, [FINAL_STATUS_KEY]: final, [VIN_OF_STATUS_KEY]: vos } }
+  cache.set(row, { damages, out })
+  return out
+}
