@@ -22,8 +22,9 @@ import { isAccessoryCheckEntry } from '../lib/finalCheckList'
 import { printFindList } from '../lib/groupingPrint'
 import { matchVins, toFindListRows } from '../lib/findCar'
 import { rowsForSite, siteWorksWith, departedFromSite, departedViewFrom, whereElse, rowYardName, gateOutReason, DEPARTURE_SETTLE_MS } from '../lib/siteScope'
+import { overlayInspection } from '../lib/inspectionStatus'
 import { zoneLabel } from '../components/CarDiagramMultiView'
-import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirst, REPAIR_STATUSES, canonRepairStatus, hasOpenBodyDefect } from '../lib/damageLabel'
+import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirst, REPAIR_STATUSES, canonRepairStatus } from '../lib/damageLabel'
 import { resolvePart, resolveDefect } from '../lib/masterDefect'
 import { useMasterDefect } from '../store/useMasterDefect'
 import { refreshUnitFocus } from '../lib/unitFocus'
@@ -141,7 +142,7 @@ export const presetChipLabel = (preset: string): string => {
   const f = sum.final === '*' ? 'ทุกสถานะ' : sum.final || '(ว่าง)'
   return `${m} · ${f}`
 }
-const presetMatch = (preset: string, r: TrackRow, units?: Record<string, Unit>): boolean => {
+const presetMatch = (preset: string, r: TrackRow): boolean => {
   const cs = deriveCarStatus(r.cells)
   const vos = parseVosPreset(preset)
   if (vos) {
@@ -170,10 +171,11 @@ const presetMatch = (preset: string, r: TrackRow, units?: Record<string, Unit>):
     case 'gateOut':    return cs === 'Gate-out'
     case 'preload':    return cs === 'Preload'
     // match the Dashboard "Damage" KPI exactly: in-yard cars that "ติด NG" —
-    // the Co file says Waiting Repair, or the app holds an open BODY defect
-    // (stock-sheet / accessory NG is not a car NG — see hasOpenBodyDefect).
-    // A gated-out / preload / pre-gate-in car is counted by neither.
-    case 'damage':     return IN_YARD_STATUSES.has(cs) && (isWaitingRepair(r.cells) || hasOpenBodyDefect(units?.[r.vin]?.damages))
+    // Final Status here is already the on-the-ground value (open BODY defect →
+    // Waiting Repair; stock-sheet / accessory NG is not a car NG — see
+    // lib/inspectionStatus). A gated-out / preload / pre-gate-in car is
+    // counted by neither.
+    case 'damage':     return IN_YARD_STATUSES.has(cs) && isWaitingRepair(r.cells)
     default:           return true
   }
 }
@@ -391,7 +393,7 @@ export function Units() {
         const cell = key === 'Car Status' ? deriveCarStatus(r.cells) : key === LOCATION_KEY ? locOf(r) : (r.cells[key] ?? '')
         if (cell !== val) return false
       }
-      if (unitPreset && !presetMatch(unitPreset, r, allUnits)) return false
+      if (unitPreset && !presetMatch(unitPreset, r)) return false
       if (vinFilterSet && !vinFilterSet.has(r.vin)) return false
       return true
     }
@@ -1862,10 +1864,13 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
   // defect with no photo at all. Same one-row fetch the other focused screens
   // already do; local pending defects are re-attached, never lost.
   useEffect(() => { if (vin) refreshUnitFocus(vin) }, [vin])
-  const liveRow = useTracking((s) => s.rows[vin])
+  const storedRow = useTracking((s) => s.rows[vin])
   const columns = useTracking((s) => s.columns)
   const lang = useYard((s) => s.lang)
   const liveUnit = useYard((s) => s.units[vin])
+  // ช่อง Final Status / Vin Of Status ตามความจริงหน้างาน เหมือนที่ตารางแสดง
+  // (Defect ตัวถังค้าง → Waiting Repair / NG — ดู lib/inspectionStatus)
+  const liveRow = useMemo(() => (storedRow ? overlayInspection(storedRow, liveUnit) : storedRow), [storedRow, liveUnit])
   const sites = useYard((s) => s.sites)
   const currentSite = useYard((s) => s.currentSite)
   // แยกยาร์ด แยกงาน: รถที่ลานนี้ยิงออกไปแล้ว (และไม่ได้กลับมายืนอยู่ในลานนี้)

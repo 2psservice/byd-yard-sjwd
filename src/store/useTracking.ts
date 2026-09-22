@@ -18,6 +18,7 @@ import { visitFromTrip, type Visit } from '../lib/visits'
 import { CAR_STATUS_ORDER, CAR_STATUS_KEY, CAR_STATUS_SET_AT_KEY, CAR_STATUS_SET_SITE_KEY, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY, RELEASED_STATUSES, deriveCarStatus, isGateOutStamp, gateOutScanMs, gateInEvidenceAt, inYardAssertedAt, fmtGateOutStamp } from '../lib/carStatus'
 import type { Site } from '../types'
 import { hasOpenBodyDefect } from '../lib/damageLabel'
+import { overlayInspection } from '../lib/inspectionStatus'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 
 // live channel (module-scoped — never persisted)
@@ -1714,9 +1715,13 @@ useTracking.subscribe(scheduleVinStatusReconcile) // rows changed (Final Status 
 useYard.subscribe(scheduleVinStatusReconcile)     // units changed (a damage's repair status changed)
 
 // memoized array of rows to avoid new-reference selector loops
+// ช่อง Final Status / Vin Of Status ที่หน้าจอเห็นเป็นค่า "ตามความจริงหน้างาน"
+// (Defect ตัวถังค้าง → Waiting Repair / NG ฯลฯ — ดู lib/inspectionStatus) คำนวณตอน
+// อ่านจากแถว + แผลของรถ ไม่เขียนลงแถว ค่าในคลังยังเป็นของไฟล์ Co ตามเดิม
 export function useTrackingRows(): TrackRow[] {
   const rows = useTracking((s) => s.rows)
-  return useMemo(() => Object.values(rows), [rows])
+  const units = useYard((s) => s.units)
+  return useMemo(() => Object.values(rows).map((r) => overlayInspection(r, units[r.vin])), [rows, units])
 }
 
 export function useVisibleColumns(): Column[] {
