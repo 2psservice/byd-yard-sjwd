@@ -787,14 +787,22 @@ function VinInput({
     const startNative = async (): Promise<boolean> => {
       const BD = (window as unknown as { BarcodeDetector?: { new (o: { formats: string[] }): { detect: (v: HTMLVideoElement) => Promise<{ rawValue?: string }[]> }; getSupportedFormats?: () => Promise<string[]> } }).BarcodeDetector
       if (!BD) return false
+      const video = videoRef.current
+      if (!video || cancelled) return false
       try {
-        const supported = (await BD.getSupportedFormats?.()) ?? []
-        const want = ['qr_code', 'code_128', 'code_39', 'ean_13', 'data_matrix'].filter(f => supported.includes(f))
-        if (!want.includes('qr_code')) return false
-        const video = videoRef.current
-        if (!video || cancelled) return false
-        const stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO })
+        // ถามรูปแบบบาร์โค้ดที่ตัวอ่านของระบบรองรับ พร้อมกับขอกล้องไปเลย แทนที่
+        // จะรอคำตอบนี้ก่อนแล้วค่อยขอกล้อง — คำถามนี้วิ่งผ่าน Google Play Services
+        // ซึ่งบางครั้งตอบช้าเป็นวินาที ของเดิมรอจบก่อนถึงจะเริ่มขอกล้อง ทำให้
+        // จอกล้องค้างดำอยู่เฉย ๆ (วาดกรอบเล็งแล้วแต่ยังไม่มีภาพ) นานกว่าที่ควร
+        // .catch(() => []) กันไม่ให้ฝั่งนี้พังแล้วลาก getUserMedia ที่รออยู่คู่กัน
+        // ไปด้วย (ถือว่า "ไม่รองรับ" แล้วปล่อยกล้องคืน ไม่ใช่โยน error ทิ้งกล้องค้าง)
+        const [supported, stream] = await Promise.all([
+          BD.getSupportedFormats?.().catch((): string[] => []) ?? Promise.resolve<string[]>([]),
+          navigator.mediaDevices.getUserMedia({ video: VIDEO }),
+        ])
         if (cancelled) { stream.getTracks().forEach(t => t.stop()); return true }
+        const want = ['qr_code', 'code_128', 'code_39', 'ean_13', 'data_matrix'].filter(f => supported.includes(f))
+        if (!want.includes('qr_code')) { stream.getTracks().forEach(t => t.stop()); return false }
         video.srcObject = stream
         await video.play().catch(() => {})
         const det = new BD({ formats: want })
