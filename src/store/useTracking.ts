@@ -3,7 +3,7 @@ import { create } from 'zustand'
 import { quotaSafeStorage } from '../lib/persistStorage'
 import { persist } from 'zustand/middleware'
 import type { Column } from '../lib/trackingColumns'
-import { defaultColumns, reconcileColumns, columnNameKey, duplicatesBuiltIn, MAX_FILTERS, DEFAULT_FILTER_COLS, PDI_KEYS } from '../lib/trackingColumns'
+import { defaultColumns, reconcileColumns, columnNameKey, duplicatesBuiltIn, MAX_FILTERS, DEFAULT_FILTER_COLS } from '../lib/trackingColumns'
 import type { ParseResult, RowEvent, TrackRow } from '../lib/excelTracking'
 import { parseTrackingWorkbook } from '../lib/excelTracking'
 import { idbBulkPut, idbClear, idbDelete, idbGetAllRows, idbPut } from '../lib/idb'
@@ -16,8 +16,8 @@ import { TRIPS_CELL, TRIP_SCOPED_KEYS, tripsOf, type TripSnapshot } from '../lib
 import { useVisits } from './useVisits'
 import { visitFromTrip, type Visit } from '../lib/visits'
 import { CAR_STATUS_ORDER, CAR_STATUS_KEY, CAR_STATUS_SET_AT_KEY, CAR_STATUS_SET_SITE_KEY, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY, RELEASED_STATUSES, deriveCarStatus, isGateOutStamp, gateOutScanMs, gateInEvidenceAt, inYardAssertedAt, fmtGateOutStamp } from '../lib/carStatus'
-import type { Site, Damage } from '../types'
-import { isOpenDefect, canonRepairStatus } from '../lib/damageLabel'
+import type { Site } from '../types'
+import { isOpenDefect } from '../lib/damageLabel'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 
 // live channel (module-scoped — never persisted)
@@ -1606,121 +1606,59 @@ if (typeof window !== 'undefined') {
 // client (version-checked inside seedViewDefault, so it only pulls when newer).
 onSync('viewdefault', () => { useTracking.getState().seedViewDefault().catch((e) => console.error('[viewdefault] sync pull', e)) })
 
-// ── สถานะตรวจสภาพขึ้นเองเมื่อไม่มีไฟล์ Co: Final Status · Vin Of Status ────────
+// ── Vin Of Status: NG → "FIS Waiting Allocation" once every defect is
+// cleared and the car has no allocation yet ─────────────────────────────────
+// "รอปลด" ("waiting to be released") is a manual step today — Final Status
+// gets flipped to OK-Repaired/OK-Accept once the office is satisfied, but Vin
+// Of Status is a second cell nobody circles back to update, so a car sits
+// showing NG on the Dashboard/Yard Plan long after its last defect closed.
+// This mirrors that decision live: OK-Repaired/OK-Accept OR (equivalently, in
+// case a device only updates the damage records) zero open defects means the
+// car is ready to move on — advance it out of the NG group the moment it has
+// no allocation yet to advance it further than "waiting".
 //
-// ยาร์ดที่ไม่ได้อัปโหลดไฟล์ Co สองช่องนี้ว่างตลอด ทั้งที่แอปรู้ครบว่ารถอยู่ขั้นไหน
-// (ยิงเข้าแล้ว · PDI แล้วหรือยัง · มีแผลไหม · ซ่อม/รับสภาพครบหรือยัง) กติกาที่หน้างานตกลง:
-//   Final Status   In Yard → "Waiting" (รอ PDI) · มีแผลค้าง → "Waiting Repair" ·
-//                  แผลปิดครบ: มีรับสภาพ (ACC) → "OK-Accept" · ซ่อมครบ → "OK-Repaired" ·
-//                  PDI ผ่านไม่มีแผล → "OK-Accept"
-//   Vin Of Status  In Yard → "Waiting PDI" · มีแผลค้าง (PDI / เดินตรวจ) → "NG" ·
-//                  PDI ผ่าน / แผลปิดครบ → "FIS Waiting Allocation"
-//
-// "ถ้าไม่มีไฟล์ Co" = แอปเขียนเฉพาะช่องที่ว่าง หรือช่องที่แอปเป็นคนเขียนไว้เองครั้งก่อน
-// (ดู autoOwns) ค่าจากไฟล์หรือที่คนแก้เองไม่ถูกแตะ — ไฟล์ Co ที่อัปโหลดทับค่าของแอป
-// ได้เสมอ และหลังจากนั้นแอปจะไม่แย่งกลับ · รถที่จัดสรรแล้ว (Allocation Date /
-// Grouping) เลยขั้นนี้ไปแล้ว Vin Of Status ไม่ถูกแตะ
-//
-// กฎที่มีมาก่อน (คงไว้): Vin Of Status กลุ่ม NG → "FIS Waiting Allocation" เมื่อ
-// แผลปิดครบหรือ Final Status เป็น OK แม้ค่า NG จะมาจากไฟล์ — "ปลด" คือข้อสรุปเดียว
-// ที่กฎรู้แน่ รถเคยค้าง NG บน Dashboard/แผนผังหลังแผลสุดท้ายปิดไปนานเพราะไม่มีใคร
-// วนกลับมาแก้ช่องที่สอง
+// Only Vin Of Status moves; Final Status stays whatever the office set it to.
+// Only the 6 NG-group values are touched — any other Vin Of Status (already
+// further along the FIS pipeline, Hold, blank, a value outside either group)
+// is left alone, since this rule only knows how to draw one specific
+// conclusion ("no longer NG"), not to guess at everything else.
 const NG_VIN_STATUSES = new Set(['ng', 'ng(allocated)', 'heavy ng', 'heavy ng(allocated)', 'heavy ng(accident)'])
 const OK_FINAL_STATUSES = new Set(['ok-repaired', 'ok-accept'])
 const GROUPING_NUMBER_KEY = 'Grouping  Number' // header carries two spaces (see useOps.ts)
-const FINAL_STATUS_KEY = 'Final Status'
-const VIN_OF_STATUS_KEY = 'Vin Of Status'
-// ชื่อผู้เขียนของกฎ — ห้ามขึ้นต้นด้วย "ระบบ"/"system" (stripSystemHistory กวาดทิ้ง)
-const AUTO_STATUS_BY = 'Auto (สถานะตรวจสภาพ)'
-const AUTO_BYS = new Set([AUTO_STATUS_BY, 'Auto (แผลปลดครบ)'])
-/** ขั้นที่รถอยู่ในลานและยังอยู่ในกระบวนการตรวจ — Pre Gate-in / ออกแล้ว / Total loss ไม่เกี่ยว */
-const AUTO_STAGES = new Set(['In Yard', 'Moving', 'PDI', 'Ready'])
-/** แผลที่ปิดโดย "รับสภาพ" (ACC BYD / ACC SJWD / ACC REVER / Accept…) ไม่ใช่ซ่อม */
-const isAcceptedDefect = (d: Damage) => !isOpenDefect(d) && canonRepairStatus(d.statusRepair) !== 'Repaired'
+const AUTO_VIN_STATUS_BY = 'Auto (แผลปลดครบ)' // must not start with "ระบบ"/"system" — stripSystemHistory sweeps those
 
-/** ช่องนี้แอปเขียนได้ไหม: ว่างอยู่ หรือค่าปัจจุบันคือค่าที่แอปเขียนไว้เองครั้งล่าสุด
- *  (ไฟล์นำเข้าไม่จดประวัติ ค่าที่ต่างจากที่แอปเขียนจึงแปลว่ามีไฟล์/คนทับไปแล้ว) */
-function autoOwns(r: TrackRow, key: string): boolean {
-  const cur = (r.cells[key] ?? '').trim()
-  const h = r.history ?? []
-  for (let i = h.length - 1; i >= 0; i--) {
-    if (h[i].field !== key) continue
-    return AUTO_BYS.has(h[i].by) && (h[i].to ?? '').trim() === cur
-  }
-  return cur === ''
+function defectsAllCleared(vin: string): boolean {
+  const u = useYard.getState().units[vin]
+  return !!u && !u.damages.some(isOpenDefect)
 }
 
-/** ค่าที่กติกาบอกว่าสองช่องนี้ "ควรเป็น" จากหลักฐานในแอป — ไม่มี = รถไม่อยู่ในขั้นที่กฎดูแล */
-export function inspectionStatusFor(cells: Record<string, string>, damages: Damage[]): { final: string; vos: string } | null {
-  if (!AUTO_STAGES.has(deriveCarStatus(cells))) return null
-  const open = damages.some(isOpenDefect)
-  const pdiDone = PDI_KEYS.some((k) => (cells[k] ?? '').trim() !== '')
-  if (open) return { final: 'Waiting Repair', vos: 'NG' }
-  if (damages.length) return { final: damages.some(isAcceptedDefect) ? 'OK-Accept' : 'OK-Repaired', vos: 'FIS Waiting Allocation' }
-  if (pdiDone) return { final: 'OK-Accept', vos: 'FIS Waiting Allocation' }
-  return { final: 'Waiting', vos: 'Waiting PDI' }
-}
-
-let inspectionTimer: ReturnType<typeof setTimeout> | null = null
-// เวลาที่เริ่มรอครั้งแรกในรอบนี้ — ถ้ามีข้อมูลวิ่งเข้าถี่กว่าตัวหน่วง (เครื่องอื่น
-// ขยับรถทุกไม่กี่วินาที) ตัวหน่วงแบบรีเซ็ตทุกครั้งจะไม่ได้รันเลย จึงบังคับรันเมื่อรอ
-// เกินเพดาน
-let inspectionWaitSince = 0
-const INSPECTION_DEBOUNCE_MS = 800
-const INSPECTION_MAX_WAIT_MS = 5000
-function reconcileInspectionStatus() {
-  inspectionWaitSince = 0
+let vinStatusTimer: ReturnType<typeof setTimeout> | null = null
+function reconcileVinOfStatus() {
   // never act on a stale snapshot: a fresh load starts from IndexedDB (often
   // hours old) and fires this the moment those rows land, well before
   // syncCloud's network round trip settles which copy is actually current.
-  // Acting sooner is exactly how an already-corrected car's whole row got
-  // overwritten with yesterday's data and republished as the newest version.
+  // Wait for this session's first cloud sync when one is even possible —
+  // acting sooner is exactly how an already-corrected car's whole row (Car
+  // Status included) got overwritten with yesterday's data and republished
+  // as the newest version everywhere (bulkUpdate stamps a fresh updatedAt).
   if (db.isConfigured() && !cloudSyncedOnce) return
   const { rows } = useTracking.getState()
-  const units = useYard.getState().units
-  const writes = new Map<string, string[]>() // "key\u0000value" → vins (bulkUpdate เขียนทีละค่า)
-  const queue = (key: string, value: string, vin: string) => {
-    const k = key + '\u0000' + value
-    const list = writes.get(k) ?? []
-    list.push(vin); writes.set(k, list)
-  }
+  const dirty: string[] = []
   for (const vin in rows) {
-    const r = rows[vin]
-    const c = r.cells
-    const curFinal = (c[FINAL_STATUS_KEY] ?? '').trim()
-    const curVos = (c[VIN_OF_STATUS_KEY] ?? '').trim()
-    const allocated = !!((c['Allocation Date'] || '').trim() || (c[GROUPING_NUMBER_KEY] || '').trim())
-    const u = units[vin]
-    // กฎเดิม: ปลด NG เมื่อแผลปิดครบ / Final OK — ทับค่าจากไฟล์ได้ (Final Status
-    // ยังไปต่อตามกติกาด้านล่าง เช่น Waiting Repair → OK-Repaired ที่แอปเขียนเอง)
-    let vosDone = false
-    if (!allocated && NG_VIN_STATUSES.has(curVos.toLowerCase())) {
-      const finalOk = OK_FINAL_STATUSES.has(curFinal.toLowerCase())
-      if (finalOk || (!!u && !u.damages.some(isOpenDefect))) { queue(VIN_OF_STATUS_KEY, 'FIS Waiting Allocation', vin); vosDone = true }
-    }
-    const want = inspectionStatusFor(c, u?.damages ?? [])
-    if (!want) continue
-    if (want.final !== curFinal && autoOwns(r, FINAL_STATUS_KEY)) queue(FINAL_STATUS_KEY, want.final, vin)
-    if (!vosDone && !allocated && want.vos !== curVos && autoOwns(r, VIN_OF_STATUS_KEY)) queue(VIN_OF_STATUS_KEY, want.vos, vin)
+    const c = rows[vin].cells
+    if (!NG_VIN_STATUSES.has((c['Vin Of Status'] || '').trim().toLowerCase())) continue
+    if ((c['Allocation Date'] || '').trim() || (c[GROUPING_NUMBER_KEY] || '').trim()) continue // already allocated
+    const finalOk = OK_FINAL_STATUSES.has((c['Final Status'] || '').trim().toLowerCase())
+    if (finalOk || defectsAllCleared(vin)) dirty.push(vin)
   }
-  for (const [k, vins] of writes) {
-    const [key, value] = k.split('\u0000')
-    useTracking.getState().bulkUpdate(vins, key, value, AUTO_STATUS_BY)
-  }
+  if (dirty.length) useTracking.getState().bulkUpdate(dirty, 'Vin Of Status', 'FIS Waiting Allocation', AUTO_VIN_STATUS_BY)
 }
-function scheduleInspectionReconcile() {
-  const now = Date.now()
-  if (!inspectionWaitSince) inspectionWaitSince = now
-  if (inspectionTimer) clearTimeout(inspectionTimer)
-  const wait = Math.max(0, Math.min(INSPECTION_DEBOUNCE_MS, inspectionWaitSince + INSPECTION_MAX_WAIT_MS - now))
-  inspectionTimer = setTimeout(reconcileInspectionStatus, wait)
+function scheduleVinStatusReconcile() {
+  if (vinStatusTimer) clearTimeout(vinStatusTimer)
+  vinStatusTimer = setTimeout(reconcileVinOfStatus, 800)
 }
-useTracking.subscribe(scheduleInspectionReconcile) // rows changed (PDI stamped, Final Status edit, import, sync)
-useYard.subscribe(scheduleInspectionReconcile)     // units changed (defect added / repair status changed)
-// dev-only: let automated tests run the rule on demand (same pattern as __sweepNow)
-if (import.meta.env.DEV && typeof window !== 'undefined') {
-  ;(window as unknown as { __reconcileStatusNow?: () => void }).__reconcileStatusNow = () => { cloudSyncedOnce = true; reconcileInspectionStatus() }
-}
+useTracking.subscribe(scheduleVinStatusReconcile) // rows changed (Final Status edit, import, sync)
+useYard.subscribe(scheduleVinStatusReconcile)     // units changed (a damage's repair status changed)
 
 // memoized array of rows to avoid new-reference selector loops
 export function useTrackingRows(): TrackRow[] {
