@@ -260,6 +260,16 @@ const isGatedInStatus = (s?: string) => {
  *  left and stays movable. */
 const hasGoneOut = (c?: Record<string, string>) => !!c && deriveCarStatus(c) === 'Gate-out'
 
+/** รอยยิงที่หน้าประตูของรอบนี้: ช่อง 'Gate In Time' เขียนโดยการยิงที่ประตูเท่านั้น
+ *  (ไฟล์นำเข้าไม่เขียน) และผูกกับรอบนี้ — พอรถออก ช่องนี้ถูกเก็บเข้าประวัติรอบไปด้วย
+ *  จึงไม่ค้างจากรอบก่อน · เป็นหลักฐานเดียวกับที่สถานี Gate-in ใช้ปฏิเสธการยิงซ้ำ
+ *  ทุกสถานีจึงต้องยอมรับด้วย ไม่งั้นรถติดกลางทาง: Walk Around บอก "ยังไม่ Gate-in"
+ *  (เชื่อสำเนา unit บนเครื่องซึ่งล้าสมัย/ยังไม่ซิงก์) ขณะที่ Gate-in บอก "Gate-in แล้ว" */
+const scannedInThisRound = (c?: Record<string, string>): boolean => {
+  const at = parseInt((c?.['Gate In Time'] || '').trim(), 10)
+  return Number.isFinite(at) && at > 0 && !hasGoneOut(c)
+}
+
 // A scanned VIN the tracking sheet says is gated in, but whose `units` row
 // hasn't landed on this device yet, used to "hurry" the WHOLE site's units —
 // every car, every damage — on a station that only needs ONE row. On a slow
@@ -391,8 +401,11 @@ function resolveForUnit(v: string, units: Unit[], rows: TrackRow[]):
     // Exception: a car the sheet says has LEFT. That is a different mistake,
     // and each station says so itself ("รถออกจากลานแล้ว") — far more use to
     // the operator than being sent to the gate for a car that is gone.
-    const parkedHere = u.status !== 'EXPECTED' && u.status !== 'DEPARTED'
     const sheetCells = rows.find((x) => x.vin === u!.vin)?.cells
+    let parkedHere = u.status !== 'EXPECTED' && u.status !== 'DEPARTED'
+    // สำเนา unit บนเครื่องนี้ยังไม่รู้ว่ายิงเข้าแล้ว แต่แถวรอบนี้มีรอยยิง → ผ่าน และดึง
+    // unit ตัวจริงมาแก้สำเนาเบื้องหลัง (ทางเดียวกับสถานี Gate-in)
+    if (!parkedHere && scannedInThisRound(sheetCells)) { parkedHere = true; fetchUnitFallback(u.vin) }
     if (!parkedHere && !hasGoneOut(sheetCells)) return { type: 'notGated', vin: u.vin, model: u.modelName }
     return { type: 'ok', vin: u.vin }
   }
@@ -2134,10 +2147,7 @@ function WalkView() {
    * จงใจไม่ใช้แค่ช่องสถานะ "In Yard" เพราะไฟล์ import เขียนคำนี้ทับรถที่ไม่มี
    * ใครยิงเข้าลานเลยก็ได้ — รถแบบนั้นต้องได้ไปการ์ดรับรถเพื่อยิงเข้าจริง ๆ
    */
-  const scannedInHere = (cells: Record<string, string>): boolean => {
-    const at = parseInt((cells['Gate In Time'] || '').trim(), 10)
-    return Number.isFinite(at) && at > 0 && !hasGoneOut(cells)
-  }
+  const scannedInHere = scannedInThisRound
 
   const blockIfAlreadyGated = (u: Unit): boolean => {
     // DEPARTED ด้วย ไม่ใช่แค่ EXPECTED — รถที่ shuttle มาจากยาร์ดอื่นพกรายการ
@@ -4885,7 +4895,11 @@ function RelocationView() {
     // "In Yard" onto a car nobody ever scanned in, and moving such a car is
     // exactly what this guard exists to stop. The sheet is only healed after
     // the unit has already vouched for the car being here.
-    if (!unitGated(r.vin)) return false
+    if (!unitGated(r.vin)) {
+      // สำเนา unit ล้าสมัย แต่แถวรอบนี้มีรอยยิงที่ประตู → ผ่าน และดึง unit ตัวจริงมาแก้
+      if (!scannedInThisRound(r.cells)) return false
+      fetchUnitFallback(r.vin)
+    }
     if (!isGatedInStatus(r.cells['Car Status'])) useTracking.getState().updateCell(r.vin, 'Car Status', 'In Yard')
     return true
   }
@@ -5534,9 +5548,13 @@ function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', s
           หากรถกลับเข้าลาน ต้องทำ <b>Gate-in</b> ใหม่ก่อน</>)
       return
     }
-    const gated = fu
+    let gated = fu
       ? (fu.status !== 'EXPECTED' && fu.status !== 'DEPARTED')
       : !!fr && isGatedInStatus(fr.cells['Car Status'])
+    // สำเนา unit บนเครื่องนี้ยังไม่รู้ว่ายิงเข้าแล้ว แต่แถวรอบนี้มีรอยยิงที่ประตู → ผ่าน
+    // และดึง unit ตัวจริงมาแก้สำเนาเบื้องหลัง — หลักฐานเดียวกับที่สถานี Gate-in ใช้
+    // ปฏิเสธการยิงซ้ำ ไม่งั้นรถติด: ที่นี่บอก "ยังไม่ Gate-in" ที่ประตูบอก "Gate-in แล้ว"
+    if (!gated && fr && scannedInThisRound(fr.cells)) { gated = true; fetchUnitFallback(found) }
     if (!gated) { blockGate(found, modelOf()); return }
     setVin(found); setShowAdd(false)
     recordRecent(`${recentKey}:search`, found)
