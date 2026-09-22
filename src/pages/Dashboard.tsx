@@ -8,6 +8,7 @@ import { visitToTrackRow } from '../lib/visits'
 import { makeT } from '../i18n'
 import { ZONE_COLOR } from '../lib/sampleData'
 import { deriveCarStatus, CAR_STATUS_META, CAR_STATUS_ORDER, PARKED_STATUSES, isWaitingRepair } from '../lib/carStatus'
+import { hasOpenBodyDefect } from '../lib/damageLabel'
 import { rowsForSite, rowInSite, departedFromSite } from '../lib/siteScope'
 import type { TrackRow } from '../lib/excelTracking'
 import { pct, pos, timeAgo } from '../lib/format'
@@ -253,6 +254,7 @@ export function Dashboard() {
       const byStatus = new Map<string, number>()
       const byModel = new Map<string, number>()
       const liveGateOutRows: TrackRow[] = []
+      const unitByVin = new Map(allUnits.map((u) => [u.vin, u]))
       for (const r of trackingRows) {
         const cs = deriveCarStatus(r.cells)
         byStatus.set(cs, (byStatus.get(cs) ?? 0) + 1)
@@ -266,9 +268,11 @@ export function Dashboard() {
           inYard++
           if (cs === 'Gate-in') gatein++
           if (PARKED_STATUSES.has(cs)) parked++
-          // "Damage" KPI counts cars waiting repair that are IN YARD only — so it
-          // matches the Summary table's "Waiting Repair" column (also in-yard scoped)
-          if (isWaitingRepair(r.cells)) damaged++
+          // "Damage" KPI = รถในลานที่ "ติด NG": ไฟล์ Co บอกว่า Waiting Repair หรือแอปมี
+          // Defect ตัวถังที่ยังไม่ปิด — ของหาย/ของไม่ครบ (Control Stock Sheet /
+          // Accessories) ไม่นับ ไม่ใช่ NG ของรถ (ดู hasOpenBodyDefect) · in-yard เท่านั้น
+          // ให้ตรงกับคอลัมน์ Waiting Repair ของตาราง Summary และตัวกรองในรายการรถ
+          if (isWaitingRepair(r.cells) || hasOpenBodyDefect(unitByVin.get(r.vin)?.damages)) damaged++
         }
       }
       // yard-to-yard departures never sit at live 'Gate-out' long enough to be

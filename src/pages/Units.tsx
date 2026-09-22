@@ -12,6 +12,7 @@ import { CarTopView } from '../components/CarTopView'
 import { printIr, printDn, printIrPaper } from '../lib/dnir'
 import { printVehicleLabels } from '../lib/vehicleLabel'
 import { useYard } from '../store/useYard'
+import type { Unit } from '../types'
 import { useTracking, useTrackingRows, useVisibleColumns } from '../store/useTracking'
 import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, LOCATION_KEY, MAX_FILTERS, DEFAULT_FILTER_COLS, agingPmDays, cleanStorage, storageDays, isDateColumn, fmtSerialToDate, type ColGroup, type Column } from '../lib/trackingColumns'
 import { yardLocFull, byYardLocation } from '../lib/groupingImport'
@@ -22,7 +23,7 @@ import { printFindList } from '../lib/groupingPrint'
 import { matchVins, toFindListRows } from '../lib/findCar'
 import { rowsForSite, siteWorksWith, departedFromSite, departedViewFrom, whereElse, rowYardName, gateOutReason, DEPARTURE_SETTLE_MS } from '../lib/siteScope'
 import { zoneLabel } from '../components/CarDiagramMultiView'
-import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirst, REPAIR_STATUSES, canonRepairStatus } from '../lib/damageLabel'
+import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirst, REPAIR_STATUSES, canonRepairStatus, hasOpenBodyDefect } from '../lib/damageLabel'
 import { resolvePart, resolveDefect } from '../lib/masterDefect'
 import { useMasterDefect } from '../store/useMasterDefect'
 import { refreshUnitFocus } from '../lib/unitFocus'
@@ -140,7 +141,7 @@ export const presetChipLabel = (preset: string): string => {
   const f = sum.final === '*' ? 'ทุกสถานะ' : sum.final || '(ว่าง)'
   return `${m} · ${f}`
 }
-const presetMatch = (preset: string, r: TrackRow): boolean => {
+const presetMatch = (preset: string, r: TrackRow, units?: Record<string, Unit>): boolean => {
   const cs = deriveCarStatus(r.cells)
   const vos = parseVosPreset(preset)
   if (vos) {
@@ -168,10 +169,11 @@ const presetMatch = (preset: string, r: TrackRow): boolean => {
     case 'preGateOut': return cs === 'Pre Gate-out'
     case 'gateOut':    return cs === 'Gate-out'
     case 'preload':    return cs === 'Preload'
-    // match the Dashboard "Damage" KPI exactly: waiting-repair cars that are
-    // still IN YARD (a gated-out / preload / pre-gate-in car waiting repair is
-    // counted by neither — otherwise the drill-down over-counts by those).
-    case 'damage':     return IN_YARD_STATUSES.has(cs) && isWaitingRepair(r.cells)
+    // match the Dashboard "Damage" KPI exactly: in-yard cars that "ติด NG" —
+    // the Co file says Waiting Repair, or the app holds an open BODY defect
+    // (stock-sheet / accessory NG is not a car NG — see hasOpenBodyDefect).
+    // A gated-out / preload / pre-gate-in car is counted by neither.
+    case 'damage':     return IN_YARD_STATUSES.has(cs) && (isWaitingRepair(r.cells) || hasOpenBodyDefect(units?.[r.vin]?.damages))
     default:           return true
   }
 }
@@ -389,7 +391,7 @@ export function Units() {
         const cell = key === 'Car Status' ? deriveCarStatus(r.cells) : key === LOCATION_KEY ? locOf(r) : (r.cells[key] ?? '')
         if (cell !== val) return false
       }
-      if (unitPreset && !presetMatch(unitPreset, r)) return false
+      if (unitPreset && !presetMatch(unitPreset, r, allUnits)) return false
       if (vinFilterSet && !vinFilterSet.has(r.vin)) return false
       return true
     }
