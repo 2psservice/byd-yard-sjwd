@@ -227,12 +227,14 @@ type RoleKey = 'walk' | 'driver' | 'pdi' | 'pm' | 'fc' | 'mechanic' | 'special' 
 const ROLES: { key: RoleKey; th: string; en: string; icon: React.ReactNode; color: string; desc: string }[] = [
   { key: 'walk',      th: 'Gate-in',         en: 'Gate-in',         icon: <ScanLine size={28} />,      color: 'var(--brand)',   desc: 'ตรวจรับรถเข้าลาน' },
   { key: 'gateout',  th: 'Gate-out',        en: 'Gate-out',        icon: <LogOut size={28} />,        color: '#64748b',        desc: 'บันทึกรถออกจากลาน' },
-  { key: 'driver',   th: 'Driver',          en: 'Driver',          icon: <Car size={28} />,           color: 'var(--st-yard)', desc: 'นำรถไปจอดตามตำแหน่ง' },
+  // สลับตำแหน่งกับ walkcheck ด้านล่าง — หน้างานใช้ Walk Around Check บ่อยกว่า Driver
+  { key: 'walkcheck',th: 'Walk Around Check', en: 'Walk Around Check', icon: <Hand size={28} />,      color: '#0d9488',        desc: 'สแกน / เพิ่ม Defect ระหว่างเดินตรวจ' },
   { key: 'relocation',th:'Re-location',     en: 'Re-location',     icon: <MapPin size={28} />,        color: '#0ea5e9',        desc: 'เปลี่ยนตำแหน่งรถในลาน' },
   { key: 'pdi',      th: 'PDI',             en: 'PDI',             icon: <ShieldCheck size={28} />,   color: '#7c3aed',        desc: 'ตรวจสอบคุณภาพ OK / NG' },
   { key: 'pm',       th: 'PM',              en: 'PM',              icon: <ShieldCheck size={28} />,   color: '#2563eb',        desc: 'ตรวจสอบคุณภาพ OK / NG' },
   { key: 'fc',       th: 'FINAL CHECK',     en: 'FINAL CHECK',     icon: <ShieldCheck size={28} />,   color: '#059669',        desc: 'ตรวจสอบคุณภาพ OK / NG' },
-  { key: 'walkcheck',th: 'Walk Around Check', en: 'Walk Around Check', icon: <Hand size={28} />,      color: '#0d9488',        desc: 'สแกน / เพิ่ม Defect ระหว่างเดินตรวจ' },
+  // ตำแหน่งเดิมของ walkcheck — ตอนนี้เป็นของ driver
+  { key: 'driver',   th: 'Driver',          en: 'Driver',          icon: <Car size={28} />,           color: 'var(--st-yard)', desc: 'นำรถไปจอดตามตำแหน่ง' },
   { key: 'updatedmg',th: 'Update Damage',   en: 'Update Damage',   icon: <AlertTriangle size={28} />, color: '#dc2626',        desc: 'บันทึก / แก้ไขความเสียหาย' },
   { key: 'check',    th: 'Check',           en: 'Check',           icon: <ClipboardList size={28} />, color: '#0891b2',        desc: 'ตรวจสอบข้อมูลรถ' },
   { key: 'mechanic', th: 'ช่าง',             en: 'Mechanic',        icon: <Wrench size={28} />,        color: '#c2680b',        desc: 'คิวงานซ่อม · แก้ไข NG' },
