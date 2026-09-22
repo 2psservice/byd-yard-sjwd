@@ -4,25 +4,32 @@
  * ไฟล์ Co บอกสถานะตามที่ BYD รู้ ณ วันที่ออกไฟล์ แต่คนที่ยืนอยู่หน้ารถรู้ดีกว่า:
  * รถที่มี Defect ตัวถังค้างอยู่ (ประตูบุบ · สีแตก …) คือรถติด NG ไม่ว่าไฟล์จะว่า
  * OK-Accept ก็ตาม และจะเป็น OK-Repaired / OK-Accept ได้ก็ต่อเมื่อ Defect ปิดครบ
+ * รถที่ยังไม่เคยทำ PDI ก็ยังรอ PDI อยู่ ไม่ว่าไฟล์จะว่าอะไร
  *
- * กติกา (ใช้เฉพาะรถที่ยังอยู่ในลานและ "มี Defect ตัวถัง" อยู่ในระบบ — รถที่ไม่มี
- * Defect เลยแสดงตามช่องเดิม ไม่เดาอะไรเพิ่ม):
- *   มี Defect ตัวถังค้าง   → Final Status = Waiting Repair · Vin Of Status = NG
- *                            (ถ้าช่องเป็น NG แบบอื่นอยู่แล้ว เช่น NG(Allocated) คงไว้)
- *   Defect ตัวถังปิดครบ    → Final Status: ถ้าช่องเป็น OK-* อยู่แล้วคงไว้ ไม่งั้น
- *                            OK-Accept เมื่อมีรับสภาพ (ACC) / OK-Repaired เมื่อซ่อมทั้งหมด
- *                            Vin Of Status: NG ทุกแบบหรือว่าง → FIS Waiting Allocation
- *                            ค่าอื่นที่ไปไกลกว่านั้นแล้วคงไว้
+ * กติกา (เฉพาะรถที่ยังอยู่ในลาน — Pre Gate-in / ออกแล้ว / Total loss แสดงตามช่องเดิม):
+ *   Vin Of Status
+ *     ยังไม่เคยทำ PDI (ไม่มีวันที่ PDI / RE-PDI ทั้งจากสถานีและจากไฟล์) → Waiting PDI
+ *       แม้เดินตรวจเจอ Defect ไปแล้วก็ยัง Waiting PDI — ส่วน Final Status ว่าไปตามแผล
+ *     PDI แล้ว + Defect ตัวถังค้าง → NG (ช่องที่เป็น NG แบบอื่นอยู่แล้ว เช่น NG(Allocated) คงไว้)
+ *     PDI แล้ว + Defect ปิดครบ    → NG ทุกแบบหรือว่าง → FIS Waiting Allocation ค่าอื่นที่
+ *                                    ไปไกลกว่านั้นแล้วคงไว้
+ *     PDI แล้ว ไม่มี Defect       → ตามช่องเดิม
+ *   Final Status
+ *     Defect ตัวถังค้าง   → Waiting Repair
+ *     Defect ปิดครบ       → ช่องเป็น OK-* อยู่แล้วคงไว้ ไม่งั้น OK-Accept เมื่อมีรับสภาพ (ACC)
+ *                           / OK-Repaired เมื่อซ่อมทั้งหมด
+ *     ไม่มี Defect        → ตามช่องเดิม เว้นแต่ช่องว่างและยังไม่ PDI → Waiting (รอ PDI)
  *   ของหาย/ของไม่ครบ (Control Stock Sheet / Additional Accessories) ไม่ใช่ Defect
  *   ตัวถัง ไม่ทำให้สองช่องนี้เปลี่ยน (ดู isBodyDefect)
  *
  * ทำไมไม่เขียนลงแถว: การเขียนทั้งแถวจากหลายเครื่องพร้อมกัน (#518) ทำให้สำเนาเก่า
  * ทับข้อมูลจริงจนรถสลับยาร์ด ค่าที่คำนวณตอนอ่านไม่มีทางทำแบบนั้น และเปลี่ยนทันที
- * ที่มีคนบันทึก/ปิด Defect โดยไม่ต้องรอใครเขียน
+ * ที่มีคนบันทึก/ปิด Defect หรือสถานี PDI บันทึก โดยไม่ต้องรอใครเขียน
  */
 import type { Damage } from '../types'
 import type { TrackRow } from './excelTracking'
 import { deriveCarStatus } from './carStatus'
+import { PDI_KEYS } from './trackingColumns'
 import { isBodyDefect, isOpenDefect, canonRepairStatus } from './damageLabel'
 
 export const FINAL_STATUS_KEY = 'Final Status'
@@ -37,16 +44,23 @@ const isAcceptedDefect = (d: Damage) => !isOpenDefect(d) && canonRepairStatus(d.
 export function effectiveInspection(cells: Record<string, string>, damages: Damage[] | undefined): { final: string; vos: string } {
   const final = (cells[FINAL_STATUS_KEY] ?? '').trim()
   const vos = (cells[VIN_OF_STATUS_KEY] ?? '').trim()
-  if (!damages?.length) return { final, vos }
-  const body = damages.filter(isBodyDefect)
-  if (!body.length || !LIVE_STAGES.has(deriveCarStatus(cells))) return { final, vos }
-  if (body.some(isOpenDefect)) {
-    return { final: 'Waiting Repair', vos: NG_VIN_STATUSES.has(vos.toLowerCase()) ? vos : 'NG' }
-  }
-  return {
-    final: OK_FINAL_STATUSES.has(final.toLowerCase()) ? final : body.some(isAcceptedDefect) ? 'OK-Accept' : 'OK-Repaired',
-    vos: vos === '' || NG_VIN_STATUSES.has(vos.toLowerCase()) ? 'FIS Waiting Allocation' : vos,
-  }
+  if (!LIVE_STAGES.has(deriveCarStatus(cells))) return { final, vos }
+  const pdiDone = PDI_KEYS.some((k) => (cells[k] ?? '').trim() !== '')
+  const body = (damages ?? []).filter(isBodyDefect)
+  const open = body.some(isOpenDefect)
+  const outFinal = open
+    ? 'Waiting Repair'
+    : body.length
+      ? OK_FINAL_STATUSES.has(final.toLowerCase()) ? final : body.some(isAcceptedDefect) ? 'OK-Accept' : 'OK-Repaired'
+      : final === '' && !pdiDone ? 'Waiting' : final
+  const outVos = !pdiDone
+    ? 'Waiting PDI'
+    : open
+      ? NG_VIN_STATUSES.has(vos.toLowerCase()) ? vos : 'NG'
+      : body.length
+        ? vos === '' || NG_VIN_STATUSES.has(vos.toLowerCase()) ? 'FIS Waiting Allocation' : vos
+        : vos
+  return { final: outFinal, vos: outVos }
 }
 
 // แถวเดิม + แผลชุดเดิม → คืนผลเดิม (identity คงที่ ให้ memo ปลายทางไม่ทำงานซ้ำ)
@@ -56,7 +70,6 @@ const cache = new WeakMap<TrackRow, { damages: Damage[] | undefined; out: TrackR
  *  คืนแถวเดิม (object เดิม) เมื่อไม่ต้องเปลี่ยนอะไร */
 export function overlayInspection(row: TrackRow, unit: { damages: Damage[] } | undefined): TrackRow {
   const damages = unit?.damages
-  if (!damages?.length) return row
   const hit = cache.get(row)
   if (hit && hit.damages === damages) return hit.out
   const { final, vos } = effectiveInspection(row.cells, damages)
