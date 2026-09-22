@@ -18,7 +18,7 @@
  *     Defect ตัวถังค้าง   → Waiting Repair
  *     Defect ปิดครบ       → ช่องเป็น OK-* อยู่แล้วคงไว้ ไม่งั้น OK-Accept เมื่อมีรับสภาพ (ACC)
  *                           / OK-Repaired เมื่อซ่อมทั้งหมด
- *     ไม่มี Defect        → ตามช่องเดิม เว้นแต่ช่องว่างและยังไม่ PDI → Waiting (รอ PDI)
+ *     ไม่มี Defect        → ยังไม่ PDI → Waiting (รอ PDI) ไม่ว่าช่องจะว่าอะไร · PDI แล้ว → ตามช่องเดิม
  *   ของหาย/ของไม่ครบ (Control Stock Sheet / Additional Accessories) ไม่ใช่ Defect
  *   ตัวถัง ไม่ทำให้สองช่องนี้เปลี่ยน (ดู isBodyDefect)
  *
@@ -52,7 +52,7 @@ export function effectiveInspection(cells: Record<string, string>, damages: Dama
     ? 'Waiting Repair'
     : body.length
       ? OK_FINAL_STATUSES.has(final.toLowerCase()) ? final : body.some(isAcceptedDefect) ? 'OK-Accept' : 'OK-Repaired'
-      : final === '' && !pdiDone ? 'Waiting' : final
+      : !pdiDone ? 'Waiting' : final
   const outVos = !pdiDone
     ? 'Waiting PDI'
     : open
