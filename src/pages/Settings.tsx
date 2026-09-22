@@ -24,6 +24,42 @@ const UNIT_STATUS_LABEL: Record<string, string> = {
 
 type VinRow = { vin: string; model: string; color: string; status: string }
 
+/**
+ * ซ่อมข้อมูล — งานครั้งเดียวที่แอดมินสั่งเอง (ไม่ใช่ตัวกวาดอัตโนมัติ: การเขียนทั้งแถว
+ * จากหลายเครื่องพร้อมกันคือต้นเหตุที่ #518 ทำข้อมูลเพี้ยน ดู revertAutoInspectionWrites)
+ */
+function DataRepair() {
+  const { currentSite, sites, toast } = useYard()
+  const [busy, setBusy] = useState(false)
+  const siteName = sites.find((s) => s.id === currentSite)?.name ?? '—'
+  const run = async () => {
+    if (!currentSite || busy) return
+    if (!window.confirm(`ล้างค่า Final Status / Vin Of Status ที่ตัวเติมอัตโนมัติ (#518) เขียนไว้ ในรถของ ${siteName}?\n(คืนค่าก่อนหน้า — ค่าจากไฟล์ Co และที่คนแก้เองไม่ถูกแตะ)`)) return
+    setBusy(true)
+    try {
+      const n = await useTracking.getState().revertAutoInspectionWrites(currentSite)
+      toast('ok', n ? `คืนค่า ${n.toLocaleString()} ช่องในรถของ ${siteName} แล้ว` : `ไม่พบค่าที่ตัวเติมอัตโนมัติเขียนไว้ใน ${siteName}`)
+    } finally { setBusy(false) }
+  }
+  return (
+    <section className="panel overflow-hidden mb-4">
+      <div className="px-4 py-3 border-b hairline flex items-center gap-2">
+        <Wrench size={16} style={{ color: 'var(--brand)' }} />
+        <span className="font-semibold text-[14.5px]">ซ่อมข้อมูล</span>
+      </div>
+      <div className="p-4 flex flex-wrap items-center gap-3">
+        <div className="text-[13px] leading-relaxed flex-1" style={{ minWidth: 260, color: 'var(--muted)' }}>
+          <b>ล้างค่าที่ตัวเติมสถานะอัตโนมัติ (#518) เขียนไว้</b> — Final Status "Waiting Repair" / Vin Of Status "NG" ที่ถูกเขียนให้รถที่มีแค่ของหาย/ของไม่ครบ
+          คืนค่าก่อนหน้าให้รถของยาร์ดที่เลือกอยู่ (<b>{siteName}</b>) ทำทีละยาร์ด
+        </div>
+        <button id="repair-auto-status" className="btn btn-ghost py-2" disabled={!currentSite || busy} onClick={run}>
+          <Wrench size={14} /> {busy ? 'กำลังทำ…' : `ล้างค่าใน ${siteName}`}
+        </button>
+      </div>
+    </section>
+  )
+}
+
 function VinManager() {
   const trackingRows = useTrackingRows()
   const units = useUnits()
@@ -690,6 +726,9 @@ export function Settings() {
 
       {/* ── VIN management ── */}
       <VinManager />
+
+      {/* ── Data repair (one-off admin actions) ── */}
+      <DataRepair />
 
       {/* ── Site management ── */}
       <section className="panel overflow-hidden mb-4">

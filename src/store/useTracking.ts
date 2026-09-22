@@ -17,7 +17,7 @@ import { useVisits } from './useVisits'
 import { visitFromTrip, type Visit } from '../lib/visits'
 import { CAR_STATUS_ORDER, CAR_STATUS_KEY, CAR_STATUS_SET_AT_KEY, CAR_STATUS_SET_SITE_KEY, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY, RELEASED_STATUSES, deriveCarStatus, isGateOutStamp, gateOutScanMs, gateInEvidenceAt, inYardAssertedAt, fmtGateOutStamp } from '../lib/carStatus'
 import type { Site } from '../types'
-import { isOpenDefect } from '../lib/damageLabel'
+import { hasOpenBodyDefect } from '../lib/damageLabel'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 
 // live channel (module-scoped — never persisted)
@@ -182,6 +182,9 @@ interface TrackingState {
   /** แอดมินยืนยันว่ารถ "ยังจอดอยู่ยาร์ดนี้" ทั้งที่อ่านเป็น Gate-out → ยกเลิกการออก
    *  ล้างหลักฐานการออกของรอบนี้แล้วตั้งเป็น In Yard (ดู undoGateOut ด้านล่าง) */
   undoGateOut: (vins: string[], siteId: string) => { restored: number; elsewhere: string[] }
+  /** ล้างค่า Final Status / Vin Of Status ที่ตัวเติมอัตโนมัติ (#518 ถอยไปแล้ว) เขียนไว้
+   *  ในรถของยาร์ดนี้ — คืนค่าก่อนหน้า (ส่วนใหญ่คือว่าง) ดู revertAutoInspectionWrites */
+  revertAutoInspectionWrites: (siteId: string) => Promise<number>
   commitCoInspection: (res: ParseResult) => { updated: number; added: number; skipped: number; gateOut: number; moved: number; otherYard: number; heldInYard: number }
   /** Set a cell and log it. `src: 'scan'` marks the write as a FIELD STATION
    *  action (ops-scan), which is what lets a report tell a real recording apart
@@ -1024,6 +1027,55 @@ export const useTracking = create<TrackingState>()(
         return { restored: changed.length, elsewhere }
       },
 
+      /**
+       * ตัวเติมสถานะอัตโนมัติ (#518) เขียน Final Status = Waiting Repair ให้รถทุกคันที่มี
+       * รายการ NG ค้าง — รวมของหาย/ของไม่ครบจาก Control Stock Sheet / Accessories ซึ่ง
+       * ไม่ใช่ NG ของรถ การ์ด Damage จึงพุ่งเป็นพันคัน #518 ถอยไปแล้ว แต่ค่าที่เขียนไป
+       * ยังค้างในช่อง (ยาร์ดที่ไม่มีไฟล์ Co ไม่มีอะไรมาทับ)
+       *
+       * แอดมินกดจากหน้าตั้งค่า ทำทีละยาร์ด (แถวที่รอบสดเป็นของยาร์ดที่เลือกอยู่) และดึง
+       * คลาวด์ก่อนเขียน — เขียนทั้งแถวเหมือนการแก้ทั่วไป จึงต้องไม่ทำจากสำเนาเก่า
+       * คืนเฉพาะช่องที่ "ผู้เขียนล่าสุดคือตัวเติมนั้น และค่ายังเป็นค่าที่มันเขียน" → กลับ
+       * เป็นค่าก่อนหน้า (from) ค่าจากไฟล์ Co / ที่คนแก้เอง / กฎปลด NG เดิม ไม่ถูกแตะ
+       */
+      revertAutoInspectionWrites: async (siteId) => {
+        await get().syncCloud().catch(() => {})
+        const AUTO_BY = 'Auto (สถานะตรวจสภาพ)'
+        const AUTO_BYS = new Set([AUTO_BY, 'Auto (แผลปลดครบ)'])
+        const KEYS = ['Final Status', 'Vin Of Status']
+        const groups = new Map<string, string[]>() // key\u0000from → vins
+        for (const r of Object.values(get().rows)) {
+          if (r.site !== siteId) continue
+          for (const key of KEYS) {
+            // เดินย้อนประวัติของช่องนี้ผ่านสายการเขียนอัตโนมัติที่ต่อเนื่องกัน (ค่า to ของ
+            // รายการก่อนต้องตรงกับ from ของรายการถัดไป และค่าปัจจุบันต้องเป็น to ล่าสุด)
+            // — ตัวเติม #518 อาจเขียน NG แล้วกฎปลด NG เขียน FIS ทับต่อ คืนไปที่ค่าก่อน
+            // รายการแรกของ #518 ในสาย ไม่ใช่ก่อนสายทั้งหมด (การปลด NG ที่ทำก่อน #518
+            // เป็นของถูก ห้ามถอย)
+            const h = (r.history ?? []).filter((e) => e.field === key)
+            let expect = (r.cells[key] ?? '').trim()
+            let restore: string | null = null
+            for (let i = h.length - 1; i >= 0; i--) {
+              const e = h[i]
+              if (!AUTO_BYS.has(e.by) || (e.to ?? '').trim() !== expect) break
+              if (e.by === AUTO_BY) restore = e.from ?? ''
+              expect = (e.from ?? '').trim()
+            }
+            if (restore === null) continue
+            const k = key + '\u0000' + restore
+            const list = groups.get(k) ?? []
+            list.push(r.vin); groups.set(k, list)
+          }
+        }
+        let n = 0
+        for (const [k, vins] of groups) {
+          const [key, from] = k.split('\u0000')
+          get().bulkUpdate(vins, key, from)
+          n += vins.length
+        }
+        return n
+      },
+
       // Co-Inspection import: MERGE the file's columns into existing VINs (update
       // PDI / RE PDI / OK date / Final check / PM… cells) and add any new VINs.
       // Never overwrites a car's live operational "Car Status", and only non-empty
@@ -1629,7 +1681,8 @@ const AUTO_VIN_STATUS_BY = 'Auto (แผลปลดครบ)' // must not star
 
 function defectsAllCleared(vin: string): boolean {
   const u = useYard.getState().units[vin]
-  return !!u && !u.damages.some(isOpenDefect)
+  // ของหาย/ของไม่ครบ (Control Stock Sheet / Accessories) ไม่ใช่ NG ของรถ — ดู isBodyDefect
+  return !!u && !hasOpenBodyDefect(u.damages)
 }
 
 let vinStatusTimer: ReturnType<typeof setTimeout> | null = null
