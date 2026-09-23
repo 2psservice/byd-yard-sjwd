@@ -16,10 +16,21 @@ import { TRIPS_CELL, TRIP_SCOPED_KEYS, tripsOf, type TripSnapshot } from '../lib
 import { useVisits } from './useVisits'
 import { visitFromTrip, type Visit } from '../lib/visits'
 import { CAR_STATUS_ORDER, CAR_STATUS_KEY, CAR_STATUS_SET_AT_KEY, CAR_STATUS_SET_SITE_KEY, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY, RELEASED_STATUSES, deriveCarStatus, isGateOutStamp, gateOutScanMs, gateInEvidenceAt, inYardAssertedAt, fmtGateOutStamp } from '../lib/carStatus'
-import type { Site } from '../types'
+import type { Site, Unit } from '../types'
 import { hasOpenBodyDefect } from '../lib/damageLabel'
 import { overlayInspection } from '../lib/inspectionStatus'
 import type { RealtimeChannel } from '@supabase/supabase-js'
+
+// รถ 24 คันที่ 60 RAI ถูกบั๊ก "ไฟล์ประกาศ Gate-out เอง" ย้ายไปเป็น Pre Gate-in
+// ที่ 3D LCB ผิดๆ ก่อนบั๊กนั้นจะถูกแก้ — ดู repairWrongTransfer ด้านล่าง
+const WRONGLY_TRANSFERRED_VINS = [
+  'LGXCE4CC0T2266500', 'LGXCE4CC1T2265310', 'LGXCE4CC2T2265333', 'LGXCE4CC3T2265339',
+  'LGXCE4CC3T2265387', 'LGXCE4CC3T2266474', 'LGXCE4CC4T2265334', 'LGXCE4CC4T2266399',
+  'LGXCE4CC5T2265360', 'LGXCE4CC5T2266394', 'LGXCE4CC5T2266461', 'LGXCE4CC5T2266475',
+  'LGXCE4CC6T2266467', 'LGXCE4CC7T2266462', 'LGXCE4CC7T2266493', 'LGXCE4CC8T2265255',
+  'LGXCE4CC8T2266504', 'LGXCE4CC9T2265233', 'LGXCE4CC9T2265345', 'LGXCE4CC9T2265359',
+  'LGXCE4CCXT2265256', 'LGXCE4CCXT2265371', 'LGXCE4CCXT2266388', 'LGXCE4CCXT2266472',
+]
 
 // live channel (module-scoped — never persisted)
 let trackingChannel: RealtimeChannel | null = null
@@ -186,6 +197,11 @@ interface TrackingState {
   /** ล้างค่า Final Status / Vin Of Status ที่ตัวเติมอัตโนมัติ (#518 ถอยไปแล้ว) เขียนไว้
    *  ในรถของยาร์ดนี้ — คืนค่าก่อนหน้า (ส่วนใหญ่คือว่าง) ดู revertAutoInspectionWrites */
   revertAutoInspectionWrites: (siteId: string) => Promise<number>
+  /** ซ่อมข้อมูลรถ 24 คันที่ 60 RAI ถูกไฟล์ระบบกลางบีบเป็น Gate-out เอง (ก่อน
+   *  บั๊กนี้จะถูกแก้ — ดู promote() ด้านล่าง) แล้วโดนตัวย้ายยาร์ดอัตโนมัติ
+   *  (App.tsx) ย้ายไปเป็น Pre Gate-in ที่ 3D LCB ทั้งที่ไม่เคยขยับจริง แอดมิน
+   *  กดจากหน้าตั้งค่าครั้งเดียว ปลอดภัยแม้กดซ้ำ (เช็คสภาพก่อนแก้ทุกครั้ง) */
+  repairWrongTransfer: () => Promise<{ fixed: number; skipped: number }>
   commitCoInspection: (res: ParseResult) => { updated: number; added: number; skipped: number; gateOut: number; moved: number; otherYard: number; heldInYard: number }
   /** Set a cell and log it. `src: 'scan'` marks the write as a FIELD STATION
    *  action (ops-scan), which is what lets a report tell a real recording apart
@@ -1026,6 +1042,76 @@ export const useTracking = create<TrackingState>()(
           pushRows(changed)
         }
         return { restored: changed.length, elsewhere }
+      },
+
+      /**
+       * ซ่อมข้อมูลรถ 24 คันที่ 60 RAI — ไฟล์ระบบกลางเคยมี "Gate Out time stamp"
+       * ใหม่กว่า Gate-in จริง (เอกสาร/แผนขนย้ายที่สร้างไว้ก่อนรถจะขยับจริง) บีบให้
+       * Car Status เป็น Gate-out เอง (ก่อนบั๊กนี้จะถูกแก้ — ดู promote() ด้านล่าง)
+       * แล้วโดนตัวย้ายยาร์ดอัตโนมัติ (App.tsx) ย้ายไปเป็น Pre Gate-in ที่ 3D LCB
+       * ทั้งที่ไม่เคยขยับจริง — คืนค่ารอบเดิมจาก __trips กลับให้
+       *
+       * แอดมินกดจากหน้าตั้งค่าครั้งเดียว ปลอดภัยแม้กดซ้ำ: เช็คสภาพของแต่ละคัน
+       * ก่อนแก้ทุกครั้ง (ยังเป็น Pre Gate-in ที่ยาร์ดผิดอยู่ไหม) ข้ามคันที่แก้ไป
+       * แล้วหรือถูก Gate-in จริงที่ 3D LCB ไปแล้วหลังจากนั้นเงียบๆ ไม่แตะ
+       */
+      repairWrongTransfer: async () => {
+        await get().syncCloud().catch(() => {})
+        const { sites, units } = useYard.getState()
+        const origin = sites.find((s) => s.name.trim().toLowerCase() === '60 rai')
+        if (!origin) return { fixed: 0, skipped: WRONGLY_TRANSFERRED_VINS.length }
+        const rows = { ...get().rows }
+        const changedRows: TrackRow[] = []
+        const nextUnits = { ...units }
+        const changedUnits: Unit[] = []
+        const fixedVins: string[] = []
+        for (const vin of WRONGLY_TRANSFERRED_VINS) {
+          const r = rows[vin]
+          if (!r || r.site === origin.id || (r.cells['Car Status'] || '').trim() !== 'Pre Gate-in') continue
+          const trips = tripsOf(r.cells)
+          if (!trips.length) continue
+          const last = trips[trips.length - 1]
+          const cells: Record<string, string> = { ...r.cells, ...last.cells, 'Car Status': 'In Yard' }
+          if (last.yard) cells['Location yard'] = last.yard
+          const remaining = trips.slice(0, -1)
+          if (remaining.length) cells[TRIPS_CELL] = JSON.stringify(remaining)
+          else delete cells[TRIPS_CELL]
+          const entry: RowEvent = { at: Date.now(), by: 'ระบบ (แก้ไขข้อมูลย้ายยาร์ดผิด)', field: CAR_STATUS_KEY, from: 'Pre Gate-in', to: 'In Yard' }
+          const next: TrackRow = { ...r, site: origin.id, cells, history: [...(r.history ?? []), entry].slice(-MAX_ROW_HISTORY), updatedAt: Date.now() }
+          rows[vin] = next
+          changedRows.push(next)
+          fixedVins.push(vin)
+
+          const u = nextUnits[vin]
+          if (u && u.site !== origin.id) {
+            const fixedUnit: Unit = { ...u, site: origin.id, status: (u.status === 'EXPECTED' || u.status === 'DEPARTED') ? 'GATE_IN' : u.status }
+            nextUnits[vin] = fixedUnit
+            changedUnits.push(fixedUnit)
+          }
+        }
+        if (changedRows.length) {
+          set({ rows })
+          idbBulkPut(changedRows).catch(() => {})
+          pushRows(changedRows)
+        }
+        if (changedUnits.length) {
+          useYard.setState({ units: nextUnits })
+          db.upsertUnits(changedUnits).catch((e) => console.error('[db] repairWrongTransfer units', e))
+        }
+        if (fixedVins.length) {
+          // เก็บกวาดรายการ "รอ Gate-in" ผีที่ยาร์ดผิด (คิวที่ตัวย้ายยาร์ดสร้างไว้ตอน
+          // ย้ายรถผิด) — vin กลับไปเป็นของ origin แล้ว คิวอื่นที่ยังค้างไว้ไม่ใช่ของจริง
+          import('./useOps').then((m) => {
+            const ops = m.useOps.getState()
+            for (const q of ops.queues) {
+              if (q.site === origin.id) continue
+              for (const vin of fixedVins) {
+                if (q.items.some((i) => i.vin === vin && !i.done)) ops.removeVin(q.id, vin)
+              }
+            }
+          }).catch(() => {})
+        }
+        return { fixed: fixedVins.length, skipped: WRONGLY_TRANSFERRED_VINS.length - fixedVins.length }
       },
 
       /**

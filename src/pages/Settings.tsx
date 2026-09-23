@@ -60,6 +60,41 @@ function DataRepair() {
   )
 }
 
+/**
+ * ซ่อมรถ 24 คันที่ 60 RAI ถูกบั๊ก "ไฟล์ระบบกลางประกาศ Gate-out เอง" (แก้ไปแล้ว
+ * — ดู repairWrongTransfer) ย้ายเป็น Pre Gate-in ที่ 3D LCB ผิดๆ ทั้งที่ไม่เคย
+ * ขยับจริง กดครั้งเดียวคืนค่ารอบเดิมกลับให้ — กดซ้ำได้ ไม่กระทบคันที่แก้ไปแล้ว
+ */
+function WrongTransferRepair() {
+  const { toast } = useYard()
+  const [busy, setBusy] = useState(false)
+  const run = async () => {
+    if (busy) return
+    if (!window.confirm('คืนค่ารถ 24 คันที่ 60 RAI ที่ถูกย้ายเป็น Pre Gate-in ที่ 3D LCB ผิดๆ กลับเป็น In Yard ที่ 60 RAI?\n(คืนข้อมูล Gate-in ของรอบเดิมให้ครบ — คันที่แก้ไปแล้วหรือถูก Gate-in จริงที่ 3D LCB ไปแล้วจะไม่ถูกแตะ)')) return
+    setBusy(true)
+    try {
+      const { fixed, skipped } = await useTracking.getState().repairWrongTransfer()
+      toast('ok', fixed ? `คืนค่ารถ ${fixed} คันกลับ 60 RAI แล้ว${skipped ? ` · ข้าม ${skipped} คัน (แก้ไปแล้ว/ไม่พบ)` : ''}` : 'ไม่พบคันที่ต้องแก้ (แก้ไปแล้วทั้งหมด หรือไม่พบยาร์ด 60 RAI)')
+    } finally { setBusy(false) }
+  }
+  return (
+    <section className="panel overflow-hidden mb-4">
+      <div className="px-4 py-3 border-b hairline flex items-center gap-2">
+        <Wrench size={16} style={{ color: 'var(--brand)' }} />
+        <span className="font-semibold text-[14.5px]">ซ่อมรถที่ย้ายยาร์ดผิด (60 RAI → 3D LCB)</span>
+      </div>
+      <div className="p-4 flex flex-wrap items-center gap-3">
+        <div className="text-[13px] leading-relaxed flex-1" style={{ minWidth: 260, color: 'var(--muted)' }}>
+          <b>คืนค่ารถ 24 คันที่ 60 RAI</b> ที่เคยถูกไฟล์ระบบกลางบีบเป็น Gate-out เองแล้วโดนย้ายเป็น Pre Gate-in ที่ 3D LCB ทั้งที่ไม่เคยขยับจริง — กดครั้งเดียวคืนค่ากลับเป็น In Yard ที่ 60 RAI พร้อมข้อมูล Gate-in เดิม
+        </div>
+        <button id="repair-wrong-transfer" className="btn btn-ghost py-2" disabled={busy} onClick={run}>
+          <Wrench size={14} /> {busy ? 'กำลังทำ…' : 'คืนค่า 24 คัน'}
+        </button>
+      </div>
+    </section>
+  )
+}
+
 function VinManager() {
   const trackingRows = useTrackingRows()
   const units = useUnits()
@@ -729,6 +764,7 @@ export function Settings() {
 
       {/* ── Data repair (one-off admin actions) ── */}
       <DataRepair />
+      <WrongTransferRepair />
 
       {/* ── Site management ── */}
       <section className="panel overflow-hidden mb-4">
