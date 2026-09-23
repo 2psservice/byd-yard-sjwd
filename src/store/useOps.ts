@@ -105,10 +105,9 @@ export function queueTypeOf(q: WorkQueue): QueueType {
   return 'SPECIAL'
 }
 
-/** A moment as "DD/MM/YYYY" — the date format the yard stations write into the
- *  sheet. Defaults to now; pass a past `at` to format e.g. a `doneAt` stamp. */
-function todayCell(at: number = Date.now()): string {
-  const n = new Date(at)
+/** Today as "DD/MM/YYYY" — the date format the yard stations write into the sheet. */
+function todayCell(): string {
+  const n = new Date()
   return `${String(n.getDate()).padStart(2, '0')}/${String(n.getMonth() + 1).padStart(2, '0')}/${n.getFullYear()}`
 }
 
@@ -1054,38 +1053,6 @@ function isStaleLadderClosure(q: WorkQueue, i: QueueItem): boolean {
   return (i.doneAt ?? 0) < ladderJoinDay(q, i)
 }
 
-/**
- * A PDI/PM/FINAL item ticked "เสร็จ" from the office queue screen's generic
- * done checkbox (Operation.tsx QueueDetail) instead of the station actually
- * recording a result — that checkbox only ever set `done`, never went near
- * `recordCheck`, so the car has no measurements and no OK/NG at all even
- * though the queue counts it finished.
- *
- * Fingerprint: ticked, no station record of any kind, not a gated-out
- * closure, and not a file-ladder closure (`isStaleLadderClosure`'s sibling —
- * those stamp doneBy 'ไฟล์ Co-Inspection', which is a legitimate completion
- * this must never touch).
- */
-function isFakeStationDone(i: QueueItem): boolean {
-  return !!i.done && !i.gatedOut && !hasStationRecord(i) && i.doneBy !== 'ไฟล์ Co-Inspection'
-}
-
-/** Reverse of stampStationDate's ladder walk: take back the date a fake
- *  office-checkbox tick (see isFakeStationDone) wrote onto the Overview —
- *  the LAST-filled slot, only if it still carries the exact day that tick
- *  stamped. Leaves the sheet alone if a real inspection has since moved the
- *  ladder further (that slot no longer matches this item's `doneAt` day). */
-function unstampFakeDone(vin: string, doneAt: number | undefined, keys: readonly string[]): void {
-  if (!doneAt) return
-  const tr = useTracking.getState()
-  const row = tr.rows[vin]
-  if (!row) return
-  const d = todayCell(doneAt)
-  let slot: string | null = null
-  for (const k of keys) if ((row.cells[k] || '').trim()) slot = k
-  if (slot && (row.cells[slot] || '').trim() === d) tr.updateCell(vin, slot, '', 'scan')
-}
-
 let reconcileTimer: ReturnType<typeof setTimeout> | null = null
 function reconcileGateOuts() {
   const rows = useTracking.getState().rows
@@ -1204,14 +1171,6 @@ function reconcileGateOuts() {
       // as the gate-in artifact above, just for the ladder's own mistake.
       if (isStationQueue && isStaleLadderClosure(q, i)) {
         changed = true
-        return { ...i, done: false, doneAt: undefined, doneBy: undefined, stamped: undefined }
-      }
-      // repair: PDI/PM/FINAL ticked "เสร็จ" from the office's generic done
-      // checkbox instead of a real station recording (see isFakeStationDone)
-      // — un-tick it and take back the date it wrongly stamped onto the sheet
-      if (ladder && isFakeStationDone(i)) {
-        changed = true
-        unstampFakeDone(i.vin, i.doneAt, ladder)
         return { ...i, done: false, doneAt: undefined, doneBy: undefined, stamped: undefined }
       }
       if (ladder && !i.done && !i.manualUndoneAt) {

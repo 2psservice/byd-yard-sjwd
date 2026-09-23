@@ -365,10 +365,6 @@ function QueueDetail({ q, onClose }: { q: WorkQueue; onClose: () => void }) {
   const addRef = useRef<HTMLTextAreaElement>(null)
 
   const { total, done, remaining, pct } = queueProgress(q)
-  // PDI / PM / FINAL CHECK ต้องบันทึกผลจากการตรวจจริงที่สถานี (recordCheck)
-  // เท่านั้น — ปุ่มติ๊ก "เสร็จ" ทั่วไปตรงนี้แค่ตั้งค่าเฉยๆ ไม่เคยตรวจจริง ทำให้
-  // คิวนับว่าเสร็จทั้งที่ยังไม่ได้ตรวจเลยสักคัน (ดูปัญหา LOT 19-9-252)
-  const inspectionQueue = (['PDI', 'PM', 'FINAL'] as QueueType[]).includes(queueTypeOf(q))
 
   // Same per-car detail the Gate-out queue shows — model · color · grouping + the
   // yard location and loading lane — so the office reads one consistent card
@@ -454,13 +450,10 @@ function QueueDetail({ q, onClose }: { q: WorkQueue; onClose: () => void }) {
           <div className="flex items-center gap-3 text-[12px]">
             <span style={{ color: '#d97706' }}>● ยังไม่บันทึก <b>{remaining}</b></span>
             <span style={{ color: 'var(--st-yard)' }}>● บันทึกแล้ว <b>{done}</b></span>
-            {total > 0 && !inspectionQueue && (
+            {total > 0 && (
               <button className="btn btn-ghost py-0.5 px-2 ml-auto text-[11.5px]" onClick={() => setAllDone(q.id, remaining > 0, currentUser)}>
                 {remaining > 0 ? <><Check size={12} /> บันทึกทั้งหมด</> : <><X size={12} /> รีเซ็ตทั้งหมด</>}
               </button>
-            )}
-            {inspectionQueue && (
-              <span className="ml-auto text-[11px]" style={{ color: 'var(--faint)' }}>ต้องบันทึกผลที่สถานีเท่านั้น</span>
             )}
           </div>
         </div>
@@ -480,19 +473,11 @@ function QueueDetail({ q, onClose }: { q: WorkQueue; onClose: () => void }) {
                 return (
                   <div key={it.vin} className="rounded-xl px-3 py-2.5 flex items-center gap-3"
                     style={{ background: '#fff', opacity: out ? 0.55 : 1, borderLeft: `4px solid ${out ? '#94a3b8' : it.done ? 'var(--st-yard)' : '#f59e0b'}`, boxShadow: '0 1px 2px rgba(16,24,40,0.05)' }}>
-                    {inspectionQueue ? (
-                      <div title={it.done ? 'บันทึกผลแล้วที่สถานี' : 'ยังไม่ได้ตรวจที่สถานี'}
-                        className="w-7 h-7 rounded-full flex items-center justify-center shrink-0"
-                        style={it.done ? { background: 'var(--st-yard)', color: '#fff' } : { background: 'var(--chip)', color: 'var(--faint)', border: '1px solid var(--line)' }}>
-                        <Check size={15} />
-                      </div>
-                    ) : (
-                      <button onClick={() => !out && toggleDone(q.id, it.vin, currentUser)} title={out ? 'รถออกจากลานแล้ว' : it.done ? 'ยกเลิกการบันทึก' : 'บันทึกว่าเสร็จ'}
-                        className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 transition active:scale-90"
-                        style={out ? { background: '#94a3b8', color: '#fff', cursor: 'default' } : it.done ? { background: 'var(--st-yard)', color: '#fff' } : { background: 'var(--chip)', color: 'var(--faint)', border: '1px solid var(--line)' }}>
-                        <Check size={15} />
-                      </button>
-                    )}
+                    <button onClick={() => !out && toggleDone(q.id, it.vin, currentUser)} title={out ? 'รถออกจากลานแล้ว' : it.done ? 'ยกเลิกการบันทึก' : 'บันทึกว่าเสร็จ'}
+                      className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 transition active:scale-90"
+                      style={out ? { background: '#94a3b8', color: '#fff', cursor: 'default' } : it.done ? { background: 'var(--st-yard)', color: '#fff' } : { background: 'var(--chip)', color: 'var(--faint)', border: '1px solid var(--line)' }}>
+                      <Check size={15} />
+                    </button>
                     <div className="min-w-0 flex-1">
                       <div className="vin text-[13.5px] font-bold clip">{it.vin}</div>
                       <div className="text-[11.5px] flex flex-wrap gap-x-2 gap-y-0.5" style={{ color: 'var(--muted)' }}>
