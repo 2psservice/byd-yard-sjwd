@@ -1110,12 +1110,16 @@ export const useTracking = create<TrackingState>()(
           return asserted > 0 && asserted > fileOutAt
         }
         let heldInYard = 0 // รถที่คำยืนยันของยาร์ดนี้กันไฟล์ไว้ ไม่ถูกตีกลับเป็น Gate-out
+        // Gate-out ต้องมาจากการยิงสแกนจริงตามคิวงานของยาร์ดนั้น (ตามที่ import
+        // Grouping สร้างไว้) หรือแอดมินแก้ Car Status เองที่ Unit List เท่านั้น —
+        // ไฟล์ระบบกลางห้ามเปลี่ยนสถานะเป็น Gate-out เองอีกต่อไป ต่อให้มีวันที่ออก
+        // ในไฟล์จริงก็ตาม (เอกสาร/แผนขนย้ายมักถูกสร้างไว้ก่อนรถจะขยับจริง) — เคสนี้
+        // เคยทำให้รถ 24 คันที่ 60 RAI ถูกไฟล์บีบเป็น Gate-out ทั้งที่ไม่เคยขยับ แล้ว
+        // โดนตัวย้ายยาร์ดอัตโนมัติ (App.tsx) ย้ายไปเป็น Pre Gate-in ที่ยาร์ดอื่นตาม
+        // ยังเก็บวันที่ดิบจากไฟล์ไว้แสดงตามปกติ (ดู GATE_OUT_TS ด้านล่าง) แค่ไม่ใช้
+        // ตัดสินสถานะเอง
         const promote = (cells: Record<string, string>): boolean => {
-          if (isGateOutStamp(cells['Gate Out time stamp'])) {
-            if (assertedAfterFileGateOut(cells, gateOutScanMs(cells))) { heldInYard++; return false }
-            if (cells['Car Status'] !== 'Gate-out') { cells['Car Status'] = 'Gate-out'; return true }
-            return false
-          }
+          if (isGateOutStamp(cells['Gate Out time stamp'])) return false
           // The file says this car is NOT gated out (blank stamp / pickup plan) and it
           // sits in the yard we're importing for. A stored 'Gate-out' is therefore
           // stale — the car was transferred in from another yard (e.g. BYD Factory →
@@ -1208,10 +1212,11 @@ export const useTracking = create<TrackingState>()(
             added++
           }
         }
-        // gate-out rows: an EXISTING VIN whose file row now says gate-out means
-        // the car left the yard — merge the file's cells (Gate Out time stamp
-        // ฯลฯ) and force Car Status = Gate-out. Applied regardless of the
-        // active yard: a gate-out is global truth.
+        // gate-out rows: for a VIN already tracked live, merge the file's cells
+        // (Gate Out time stamp ฯลฯ) WITHOUT forcing Car Status — that now needs a
+        // real scan or an admin edit (see promote() above). For a VIN missing
+        // from the system entirely (deleted + re-imported), restore it as a
+        // historical Gate-out record so the data is never silently lost.
         let gateOut = 0
         for (const r of res.gateOutRows ?? []) {
           const existing = rows[r.vin]
@@ -1243,13 +1248,13 @@ export const useTracking = create<TrackingState>()(
             if (v != null && v !== '' && cells[k] !== v) { cells[k] = v; didChange = true }
           }
           if (promote(cells)) didChange = true
-          // gateOutRows all carry a real gate-out timestamp now → force Gate-out
-          if (cells['Car Status'] !== 'Gate-out') { cells['Car Status'] = 'Gate-out'; didChange = true }
+          // ไม่บังคับ Car Status เป็น Gate-out เองแล้ว (ดู promote ด้านบน) — merge
+          // แค่ข้อมูลดิบ (วันที่ ฯลฯ) ไว้ให้เห็น สถานะจริงต้องมาจากสแกน/แอดมินเท่านั้น
           if (!didChange) continue
           const next: TrackRow = { ...existing, cells, updatedAt: now }
           rows[r.vin] = next
           changed.push(next)
-          gateOut++
+          if (cells['Car Status'] === 'Gate-out') gateOut++
         }
         idbBulkPut(changed).catch(() => {})
         pushRows(changed)
