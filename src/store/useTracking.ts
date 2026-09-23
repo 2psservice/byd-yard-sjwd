@@ -1051,9 +1051,18 @@ export const useTracking = create<TrackingState>()(
        * แล้วโดนตัวย้ายยาร์ดอัตโนมัติ (App.tsx) ย้ายไปเป็น Pre Gate-in ที่ 3D LCB
        * ทั้งที่ไม่เคยขยับจริง — คืนค่ารอบเดิมจาก __trips กลับให้
        *
-       * แอดมินกดจากหน้าตั้งค่าครั้งเดียว ปลอดภัยแม้กดซ้ำ: เช็คสภาพของแต่ละคัน
-       * ก่อนแก้ทุกครั้ง (ยังเป็น Pre Gate-in ที่ยาร์ดผิดอยู่ไหม) ข้ามคันที่แก้ไป
-       * แล้วหรือถูก Gate-in จริงที่ 3D LCB ไปแล้วหลังจากนั้นเงียบๆ ไม่แตะ
+       * ตอนปิดรอบปลอมตอนบั๊กเกิด ระบบสร้าง "แถวรอบ" (useVisits) ของรอบนั้นไว้ด้วย
+       * — visitFromTrip ตั้ง Car Status ของแถวรอบเป็น "Gate-out" เสมอ (ความหมาย
+       * ปกติของแถวรอบคือ "รอบที่จบแล้ว = ออกจากยาร์ดนั้นไปแล้ว") พอฝั่งแถวสดถูก
+       * คืนค่ากลับเป็น In Yard แล้ว แถวรอบปลอมตัวนี้ยังค้างอยู่ต่างหาก ทำให้บางจุด
+       * (การ์ด Gate-out ที่รวมแถวรอบเข้ามาด้วย) อ่านรถคันนั้นเป็น Gate-out ที่ 60
+       * RAI ทั้งที่ไม่มีการ Gate-out จริงบันทึกไว้ใน Event เลย — ต้องลบแถวรอบปลอม
+       * นี้ทิ้งด้วย ไม่ใช่แค่แก้แถวสด — กวาดหาแบบไม่พึ่ง __trips (เผื่อรอบก่อนที่
+       * กดซ่อมไปแล้วเคยล้าง __trips ทิ้งไปก่อนจุดนี้จะถูกแก้)
+       *
+       * แอดมินกดจากหน้าตั้งค่าได้หลายครั้ง ปลอดภัยเสมอ: เช็คสภาพของแต่ละคันก่อน
+       * แก้ทุกครั้ง ข้ามคันที่แก้ครบแล้วหรือถูก Gate-in จริงที่ 3D LCB ไปแล้ว
+       * หลังจากนั้นเงียบๆ ไม่แตะ
        */
       repairWrongTransfer: async () => {
         await get().syncCloud().catch(() => {})
@@ -1065,28 +1074,49 @@ export const useTracking = create<TrackingState>()(
         const nextUnits = { ...units }
         const changedUnits: Unit[] = []
         const fixedVins: string[] = []
+        const stripGateOutKeys = (cells: Record<string, string>) => {
+          delete cells['Gate Out time stamp']; delete cells['Gate Out Date']; delete cells['Gate Out Time']
+        }
         for (const vin of WRONGLY_TRANSFERRED_VINS) {
           const r = rows[vin]
-          if (!r || r.site === origin.id || (r.cells['Car Status'] || '').trim() !== 'Pre Gate-in') continue
-          const trips = tripsOf(r.cells)
-          if (!trips.length) continue
-          const last = trips[trips.length - 1]
-          const cells: Record<string, string> = { ...r.cells, ...last.cells, 'Car Status': 'In Yard' }
-          if (last.yard) cells['Location yard'] = last.yard
-          const remaining = trips.slice(0, -1)
-          if (remaining.length) cells[TRIPS_CELL] = JSON.stringify(remaining)
-          else delete cells[TRIPS_CELL]
-          const entry: RowEvent = { at: Date.now(), by: 'ระบบ (แก้ไขข้อมูลย้ายยาร์ดผิด)', field: CAR_STATUS_KEY, from: 'Pre Gate-in', to: 'In Yard' }
-          const next: TrackRow = { ...r, site: origin.id, cells, history: [...(r.history ?? []), entry].slice(-MAX_ROW_HISTORY), updatedAt: Date.now() }
-          rows[vin] = next
-          changedRows.push(next)
-          fixedVins.push(vin)
+          if (!r) continue
+          const stillWrong = r.site !== origin.id && (r.cells['Car Status'] || '').trim() === 'Pre Gate-in'
+          if (stillWrong) {
+            const trips = tripsOf(r.cells)
+            if (!trips.length) continue
+            const last = trips[trips.length - 1]
+            // ไม่ดึง "Gate Out time stamp/Date/Time" ของรอบเดิมกลับมาด้วย — นั่นคือ
+            // ค่าปลอมตัวการของบั๊กเอง ไม่ใช่ประวัติจริงที่ควรคืน
+            const restoredCells = { ...last.cells }
+            stripGateOutKeys(restoredCells)
+            const cells: Record<string, string> = { ...r.cells, ...restoredCells, 'Car Status': 'In Yard' }
+            stripGateOutKeys(cells)
+            if (last.yard) cells['Location yard'] = last.yard
+            const remaining = trips.slice(0, -1)
+            if (remaining.length) cells[TRIPS_CELL] = JSON.stringify(remaining)
+            else delete cells[TRIPS_CELL]
+            const entry: RowEvent = { at: Date.now(), by: 'ระบบ (แก้ไขข้อมูลย้ายยาร์ดผิด)', field: CAR_STATUS_KEY, from: 'Pre Gate-in', to: 'In Yard' }
+            const next: TrackRow = { ...r, site: origin.id, cells, history: [...(r.history ?? []), entry].slice(-MAX_ROW_HISTORY), updatedAt: Date.now() }
+            rows[vin] = next
+            changedRows.push(next)
+            fixedVins.push(vin)
 
-          const u = nextUnits[vin]
-          if (u && u.site !== origin.id) {
-            const fixedUnit: Unit = { ...u, site: origin.id, status: (u.status === 'EXPECTED' || u.status === 'DEPARTED') ? 'GATE_IN' : u.status }
-            nextUnits[vin] = fixedUnit
-            changedUnits.push(fixedUnit)
+            const u = nextUnits[vin]
+            if (u && u.site !== origin.id) {
+              const fixedUnit: Unit = { ...u, site: origin.id, status: (u.status === 'EXPECTED' || u.status === 'DEPARTED') ? 'GATE_IN' : u.status }
+              nextUnits[vin] = fixedUnit
+              changedUnits.push(fixedUnit)
+            }
+          } else if (r.site === origin.id && (r.cells['Car Status'] || '').trim() !== 'Gate-out'
+            && (r.cells['Gate Out time stamp'] || r.cells['Gate Out Date'] || r.cells['Gate Out Time'])) {
+            // แก้รอบก่อนไปแล้ว (site ถูกต้อง) แต่ยังมีขยะ Gate Out ตกค้างจากก่อนที่
+            // จุดนี้จะถูกแก้ — ล้างออกอย่างเดียว ไม่แตะอย่างอื่น
+            const cells = { ...r.cells }
+            stripGateOutKeys(cells)
+            const next: TrackRow = { ...r, cells, updatedAt: Date.now() }
+            rows[vin] = next
+            changedRows.push(next)
+            fixedVins.push(vin)
           }
         }
         if (changedRows.length) {
@@ -1098,6 +1128,15 @@ export const useTracking = create<TrackingState>()(
           useYard.setState({ units: nextUnits })
           db.upsertUnits(changedUnits).catch((e) => console.error('[db] repairWrongTransfer units', e))
         }
+        // ลบแถวรอบปลอม (useVisits) ที่ตัวย้ายยาร์ดสร้างไว้ตอนบั๊กเกิด — ไม่พึ่ง
+        // __trips (อาจถูกล้างไปแล้วตั้งแต่รอบก่อน) ค้นจาก visit store ตรงๆ:
+        // 24 คันนี้ไม่ควรมีรอบที่ปิดจริงที่ 60 RAI เลย (อยู่ที่นั่นต่อเนื่องมาตลอด)
+        // รอบที่ปิดที่ 60 RAI ที่เจอจึงเป็นของปลอมทั้งหมด
+        const badVinSet = new Set(WRONGLY_TRANSFERRED_VINS)
+        const staleVisitIds = Object.values(useVisits.getState().visits)
+          .filter((v) => badVinSet.has(v.vin) && v.site === origin.id)
+          .map((v) => v.id)
+        if (staleVisitIds.length) useVisits.getState().remove(staleVisitIds)
         if (fixedVins.length) {
           // เก็บกวาดรายการ "รอ Gate-in" ผีที่ยาร์ดผิด (คิวที่ตัวย้ายยาร์ดสร้างไว้ตอน
           // ย้ายรถผิด) — vin กลับไปเป็นของ origin แล้ว คิวอื่นที่ยังค้างไว้ไม่ใช่ของจริง
@@ -1111,7 +1150,8 @@ export const useTracking = create<TrackingState>()(
             }
           }).catch(() => {})
         }
-        return { fixed: fixedVins.length, skipped: WRONGLY_TRANSFERRED_VINS.length - fixedVins.length }
+        const touchedVins = new Set([...fixedVins, ...staleVisitIds.map((id) => id.split('#')[0])])
+        return { fixed: touchedVins.size, skipped: WRONGLY_TRANSFERRED_VINS.length - touchedVins.size }
       },
 
       /**

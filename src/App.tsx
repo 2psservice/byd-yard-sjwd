@@ -424,7 +424,7 @@ export default function App() {
   // dev-only store handles for automated tests (same pattern as Units' __tracking)
   useEffect(() => {
     if (import.meta.env.DEV) {
-      (window as any).__yard = useYard; (window as any).__ops = useOps; (window as any).__tracking = useTracking
+      (window as any).__yard = useYard; (window as any).__ops = useOps; (window as any).__tracking = useTracking; (window as any).__visits = useVisits
       // lets a test play the part of "another device" announcing a move
       import('./lib/syncBus').then((m) => { (window as any).__sync = m }).catch(() => {})
     }
