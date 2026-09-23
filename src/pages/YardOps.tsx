@@ -266,10 +266,17 @@ const hasGoneOut = (c?: Record<string, string>) => !!c && deriveCarStatus(c) ===
  *  (ไฟล์นำเข้าไม่เขียน) และผูกกับรอบนี้ — พอรถออก ช่องนี้ถูกเก็บเข้าประวัติรอบไปด้วย
  *  จึงไม่ค้างจากรอบก่อน · เป็นหลักฐานเดียวกับที่สถานี Gate-in ใช้ปฏิเสธการยิงซ้ำ
  *  ทุกสถานีจึงต้องยอมรับด้วย ไม่งั้นรถติดกลางทาง: Walk Around บอก "ยังไม่ Gate-in"
- *  (เชื่อสำเนา unit บนเครื่องซึ่งล้าสมัย/ยังไม่ซิงก์) ขณะที่ Gate-in บอก "Gate-in แล้ว" */
+ *  (เชื่อสำเนา unit บนเครื่องซึ่งล้าสมัย/ยังไม่ซิงก์) ขณะที่ Gate-in บอก "Gate-in แล้ว"
+ *
+ *  รถบางคัน Gate-in จริงมาแล้ว (มี Walk Around / งานสถานีในรอบนี้จริง) แต่รอบถูก
+ *  ปิด/เปิดใหม่กลางทางจนช่อง 'Gate In Time' หลุดหายไป ขณะที่คอลัมน์ "Gate In"
+ *  (Gate In (Rayong yard) — เห็นได้ในหน้า Unit List) ยังมีวันที่อยู่ จึงยอมรับ
+ *  คอลัมน์นี้เป็นหลักฐานสำรองด้วย ตามที่หน้างานยืนยันให้ใช้ */
 const scannedInThisRound = (c?: Record<string, string>): boolean => {
   const at = parseInt((c?.['Gate In Time'] || '').trim(), 10)
-  return Number.isFinite(at) && at > 0 && !hasGoneOut(c)
+  const hasScanTime = Number.isFinite(at) && at > 0
+  const hasGateInCol = !!(c?.['Gate In (Rayong yard)'] || '').trim()
+  return (hasScanTime || hasGateInCol) && !hasGoneOut(c)
 }
 
 // A scanned VIN the tracking sheet says is gated in, but whose `units` row
