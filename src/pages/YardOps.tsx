@@ -27,7 +27,7 @@ import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirs
 import { candidates } from '../lib/parkingEngine'
 import { slotToLatLng } from '../lib/geo'
 import { cx, PhotoLightbox } from '../components/ui'
-import { rowInSite, rowsForSite, siteWorksWith, deliveryDestinationSite, siteIdForLocation } from '../lib/siteScope'
+import { rowInSite, rowsForSite, siteWorksWith, deliveryDestinationSite, siteIdForLocation, rowYardName } from '../lib/siteScope'
 import { compressImage } from '../lib/photo'
 import StationSheet from '../components/StationSheet'
 import StockAccessoryCheck from '../components/StockAccessoryCheck'
@@ -1825,8 +1825,20 @@ function WalkView() {
   const onScan = (v: string) => {
     setTrackingVin(null)
     // 0. รถของยาร์ดอื่นมาถึงประตูนี้ → การ์ดรับรถ (ตรวจรุ่น/สี แล้วยิงรับ = ย้ายมายาร์ดนี้)
+    //    แต่ต้องยิง Gate-out จากยาร์ดเดิมมาก่อนจริง ๆ ถึงจะถือว่าเป็นการย้ายยาร์ด
+    //    จริง — ถ้าชีตยังบอกว่ารถยิงเข้ายาร์ดเดิมอยู่ (ยังไม่ออก) การสแกนที่นี่คือ
+    //    เลือกผิด Site หรือสแกนวินผิดคัน ไม่ใช่รถย้ายมาจริง ห้ามยิงรับ
     const foreign = foreignRowOf(v)
-    if (foreign) { openWaiting(foreign.vin); return }
+    if (foreign) {
+      if (scannedInHere(foreign.cells)) {
+        blockWith(foreign.vin, foreign.cells['Model name'] ?? foreign.cells['Model'], 'รถอยู่ยาร์ดอื่น', (
+          <>รถคันนี้ยังอยู่ที่ <b style={{ color: 'var(--brand)' }}>{rowYardName(foreign, sites) || 'ยาร์ดอื่น'}</b> และยังไม่ได้ Gate-out จากยาร์ดนั้น<br />
+          ตรวจสอบว่าเลือก Site ถูกต้อง หรือรถยังไม่ได้ออกจากยาร์ดเดิมจริง</>
+        ))
+        return
+      }
+      openWaiting(foreign.vin); return
+    }
     // 1. exact yard unit — unless the sheet says the car is waiting to come IN,
     //    in which case this is a returning car and the arrival card is the one
     //    that can actually gate it in
