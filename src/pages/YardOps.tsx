@@ -1579,7 +1579,7 @@ function WalkView() {
   const { gateIn, importUnits, addDamage, updateDamage, markTrailerArrived, toast, currentUser } = useYard()
   const allTrackingRows = useTrackingRows()
   const wrongSite = useWrongSiteHint()
-  const { loadFromIdb, updateCell, claimPreGateInCandidate, transferToYard } = useTracking()
+  const { loadFromIdb, updateCell, updateCells, claimPreGateInCandidate, transferToYard } = useTracking()
   const { toggleDone } = useOps()
   const { blockWith, modal: gateModal } = useNotGatedIn()
   const queues = useSiteQueues()
@@ -1895,10 +1895,12 @@ function WalkView() {
     // straight to "In Yard" — no separate "Gate-in" stage anymore; gateIn()
     // (called below) auto-parks the unit at the WCL staging block, so the
     // car really is in the yard the moment this scan completes
-    updateCell(trackRow.vin, 'Car Status', 'In Yard')
-    updateCell(trackRow.vin, 'Gate In (Rayong yard)', d)
-    updateCell(trackRow.vin, 'Gate In Inspector', currentUser)
-    updateCell(trackRow.vin, 'Gate In Time', String(now.getTime()))
+    updateCells(trackRow.vin, {
+      'Car Status': 'In Yard',
+      'Gate In (Rayong yard)': d,
+      'Gate In Inspector': currentUser,
+      'Gate In Time': String(now.getTime()),
+    })
     // register as yard unit so Driver can find it for parking assignment. ALWAYS
     // (re)register — a car that had a placeholder unit (e.g. a manual defect added
     // pre-gate-in, model '') would otherwise keep an empty model, and the parking
