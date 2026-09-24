@@ -946,6 +946,26 @@ export const useOps = create<OpsState>()(
 // another client changed a queue → refetch (cloud is authoritative on broadcast)
 onSync('ops', () => { useOps.getState().loadFromCloud(true).catch((e) => console.error('[ops] sync pull', e)) })
 
+// ── ทุกเครื่องเห็นคิวงานชุดเดียวกัน: นาฬิกากันดริฟท์ ──────────────────────────
+// การอัปเดตคิวงานอาศัยแค่สัญญาณ broadcast ตอนมีคนแก้ (onSync ด้านบน) ต่างจาก
+// ชีต tracking ที่มีทั้ง broadcast และนาฬิกาดึงซ้ำทุกนาที — จอไหนพลาดสัญญาณไป
+// (แท็บไม่ได้โฟกัส หรือมีสัญญาณรัวๆ พร้อมกันตอนนำเข้าไฟล์ก้อนใหญ่) จะไม่มีอะไร
+// ไปแก้ให้เองอีกเลยจนกว่าจะมีคนแก้คิวใหม่ — Dashboard เคยค้างเลข "365" ไว้ขณะที่
+// หน้า Gate-in อีกเครื่องซิงก์ทันแล้วเหลือ "343" เพิ่มนาฬิกาแบบเดียวกับ tracking
+// rows ให้จำกัดว่าสองจอห่างกันได้แค่ไหน (loadFromCloud ดึงทั้งชุดแต่เบา ไม่มี
+// อะไรเปลี่ยนก็แทบไม่มีผลอะไรให้ set ใหม่)
+const OPS_RESYNC_MS = 60_000
+if (typeof window !== 'undefined') {
+  const resyncOps = () => {
+    if (document.visibilityState === 'hidden') return
+    if (!useYard.getState().loggedInUserId) return
+    useOps.getState().loadFromCloud().catch(() => {})
+  }
+  setInterval(resyncOps, OPS_RESYNC_MS)
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') resyncOps() })
+  window.addEventListener('online', resyncOps)
+}
+
 // ── keep queues honest about the live Car Status (data-level, one place) ─────
 // Two reconciliations run debounced whenever tracking data changes, so a queue
 // reflects reality no matter HOW a car moved (ops-scan, Gate In/Out page, import):
