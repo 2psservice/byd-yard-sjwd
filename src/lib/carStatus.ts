@@ -69,24 +69,6 @@ function parseDMY(s: string): Date | null {
 }
 
 /**
- * A pickup PLAN in "Gate Out time stamp" ("แผนรับวันที่ 10/07/2026") schedules the
- * car for collection. Once that planned date has passed by MORE than `graceDays`
- * (default 2) it is treated as an actual gate-out — the car was collected around
- * the plan date. (Today 13th, plan 10th → 3 days late → gated out; plan 11th → 2
- * days, still in yard; a future/today plan stays in yard.) A bare date is NOT a
- * plan — that's a real gate-out handled by isGateOutStamp, so it's excluded here.
- */
-export function isLapsedPlan(v: string | undefined | null, now: Date = new Date(), graceDays = 2): boolean {
-  const s = (v ?? '').trim()
-  if (!s || isGateOutStamp(s)) return false // empty, or a bare gate-out date (not a plan)
-  const plan = parseDMY(s)
-  if (!plan) return false
-  const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
-  const plan0 = new Date(plan.getFullYear(), plan.getMonth(), plan.getDate()).getTime()
-  return (today0 - plan0) / 86400000 > graceDays
-}
-
-/**
  * เวลาที่แถวนี้บอกว่า "รถเข้าลาน" ล่าสุด — epoch ms (0 = ไม่มีข้อมูล)
  *
  * ops-scan ประทับ 'Gate In Time' เป็น epoch ms ตอนยิงเข้าลาน ส่วนไฟล์ชีตเขียน
@@ -128,18 +110,6 @@ export function inYardAssertedAt(c: Record<string, string>, siteId: string | nul
   if (!siteId || (c[CAR_STATUS_SET_SITE_KEY] || '').trim() !== siteId) return 0
   if (RELEASED_STATUSES.has((c[CAR_STATUS_KEY] || '').trim())) return 0
   return statusSetAt(c)
-}
-
-/** มีใคร "ยืนยันสถานะของรถคันนี้" ตั้งแต่วันแผนรับเป็นต้นไปไหม
- *
- *  นับสองอย่าง: การยิงรับรถเข้าลาน และการที่มีคนตั้งค่าสถานะไว้เองในแอป
- *  ถ้ามีอย่างใดอย่างหนึ่ง แปลว่าแผนที่เลยกำหนดนั้นไม่ได้เกิดขึ้น (หรือรถวนกลับ
- *  เข้ามาใหม่) จึงห้ามเดาทับว่ารถออกไปแล้ว — การเดาต้องแพ้คำยืนยันของคนเสมอ */
-function assertedAfterPlan(c: Record<string, string>): boolean {
-  const plan = parseDMY(c['Gate Out time stamp'] || '')
-  if (!plan) return false
-  const at = Math.max(gateInEvidenceAt(c), statusSetAt(c))
-  return at > 0 && at >= plan.getTime()
 }
 
 /** Daily flush hour for Pre Gate-out → Gate-out (09:30 local). */
@@ -222,21 +192,15 @@ export function deriveCarStatus(c: Record<string, string>): string {
   // Total loss (write-off) is a definitive terminal fact about the vehicle —
   // it wins over the lifecycle status so a written-off car is always visible.
   if (/total\s*loss/i.test(c['Vin Of Status'] || '')) return 'Total loss'
-  // a pickup plan whose date lapsed > 2 days ago ⇒ the car was collected → Gate-out,
-  // overriding the stale "In Yard" the importer stamped before the plan date passed
-  //
-  // ...เว้นแต่มีการ "ยิง Gate-in" ที่หน้าลานหลังวันแผนนั้น การเดาต้องแพ้หลักฐานตรง:
-  // การยิงเข้าลานคือคนยืนดูรถคันนั้นอยู่จริงในวันนั้น ส่วนแผนรับเป็นแค่กระดาษที่
-  // เลยกำหนดมา รถ yard-to-yard มักแบกแผนรับเก่าของลานต้นทางติดมาด้วย พอยิงเข้า
-  // ลานที่ปลายทาง สถานะที่คำนวณได้ยังเป็น Gate-out อยู่ ตัวเก็บกวาดใน App จึงเด้ง
-  // รถออกจากลาน (DEPARTED) ภายใน 1 นาที แล้วทุกสถานีก็ขึ้นว่า "รถยังไม่ Gate-in"
-  // ทั้งที่พนักงานเพิ่งยิงไปเองเมื่อครู่
-  //  เพิ่มอีกข้อ: แอดมินตั้งค่าสถานะไว้เองในแอปก็นับเป็นการยืนยันเช่นกัน —
-  //  ของเดิมกฎนี้ตัดสินก่อนช่อง Car Status แอดมินแก้เป็น In Yard เท่าไหร่ก็ไม่
-  //  เปลี่ยน ไม่มีทางแก้ข้อมูลให้ถูกได้เลย ส่วนกฎนี้มีไว้กันไฟล์ที่ import มา
-  //  แล้วเขียน In Yard ค้างไว้เท่านั้น ซึ่งยังกันได้เหมือนเดิม เพราะการ import
-  //  ไม่ได้ประทับเวลายืนยันสถานะไว้ (ดู assertedAfterPlan)
-  if (isLapsedPlan(c['Gate Out time stamp']) && !assertedAfterPlan(c)) return 'Gate-out'
+  // การตัดสินใจที่ตั้งใจเปลี่ยน (ไม่ใช่บั๊ก): เดิมแผนรับที่เลยกำหนดเกิน 2 วันจะ
+  // ถูกเดาว่า "รถถูกรับไปแล้ว" → Gate-out เอง ล้วน ๆ จากเวลาที่ผ่านไป ไม่ต้องมี
+  // ใครทำอะไรเลย — กฎนี้เคยทำให้รถที่ยังจอดอยู่จริงใน 3D LCB กลายเป็น Gate-out
+  // เองตอนตัวเก็บกวาดรันทุก 60 วิ แล้วโดนย้ายข้ามยาร์ดอัตโนมัติไปเป็น Pre Gate-in
+  // ที่ยาร์ดอื่นตาม (deliveryDestinationSite ใน App.tsx) ทั้งที่ไม่มีใครสแกนหรือ
+  // ทำอะไรกับรถคันนั้นเลย — ขัดกับกติกาที่ตั้งไว้ว่า Gate-out ต้องมาจากการสแกน
+  // จริงตามคิวงาน หรือแอดมินแก้เองที่ Unit List เท่านั้น (ดู promote() ด้านล่าง
+  // ที่ตัดกฎแบบเดียวกันนี้ออกจากฝั่งไฟล์ไปแล้ว) จึงตัดกฎ "แผนรับเลยกำหนด =
+  // Gate-out เอง" ออกทั้งหมด (isLapsedPlan/assertedAfterPlan ลบไปพร้อมกัน)
   const explicit = (c['Car Status'] || '').trim()
   // Pre Gate-out: ops-scan gate-out parks the car in preload until the daily 09:30
   // flush, when it becomes a real Gate-out (unless it was confirmed Preload first).

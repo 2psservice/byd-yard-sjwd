@@ -6,7 +6,7 @@
 import type { Site } from '../types'
 import type { TrackRow } from './excelTracking'
 import { tripsOf, TRIPS_CELL, TRIP_SCOPED_KEYS, type TripSnapshot } from './tripHistory'
-import { GATE_OUT_ORIGIN_SITE_KEY, CAR_STATUS_KEY, gateOutOriginAt, inYardAssertedAt, fmtGateOutStamp, isGateOutStamp, isLapsedPlan, gateOutScanMs } from './carStatus'
+import { GATE_OUT_ORIGIN_SITE_KEY, CAR_STATUS_KEY, gateOutOriginAt, inYardAssertedAt, fmtGateOutStamp, isGateOutStamp, gateOutScanMs } from './carStatus'
 
 const norm = (s?: string) => (s ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
 
@@ -220,9 +220,11 @@ export function departedViewFrom(r: TrackRow, siteId: string | null | undefined,
  * ทำไมรถคันนี้ถึงอ่านได้ว่า "Gate-out" เมื่อมองจากยาร์ดนี้ — ตอบเป็นภาษาคน
  *
  * สถานะ Gate-out ไม่ได้มาจากการยิงที่ประตูเสมอไป ไฟล์ที่อัปโหลดก็ทำให้เป็นได้
- * (มีวันที่ออกติดมาในไฟล์ หรือแผนรับที่เลยกำหนดมาเกิน 2 วัน) เวลามีรถขึ้นเป็น
- * Gate-out ทั้งที่ยังจอดอยู่ในลาน คนหน้างานต้องตอบได้ว่า "มาจากไหน" ก่อนจะแก้
- * ไม่งั้นแก้แล้วไฟล์รอบหน้าก็ตีกลับอีก
+ * (มีวันที่ออกติดมาในไฟล์) เวลามีรถขึ้นเป็น Gate-out ทั้งที่ยังจอดอยู่ในลาน
+ * คนหน้างานต้องตอบได้ว่า "มาจากไหน" ก่อนจะแก้ ไม่งั้นแก้แล้วไฟล์รอบหน้าก็ตีกลับอีก
+ *
+ * (แผนรับที่เลยกำหนดเกิน 2 วัน เคยเป็นอีกเหตุผลหนึ่งในนี้ด้วย — ตัดออกแล้วพร้อม
+ * กับกฎเดียวกันใน deriveCarStatus ดูคอมเมนต์ที่นั่น)
  *
  * เรียงตามลำดับที่ deriveCarStatus ตัดสินจริง คืน null ถ้าไม่ได้อ่านเป็น Gate-out
  */
@@ -232,7 +234,6 @@ export function gateOutReason(
   const d = departureFromSite(cells, siteId, sites)
   if (d) return `ยาร์ดนี้บันทึกว่ารถออกไปแล้ว เมื่อ ${fmtGateOutStamp(d.at)}`
   const stamp = (cells['Gate Out time stamp'] ?? '').trim()
-  if (isLapsedPlan(stamp)) return `แผนรับเลยกำหนดเกิน 2 วัน — "${stamp}" (ระบบเดาว่ารถถูกมารับไปแล้ว)`
   const explicit = (cells[CAR_STATUS_KEY] ?? '').trim()
   if (explicit === 'Pre Gate-out') return 'ยิงออกที่ประตูแล้ว รอตัดยอดรอบ 09:30'
   if (explicit === 'Gate-out') {
