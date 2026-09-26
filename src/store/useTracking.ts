@@ -1386,22 +1386,23 @@ export const useTracking = create<TrackingState>()(
         // gate-out rows: for a VIN already tracked live, merge the file's cells
         // (Gate Out time stamp ฯลฯ) WITHOUT forcing Car Status — that now needs a
         // real scan or an admin edit (see promote() above). For a VIN missing
-        // from the system entirely (deleted + re-imported), restore it as a
-        // historical Gate-out record so the data is never silently lost.
+        // from the system entirely (deleted + re-imported), restore the raw
+        // data so it is never silently lost — but Car Status ห้ามตั้งเป็น
+        // Gate-out เองจากไฟล์ด้วยเช่นกัน (กติกาเดียวกันทั้งระบบ) แอดมินต้องมา
+        // ยืนยันเองที่ Unit List ถ้ารถคันนี้ Gate-out จริง
         let gateOut = 0
         for (const r of res.gateOutRows ?? []) {
           const existing = rows[r.vin]
           if (!existing) {
             // sold car MISSING from the system (e.g. cleared + re-imported):
-            // when it belongs to the ACTIVE yard, restore it as Gate-out so the
-            // data stays in the system — never silently gone. Other yards'
+            // when it belongs to the ACTIVE yard, restore the raw data so it
+            // stays in the system — never silently gone. Other yards'
             // historical gate-outs stay excluded.
             if (!currentSite || siteIdForLocation(r.cells, sites) !== currentSite) continue
-            const cells = { ...r.cells, 'Car Status': 'Gate-out' }
+            const cells = { ...r.cells }
             const stamped: TrackRow = { vin: r.vin, cells, updatedAt: now, site: currentSite }
             rows[r.vin] = stamped
             changed.push(stamped)
-            gateOut++
             continue
           }
           // แยกยาร์ด แยกงาน: แถวที่รอบสดเป็นของยาร์ดอื่น ไฟล์ของยาร์ดนี้แตะไม่ได้ —
