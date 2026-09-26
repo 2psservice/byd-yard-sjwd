@@ -3,14 +3,15 @@ import { create } from 'zustand'
 import { quotaSafeStorage } from '../lib/persistStorage'
 import { persist } from 'zustand/middleware'
 import type { Column } from '../lib/trackingColumns'
-import { defaultColumns, reconcileColumns, columnNameKey, duplicatesBuiltIn, MAX_FILTERS, DEFAULT_FILTER_COLS } from '../lib/trackingColumns'
+import { defaultColumns, reconcileColumns, columnNameKey, duplicatesBuiltIn, MAX_FILTERS, DEFAULT_FILTER_COLS, LOCATION_KEY } from '../lib/trackingColumns'
 import type { ParseResult, RowEvent, TrackRow } from '../lib/excelTracking'
-import { parseTrackingWorkbook } from '../lib/excelTracking'
+import { parseTrackingWorkbook, isScanLocationEntry } from '../lib/excelTracking'
+import { parseYardLocCode, yardLocFull } from '../lib/groupingImport'
 import { idbBulkPut, idbClear, idbDelete, idbGetAllRows, idbPut } from '../lib/idb'
 import * as db from '../lib/db'
 import { supabase } from '../lib/supabase'
 import { onSync, sendSync, type RowMsg, type RowsPayload } from '../lib/syncBus'
-import { useYard } from './useYard'
+import { useYard, WCL_STAGING_BLOCK } from './useYard'
 import { siteForRow, siteIdForLocation, coInspectionAccepts, departedFromSite, siteWorksWith, rowYardName, CANDIDATE_SITES_KEY } from '../lib/siteScope'
 import { TRIPS_CELL, TRIP_SCOPED_KEYS, tripsOf, type TripSnapshot } from '../lib/tripHistory'
 import { useVisits } from './useVisits'
@@ -202,6 +203,13 @@ interface TrackingState {
    *  (App.tsx) ย้ายไปเป็น Pre Gate-in ที่ 3D LCB ทั้งที่ไม่เคยขยับจริง แอดมิน
    *  กดจากหน้าตั้งค่าครั้งเดียว ปลอดภัยแม้กดซ้ำ (เช็คสภาพก่อนแก้ทุกครั้ง) */
   repairWrongTransfer: () => Promise<{ fixed: number; skipped: number }>
+  /** ซ่อมรถที่ตำแหน่งปัจจุบันในผัง (block/row/slot) ไม่ตรงกับบรรทัดประวัติ
+   *  "Location" ล่าสุดของคันนั้น (ไม่นับบล็อกพักรถ WCL ซึ่งจอดอัตโนมัติตอน
+   *  Gate-in โดยไม่บันทึกประวัติเป็นปกติอยู่แล้ว) — ถอยตำแหน่งกลับไปที่บรรทัด
+   *  ประวัติล่าสุดบอกไว้ ถ้าช่องนั้นว่างจริง ถ้ามีรถคันอื่นจอดอยู่แล้ว (กันชนกัน)
+   *  หรือไม่มีประวัติ Location เลยให้ถอยไป จะข้ามไปเฉยๆ ไม่แตะ — กดจากหน้า
+   *  ตั้งค่าซ้ำได้ปลอดภัย (เช็คสภาพก่อนแก้ทุกครั้ง) */
+  repairOrphanPositions: () => { fixed: number; collided: { vin: string; want: string }[]; skipped: number }
   commitCoInspection: (res: ParseResult) => { updated: number; added: number; skipped: number; gateOut: number; moved: number; otherYard: number; heldInYard: number }
   /** Set a cell and log it. `src: 'scan'` marks the write as a FIELD STATION
    *  action (ops-scan), which is what lets a report tell a real recording apart
@@ -1151,6 +1159,44 @@ export const useTracking = create<TrackingState>()(
         }
         const touchedVins = new Set([...fixedVins, ...staleVisitIds.map((id) => id.split('#')[0])])
         return { fixed: touchedVins.size, skipped: WRONGLY_TRANSFERRED_VINS.length - touchedVins.size }
+      },
+
+      repairOrphanPositions: () => {
+        const { currentSite, units } = useYard.getState()
+        const rows = get().rows
+        const nextUnits: Record<string, Unit> = { ...units }
+        const changedUnits: Unit[] = []
+        const collided: { vin: string; want: string }[] = []
+        let skipped = 0
+        // ช่องที่ไซต์นี้ครองอยู่ตอนเริ่ม — เช็คชนกันกับสภาพจริง ไม่ใช่ค่าที่กำลังแก้ไปพร้อมกัน
+        const siteUnits = Object.values(units).filter((u) => u.site === currentSite)
+        const occupied = new Map<string, string>() // "block-row-slot" → vin
+        for (const u of siteUnits) if (u.block && u.row && u.slot) occupied.set(`${u.block}-${u.row}-${u.slot}`, u.vin)
+        for (const u of siteUnits) {
+          if (u.block === WCL_STAGING_BLOCK || !u.block || !u.row || !u.slot) continue
+          const r = rows[u.vin]
+          if (!r) { skipped++; continue }
+          const moves = (r.history ?? []).filter((e) => (e.field === 'Location' || e.field === LOCATION_KEY) && isScanLocationEntry(e))
+          const last = moves[moves.length - 1]
+          const target = last ? parseYardLocCode(last.to) : null
+          if (!target) { skipped++; continue }
+          if (u.block === target.block && u.row === target.row && u.slot === target.slot) continue
+          const key = `${target.block}-${target.row}-${target.slot}`
+          const occupant = occupied.get(key)
+          if (occupant && occupant !== u.vin) { collided.push({ vin: u.vin, want: yardLocFull(target) }); continue }
+          occupied.delete(`${u.block}-${u.row}-${u.slot}`)
+          occupied.set(key, u.vin)
+          const from = yardLocFull(u)
+          const fixedUnit: Unit = { ...u, block: target.block, row: target.row, slot: target.slot, parkedAt: Date.now() }
+          nextUnits[u.vin] = fixedUnit
+          changedUnits.push(fixedUnit)
+          get().appendHistory(u.vin, { at: Date.now(), by: 'ระบบ (แก้ไขตำแหน่งที่ไม่มีการสแกน)', field: 'Location', from, to: yardLocFull(target) })
+        }
+        if (changedUnits.length) {
+          useYard.setState({ units: nextUnits })
+          db.upsertUnits(changedUnits).catch((e) => console.error('[db] repairOrphanPositions', e))
+        }
+        return { fixed: changedUnits.length, collided, skipped }
       },
 
       /**

@@ -95,6 +95,47 @@ function WrongTransferRepair() {
   )
 }
 
+/**
+ * ซ่อมรถที่ตำแหน่งในผัง (block/row/slot) ไม่ตรงกับบรรทัดประวัติ "Location"
+ * ล่าสุดของคันนั้น — เช่นรถที่เคยถูกปุ่ม "จัดจอดอัตโนมัติ" (ลบไปแล้ว) ย้ายไปโดย
+ * ไม่บันทึกประวัติ ดู repairOrphanPositions ทำทีละไซต์ (ไซต์ที่เลือกอยู่)
+ */
+function OrphanPositionRepair() {
+  const { currentSite, sites, toast } = useYard()
+  const [busy, setBusy] = useState(false)
+  const siteName = sites.find((s) => s.id === currentSite)?.name ?? '—'
+  const run = async () => {
+    if (!currentSite || busy) return
+    if (!window.confirm(`ถอยตำแหน่งรถของ ${siteName} ที่ไม่ตรงกับประวัติการสแกนล่าสุด กลับไปตำแหน่งที่มีคนบันทึกไว้จริง?\n(ไม่นับรถที่บล็อก WCL · คันที่ช่องปลายทางมีรถอื่นจอดอยู่แล้วจะไม่ถูกแตะ)`)) return
+    setBusy(true)
+    try {
+      const { fixed, collided, skipped } = useTracking.getState().repairOrphanPositions()
+      toast('ok', fixed
+        ? `ถอยตำแหน่งรถ ${fixed} คันใน ${siteName} กลับแล้ว${collided.length ? ` · ชนกัน ${collided.length} คัน (ดูรายละเอียด)` : ''}`
+        : `ไม่พบตำแหน่งที่ต้องแก้ใน ${siteName}${collided.length ? ` · ชนกัน ${collided.length} คัน (ดูรายละเอียด)` : ''}`)
+      if (collided.length) {
+        window.alert(`ช่องปลายทางมีรถคันอื่นจอดอยู่แล้ว ต้องแก้เอง:\n\n${collided.map((c) => `${c.vin} → ${c.want}`).join('\n')}`)
+      }
+    } finally { setBusy(false) }
+  }
+  return (
+    <section className="panel overflow-hidden mb-4">
+      <div className="px-4 py-3 border-b hairline flex items-center gap-2">
+        <Wrench size={16} style={{ color: 'var(--brand)' }} />
+        <span className="font-semibold text-[14.5px]">ซ่อมตำแหน่งที่ไม่มีการสแกน</span>
+      </div>
+      <div className="p-4 flex flex-wrap items-center gap-3">
+        <div className="text-[13px] leading-relaxed flex-1" style={{ minWidth: 260, color: 'var(--muted)' }}>
+          <b>ถอยตำแหน่งรถของ {siteName}</b> ที่ตำแหน่งปัจจุบันในผังไม่ตรงกับประวัติการสแกนย้ายล่าสุด (เช่น เคยถูกปุ่มจัดจอดอัตโนมัติที่ถูกลบไปแล้วย้ายโดยไม่บันทึก) กลับไปตำแหน่งที่มีคนบันทึกไว้จริง — ไม่แตะรถที่บล็อก WCL หรือช่องปลายทางมีรถอื่นจอดอยู่แล้ว
+        </div>
+        <button id="repair-orphan-positions" className="btn btn-ghost py-2" disabled={!currentSite || busy} onClick={run}>
+          <Wrench size={14} /> {busy ? 'กำลังทำ…' : `ซ่อมตำแหน่งใน ${siteName}`}
+        </button>
+      </div>
+    </section>
+  )
+}
+
 function VinManager() {
   const trackingRows = useTrackingRows()
   const units = useUnits()
@@ -765,6 +806,7 @@ export function Settings() {
       {/* ── Data repair (one-off admin actions) ── */}
       <DataRepair />
       <WrongTransferRepair />
+      <OrphanPositionRepair />
 
       {/* ── Site management ── */}
       <section className="panel overflow-hidden mb-4">
