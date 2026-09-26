@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Zap, Layers, MapPin, Pencil, Eye, Plus, Trash2, RotateCw, Square, MousePointer2,
+  Layers, MapPin, Pencil, Eye, Plus, Trash2, RotateCw, Square, MousePointer2,
   Copy, X, Maximize2, Upload, Loader2, ImageOff, Grid3x3, ArrowLeftRight, ChevronDown,
   Search, Printer, Download, ChevronUp, ChevronsUpDown,
 } from 'lucide-react'
 import { useYard, useUnits, useBlocks, WCL_STAGING_BLOCK } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
-import { yardLocFull, byYardLocation } from '../lib/groupingImport'
+import { byYardLocation } from '../lib/groupingImport'
 import { isConfigured, fetchUnitsByVins } from '../lib/db'
 import { deriveCarStatus, IN_YARD_STATUSES, CAR_STATUS_META } from '../lib/carStatus'
 import { rowInSite } from '../lib/siteScope'
@@ -129,7 +129,7 @@ export function YardPlan() {
   const blocks = useBlocks()
   const currentSite = useYard((s) => s.currentSite)
   const sites = useYard((s) => s.sites)
-  const { autoParkAll, addBlock, updateBlock, removeBlock, toast } = useYard()
+  const { addBlock, updateBlock, removeBlock, toast } = useYard()
   const t = makeT(lang)
   const siteName = sites.find((x) => x.id === currentSite)?.name
   // the yard's REAL parking capacity (admin-set in Report → รายงานประจำวัน),
@@ -513,28 +513,6 @@ export function YardPlan() {
               </div>
             )}
 
-            {!edit && (
-              <button className="btn btn-primary" onClick={() => {
-                const before = useYard.getState().units
-                const n = autoParkAll()
-                if (n) {
-                  // log each auto-assigned position — an unlogged position
-                  // write can silently contradict a later manual edit
-                  const after = useYard.getState().units
-                  const by = `${useYard.getState().currentUser} · จัดจอดอัตโนมัติ`
-                  const ah = useTracking.getState().appendHistory
-                  for (const vin in after) {
-                    const a = after[vin], b = before[vin]
-                    if (!a.block || !a.row || !a.slot) continue
-                    if (b && b.block === a.block && b.row === a.row && b.slot === a.slot) continue
-                    ah(vin, { at: Date.now(), by, field: 'Location', from: yardLocFull(b), to: yardLocFull(a) })
-                  }
-                }
-                toast(n ? 'ok' : 'info', n ? `จัดจอดอัตโนมัติ ${n} คัน` : 'ไม่มีรถรอจอด')
-              }}>
-                <Zap size={15} /> {t('autoFill')}
-              </button>
-            )}
             {edit && (
               <>
                 <button className="btn btn-primary" onClick={() => setGenOpen(true)}><Grid3x3 size={15} /> สร้างบล็อกจากตัวเลข</button>
