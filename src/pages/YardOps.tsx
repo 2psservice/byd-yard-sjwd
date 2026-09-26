@@ -2070,8 +2070,14 @@ function WalkView() {
         // to "In Yard" by an import, and it still has to be checked in properly
         // here or it never gets a slot (see needsArrival).
         const uHere = units.find((u) => u.vin === trackRow.vin)
-        const isPre = (trackRow.cells['Car Status'] ?? 'Pre Gate-in') === 'Pre Gate-in'
+        // ชีตเป็นฝ่ายชี้ขาดก่อนเสมอ (เหมือน blockIfAlreadyGated/needsArrival
+        // ด้านบน) — ถ้าชีตบอกว่ายิงเข้าลานนี้ไปแล้วในรอบนี้ ห้ามโชว์ปุ่ม Confirm
+        // ซ้ำอีก ต่อให้ cache หน่วย (uHere) ของเครื่องนี้ยังไม่ทันซิงก์มา/ยังว่าง
+        // อยู่ก็ตาม (เดิมเงื่อนไข !uHere ทำให้กรณีนี้ขึ้นปุ่ม Confirm ซ้ำได้)
+        const isPre = !scannedInHere(trackRow.cells) && (
+          (trackRow.cells['Car Status'] ?? 'Pre Gate-in') === 'Pre Gate-in'
           || !uHere || uHere.status === 'EXPECTED' || uHere.status === 'DEPARTED'
+        )
         const MatchPick = ({ value, onPick, what }: {
           value: 'OK' | 'NG' | null; onPick: (v: 'OK' | 'NG') => void; what: string
         }) => (
