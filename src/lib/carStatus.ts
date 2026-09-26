@@ -211,9 +211,13 @@ export function deriveCarStatus(c: Record<string, string>): string {
   if (explicit === 'Gate-in') return 'In Yard'
   if (explicit && isStationWorkStatus(explicit)) return 'In Yard'
   if (explicit) return explicit
-  // gate-out signal — the Tracking Status sheet uses "Gate Out time stamp",
-  // the Vin List Inventory uses "Gate Out Date"; either real date = gated out
-  if (isGateOutStamp(c['Gate Out time stamp']) || isGateOutStamp(c['Gate Out Date'])) return 'Gate-out'
+  // การตัดสินใจที่ตั้งใจเปลี่ยน (ไม่ใช่บั๊ก): เดิมช่อง "Gate Out time stamp" /
+  // "Gate Out Date" ที่มีวันที่ล้วนๆ (ไม่ใช่แผน) ติดมาจากไฟล์ ทำให้อ่านเป็น
+  // Gate-out ได้เองโดยไม่มีใครสแกนหรือแอดมินแก้เลย — ขัดกับกติกาที่ตั้งไว้ว่า
+  // Gate-out ต้องมาจากการสแกนจริงตามคิวงาน (grouping) หรือแอดมินแก้ Car Status
+  // เองที่ Unit List เท่านั้น (ไฟล์ real gate-out scan เขียนช่อง Car Status
+  // ตรงๆ อยู่แล้ว ดู YardOps.tsx doGateOut — ไม่ได้พึ่งกฎนี้เลย) จึงตัดออก —
+  // วันที่ในไฟล์ยังถูกเก็บ/แสดงไว้ตามจริง แค่ไม่ใช้ตัดสินสถานะรถเองอีกต่อไป
   if ((c['Grouping  Number'] || '').trim()) return 'Ready'
   // gate-in signal — mirror the gate-out check above: the Vin List Inventory
   // sheet writes "Gate In (Rayong yard)", a Vin List Inventory import can

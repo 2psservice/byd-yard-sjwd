@@ -303,6 +303,7 @@ function excelDateToStr(XLSX: any, v: any): string {
 /** Parse the per-yard Vin List Inventory workbook → Pre Gate-in rows. */
 export function parseVinListInventory(XLSX: any, wb: any, yards: YardName[] = []): ParseResult {
   const byVin = new Map<string, TrackRow>()
+  const gateOutByVin = new Map<string, TrackRow>()
   const optSets: Record<string, Set<string>> = {}
   const headerSet = new Set<string>(['Vin', 'Location yard', 'Model', 'Color', 'Gate In Date', 'Car Status'])
   let total = 0
@@ -349,18 +350,21 @@ export function parseVinListInventory(XLSX: any, wb: any, yards: YardName[] = []
       cells['Vin'] = vin
       cells['Location yard'] = yard
       cells['Gate In Date'] = gateInIdx >= 0 ? excelDateToStr(XLSX, row[gateInIdx]) : ''
-      // a filled "Gate Out Date" means the car already LEFT → Gate-out, not Pre
-      // Gate-in. Map it to the canonical "Gate Out time stamp" (what the app's
-      // gate-out logic reads) so status/date line up everywhere.
+      // a filled "Gate Out Date" means the car already LEFT — per the rule that
+      // Gate-out must come from a real gate-out scan (grouping queue) or an
+      // admin edit, never from a file alone (see deriveCarStatus), these rows
+      // are kept SEPARATE from the tracked Pre Gate-in list — never imported as
+      // a new car, only used to merge cell data into an EXISTING vin (same
+      // pattern as the Tracking Status parser's gateOutRows above).
       const goRaw = gateOutIdx >= 0 ? String(row[gateOutIdx] ?? '').trim() : ''
       if (isGateOutStamp(goRaw)) {
         const goStr = excelDateToStr(XLSX, goRaw) || goRaw
         cells['Gate Out Date'] = goStr
         cells['Gate Out time stamp'] = goStr
-        cells['Car Status'] = 'Gate-out'
-      } else {
-        cells['Car Status'] = 'Pre Gate-in'
+        gateOutByVin.set(vin, { vin, cells })
+        continue
       }
+      cells['Car Status'] = 'Pre Gate-in'
 
       for (const k of Object.keys(cells)) {
         if (cells[k] && SELECT_DATA_KEYS.has(k)) (optSets[k] ??= new Set()).add(cells[k])
@@ -377,8 +381,8 @@ export function parseVinListInventory(XLSX: any, wb: any, yards: YardName[] = []
     headers: [...headerSet],
     total,
     inYard: byVin.size,
-    gatedOut: 0,
-    gateOutRows: [],
+    gatedOut: gateOutByVin.size,
+    gateOutRows: [...gateOutByVin.values()],
     options,
     defects: [],
     defectSheets: [],
