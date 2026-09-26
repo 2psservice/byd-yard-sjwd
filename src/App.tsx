@@ -7,7 +7,7 @@ import { SelectSiteModal } from './components/SelectSiteModal'
 import { OpsShell } from './components/OpsShell'
 import { useYard, useMe, isOpsOnlyRole } from './store/useYard'
 import { useTrackingRows, useTracking } from './store/useTracking'
-import { useOps, queueTypeOf } from './store/useOps'
+import { useOps, queueTypeOf, repairMissingStationDates } from './store/useOps'
 import { useVisits } from './store/useVisits'
 import { startSyncBus, stopSyncBus } from './lib/syncBus'
 import { startKeyboardGuard } from './lib/keyboardGuard'
@@ -425,6 +425,7 @@ export default function App() {
   useEffect(() => {
     if (import.meta.env.DEV) {
       (window as any).__yard = useYard; (window as any).__ops = useOps; (window as any).__tracking = useTracking; (window as any).__visits = useVisits
+      ;(window as any).__repairStationDates = repairMissingStationDates
       // lets a test play the part of "another device" announcing a move
       import('./lib/syncBus').then((m) => { (window as any).__sync = m }).catch(() => {})
     }

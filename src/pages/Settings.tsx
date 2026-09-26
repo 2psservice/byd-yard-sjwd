@@ -11,6 +11,7 @@ import {
 import { useYard, useUnits } from '../store/useYard'
 import type { UserRole } from '../types'
 import { useTracking, useTrackingRows } from '../store/useTracking'
+import { repairMissingStationDates } from '../store/useOps'
 import { PageHead, cx } from '../components/ui'
 import { hashPassword } from '../lib/password'
 
@@ -130,6 +131,45 @@ function OrphanPositionRepair() {
         </div>
         <button id="repair-orphan-positions" className="btn btn-ghost py-2" disabled={!currentSite || busy} onClick={run}>
           <Wrench size={14} /> {busy ? 'กำลังทำ…' : `ซ่อมตำแหน่งใน ${siteName}`}
+        </button>
+      </div>
+    </section>
+  )
+}
+
+/**
+ * ซ่อมวันที่ตรวจ PDI/PM/FINAL ที่หายไปเงียบๆ ตอนแถวชีต tracking ของรถคันนั้น
+ * ยังไม่ทันซิงก์มาที่เครื่องที่บันทึก (checkedAt/result ยังอยู่ในคิวงานครบ
+ * แต่วันที่ไม่เคยถูกเขียนลงชีต) ดู repairMissingStationDates — ทำทุกไซต์พร้อมกัน
+ * (คิวงานไม่ได้แยกไซต์ชัดเจนเท่าตำแหน่งจอด) ค่าที่วัดได้ (SOC/แรงดัน/เลขไมล์/
+ * ลมยาง) กู้คืนไม่ได้ด้วยเครื่องมือนี้ — ไม่เคยถูกเก็บไว้ที่ไหนอื่นนอกจากชีตที่
+ * เขียนไม่สำเร็จ ต้องแจ้งทีมวัดค่าใหม่แยกต่างหาก
+ */
+function StationDateRepair() {
+  const { toast } = useYard()
+  const [busy, setBusy] = useState(false)
+  const run = () => {
+    if (busy) return
+    if (!window.confirm('ซ่อมวันที่ตรวจ PDI/PM/FINAL ที่หายไป (ตรวจจริงแล้วแต่วันที่ไม่ถูกบันทึก) ทุกไซต์?\n(คืนเฉพาะวันที่ตรวจ + ผล — ค่า SOC/แรงดัน/เลขไมล์/ลมยางกู้คืนไม่ได้ ต้องวัดใหม่)')) return
+    setBusy(true)
+    try {
+      const { fixed, skipped } = repairMissingStationDates()
+      toast('ok', fixed ? `คืนวันที่ตรวจ ${fixed} คันแล้ว${skipped ? ` · ข้าม ${skipped} คัน (แถวชีตยังไม่มา/แก้ไปแล้ว)` : ''}` : 'ไม่พบคันที่ต้องแก้ (แก้ไปแล้วทั้งหมด หรือแถวชีตยังไม่ซิงก์มา)')
+    } finally { setBusy(false) }
+  }
+  return (
+    <section className="panel overflow-hidden mb-4">
+      <div className="px-4 py-3 border-b hairline flex items-center gap-2">
+        <Wrench size={16} style={{ color: 'var(--brand)' }} />
+        <span className="font-semibold text-[14.5px]">ซ่อมวันที่ตรวจ PDI/PM/FINAL ที่หายไป</span>
+      </div>
+      <div className="p-4 flex flex-wrap items-center gap-3">
+        <div className="text-[13px] leading-relaxed flex-1" style={{ minWidth: 260, color: 'var(--muted)' }}>
+          <b>คืนวันที่ตรวจ + ผล (OK/NG)</b> ให้รถที่ตรวจ PDI/PM/FINAL จริงแล้ว (มี Defect/Event log ยืนยัน) แต่วันที่ตรวจในชีตหาย เพราะเครื่องที่บันทึกยังไม่ได้โหลดแถวชีตของคันนั้นตอนกด Save — ทำทุกไซต์พร้อมกัน
+          <br /><span style={{ color: '#dc2626' }}>ค่า SOC / แรงดัน / เลขไมล์ / ลมยาง กู้คืนไม่ได้ ต้องแจ้งทีมวัดใหม่</span>
+        </div>
+        <button id="repair-station-dates" className="btn btn-ghost py-2" disabled={busy} onClick={run}>
+          <Wrench size={14} /> {busy ? 'กำลังทำ…' : 'ซ่อมวันที่ตรวจ'}
         </button>
       </div>
     </section>
@@ -807,6 +847,7 @@ export function Settings() {
       <DataRepair />
       <WrongTransferRepair />
       <OrphanPositionRepair />
+      <StationDateRepair />
 
       {/* ── Site management ── */}
       <section className="panel overflow-hidden mb-4">
