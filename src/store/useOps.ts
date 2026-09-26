@@ -105,9 +105,11 @@ export function queueTypeOf(q: WorkQueue): QueueType {
   return 'SPECIAL'
 }
 
-/** Today as "DD/MM/YYYY" — the date format the yard stations write into the sheet. */
-function todayCell(): string {
-  const n = new Date()
+/** "DD/MM/YYYY" — the date format the yard stations write into the sheet.
+ *  Defaults to today; pass a real timestamp to stamp a PAST date instead
+ *  (see repairMissingStationDates — backfilling must never show today). */
+function dmyCell(at: number = Date.now()): string {
+  const n = new Date(at)
   return `${String(n.getDate()).padStart(2, '0')}/${String(n.getMonth() + 1).padStart(2, '0')}/${n.getFullYear()}`
 }
 
@@ -123,13 +125,16 @@ const PDI_KEYS = ['PDI', ...Array.from({ length: 8 }, (_, i) => `RE PDI  Date #$
  * never double-write (which would eat a second PM slot on a re-toggle).
  */
 /**
- * Stamp today's date into the tracking sheet for a station check, using the
- * per-type ladder — PM → next empty PM1…PM15, PDI → PDI then RE-PDI 1…8, FINAL
- * → "Final check date" (single). Queue-independent so field stations can stamp
+ * Stamp a station check's date into the tracking sheet, using the per-type
+ * ladder — PM → next empty PM1…PM15, PDI → PDI then RE-PDI 1…8, FINAL →
+ * "Final check date" (single). Queue-independent so field stations can stamp
  * even when the car isn't part of a work queue. Returns true if a cell was
  * written. WASH / SPECIAL have no date cell.
+ *
+ * `at` defaults to now (a live station save); pass a past timestamp to
+ * backfill a check that already happened (see repairMissingStationDates).
  */
-export function stampStationDate(vin: string, type: QueueType): boolean {
+export function stampStationDate(vin: string, type: QueueType, at?: number): boolean {
   // REPAIR/WASH/SPECIAL have no date column on the master sheet — event log only.
   // GATEIN neither: arrival is stamped by the gate station's own write (Gate In
   // Time / Inspector), and falling through here would date 'Final check date'.
@@ -137,17 +142,17 @@ export function stampStationDate(vin: string, type: QueueType): boolean {
   const tr = useTracking.getState()
   const row = tr.rows[vin]
   if (!row) return false
-  const d = todayCell()
-  // idempotent per day: walk the ladder to the first empty slot, but if the
-  // LAST filled slot already carries today's date this is a re-save of the same
-  // inspection (double-tap / corrected entry) — don't burn another slot.
+  const d = dmyCell(at)
+  // idempotent per date: walk the ladder to the first empty slot, but if the
+  // LAST filled slot already carries this same date this is a re-save of the
+  // same inspection (double-tap / corrected entry) — don't burn another slot.
   const ladder = (keys: readonly string[]): boolean => {
     let slot: string | null = null
     for (let i = 0; i < keys.length; i++) {
       const val = (row.cells[keys[i]] || '').trim()
       if (!val) { slot = keys[i]; break }
       if (val === d && (i === keys.length - 1 || !(row.cells[keys[i + 1]] || '').trim()))
-        return false // latest stamp is already today → same inspection re-saved
+        return false // latest stamp is already this date → same inspection re-saved
     }
     if (!slot) return false // all slots already used
     // 'scan' — this only ever runs from a station save, and the entry's `at` is
@@ -165,6 +170,49 @@ export function stampStationDate(vin: string, type: QueueType): boolean {
 
 function stampOverview(q: WorkQueue, vin: string, _result?: 'OK' | 'NG'): boolean {
   return stampStationDate(vin, queueTypeOf(q))
+}
+
+/**
+ * ซ่อมวันที่ตรวจ PDI/PM/FINAL ที่หายไปเงียบๆ — สถานีเขียนวันที่ตรวจ + ค่าที่
+ * วัดได้ (SOC/แรงดัน/เลขไมล์/ลมยาง) ลงแถวชีต tracking แยกจาก Event log/Defect
+ * (ซึ่งเขียนลงคิวงาน/unit เสมอ) ถ้าเครื่องที่บันทึกตอนนั้นยังไม่มีแถวชีตของ
+ * VIN นั้น (unit โหลดมาแล้วจนตรวจได้ แต่แถวชีตยังไม่ทันซิงก์) การเขียนวันที่จะ
+ * เงียบๆ ไม่เกิดขึ้นเลย ทั้งที่ checkedAt/result ยังถูกบันทึกไว้ในคิวงานครบ —
+ * ฟังก์ชันนี้เดินดูทุกคิวงาน หาคันที่ checkedAt มีแต่ยังไม่เคย stamped แล้วเขียน
+ * วันที่ (ของวันที่ตรวจจริง ไม่ใช่วันนี้) ย้อนกลับให้
+ *
+ * ค่าที่วัดได้ (SOC/แรงดัน/เลขไมล์/ลมยาง) กู้คืนไม่ได้ด้วยวิธีนี้ — ไม่เคยถูก
+ * เก็บไว้ที่ไหนอื่นนอกจากแถวชีตที่เขียนไม่สำเร็จ ต้องให้ทีมวัดค่าใหม่จริงๆ
+ *
+ * แอดมินกดจากหน้าตั้งค่า ปลอดภัยกดซ้ำ (ข้ามคันที่ stamped ไปแล้ว/ไม่มีแถวชีต)
+ */
+export function repairMissingStationDates(): { fixed: number; skipped: number } {
+  const tr = useTracking.getState()
+  let fixed = 0
+  let skipped = 0
+  const dirtyIds: string[] = []
+  const nextQueues = useOps.getState().queues.map((q) => {
+    const type = queueTypeOf(q)
+    if (isSequenceQueue(q) || type === 'REPAIR' || type === 'WASH' || type === 'SPECIAL' || type === 'GATEIN') return q
+    let changed = false
+    const items = q.items.map((it) => {
+      if (!it.checkedAt || it.stamped) return it
+      if (!tr.rows[it.vin]) { skipped++; return it }
+      const wrote = stampStationDate(it.vin, type, it.checkedAt)
+      if (!wrote) { skipped++; return it }
+      changed = true
+      fixed++
+      return { ...it, stamped: true }
+    })
+    if (!changed) return q
+    dirtyIds.push(q.id)
+    return { ...q, items }
+  })
+  if (dirtyIds.length) {
+    useOps.setState({ queues: nextQueues })
+    pushQueues(useOps.getState, dirtyIds)
+  }
+  return { fixed, skipped }
 }
 
 /** Coerce a queue from ANY source (old localStorage, cloud rows, another app

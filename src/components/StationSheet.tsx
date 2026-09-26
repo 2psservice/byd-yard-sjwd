@@ -146,6 +146,14 @@ export default function StationSheet({ unit, row, activeProc, onSaved, stationTi
       toast('err', 'กรุณาถ่ายรูปเลขวิน (Export Label) 1 รูป — บังคับเฉพาะครั้งแรกของคันนี้')
       return
     }
+    // แถวชีต tracking ของคันนี้ยังไม่ทันซิงก์มาที่เครื่องนี้ — ถ้าปล่อยให้บันทึก
+    // ต่อไป วันที่ตรวจ + ค่าที่วัดได้ (SOC/แรงดัน/เลขไมล์/ลมยาง) จะเงียบๆ ไม่ถูก
+    // เขียนเลย (ดูคอมเมนต์ที่ PdiView) ทั้งที่ Event log ยังขึ้นเหมือนบันทึกสำเร็จ
+    // — บล็อกไว้ก่อน ให้รอสักครู่แล้วลองใหม่ ดีกว่าให้ข้อมูลหายแบบกู้คืนไม่ได้
+    if (!row) {
+      toast('err', 'ยังโหลดข้อมูลรถคันนี้ไม่ครบ — รอสักครู่แล้วลองบันทึกใหม่ (ไม่งั้นวันที่ตรวจ/ค่าที่วัดจะหาย)')
+      return
+    }
     savedRef.current = true
 
     // stash the once-per-car VIN-label shot (no history line — it can be a big

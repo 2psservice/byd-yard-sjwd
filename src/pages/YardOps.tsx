@@ -3187,6 +3187,13 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved, stationTit
   const savedRef = useRef(false) // double-tap guard — a 2nd save burns another PM/RE-PDI date slot
   const save = () => {
     if (savedRef.current) return
+    // แถวชีต tracking ของคันนี้ยังไม่ทันซิงก์มาที่เครื่องนี้ — ถ้าปล่อยให้บันทึก
+    // ต่อไป วันที่ตรวจ + ค่าที่วัดได้จะเงียบๆ ไม่ถูกเขียนเลย (ดูคอมเมนต์ที่
+    // PdiView) บล็อกไว้ก่อน ให้รอสักครู่แล้วลองใหม่ ดีกว่าให้ข้อมูลหายแบบกู้คืนไม่ได้
+    if (!row) {
+      toast('err', 'ยังโหลดข้อมูลรถคันนี้ไม่ครบ — รอสักครู่แล้วลองบันทึกใหม่ (ไม่งั้นวันที่ตรวจ/ค่าที่วัดจะหาย)')
+      return
+    }
     savedRef.current = true
     // measurements → tracking cells
     if (row) {
@@ -3381,6 +3388,28 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
     attempt()
     return () => { cancelled = true }
   }, [vin])
+  // สถานี PDI/FINAL/PM เขียนวันที่ตรวจ + ค่าที่วัดได้ (SOC/แรงดัน/เลขไมล์/ลมยาง)
+  // ลง "แถวชีต tracking" ของรถคันนั้นตรงๆ (คนละที่กับ unit) — ถ้าเครื่องนี้ยัง
+  // ไม่มีแถวของ VIN ที่กำลังโฟกัสอยู่ (unit โหลดมาแล้วจนตรวจได้ แต่แถวชีตยังไม่
+  // ทันซิงก์มา) ตอนกด Save ช่องพวกนี้จะเงียบๆ ไม่ถูกเขียนเลย ทั้งที่ Event log /
+  // Defect ยังบันทึกได้ตามปกติ (คนละ store กัน) — ต้องรีบดึงแถวมาก่อน เหมือนที่
+  // ทำกับ unit ด้านบน ไม่งั้นค่าที่ inspector พิมพ์ไว้จะหายไปโดยไม่มีทางกู้คืน
+  useEffect(() => {
+    if (!vin || !isConfigured()) return
+    if (trackingRows.some(r => r.vin === vin)) return
+    let cancelled = false
+    let tries = 0
+    const attempt = () => {
+      if (cancelled) return
+      tries++
+      fetchTrackingRowsByVin(vin).then((rows) => {
+        if (rows.length) { useTracking.getState().adoptCloudRows(rows); return }
+        if (!cancelled && tries < 4) setTimeout(attempt, 1500 * tries)
+      }).catch(() => {})
+    }
+    attempt()
+    return () => { cancelled = true }
+  }, [vin, trackingRows])
   // the station task this car is currently in (PDI / FINAL PM / Wash …)
   const activeProc = useMemo(() => (unit ? activeProcess(unit.vin, queues) : null), [unit, queues])
   const procStage = activeProc ? stageOf(activeProc.item) : null
