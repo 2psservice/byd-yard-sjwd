@@ -118,7 +118,6 @@ const D: Dict = {
   planMode: { th: 'โหมดวางแผน', en: 'Plan mode' },
   autoPlan: { th: 'Auto — เครื่องเลือกให้', en: 'Auto — engine decides' },
   semiPlan: { th: 'Semi — เลือกเองได้', en: 'Semi — operator can pick' },
-  autoFill: { th: 'จัดจอดอัตโนมัติทั้งหมด', en: 'Auto-park all' },
 }
 
 export function makeT(lang: Lang) {

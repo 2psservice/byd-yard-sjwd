@@ -254,7 +254,6 @@ interface YardState {
     modelName?: string; color?: string; gateInAt?: number
     from?: { block?: string; row?: number; slot?: number }
   }[]) => number
-  autoParkAll: () => number
   setPolicy: (model: string, patch: Partial<ParkingPolicy>) => void
   loadPolicies: () => Promise<void>
   // --- yard layout editor ---
@@ -1248,30 +1247,6 @@ export const useYard = create<YardState>()(
           })()
         }
         return changed.length
-      },
-
-      autoParkAll: () => {
-        const { policies, groupModelsInRow, laneDepth, currentDriver } = get()
-        const blocks = curBlocks(get())
-        const units = { ...get().units }
-        let n = 0
-        const changed: Unit[] = []
-        for (const u of Object.values(units)) {
-          if (u.status !== 'GATE_IN') continue
-          const a = autoAssign(withModelId(u), blocks, policies, Object.values(units), groupModelsInRow, laneDepth)
-          if (!a) continue
-          const now = Date.now()
-          const updated: Unit = {
-            ...u, block: a.block, row: a.row, slot: a.slot, status: 'PARKED', planMode: 'AUTO',
-            assignedAt: now, drivingStartedAt: now, parkedAt: now, driver: u.driver || currentDriver || 'Auto',
-          }
-          units[u.vin] = updated
-          changed.push(updated)
-          n++
-        }
-        set({ units })
-        db.upsertUnits(changed).catch((e) => console.error('[db] autoParkAll', e))
-        return n
       },
 
       setPolicy: (model, patch) => {
