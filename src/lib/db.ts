@@ -916,26 +916,33 @@ export async function fetchTrackingRows(sinceMs?: number): Promise<TrackRow[]> {
   const PAGE = 1000
   const sinceIso = sinceMs ? new Date(sinceMs).toISOString() : null
 
-  const page = async (from: number): Promise<TrackRowRow[]> => {
-    const run = (cols: string) => {
-      let q: any = supabase.from('tracking_rows').select(cols).order('vin')
-      if (sinceIso) q = q.gt('updated_at', sinceIso)
-      return q.range(from, from + PAGE - 1)
-    }
-    // fall through the shrinking column sets ONLY on a missing-column error
-    // (see fetchTrackingRowsByVin) — a timeout must not fan out into 4 scans
-    let res: any = await run('vin, cells, updated_at, site, history, deleted_at')
-    if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at, site, history') // `deleted_at` column not migrated yet
-    if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at, site') // `history` column not migrated yet
-    if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at') // `site` column not migrated yet
-    // THROW on a real failure. Returning [] here read as "short page = done",
-    // so a pull that failed mid-way passed for complete — the caller then
-    // stamped lastSync and the minute-sync (changed-rows-only) never went back
-    // for the missing thousands. That is how two browsers ended up counting
-    // 8 and 280 cars in a yard whose plan draws ~2,300.
-    if (res.error) { console.error('[db] fetchTrackingRows', res.error); throw res.error }
-    return (res.data ?? []) as TrackRowRow[]
-  }
+  // Retried (yard wifi/cellular drops a page mid-pull often enough that one
+  // blip used to fail the whole full sync) — see withRetry. The periodic
+  // minute-resync (useTracking.ts) will call this again either way, but a
+  // page that can survive one retry here needs one fewer 60s round trip to
+  // finally land, and on a persistently flaky device that round trip may not
+  // come — every attempt failing the same way is how a device gets stuck.
+  const page = (from: number): Promise<TrackRowRow[]> =>
+    withRetry(async () => {
+      const run = (cols: string) => {
+        let q: any = supabase.from('tracking_rows').select(cols).order('vin')
+        if (sinceIso) q = q.gt('updated_at', sinceIso)
+        return q.range(from, from + PAGE - 1)
+      }
+      // fall through the shrinking column sets ONLY on a missing-column error
+      // (see fetchTrackingRowsByVin) — a timeout must not fan out into 4 scans
+      let res: any = await run('vin, cells, updated_at, site, history, deleted_at')
+      if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at, site, history') // `deleted_at` column not migrated yet
+      if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at, site') // `history` column not migrated yet
+      if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at') // `site` column not migrated yet
+      // THROW on a real failure. Returning [] here read as "short page = done",
+      // so a pull that failed mid-way passed for complete — the caller then
+      // stamped lastSync and the minute-sync (changed-rows-only) never went back
+      // for the missing thousands. That is how two browsers ended up counting
+      // 8 and 280 cars in a yard whose plan draws ~2,300.
+      if (res.error) console.error('[db] fetchTrackingRows', res.error)
+      return res
+    }).then((res: any) => (res.data ?? []) as TrackRowRow[])
 
   // incremental deltas are small → walk sequentially
   if (sinceIso) {
@@ -988,25 +995,51 @@ export async function countTrackingRows(): Promise<number | null> {
 }
 
 /**
- * Fetch only the rows for one yard, filtered SERVER-SIDE by "Location yard".
- * Used to reveal the active site fast on a fresh device (≈2 MB vs 11 MB).
+ * Fetch only the rows for one yard, filtered SERVER-SIDE — used to reveal the
+ * active site fast on a fresh device (≈2 MB vs 11 MB) before the full
+ * background sync (syncCloud) reconciles every site properly. Matches by
+ * `site` tag (the primary way a row belongs to a yard everywhere else in the
+ * app — see rowInSite in siteScope.ts) OR by a "Location yard" cell match on
+ * the site's name/code, so a tagged row whose Location-yard cell is blank or
+ * stale isn't quietly left out of what looks like a complete preview.
+ *
+ * On a real failure this THROWS rather than returning whatever page already
+ * landed — a silent partial return here used to get written to IndexedDB and
+ * marked "loaded" as if it were the whole yard, e.g. 17 cars showing where
+ * ~980 exist, with nothing to correct it short of the next full sync actually
+ * completing. Each page also retries a few times (withRetry) before giving up,
+ * since yard wifi is exactly the kind of connection this preview exists for.
  */
-export async function fetchTrackingRowsForSite(locationYard: string): Promise<TrackRow[]> {
-  if (!isConfigured() || !locationYard) return []
+export async function fetchTrackingRowsForSite(site: { id: string; name?: string; code?: string }): Promise<TrackRow[]> {
+  if (!isConfigured()) return []
   const PAGE = 1000
+  const seen = new Set<string>()
   const out: TrackRow[] = []
-  for (let from = 0; ; from += PAGE) {
-    const run = (cols: string) =>
-      supabase.from('tracking_rows').select(cols).eq('cells->>Location yard', locationYard).order('vin').range(from, from + PAGE - 1)
-    let res: any = await run('vin, cells, updated_at, site, history, deleted_at')
-    if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at, site, history')
-    if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at, site')
-    if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at')
-    if (res.error) { console.error('[db] fetchTrackingRowsForSite', res.error); break }
-    const batch = (res.data ?? []) as TrackRowRow[]
-    // skip tombstoned rows — a soft-deleted VIN must not resurface in a yard view
-    for (const r of batch) { const tr = toTrackRow(r); if (!tr.deletedAt) out.push(tr) }
-    if (batch.length < PAGE) break
+  const collect = (batch: TrackRowRow[]) => {
+    for (const r of batch) {
+      const tr = toTrackRow(r)
+      if (tr.deletedAt || seen.has(tr.vin)) continue // skip tombstones + cross-filter dupes
+      seen.add(tr.vin); out.push(tr)
+    }
+  }
+  const fetchBy = async (apply: (q: any) => any) => {
+    for (let from = 0; ; from += PAGE) {
+      const run = (cols: string) => apply(supabase.from('tracking_rows').select(cols)).order('vin').range(from, from + PAGE - 1)
+      const batch = await withRetry(async () => {
+        let res: any = await run('vin, cells, updated_at, site, history, deleted_at')
+        if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at, site, history')
+        if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at, site')
+        if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at')
+        if (res.error) console.error('[db] fetchTrackingRowsForSite', res.error)
+        return res
+      }).then((res: any) => (res.data ?? []) as TrackRowRow[])
+      collect(batch)
+      if (batch.length < PAGE) break
+    }
+  }
+  await fetchBy((q) => q.eq('site', site.id))
+  for (const key of [site.name, site.code].filter(Boolean) as string[]) {
+    await fetchBy((q) => q.eq('cells->>Location yard', key))
   }
   return out
 }

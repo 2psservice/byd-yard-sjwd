@@ -583,10 +583,10 @@ export const useTracking = create<TrackingState>()(
           // server-side "Location yard" filter (~2 MB, not the full 11 MB) — so the
           // current site fills in fast, before the full background sync
           const y = useYard.getState()
-          const siteName = y.sites.find((s) => s.id === y.currentSite)?.name
-          if (siteName) {
+          const site = y.sites.find((s) => s.id === y.currentSite)
+          if (site) {
             try {
-              const siteRows = await db.fetchTrackingRowsForSite(siteName)
+              const siteRows = await db.fetchTrackingRowsForSite(site)
               if (siteRows.length) {
                 const rec: Record<string, TrackRow> = {}
                 for (const r of siteRows) if (hasVin(r)) rec[r.vin] = stripSystemHistory(r)
