@@ -1101,7 +1101,21 @@ export const useYard = create<YardState>()(
             assignedAt: now, drivingStartedAt: now,
             driver: driver || s.currentDriver,
           }
-          db.upsertUnit(updated).catch((e) => console.error('[db] assign', e))
+          db.upsertUnit(updated).catch((e) => {
+            console.error('[db] assign', e)
+            // same gap updateLocations already guards against (see
+            // attachPendingPlacement): the scan already logged this move into
+            // the car's Location history as successful, and the slot already
+            // shows on screen — if this write never lands, refreshPlacements'
+            // next 3-minute pull (or any other full re-pull) silently slides
+            // the car back to its OLD slot while the history line keeps
+            // claiming the move succeeded, forever. Queue it so
+            // flushPendingPlacements keeps retrying instead of losing the move.
+            set((s2) => ({
+              pendingPlacements: { ...s2.pendingPlacements, [vin]: { vin, block: slot.block, row: slot.row, slot: slot.slot } },
+            }))
+            scheduleFlushPendingPlacements(get)
+          })
           return { units: { ...s.units, [vin]: updated } }
         }),
 
@@ -1501,7 +1515,14 @@ export const useYard = create<YardState>()(
         set((s) => {
           const units = { ...s.units }
           const seen = new Set<string>()
-          for (const c of cloud) {
+          for (const raw of cloud) {
+            // a move THIS device made hasn't been confirmed on the cloud yet
+            // (see attachPendingPlacement) — this light pass still reads the
+            // cloud's OLD slot for it, and used to adopt that wholesale,
+            // sliding the car straight back while its Location-history line
+            // kept claiming the move succeeded. Every "adopt cloud wholesale"
+            // merge has to re-stamp the pending slot; this one didn't.
+            const c = attachPendingPlacement(s.pendingPlacements, raw)
             seen.add(c.vin)
             const cur = units[c.vin]
             if (cur && cur.block === c.block && cur.row === c.row && cur.slot === c.slot && cur.status === c.status) continue
