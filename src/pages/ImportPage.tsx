@@ -6,7 +6,7 @@ import {
 import { useYard } from '../store/useYard'
 import { useTracking } from '../store/useTracking'
 import { useOps } from '../store/useOps'
-import { downloadTemplate } from '../lib/excel'
+import { downloadTemplate, downloadVinListTemplate } from '../lib/excel'
 import { parseTrackingWorkbook, parseImportWorkbook, isScanLocationEntry, type ParseResult } from '../lib/excelTracking'
 import { parseLane, parseLaneWorkbook, type LaneParseResult, type LaneRow } from '../lib/laneImport'
 import { coInspectionAccepts, rowInSite, siteForRow, siteWorksWith } from '../lib/siteScope'
@@ -638,7 +638,11 @@ export function ImportPage() {
             <div className="flex items-center gap-2 px-4 py-3 border-b hairline">
               <Hourglass size={16} style={{ color: 'var(--brand)' }} />
               <span className="font-semibold text-[14px]">Pre Gate-in</span>
-              <span className="text-[12px] ml-auto" style={{ color: 'var(--muted)' }}>นำเข้า Vin List แยกตามยาร์ด → สร้างคิว Gate-in อัตโนมัติ</span>
+              <span className="text-[12px] ml-auto hidden sm:inline" style={{ color: 'var(--muted)' }}>นำเข้า Vin List แยกตามยาร์ด → สร้างคิว Gate-in อัตโนมัติ</span>
+              <button className="btn btn-ghost py-1 text-[12px] shrink-0" onClick={downloadVinListTemplate}
+                title="ดาวน์โหลดไฟล์ตัวอย่าง Vin List Inventory — ชื่อชีตต้องตรงกับยาร์ด + มีคอลัมน์ Vin No. และ Gate In Date">
+                <Download size={13} /> เทมเพลต
+              </button>
             </div>
             <div className="p-4">
               <UploadRow

@@ -76,3 +76,34 @@ export async function downloadTemplate() {
   XLSX.utils.book_append_sheet(wb, ws, 'Tracking Status')
   XLSX.writeFile(wb, 'SJWD_Vin_Transfer_Template.xlsx')
 }
+
+/**
+ * "Vin List Inventory" (Pre Gate-in) template — ONE SHEET PER YARD, matching
+ * parseVinListInventory's expectations (excelTracking.ts): the sheet NAME is
+ * what tags each row's yard (sheet names below match VINLIST_SHEETS exactly,
+ * once normalized), and the header row needs at minimum a "Vin No." column —
+ * "Gate In Date" lets the import screen's date filter work, "Gate Out Date"
+ * marks a car that already left (merged into its existing VIN, not re-added).
+ */
+export async function downloadVinListTemplate() {
+  const XLSX = await import('xlsx')
+  const headers = ['No', 'Vin No.', 'Model', 'Color', 'Gate In Date', 'Gate Out Date', 'Remark']
+  const sheet = (yard: string, rows: (string | number)[][]) => {
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows])
+    ws['!cols'] = headers.map((h) => ({ wch: Math.max(10, h.length + 4) }))
+    return { name: yard, ws }
+  }
+  const sheets = [
+    sheet('VinListMasterRayong', [
+      [1, 'LGXCE4CB0TG025160', 'BYD ATTO 3', 'White', '23-Jun-25', '', ''],
+      [2, 'LGXC74CB1TG010044', 'BYD DOLPHIN', 'Blue', '23-Jun-25', '', ''],
+    ]),
+    sheet('SOI 5', [[1, 'LGXCD4CB2TG044190', 'BYD SEAL', 'Black', '24-Jun-25', '', '']]),
+    sheet('NYB2', [[1, 'LGXCE4CB3TG055201', 'BYD ATTO 1', 'Grey', '24-Jun-25', '', '']]),
+    sheet('20 Rai', [[1, 'LGXCE4CB4TG066312', 'BYD SEALION 7', 'White', '25-Jun-25', '', '']]),
+    sheet('38 Rai', [[1, 'LGXCE4CB5TG077423', 'BYD M6', 'Silver', '25-Jun-25', '', '']]),
+  ]
+  const wb = XLSX.utils.book_new()
+  for (const { name, ws } of sheets) XLSX.utils.book_append_sheet(wb, ws, name)
+  XLSX.writeFile(wb, 'SJWD_Vin_List_Inventory_Template.xlsx')
+}
