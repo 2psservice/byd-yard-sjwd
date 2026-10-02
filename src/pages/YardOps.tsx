@@ -685,6 +685,22 @@ function savedScanZoom(): number {
 }
 const rememberScanZoom = (v: number) => { try { localStorage.setItem(SCAN_ZOOM_KEY, String(v)) } catch { /* full */ } }
 
+// BarcodeDetector.getSupportedFormats() asks Google Play Services over IPC —
+// a hardware/OS capability that cannot change mid-session, yet the old code
+// re-asked it fresh on every single camera open (hundreds of times a shift on
+// a busy gate). On a low-RAM phone (2-3GB — e.g. MediaTek Helio G35) GMS can
+// get evicted from memory between scans and need a slow cold restart, making
+// this one ask occasionally take seconds instead of milliseconds — exactly
+// the kind of per-scan camera-open "ค้าง" a low-end phone would show. Ask
+// once per session and reuse the answer for every scan after.
+let supportedFormatsCache: Promise<string[]> | null = null
+function cachedSupportedFormats(BD: { getSupportedFormats?: () => Promise<string[]> }): Promise<string[]> {
+  if (!supportedFormatsCache) {
+    supportedFormatsCache = BD.getSupportedFormats?.().catch((): string[] => []) ?? Promise.resolve<string[]>([])
+  }
+  return supportedFormatsCache
+}
+
 function VinInput({
   onScan, accent = 'var(--brand)',
   placeholder = 'VIN / 5 ตัวท้าย…',
@@ -855,7 +871,7 @@ function VinInput({
         // .catch(() => []) กันไม่ให้ฝั่งนี้พังแล้วลาก getUserMedia ที่รออยู่คู่กัน
         // ไปด้วย (ถือว่า "ไม่รองรับ" แล้วปล่อยกล้องคืน ไม่ใช่โยน error ทิ้งกล้องค้าง)
         const [supported, stream] = await Promise.all([
-          BD.getSupportedFormats?.().catch((): string[] => []) ?? Promise.resolve<string[]>([]),
+          cachedSupportedFormats(BD),
           navigator.mediaDevices.getUserMedia({ video: VIDEO }),
         ])
         if (cancelled) { stream.getTracks().forEach(t => t.stop()); return true }
