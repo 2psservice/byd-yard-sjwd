@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import { useYard, useUnits, useTrips, useBlocks, attachPendingDamages } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
+import { overlayInspection } from '../lib/inspectionStatus'
 import { isDamaged, deriveCarStatus, hasLeftGate, IN_YARD_STATUSES, CAR_STATUS_META, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY } from '../lib/carStatus'
 import { useOps, useActiveQueues, useSiteQueues, activeProcess, stageOf, isSequenceQueue, isPreGateInQueue, seqStageOf, isQueueComplete, isEmptyQueue, isStationWorkComplete, queueTypeOf, stampStationDate, stationProgress, drivingNow, gateInArrived, gateInPendingItems } from '../store/useOps'
 import type { WorkQueue, QueueItem, QueueType, QueueStage } from '../store/useOps'
@@ -82,11 +83,28 @@ import { SeqQueuePicker } from '../components/SeqQueueList'
 // Every station reads through these hooks so an operator stamped into site A
 // can neither see nor record vehicles that belong to site B — the work site
 // must match the vehicle's site for any scan to resolve.
+// useTrackingRows() builds every yard's rows (~57k company-wide) because a
+// few screens (cross-site VIN lookups, Dashboard) genuinely need all of them
+// — but every YardOps station only ever shows ONE site, and used to pay for
+// that whole company-wide overlay pass on every single scan/sync just to
+// throw away all but a few hundred rows in the .filter() right after. Filter
+// FIRST (a plain field check, no overlay work) and only overlay the rows this
+// site actually keeps.
 function useSiteRows(): TrackRow[] {
-  const all = useTrackingRows()
+  const rows = useTracking((s) => s.rows)
+  const units = useYard((s) => s.units)
   const sites = useYard((s) => s.sites)
   const currentSite = useYard((s) => s.currentSite)
-  return useMemo(() => (currentSite ? all.filter((r) => rowInSite(r, currentSite, sites)) : all), [all, currentSite, sites])
+  return useMemo(() => {
+    if (!currentSite) return Object.values(rows).map((r) => overlayInspection(r, units[r.vin]))
+    const out: TrackRow[] = []
+    for (const vin in rows) {
+      const r = rows[vin]
+      if (!rowInSite(r, currentSite, sites)) continue
+      out.push(overlayInspection(r, units[vin]))
+    }
+    return out
+  }, [rows, units, currentSite, sites])
 }
 function useSiteUnits(): Unit[] {
   const all = useUnits()

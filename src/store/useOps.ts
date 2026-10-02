@@ -1405,8 +1405,17 @@ export function useActiveQueues(): WorkQueue[] {
     // (เช็กช่องเดียว) แล้วค่อยไปถามละเอียดทีหลังว่าออกจากลานของคิวไหน จะได้ไม่
     // ต้องแกะประวัติเที่ยวรถของทุกคันในทุกครั้งที่หน้าจอรีเฟรช
     const maybeLeft = new Set<string>()
-    for (const vin in rows) {
+    // gone/waiting/maybeLeft/leftAtOf are only ever consulted below for a VIN
+    // that appears in one of THESE queues' items (drop() always reads i.vin) —
+    // scanning every row in the whole company (~57k across every yard) to
+    // build them, most of which belong to no open queue at all, made every
+    // scan or background sync pay for the whole company instead of just the
+    // handful of VINs this screen's open work actually touches.
+    const queuedVins = new Set<string>()
+    for (const q of queues) for (const i of q.items) queuedVins.add(i.vin)
+    for (const vin of queuedVins) {
       const r = rows[vin]
+      if (!r) continue
       if (r.cells[GATE_OUT_ORIGIN_SITE_KEY]) maybeLeft.add(vin)
       if (hasLeftGate(r.cells)) { gone.add(vin); continue }
       if (deriveCarStatus(r.cells) !== 'Pre Gate-in') continue
