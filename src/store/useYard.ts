@@ -1089,7 +1089,21 @@ export const useYard = create<YardState>()(
         return autoAssign(withModelId(u), curBlocks(get()), get().policies, Object.values(get().units), get().groupModelsInRow, get().laneDepth)
       },
 
-      assign: (vin, slot, driver, mode) =>
+      assign: (vin, slot, driver, mode) => {
+        const s0 = get()
+        const u0 = s0.units[vin]
+        if (!u0) return
+        // สองคนขับ (หรือ auto-suggest บนสองเครื่อง) อาจได้ช่องเดียวกันถ้าข้อมูล
+        // ยังไม่ทันซิงก์ระหว่างกัน — เช็คจากสิ่งที่เครื่องนี้รู้ล่าสุดก่อนเขียน
+        // ทับ ไม่ใช่ lock ข้ามเครื่องแบบสมบูรณ์ (ยังมีช่องที่สองเครื่องกดห่างกัน
+        // เสี้ยววินาทีจนไม่ทันเห็นกัน) แต่ปิดกรณีปกติที่ข้อมูลตามทันอยู่แล้ว
+        const clash = Object.values(s0.units).find((o) =>
+          o.vin !== vin && o.site === u0.site && o.block === slot.block && o.row === slot.row && o.slot === slot.slot &&
+          (o.status === 'PARKED' || o.status === 'ASSIGNED'))
+        if (clash) {
+          s0.toast('err', `ช่องนี้มีรถคันอื่นจอดอยู่แล้ว (...${clash.vin.slice(-6)}) — เลือกช่องใหม่`)
+          return
+        }
         set((s) => {
           const u = s.units[vin]
           if (!u) return s
@@ -1128,7 +1142,8 @@ export const useYard = create<YardState>()(
             scheduleFlushPendingPlacements(get)
           })
           return { units: { ...s.units, [vin]: updated } }
-        }),
+        })
+      },
 
       confirmParked: (vin) =>
         set((s) => {

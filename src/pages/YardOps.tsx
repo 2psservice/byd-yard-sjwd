@@ -140,6 +140,28 @@ function rowGroup(r: TrackRow, queues: WorkQueue[]): string {
   return normGroup(r.cells[GROUP_KEY]) || normGroup(findSeqItem(r.vin, queues)?.item.group)
 }
 
+/** vin → the group of its open delivery-sequence queue item, precomputed once.
+ *  findSeqItem/rowGroup each do a fresh queues×items scan per call — fine for
+ *  checking ONE scanned VIN, but a bulk filter over every tracking row (DN scan
+ *  at Gate-out, which can mean ~20,000 cars) turned that into a scan-per-row,
+ *  i.e. O(rows × queues × items) just to find which cars belong to one DN. */
+function buildSeqGroupIndex(queues: WorkQueue[]): Map<string, string> {
+  const m = new Map<string, string>()
+  for (const q of queues) {
+    if (!isSequenceQueue(q)) continue
+    for (const i of q.items) {
+      if (i.done || m.has(i.vin)) continue
+      m.set(i.vin, normGroup(i.group))
+    }
+  }
+  return m
+}
+
+/** Same rule as rowGroup, against the precomputed index — use for bulk filters. */
+function rowGroupFast(r: TrackRow, seqGroupIndex: Map<string, string>): string {
+  return normGroup(r.cells[GROUP_KEY]) || (seqGroupIndex.get(r.vin) ?? '')
+}
+
 // ── damage config: bilingual master lists (Part + Defect) from the master Excel ──
 // Field staff type Thai (English shown alongside); we store BOTH languages.
 // The master lists are admin-editable, so read them at USE time — a module-level
@@ -3976,6 +3998,8 @@ function GateOutView() {
   const seqQueues = useMemo(() => queues.filter(q => isSequenceQueue(q) && !isEmptyQueue(q) && !isQueueComplete(q) && !seqClosed[q.id]), [queues, seqClosed])
   const row = vin ? (trackingRows.find(r => r.vin === vin) ?? null) : null
   const seqHit = useMemo(() => findSeqItem(vin, queues), [vin, queues])
+  // for bulk DN matching below — see buildSeqGroupIndex
+  const seqGroupIndex = useMemo(() => buildSeqGroupIndex(queues), [queues])
   // where the car actually stands, so the gate can go fetch it — the yard name
   // alone ("NYB2 Phase 2") never told anyone which lane to walk to
   const parked = vin ? units.find(u => u.vin === vin) : undefined
@@ -3989,12 +4013,12 @@ function GateOutView() {
   const dnCars = useMemo(() => {
     if (!dn) return []
     return trackingRows
-      .filter(r => rowGroup(r, queues) === dn)
+      .filter(r => rowGroupFast(r, seqGroupIndex) === dn)
       .map(r => {
         const u = units.find(x => x.vin === r.vin)
         const status = (r.cells['Car Status'] ?? '').trim()
         const gone = hasLeftGate(r.cells) // shared rule — also catches import-only gate-outs
-        const inSeq = !!findSeqItem(r.vin, queues)
+        const inSeq = seqGroupIndex.has(r.vin)
         // same rule as the single-VIN scan: only a car planned in an open
         // Grouping-to-Dealer queue, and actually gated in, may leave
         const reason = gone ? '' : !inSeq ? 'ไม่มีคิวงาน' : !isGatedInStatus(status) ? 'ยังไม่ Gate-in' : ''
@@ -4010,7 +4034,7 @@ function GateOutView() {
         }
       })
       .sort((a, b) => byYardLocation(a.location, b.location))
-  }, [dn, trackingRows, units, queues])
+  }, [dn, trackingRows, units, seqGroupIndex])
 
   // dnCars can only .filter() rows that already exist HERE — a car whose queue
   // item carries this DN's group but whose tracking row never synced to this
@@ -4040,7 +4064,7 @@ function GateOutView() {
   const onScanDn = (raw: string) => {
     const g = normGroup(raw)
     if (!g) return
-    const n = trackingRows.filter(r => rowGroup(r, queues) === g).length
+    const n = trackingRows.filter(r => rowGroupFast(r, seqGroupIndex) === g).length
     if (!n) { toast('err', `ไม่พบ DN / เลข Grouping: ${raw}`); return }
     setVin(null); setDn(g); setSessionOut([])
   }
