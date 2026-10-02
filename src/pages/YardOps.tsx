@@ -4539,6 +4539,7 @@ function RelocationView() {
   const [vin, setVin] = useState<string | null>(null)
   const [fLoc, setFLoc] = useState('')
   const [saved, setSaved] = useState(false)
+  const [saving, setSaving] = useState(false) // cloud write in flight — the card waits for its answer
   // ── ยิงตามแถว: pick a lane once (e.g. A10), then scan car after car — each
   // one lands on the next free space down that lane automatically ──
   const [mode, setMode] = useState<'one' | 'lane'>('one')
@@ -4645,7 +4646,7 @@ function RelocationView() {
   // a block this plan does not draw has no grid to land in, so refuse it rather
   // than park the car somewhere that only exists in the typo
   const blockOk = !!blockId && (blocks.length === 0 || !!blk)
-  const canSave = !!row && blockOk && slotOk && nextRow !== null && !saved
+  const canSave = !!row && blockOk && slotOk && nextRow !== null && !saved && !saving
 
   // The Car Status CELL can lag reality: a unit standing in the yard (placed by
   // gate-in on another device, or a lane/plan import) while the sheet still says
@@ -4808,17 +4809,12 @@ function RelocationView() {
       from?: { block?: string; row?: number; slot?: number }
     }
     const gen = ++laneGenRef.current
-    /** `verified` = the lane exactly as the cloud just described it. Every move
-     *  built from it carries where the car WAS, so the write lands only while
-     *  that is still true — another phone reordering this same lane a second
-     *  later can no longer be silently overwritten. */
-    const buildAndApply = (inc: typeof incumbents, verified?: Unit[]) => {
+    /** Scanned cars (`seq`) are written exactly where the worker put them — no
+     *  `from` compare-and-set: the scan IS the truth. Only the incumbents
+     *  sliding down behind them (cars nobody scanned) keep the guard, so a car
+     *  another phone moved away meanwhile is not dragged back into this lane. */
+    const buildAndApply = (inc: typeof incumbents) => {
       if (gen !== laneGenRef.current) return // a newer scan supersedes this rebuild
-      const truth = new Map((verified ?? []).map(x => [x.vin, x] as const))
-      const seenAt = (vin: string) => {
-        const x = truth.get(vin)
-        return x ? { block: x.block, row: x.row, slot: x.slot } : undefined
-      }
       const updates: LocUpdate[] = []
       seq.forEach((vin, i) => {
         const cu = siteUnits.find(x => x.vin === vin)
@@ -4827,8 +4823,7 @@ function RelocationView() {
         const tr2 = vin === r!.vin ? r : trackingRows.find(x => x.vin === vin)
         updates.push({ vin, block: L.blockId, row, slot: L.slot,
           modelName: cu?.modelName || tr2?.cells['Model name'] || tr2?.cells['Model'] || undefined,
-          color: cu?.color || tr2?.cells['Color'] || undefined,
-          from: seenAt(vin) })
+          color: cu?.color || tr2?.cells['Color'] || undefined })
       })
       inc.forEach((cu, i) => {
         const row = seq.length + 1 + i
@@ -4859,7 +4854,7 @@ function RelocationView() {
     // rebuild from that. Offline / slow wifi keeps the old trust-local behaviour.
     if (!isConfigured()) buildAndApply(incumbents)
     else laneFromCloud(siteUnits, currentSite, L.blockId, L.slot).then((lane) =>
-      buildAndApply(laneOccupants(lane, L.blockId, L.slot).filter(u => !ord.includes(u.vin) && u.vin !== r!.vin), lane))
+      buildAndApply(laneOccupants(lane, L.blockId, L.slot).filter(u => !ord.includes(u.vin) && u.vin !== r!.vin)))
     const code = codeOf(L.blockId, L.slot, pos)
     appendHistory(r.vin, {
       at: Date.now(), by: currentUser, field: 'Location', src: 'scan',
@@ -4890,29 +4885,44 @@ function RelocationView() {
       return
     }
     if (depth !== nextRow) toast('info', `แถวนี้มีรถเพิ่มจากเครื่องอื่น — ลงเป็นคันที่ ${depth}`)
+    const code = codeOf(blockId, slotNo, depth)
+    const fromCode = placed ? yardLocFull(unit) : ''
     // move the CAR, not the "Location yard" cell — that cell names the yard and
     // is what scopes a row to its site, so a slot code written into it used to
-    // drop the car out of its own yard
-    const seenAt = lane.find(x => x.vin === row.vin)
-    updateLocations([{
+    // drop the car out of its own yard.
+    // The worker is standing at this car and just typed where it goes — that
+    // entry IS the truth, so it is written as-is, with no `from` compare-and-
+    // set. It used to carry `from` = where THIS phone last saw the car, and
+    // whenever the cloud disagreed (another phone's old auto-dedupe had quietly
+    // re-numbered it, Q3501→Q3506) the cloud won: the typed move was thrown
+    // away and the car snapped to the cloud's spot — while the history line and
+    // the green toast had already announced "ย้ายไป Q3701". The guard stays only
+    // on cars nobody scanned (lane-mode bystanders, see buildAndApply).
+    setSaving(true)
+    const n = updateLocations([{
       vin: row.vin, block: blockId, row: depth, slot: slotNo,
       modelName: row.cells['Model name'] || row.cells['Model'] || undefined,
       color: row.cells['Color'] || undefined,
-      // where the cloud just said this car stands — the save lands only while
-      // that is still true, so a move somebody else made meanwhile is not lost
-      from: seenAt ? { block: seenAt.block, row: seenAt.row, slot: seenAt.slot } : undefined,
-    }])
-    // log the move under the Location column: from → to, who, when — the same
-    // trail this screen and the admin's Event tab show
-    appendHistory(row.vin, {
-      at: Date.now(), by: currentUser, field: 'Location', src: 'scan',
-      from: placed ? yardLocFull(unit) : '',
-      to: codeOf(blockId, slotNo, depth),
+    }], (results) => {
+      setSaving(false)
+      const r0 = results.find(x => x.vin === row.vin)
+      if (r0?.status === 'lost') {
+        lastSaveGuard.current = 0
+        toast('err', `ตำแหน่ง ${code} ไม่ถูกบันทึก — กรุณาลองใหม่`)
+        return
+      }
+      // only now — once the cloud has answered — does the move go into the
+      // car's ประวัติการย้าย and the worker see "บันทึกแล้ว"; before, both fired
+      // the instant the button was tapped, so a write the cloud then rejected
+      // left a history line (and a green toast) for a move that never happened
+      appendHistory(row.vin, { at: Date.now(), by: currentUser, field: 'Location', src: 'scan', from: fromCode, to: code })
+      recordRecent('reloc:save', row.vin, `ย้ายไป ${code}`)
+      setSaved(true)
+      if (r0?.status === 'queued') toast('info', `ย้ายไป ${code} · ${row.vin.slice(-6)} — สัญญาณไม่ดี บันทึกไว้ในเครื่องแล้ว กำลังรอส่งขึ้นระบบ`)
+      else toast('ok', `ย้ายไป ${code} · ${row.vin.slice(-6)}`)
+      setTimeout(() => { setVin(null); setSaved(false) }, 1600)
     })
-    recordRecent('reloc:save', row.vin, `ย้ายไป ${codeOf(blockId, slotNo, depth)}`)
-    setSaved(true)
-    toast('ok', `ย้ายไป ${codeOf(blockId, slotNo, depth)} · ${row.vin.slice(-6)}`)
-    setTimeout(() => { setVin(null); setSaved(false) }, 1600)
+    if (!n) setSaving(false)
   }
 
   return (
@@ -5136,7 +5146,9 @@ function RelocationView() {
             disabled={!canSave}
             className="w-full py-3 rounded-2xl text-[15px] font-bold text-white flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-40"
             style={{ background: saved ? '#16a34a' : '#0ea5e9' }}>
-            {saved ? <><CheckCircle2 size={18} /> บันทึกแล้ว!</> : <><MapPin size={18} /> บันทึกตำแหน่งใหม่</>}
+            {saved ? <><CheckCircle2 size={18} /> บันทึกแล้ว!</>
+              : saving ? <><RefreshCw size={18} className="animate-spin" /> กำลังบันทึก…</>
+              : <><MapPin size={18} /> บันทึกตำแหน่งใหม่</>}
           </button>
 
           {/* every move this car has made: where, by whom, when */}
