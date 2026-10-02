@@ -46,6 +46,15 @@ import { buildWorkRows, buildEventLog, fmtHistAt, histOf } from '../lib/carHisto
 import { roundOf } from '../lib/tripHistory'
 import { exportSpecialQueue } from '../lib/opsReport'
 
+// A queue's car list used to render every item at once — fine for a dozen
+// cars, but a yard-wide Pre Gate-in/PDI/PM lot can hold 700+, and that many
+// rows (each several DOM nodes) sitting live in one scrollable div is what
+// made the station noticeably sluggish on a 4 GB-RAM phone. Scanning a VIN
+// never touches this list (VinInput looks the car up directly), so only the
+// manual scroll-and-tap path is affected — showing a bounded page first keeps
+// that path responsive and "โหลดเพิ่ม" still reaches every car underneath.
+const QUEUE_PAGE_SIZE = 50
+
 const recordRecent = (key: string, vin: string, note?: string) => useRecentOps.getState().record(key, vin, note)
 
 /** Copy a VIN to the clipboard — falls back to a hidden textarea where the
@@ -1596,6 +1605,8 @@ function WalkView() {
   const [vin, setVin] = useState<string | null>(null)
   const [trackingVin, setTrackingVin] = useState<string | null>(null)
   const [selectedQueueId, setSelectedQueueId] = useState<string | null>(null)
+  const [queueVisible, setQueueVisible] = useState(QUEUE_PAGE_SIZE)
+  useEffect(() => setQueueVisible(QUEUE_PAGE_SIZE), [selectedQueueId])
   const [showDmg, setShowDmg] = useState(false)
   const [editId, setEditId] = useState<string | null>(null)
   const [editArea, setEditArea] = useState('')
@@ -1664,9 +1675,12 @@ function WalkView() {
   }, [allUnits])
   const queueCars = useMemo(() => {
     if (!selectedQueue) return [] as { vin: string; model: string; color: string; grouping: string; location: string; done: boolean; ng: boolean; doneAt?: number; doneBy?: string }[]
+    // build lookups once — see the equivalent station queueCars for why
+    const rowByVin = new Map(trackingRows.map(r => [r.vin, r]))
+    const unitByVin = new Map(allUnits.map(u => [u.vin, u]))
     return selectedQueue.items.map(i => {
-      const row = trackingRows.find(r => r.vin === i.vin)
-      const u = allUnits.find(x => x.vin === i.vin)
+      const row = rowByVin.get(i.vin)
+      const u = unitByVin.get(i.vin)
       // when the car was gate-in scanned: the queue item's doneAt, or the
       // "Gate In Time" cell that doTrackingGateIn stamps on the tracking row
       const gitCell = row?.cells['Gate In Time']
@@ -2021,37 +2035,46 @@ function WalkView() {
                   <ChevronLeft size={16} style={{ color: 'var(--muted)', transform: isOpen ? 'rotate(90deg)' : 'rotate(-90deg)', transition: 'transform .15s' }} />
                 </button>
                 {isOpen && (
-                  <div className="border-t hairline max-h-[65vh] overflow-y-auto divide-y" style={{ borderColor: 'var(--line)' }}>
-                    {queueCars.map(c => (
-                      <button key={c.vin} onClick={() => openWaiting(c.vin)}
-                        className="w-full px-4 py-2.5 flex items-center gap-3 text-left transition active:bg-chip"
-                        style={c.done ? { opacity: 0.62 } : undefined}>
-                        <div className="min-w-0 flex-1">
-                          <div className="vin text-[12.5px] font-bold clip">{c.vin}</div>
-                          <div className="text-[11px] mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5" style={{ color: 'var(--muted)' }}>
-                            <span>{c.model}</span><span>· {c.color}</span><span>· {c.grouping}</span>
-                          </div>
-                          {c.done && c.doneAt && (
-                            <div className="text-[10.5px] mt-0.5 flex items-center gap-1" style={{ color: 'var(--faint)' }}>
-                              <Clock size={10} />
-                              <span>ตรวจ {new Date(c.doneAt).toLocaleString('th-TH', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
-                              {c.doneBy && <span>· {c.doneBy}</span>}
+                  <>
+                    <div className="border-t hairline max-h-[65vh] overflow-y-auto divide-y" style={{ borderColor: 'var(--line)' }}>
+                      {queueCars.slice(0, queueVisible).map(c => (
+                        <button key={c.vin} onClick={() => openWaiting(c.vin)}
+                          className="w-full px-4 py-2.5 flex items-center gap-3 text-left transition active:bg-chip"
+                          style={c.done ? { opacity: 0.62 } : undefined}>
+                          <div className="min-w-0 flex-1">
+                            <div className="vin text-[12.5px] font-bold clip">{c.vin}</div>
+                            <div className="text-[11px] mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5" style={{ color: 'var(--muted)' }}>
+                              <span>{c.model}</span><span>· {c.color}</span><span>· {c.grouping}</span>
                             </div>
-                          )}
-                        </div>
-                        <div className="text-right shrink-0">
-                          <div className="tabular text-[12px] font-bold">{c.location}</div>
-                          <span className="badge mt-0.5 inline-block" style={{ fontSize: 10, ...(!c.done
-                            ? { background: '#fef9c3', color: '#854d0e' }
-                            : c.ng
-                              ? { background: 'rgba(255,59,48,0.12)', color: 'var(--st-damage)' }
-                              : { background: 'rgba(22,163,74,0.12)', color: '#16a34a' }) }}>
-                            {!c.done ? 'รอ' : c.ng ? 'NG' : 'OK'}
-                          </span>
-                        </div>
+                            {c.done && c.doneAt && (
+                              <div className="text-[10.5px] mt-0.5 flex items-center gap-1" style={{ color: 'var(--faint)' }}>
+                                <Clock size={10} />
+                                <span>ตรวจ {new Date(c.doneAt).toLocaleString('th-TH', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
+                                {c.doneBy && <span>· {c.doneBy}</span>}
+                              </div>
+                            )}
+                          </div>
+                          <div className="text-right shrink-0">
+                            <div className="tabular text-[12px] font-bold">{c.location}</div>
+                            <span className="badge mt-0.5 inline-block" style={{ fontSize: 10, ...(!c.done
+                              ? { background: '#fef9c3', color: '#854d0e' }
+                              : c.ng
+                                ? { background: 'rgba(255,59,48,0.12)', color: 'var(--st-damage)' }
+                                : { background: 'rgba(22,163,74,0.12)', color: '#16a34a' }) }}>
+                              {!c.done ? 'รอ' : c.ng ? 'NG' : 'OK'}
+                            </span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                    {queueVisible < queueCars.length && (
+                      <button className="w-full py-2.5 border-t hairline text-[12.5px] font-semibold text-center"
+                        style={{ borderColor: 'var(--line)', color: 'var(--brand)' }}
+                        onClick={() => setQueueVisible(n => n + QUEUE_PAGE_SIZE)}>
+                        โหลดเพิ่ม ({queueCars.length - queueVisible} คันที่เหลือ)
                       </button>
-                    ))}
-                  </div>
+                    )}
+                  </>
                 )}
               </div>
             )
@@ -3310,6 +3333,8 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
   const [okLabel, setOkLabel] = useState('OK')
   const [okResult, setOkResult] = useState<'OK' | 'NG'>('OK')
   const [selectedQueueId, setSelectedQueueId] = useState<string | null>(null)
+  const [queueVisible, setQueueVisible] = useState(QUEUE_PAGE_SIZE)
+  useEffect(() => setQueueVisible(QUEUE_PAGE_SIZE), [selectedQueueId])
 
   // STRICTLY this station's own queues. Delivery-sequence (Grouping) runs and
   // every other work type belong to their own screens — a station must never
@@ -3345,9 +3370,14 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
   // same list, marked green for OK and red for NG.
   const queueCars = useMemo(() => {
     if (!selectedQueue) return []
+    // a queue of hundreds of items × a site of thousands of units/rows used to
+    // re-scan both arrays with .find() for EVERY item on every render — build
+    // the lookup once instead (O(units+rows) instead of O(items×(units+rows)))
+    const unitByVin = new Map(units.map(u => [u.vin, u]))
+    const rowByVin = new Map(trackingRows.map(r => [r.vin, r]))
     return selectedQueue.items.map(i => {
-      const u = units.find(x => x.vin === i.vin)
-      const row = trackingRows.find(r => r.vin === i.vin)
+      const u = unitByVin.get(i.vin)
+      const row = rowByVin.get(i.vin)
       return {
         vin: i.vin,
         model: u?.modelName ?? row?.cells['Model name'] ?? row?.cells['Model'] ?? '—',
@@ -3527,15 +3557,18 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
                   <div className="px-4 py-3 border-t hairline text-[12px] font-semibold" style={{ color: '#d97706' }}>
                     ยังไม่มีรถในคิวนี้ — เพิ่มรถได้ที่หน้า Operation (คิวงาน)
                   </div>
-                ) : (
+                ) : (() => {
+                  const visibleCars = queueCars.slice(0, queueVisible)
+                  return (
+                  <>
                   <div className="border-t hairline max-h-[65vh] overflow-y-auto divide-y" style={{ borderColor: 'var(--line)' }}>
                     {remaining === 0 && (
                       <div className="px-4 py-2.5 text-[12px] font-semibold" style={{ color: '#16a34a' }}>✓ เสร็จครบแล้ว!</div>
                     )}
-                    {queueCars.map((item, idx) => (
+                    {visibleCars.map((item, idx) => (
                       <div key={item.vin}>
                         {/* เส้นคั่นก่อนคันแรกที่ตรวจแล้ว — ด้านบนคือ "งานที่เหลือ" */}
-                        {item.done && !queueCars[idx - 1]?.done && (
+                        {item.done && !visibleCars[idx - 1]?.done && (
                           <div className="px-4 py-1.5 text-[10.5px] font-bold uppercase tracking-wider"
                             style={{ background: 'var(--chip)', color: 'var(--muted)' }}>
                             ตรวจแล้ว {done} คัน
@@ -3571,7 +3604,16 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
                       </div>
                     ))}
                   </div>
-                ))}
+                  {queueVisible < queueCars.length && (
+                    <button className="w-full py-2.5 border-t hairline text-[12.5px] font-semibold text-center"
+                      style={{ borderColor: 'var(--line)', color: 'var(--brand)' }}
+                      onClick={() => setQueueVisible(n => n + QUEUE_PAGE_SIZE)}>
+                      โหลดเพิ่ม ({queueCars.length - queueVisible} คันที่เหลือ)
+                    </button>
+                  )}
+                  </>
+                  )
+                })())}
               </div>
             )
           })}

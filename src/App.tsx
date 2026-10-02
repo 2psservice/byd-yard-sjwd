@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { Layout } from './components/Layout'
 import { LoginScreen } from './components/LoginScreen'
 import { LogoLoaderOverlay } from './components/LogoLoader'
@@ -16,25 +16,33 @@ import { yardLocCode, LAST_LOCATION_KEY } from './lib/groupingImport'
 import { deliveryDestinationSite, siteIdForLocation } from './lib/siteScope'
 import { matchModel } from './lib/sampleData'
 import { isPhone } from './lib/device'
-import { Dashboard } from './pages/Dashboard'
-import { ImportPage } from './pages/ImportPage'
 import { useMasterDefect } from './store/useMasterDefect'
-import { Report } from './pages/Report'
-import { Report2ps } from './pages/Report2ps'
-import { GateIn } from './pages/GateIn'
-import { Driver } from './pages/Driver'
-import { YardPlan } from './pages/YardPlan'
-import { Units } from './pages/Units'
-import { Rules } from './pages/Rules'
-import { YardOps } from './pages/YardOps'
-import { Tracking } from './pages/Tracking'
-import { Operation } from './pages/Operation'
-import { PmPlan } from './pages/PmPlan'
-import { PdiBoard } from './pages/PdiBoard'
-import { Damages } from './pages/Damages'
-import { Grouping } from './pages/Grouping'
-import { Settings } from './pages/Settings'
 import type { View } from './types'
+
+// Every page used to be a static import, so a phone opening ONLY Yard Ops
+// still paid to parse/compile every admin page (Dashboard, Report, Import…)
+// bundled into the same ~1.4 MB chunk before anything could render — a real
+// cost on weak CPUs, not just a download-speed one. Each page is its own
+// chunk now, fetched the first time its view is actually opened (Suspense
+// fallback below) — a phone that only ever opens opsOnly's <YardOps/> now
+// loads just that one page's code.
+const Dashboard = lazy(() => import('./pages/Dashboard').then((m) => ({ default: m.Dashboard })))
+const ImportPage = lazy(() => import('./pages/ImportPage').then((m) => ({ default: m.ImportPage })))
+const Report = lazy(() => import('./pages/Report').then((m) => ({ default: m.Report })))
+const Report2ps = lazy(() => import('./pages/Report2ps').then((m) => ({ default: m.Report2ps })))
+const GateIn = lazy(() => import('./pages/GateIn').then((m) => ({ default: m.GateIn })))
+const Driver = lazy(() => import('./pages/Driver').then((m) => ({ default: m.Driver })))
+const YardPlan = lazy(() => import('./pages/YardPlan').then((m) => ({ default: m.YardPlan })))
+const Units = lazy(() => import('./pages/Units').then((m) => ({ default: m.Units })))
+const Rules = lazy(() => import('./pages/Rules').then((m) => ({ default: m.Rules })))
+const YardOps = lazy(() => import('./pages/YardOps').then((m) => ({ default: m.YardOps })))
+const Tracking = lazy(() => import('./pages/Tracking').then((m) => ({ default: m.Tracking })))
+const Operation = lazy(() => import('./pages/Operation').then((m) => ({ default: m.Operation })))
+const PmPlan = lazy(() => import('./pages/PmPlan').then((m) => ({ default: m.PmPlan })))
+const PdiBoard = lazy(() => import('./pages/PdiBoard').then((m) => ({ default: m.PdiBoard })))
+const Damages = lazy(() => import('./pages/Damages').then((m) => ({ default: m.Damages })))
+const Grouping = lazy(() => import('./pages/Grouping').then((m) => ({ default: m.Grouping })))
+const Settings = lazy(() => import('./pages/Settings').then((m) => ({ default: m.Settings })))
 
 // same local calendar day? (device-local time — matches how the yard works shifts)
 const sameDay = (a: number, b: number) => new Date(a).toDateString() === new Date(b).toDateString()
@@ -509,7 +517,9 @@ export default function App() {
   if (opsOnly)
     return (
       <>
-        <OpsShell><YardOps /></OpsShell>
+        <OpsShell>
+          <Suspense fallback={<LogoLoaderOverlay label="กำลังโหลดหน้า" />}><YardOps /></Suspense>
+        </OpsShell>
         <SelectSiteModal />
         <Toaster />
       </>
@@ -517,7 +527,9 @@ export default function App() {
 
   return (
     <>
-      <Layout>{pages[view]}</Layout>
+      <Layout>
+        <Suspense fallback={<LogoLoaderOverlay label="กำลังโหลดหน้า" />}>{pages[view]}</Suspense>
+      </Layout>
       <SelectSiteModal />
       <Toaster />
     </>
