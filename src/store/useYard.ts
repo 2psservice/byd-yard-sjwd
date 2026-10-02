@@ -1101,7 +1101,18 @@ export const useYard = create<YardState>()(
             assignedAt: now, drivingStartedAt: now,
             driver: driver || s.currentDriver,
           }
-          db.upsertUnit(updated).catch((e) => {
+          db.upsertUnit(updated).then(() => {
+            // this write just landed, so it IS the current truth — drop any
+            // stale pendingPlacements[vin] an EARLIER failed move left queued.
+            // Without this, a failed move queues {A,1,1}; the operator rescans
+            // the same car into {B,2,3} and THIS write succeeds outright (no
+            // catch, so the queue is never touched) — flushPendingPlacements'
+            // retry timer then fires later, reads the now-current unit, and
+            // overwrites it back to the stale {A,1,1} it never cleared.
+            if (get().pendingPlacements[vin]) {
+              set((s2) => { const next = { ...s2.pendingPlacements }; delete next[vin]; return { pendingPlacements: next } })
+            }
+          }).catch((e) => {
             console.error('[db] assign', e)
             // same gap updateLocations already guards against (see
             // attachPendingPlacement): the scan already logged this move into
@@ -1200,7 +1211,18 @@ export const useYard = create<YardState>()(
         const guarded = items.filter((it) => it.from && intentional.has(it.vin))
         const plain = [...intentional].filter((v) => !guarded.some((g) => g.vin === v))
         if (plain.length) {
-          db.upsertUnits(plain.map((v) => units[v])).catch((e) => {
+          db.upsertUnits(plain.map((v) => units[v])).then(() => {
+            // landed — drop any STALE pendingPlacements an earlier failed move
+            // for one of these vins left queued, or flushPendingPlacements'
+            // later retry would overwrite this fresh position with that old
+            // one (see assign() for the full scenario this guards against).
+            set((s2) => {
+              const next = { ...s2.pendingPlacements }
+              let changed = false
+              for (const v of plain) if (next[v]) { delete next[v]; changed = true }
+              return changed ? { pendingPlacements: next } : s2
+            })
+          }).catch((e) => {
             console.error('[db] updateLocations', e)
             // the optimistic move above already shows on screen, and the caller
             // (e.g. RelocationView) already wrote a Location-history line
@@ -1235,14 +1257,23 @@ export const useYard = create<YardState>()(
                 // plain (unguarded) path above does, instead of trusting a
                 // write we never actually confirmed.
                 if (res.transportError) failed.push(it.vin)
+                // genuinely confirmed — drop any stale pendingPlacements an
+                // earlier failed move left queued (see assign() for the scenario)
+                else if (get().pendingPlacements[it.vin]) {
+                  set((s2) => { const next = { ...s2.pendingPlacements }; delete next[it.vin]; return { pendingPlacements: next } })
+                }
                 continue
               }
               lost.push({ vin: it.vin, at: posCode(res.current) || '—' })
               // adopt what the cloud says rather than keeping our rejected guess
+              // — and drop any stale pending entry, so it doesn't later overwrite
+              // this just-reconciled truth either
               set((st) => {
                 const cur = st.units[it.vin]
-                if (!cur) return st
-                return { units: { ...st.units, [it.vin]: { ...cur, ...res.current } } }
+                const units2 = cur ? { ...st.units, [it.vin]: { ...cur, ...res.current } } : st.units
+                if (!st.pendingPlacements[it.vin]) return { units: units2 }
+                const pendingPlacements = { ...st.pendingPlacements }; delete pendingPlacements[it.vin]
+                return { units: units2, pendingPlacements }
               })
             }
             if (failed.length) {
