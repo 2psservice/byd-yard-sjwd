@@ -1434,6 +1434,13 @@ export const useYard = create<YardState>()(
        * against a half-loaded copy is how the duplicates got created in the
        * first place.
        */
+      // ── รถซ้อนช่องกัน → จัดคันที่ใหม่ในแถวเดิม (กดเองจาก Settings เท่านั้น) ──
+      // ตำแหน่ง/โลเคชั่นต้องมาจากข้อมูลที่กรอกเข้าไปจริงเท่านั้น (สแกน / แอดมิน
+      // แก้เอง) — เคยรันเองอัตโนมัติทุกครั้งที่ units เปลี่ยน (ดีบาวซ์ 1.2 วิ) แต่
+      // ส่วนใหญ่ที่ "ดูเหมือน" ชนกันไม่ใช่การชนกันจริง เครื่องแค่ยังไม่รู้ว่ารถ
+      // ถูกย้ายไปที่อื่นแล้ว — รันเองเงียบๆ จึงเขียนรถกลับเข้าเลนที่มันออกไปแล้ว
+      // จริง ตอนนี้ต้องมีคนกดเท่านั้น (ดู StackedSlotRepair ใน Settings.tsx) —
+      // logic ยืนยันกับคลาวด์ก่อนขยับ (pass 2 ด้านล่าง) ยังเหมือนเดิมทุกประการ
       dedupeSlots: async () => {
         const s0 = get()
         if (!s0.unitsCloudDone) return 0
@@ -1491,11 +1498,8 @@ export const useYard = create<YardState>()(
         const units = { ...get().units }
         // `healed` cars come straight from a cloud lane fetch (laneFromCloud) —
         // real damages, but not this device's own not-yet-synced defect if the
-        // insert hasn't landed yet. A bare overwrite here erased it: this runs
-        // automatically after every units change (see the useYard.subscribe
-        // below), so a defect saved on a car sitting in a busy staging lane
-        // (WCL — every gate-in and re-location car in one lane) could vanish
-        // within the debounce window of the SAME save that added it.
+        // insert hasn't landed yet. A bare overwrite here would erase it, so
+        // reattach whatever this device still has queued before adopting.
         const pendingNow = get().pendingDamages
         for (const u of healed) units[u.vin] = attachPendingDamages(pendingNow, u)
         for (const lane of verified.values()) {
@@ -1585,7 +1589,6 @@ export const useYard = create<YardState>()(
           }
           return changed ? { units } : s
         })
-        if (changed) get().dedupeSlots().catch(() => {})
         return changed
       },
 
@@ -2261,24 +2264,15 @@ onSync('moves', (p: MovesPayload) => {
   })
 })
 
-// ── รถซ้อนช่องกัน → จัดคันที่ใหม่ในแถวเดิม (อัตโนมัติ) ────────────────────────
-// A collision can appear from any device at any moment (a relocation racing
-// another phone's), so the check rides on the units store itself. dedupeSlots
-// only acts on squares claimed by MORE THAN ONE car and only ever re-numbers
-// within the same ช่อง — a lane with holes but no collision is left exactly as
-// the yard put it, and no car ever changes lane. It also writes nothing when
-// there is nothing to fix, so its own set() cannot loop.
-let dedupeTimer: ReturnType<typeof setTimeout> | null = null
-function scheduleDedupe(delay = 1200) {
-  if (dedupeTimer) clearTimeout(dedupeTimer)
-  dedupeTimer = setTimeout(() => {
-    dedupeTimer = null
-    try { useYard.getState().dedupeSlots().catch(() => {}) } catch { /* store mid-teardown */ }
-  }, delay)
-}
-useYard.subscribe((s, prev) => {
-  if (s.units !== prev.units || s.unitsCloudDone !== prev.unitsCloudDone) scheduleDedupe()
-})
+// ── รถซ้อนช่องกัน → จัดคันที่ใหม่ในแถวเดิม ────────────────────────────────────
+// dedupeSlots() used to run on its own (a timer off this very subscription),
+// silently re-numbering a car's depth whenever it LOOKED like two cars shared
+// a square. ตำแหน่ง/โลเคชั่นต้องมาจากข้อมูลที่กรอกเข้าไปเท่านั้น (สแกนจริง /
+// แอดมินแก้เอง) เท่านั้น — ระบบห้ามปรับเปลี่ยนเอง แม้ตอน "ดูเหมือน" ชนกันก็ตาม
+// (ของเดิมก็เคยยอมรับเองว่าส่วนใหญ่ที่เห็นว่าชนกันไม่ใช่การชนกันจริง เครื่อง
+// แค่ยังไม่รู้ว่ารถถูกย้ายไปที่อื่นแล้ว — เงียบๆ เขียนรถกลับเข้าเลนที่มันออก
+// ไปแล้วจริง) เหลือไว้เป็นเครื่องมือกดเองเท่านั้น ดู StackedSlotRepair ใน
+// Settings — ยังมี logic ยืนยันกับคลาวด์ก่อนขยับเหมือนเดิม แค่ต้องมีคนกดก่อน
 
 // ── ทุกเครื่องเห็นผังเดียวกัน: นาฬิกากระทบยอดตำแหน่ง ──────────────────────────
 // Realtime carries every move the moment it happens, but a websocket that drops
