@@ -176,6 +176,44 @@ function StationDateRepair() {
   )
 }
 
+/**
+ * รถซ้อนช่องกัน (สองคันถูกบันทึกไว้ที่บล็อก/แถว/ช่องเดียวกัน) — เคยมีตัวกวาด
+ * อัตโนมัติรันเองทุกครั้งที่ units เปลี่ยน แต่ส่วนใหญ่ที่ "ดูเหมือน" ชนกันไม่ใช่
+ * การชนกันจริง (เครื่องแค่ยังไม่รู้ว่ารถถูกย้ายไปที่อื่นแล้ว) รันเองเงียบๆ จึง
+ * เขียนรถกลับเข้าเลนที่มันออกไปแล้วจริง — ตำแหน่ง/โลเคชั่นต้องมาจากข้อมูลที่
+ * กรอกเข้าไปจริงเท่านั้น ตอนนี้ต้องกดเองเท่านั้น ดู dedupeSlots ใน useYard.ts
+ * (ยังยืนยันกับคลาวด์ก่อนขยับเหมือนเดิมทุกประการ)
+ */
+function StackedSlotRepair() {
+  const { toast } = useYard()
+  const [busy, setBusy] = useState(false)
+  const run = async () => {
+    if (busy) return
+    if (!window.confirm('ตรวจรถที่ถูกบันทึกจอดซ้อนช่องกัน (บล็อก/แถว/ช่องเดียวกัน) ทุกไซต์ แล้วจัดคันที่ใหม่ในแถวเดิมให้?\n(ยืนยันกับคลาวด์ก่อนขยับทุกครั้ง — ไม่ย้ายคันที่ไม่ได้ซ้อนกันจริง)')) return
+    setBusy(true)
+    try {
+      const n = await useYard.getState().dedupeSlots()
+      toast('ok', n ? `จัดคันที่ใหม่ให้รถซ้อนช่องกัน ${n} คันแล้ว` : 'ไม่พบรถที่ซ้อนช่องกัน')
+    } finally { setBusy(false) }
+  }
+  return (
+    <section className="panel overflow-hidden mb-4">
+      <div className="px-4 py-3 border-b hairline flex items-center gap-2">
+        <Wrench size={16} style={{ color: 'var(--brand)' }} />
+        <span className="font-semibold text-[14.5px]">ซ่อมรถซ้อนช่องกัน</span>
+      </div>
+      <div className="p-4 flex flex-wrap items-center gap-3">
+        <div className="text-[13px] leading-relaxed flex-1" style={{ minWidth: 260, color: 'var(--muted)' }}>
+          <b>จัดคันที่ใหม่ในแถวเดิม</b> ให้รถที่ถูกบันทึกจอดช่องเดียวกันซ้อนกัน (เช่น สองเครื่องยิงช่องเดียวกันตอนข้อมูลยังไม่ทันซิงก์) ทุกไซต์ — ยืนยันกับคลาวด์ก่อนขยับทุกครั้ง คันที่ไม่ได้ซ้อนกันจริงจะไม่ถูกแตะ
+        </div>
+        <button id="repair-stacked-slots" className="btn btn-ghost py-2" disabled={busy} onClick={run}>
+          <Wrench size={14} /> {busy ? 'กำลังทำ…' : 'ซ่อมรถซ้อนช่องกัน'}
+        </button>
+      </div>
+    </section>
+  )
+}
+
 function VinManager() {
   const trackingRows = useTrackingRows()
   const units = useUnits()
@@ -847,6 +885,7 @@ export function Settings() {
       <DataRepair />
       <WrongTransferRepair />
       <OrphanPositionRepair />
+      <StackedSlotRepair />
       <StationDateRepair />
 
       {/* ── Site management ── */}

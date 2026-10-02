@@ -370,6 +370,27 @@ export async function upsertUnits(units: Unit[], onProgress?: ChunkProgress): Pr
   await bulkUpsert('units', units.map(unitToRow), 200, 'vin', 5, undefined, onProgress)
 }
 
+/**
+ * Same write as upsertUnits, but for a live action (a relocation save, not a
+ * big import) whose caller needs to KNOW whether it actually landed. bulkUpsert
+ * is built for the import progress bar: a chunk that exhausts its retries still
+ * counts as "finished" so the bar reaches 100%, which means it never rejects —
+ * a caller like updateLocations() that queues a retry (pendingPlacements) only
+ * in its .catch() never saw one, so a position write that permanently failed
+ * was silently treated as a success while the car's Location-history line
+ * (written separately, to a different table) kept the new spot — "ตำแหน่ง
+ * ปัจจุบัน" stuck on the old one forever with nothing left to reconcile it.
+ */
+export async function upsertUnitsStrict(units: Unit[]): Promise<void> {
+  if (!isConfigured() || !units.length) return
+  try {
+    await withRetry(() => supabase.from('units').upsert(units.map(unitToRow), { onConflict: 'vin' }))
+  } catch (error) {
+    console.error('[db] upsertUnitsStrict', units.map((u) => u.vin), error)
+    throw error
+  }
+}
+
 /** Where a car physically stands, plus who/when put it there. Owned exclusively
  *  by the yard-plan flows (driver, re-location, lane import, auto-park). */
 const PLACEMENT_COLS = ['block', 'row', 'slot', 'plan_mode', 'assigned_at', 'driver', 'driving_started_at', 'parked_at'] as const

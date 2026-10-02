@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import { useYard, useUnits, useTrips, useBlocks, attachPendingDamages } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
+import { overlayInspection } from '../lib/inspectionStatus'
 import { isDamaged, deriveCarStatus, hasLeftGate, IN_YARD_STATUSES, CAR_STATUS_META, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY } from '../lib/carStatus'
 import { useOps, useActiveQueues, useSiteQueues, activeProcess, stageOf, isSequenceQueue, isPreGateInQueue, seqStageOf, isQueueComplete, isEmptyQueue, isStationWorkComplete, queueTypeOf, stampStationDate, stationProgress, drivingNow, gateInArrived, gateInPendingItems } from '../store/useOps'
 import type { WorkQueue, QueueItem, QueueType, QueueStage } from '../store/useOps'
@@ -82,11 +83,28 @@ import { SeqQueuePicker } from '../components/SeqQueueList'
 // Every station reads through these hooks so an operator stamped into site A
 // can neither see nor record vehicles that belong to site B — the work site
 // must match the vehicle's site for any scan to resolve.
+// useTrackingRows() builds every yard's rows (~57k company-wide) because a
+// few screens (cross-site VIN lookups, Dashboard) genuinely need all of them
+// — but every YardOps station only ever shows ONE site, and used to pay for
+// that whole company-wide overlay pass on every single scan/sync just to
+// throw away all but a few hundred rows in the .filter() right after. Filter
+// FIRST (a plain field check, no overlay work) and only overlay the rows this
+// site actually keeps.
 function useSiteRows(): TrackRow[] {
-  const all = useTrackingRows()
+  const rows = useTracking((s) => s.rows)
+  const units = useYard((s) => s.units)
   const sites = useYard((s) => s.sites)
   const currentSite = useYard((s) => s.currentSite)
-  return useMemo(() => (currentSite ? all.filter((r) => rowInSite(r, currentSite, sites)) : all), [all, currentSite, sites])
+  return useMemo(() => {
+    if (!currentSite) return Object.values(rows).map((r) => overlayInspection(r, units[r.vin]))
+    const out: TrackRow[] = []
+    for (const vin in rows) {
+      const r = rows[vin]
+      if (!rowInSite(r, currentSite, sites)) continue
+      out.push(overlayInspection(r, units[vin]))
+    }
+    return out
+  }, [rows, units, currentSite, sites])
 }
 function useSiteUnits(): Unit[] {
   const all = useUnits()
@@ -138,6 +156,28 @@ function findSeqItem(vin: string | null, queues: WorkQueue[]): { queue: WorkQueu
  *  own active delivery-sequence queue item still carries (see QueueItem.group). */
 function rowGroup(r: TrackRow, queues: WorkQueue[]): string {
   return normGroup(r.cells[GROUP_KEY]) || normGroup(findSeqItem(r.vin, queues)?.item.group)
+}
+
+/** vin → the group of its open delivery-sequence queue item, precomputed once.
+ *  findSeqItem/rowGroup each do a fresh queues×items scan per call — fine for
+ *  checking ONE scanned VIN, but a bulk filter over every tracking row (DN scan
+ *  at Gate-out, which can mean ~20,000 cars) turned that into a scan-per-row,
+ *  i.e. O(rows × queues × items) just to find which cars belong to one DN. */
+function buildSeqGroupIndex(queues: WorkQueue[]): Map<string, string> {
+  const m = new Map<string, string>()
+  for (const q of queues) {
+    if (!isSequenceQueue(q)) continue
+    for (const i of q.items) {
+      if (i.done || m.has(i.vin)) continue
+      m.set(i.vin, normGroup(i.group))
+    }
+  }
+  return m
+}
+
+/** Same rule as rowGroup, against the precomputed index — use for bulk filters. */
+function rowGroupFast(r: TrackRow, seqGroupIndex: Map<string, string>): string {
+  return normGroup(r.cells[GROUP_KEY]) || (seqGroupIndex.get(r.vin) ?? '')
 }
 
 // ── damage config: bilingual master lists (Part + Defect) from the master Excel ──
@@ -645,6 +685,22 @@ function savedScanZoom(): number {
 }
 const rememberScanZoom = (v: number) => { try { localStorage.setItem(SCAN_ZOOM_KEY, String(v)) } catch { /* full */ } }
 
+// BarcodeDetector.getSupportedFormats() asks Google Play Services over IPC —
+// a hardware/OS capability that cannot change mid-session, yet the old code
+// re-asked it fresh on every single camera open (hundreds of times a shift on
+// a busy gate). On a low-RAM phone (2-3GB — e.g. MediaTek Helio G35) GMS can
+// get evicted from memory between scans and need a slow cold restart, making
+// this one ask occasionally take seconds instead of milliseconds — exactly
+// the kind of per-scan camera-open "ค้าง" a low-end phone would show. Ask
+// once per session and reuse the answer for every scan after.
+let supportedFormatsCache: Promise<string[]> | null = null
+function cachedSupportedFormats(BD: { getSupportedFormats?: () => Promise<string[]> }): Promise<string[]> {
+  if (!supportedFormatsCache) {
+    supportedFormatsCache = BD.getSupportedFormats?.().catch((): string[] => []) ?? Promise.resolve<string[]>([])
+  }
+  return supportedFormatsCache
+}
+
 function VinInput({
   onScan, accent = 'var(--brand)',
   placeholder = 'VIN / 5 ตัวท้าย…',
@@ -667,6 +723,36 @@ function VinInput({
   // live camera track — zoom / torch are applied straight onto it where the
   // device supports them (Android Chrome: both · iOS 17+: zoom only)
   const trackRef = useRef<MediaStreamTrack | null>(null)
+  // "อุ่นกล้องไว้สั้นๆ" หลังสแกนสำเร็จ — getUserMedia() ใหม่ทุกครั้งสั่งฮาร์ดแวร์
+  // ให้ไล่หาโฟกัส/ปรับแสงใหม่ตั้งแต่ศูนย์ (ขั้นตอนฟิสิกส์ของเลนส์/เซนเซอร์ ไม่ใช่
+  // โค้ดที่ไม่มีประสิทธิภาพ) ซึ่งเห็นชัดบนชิปถูก ๆ ตอนสแกนรถคันต่อ ๆ ไปติดกัน —
+  // เคยลอง "จอดกล้องไว้" ยาวเป็นนาที (#443-470) แล้วต้องย้อนกลับ 2 ครั้ง (#462,
+  // #525) เพราะเซนเซอร์ทำงานต่อเนื่องนานจนเครื่องร้อนสะสมจนถูกหรี่ความเร็ว รอบนี้
+  // จอดไว้แค่สั้น ๆ แทน (CAMERA_WARM_MS) แล้วปล่อยจริงถ้าไม่สแกนต่อภายในเวลานั้น
+  // — ปิดด้วยมือ (ปุ่ม "ปิดกล้อง") หรือสลับสถานี/ปิดหน้าจอยังปล่อยทันทีเหมือนเดิม
+  // ไม่จอด เพราะเป็นสัญญาณว่าจะไม่สแกนต่อจริง ๆ
+  const CAMERA_WARM_MS = 4500
+  const warmStreamRef = useRef<MediaStream | null>(null)
+  const warmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const releaseWarmStream = () => {
+    if (warmTimerRef.current) { clearTimeout(warmTimerRef.current); warmTimerRef.current = null }
+    warmStreamRef.current?.getTracks().forEach((t) => t.stop())
+    warmStreamRef.current = null
+  }
+  // ปิดเมื่อ component นี้ถูก unmount จริง (สลับสถานี/ออกจากหน้า) — กันกล้องค้าง
+  // เปิดอยู่เบื้องหลังเกินช่วงสั้น ๆ ที่ตั้งใจจอดไว้
+  useEffect(() => releaseWarmStream, [])
+  // ดึง stream ที่จอดไว้มาใช้ต่อ — เช็กว่า track ยัง live จริงก่อน (เช่น ผู้ใช้
+  // ถอนสิทธิ์กล้องระหว่างรอ) ไม่งั้นจะได้ preview ดำ
+  const takeWarmStream = (): MediaStream | null => {
+    if (warmTimerRef.current) { clearTimeout(warmTimerRef.current); warmTimerRef.current = null }
+    const s = warmStreamRef.current
+    warmStreamRef.current = null
+    if (!s) return null
+    if (s.getVideoTracks().every((t) => t.readyState === 'live')) return s
+    s.getTracks().forEach((t) => t.stop())
+    return null
+  }
   const [zoomCap, setZoomCap] = useState<{ min: number; max: number; step: number } | null>(null)
   const [zoom, setZoom] = useState(1)
   const [torchCap, setTorchCap] = useState(false)
@@ -738,15 +824,24 @@ function VinInput({
     return () => document.removeEventListener('keydown', onKey, true)
   }, [])
 
-  // Fully release the camera: stop ZXing's decode loop AND every media track,
-  // then detach from the <video> so the OS camera indicator turns off.
-  const stopScan = () => {
+  // Stop the decode loop and detach from the <video> so the preview goes away
+  // either way. `warm`: park the live track for CAMERA_WARM_MS instead of
+  // stopping it for real — only when the track is confirmed still live, so a
+  // revoked permission falls back to a normal full stop. Any other close
+  // (button press, unmount) always passes warm=false — a full, real release.
+  const stopScan = (warm = false) => {
     try { controlsRef.current?.stop() } catch { /* already stopped */ }
     controlsRef.current = null
     const v = videoRef.current
     const s = v?.srcObject as MediaStream | null
-    s?.getTracks().forEach(t => t.stop())
     if (v) v.srcObject = null
+    if (warm && s && s.getVideoTracks().every(t => t.readyState === 'live')) {
+      releaseWarmStream() // a still-parked stream from before this one → really gone first
+      warmStreamRef.current = s
+      warmTimerRef.current = setTimeout(releaseWarmStream, CAMERA_WARM_MS)
+    } else {
+      s?.getTracks().forEach(t => t.stop())
+    }
     trackRef.current = null
     setZoomCap(null); setZoom(1); setTorchCap(false); setTorchOn(false)
     const z0 = Math.min(3, savedScanZoom())
@@ -754,7 +849,7 @@ function VinInput({
   }
 
   const openCamera = () => { setCamErr(''); setCamOpen(true) }
-  const closeCamera = () => { stopScan(); setCamOpen(false) }
+  const closeCamera = (warm = false) => { stopScan(warm); setCamOpen(false) }
 
   // Start the scanner whenever the overlay opens. ZXing manages getUserMedia +
   // srcObject + play() + the continuous decode loop internally, which also
@@ -796,7 +891,7 @@ function VinInput({
 
     const hit = (text?: string | null) => {
       const t = text?.trim().toUpperCase()
-      if (t) { closeCamera(); go(t) }
+      if (t) { closeCamera(true); go(t) } // warm — the next car is usually seconds away
     }
 
     // Path 1 — native BarcodeDetector (Android Chrome): hardware-accelerated and
@@ -814,10 +909,16 @@ function VinInput({
         // จอกล้องค้างดำอยู่เฉย ๆ (วาดกรอบเล็งแล้วแต่ยังไม่มีภาพ) นานกว่าที่ควร
         // .catch(() => []) กันไม่ให้ฝั่งนี้พังแล้วลาก getUserMedia ที่รออยู่คู่กัน
         // ไปด้วย (ถือว่า "ไม่รองรับ" แล้วปล่อยกล้องคืน ไม่ใช่โยน error ทิ้งกล้องค้าง)
-        const [supported, stream] = await Promise.all([
-          BD.getSupportedFormats?.().catch((): string[] => []) ?? Promise.resolve<string[]>([]),
-          navigator.mediaDevices.getUserMedia({ video: VIDEO }),
-        ])
+        // สแกนคันก่อนหน้าทิ้งกล้องที่ "โฟกัส/แสงนิ่งแล้ว" ไว้จอดสั้น ๆ หรือเปล่า —
+        // ถ้ามีและยัง live อยู่จริง ใช้ต่อเลย ข้าม getUserMedia (และการไล่หาโฟกัส/
+        // ปรับแสงใหม่ตั้งแต่ศูนย์) ไปทั้งก้อน
+        const warmed = takeWarmStream()
+        const [supported, stream] = warmed
+          ? [await cachedSupportedFormats(BD), warmed]
+          : await Promise.all([
+              cachedSupportedFormats(BD),
+              navigator.mediaDevices.getUserMedia({ video: VIDEO }),
+            ])
         if (cancelled) { stream.getTracks().forEach(t => t.stop()); return true }
         const want = ['qr_code', 'code_128', 'code_39', 'ean_13', 'data_matrix'].filter(f => supported.includes(f))
         if (!want.includes('qr_code')) { stream.getTracks().forEach(t => t.stop()); return false }
@@ -845,7 +946,7 @@ function VinInput({
     const startZxing = async () => {
       const video = videoRef.current
       if (!video || cancelled) return
-      const stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO })
+      const stream = takeWarmStream() ?? await navigator.mediaDevices.getUserMedia({ video: VIDEO })
       if (cancelled) { stream.getTracks().forEach(t => t.stop()); return }
       video.srcObject = stream
       await video.play().catch(() => {})
@@ -942,7 +1043,7 @@ function VinInput({
           <div className="flex items-center justify-between px-4 pb-2 shrink-0"
             style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 14px)' }}>
             <span className="text-white font-bold text-[16px]">{camTitle}</span>
-            <button onClick={closeCamera} className="w-12 h-12 rounded-full flex items-center justify-center shrink-0"
+            <button onClick={() => closeCamera()} className="w-12 h-12 rounded-full flex items-center justify-center shrink-0"
               style={{ background: '#dc2626' }}>
               <X size={24} color="#fff" strokeWidth={3} />
             </button>
@@ -1012,7 +1113,7 @@ function VinInput({
           </div>
           {/* thumb-reach close bar — one tap to leave, no stretching to the top */}
           <div className="px-4 pt-1 shrink-0" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 12px)' }}>
-            <button onClick={closeCamera}
+            <button onClick={() => closeCamera()}
               className="w-full py-3.5 rounded-2xl text-[15px] font-bold text-white flex items-center justify-center gap-2"
               style={{ background: '#dc2626' }}>
               <X size={18} strokeWidth={3} /> ปิดกล้อง
@@ -3976,6 +4077,8 @@ function GateOutView() {
   const seqQueues = useMemo(() => queues.filter(q => isSequenceQueue(q) && !isEmptyQueue(q) && !isQueueComplete(q) && !seqClosed[q.id]), [queues, seqClosed])
   const row = vin ? (trackingRows.find(r => r.vin === vin) ?? null) : null
   const seqHit = useMemo(() => findSeqItem(vin, queues), [vin, queues])
+  // for bulk DN matching below — see buildSeqGroupIndex
+  const seqGroupIndex = useMemo(() => buildSeqGroupIndex(queues), [queues])
   // where the car actually stands, so the gate can go fetch it — the yard name
   // alone ("NYB2 Phase 2") never told anyone which lane to walk to
   const parked = vin ? units.find(u => u.vin === vin) : undefined
@@ -3989,12 +4092,12 @@ function GateOutView() {
   const dnCars = useMemo(() => {
     if (!dn) return []
     return trackingRows
-      .filter(r => rowGroup(r, queues) === dn)
+      .filter(r => rowGroupFast(r, seqGroupIndex) === dn)
       .map(r => {
         const u = units.find(x => x.vin === r.vin)
         const status = (r.cells['Car Status'] ?? '').trim()
         const gone = hasLeftGate(r.cells) // shared rule — also catches import-only gate-outs
-        const inSeq = !!findSeqItem(r.vin, queues)
+        const inSeq = seqGroupIndex.has(r.vin)
         // same rule as the single-VIN scan: only a car planned in an open
         // Grouping-to-Dealer queue, and actually gated in, may leave
         const reason = gone ? '' : !inSeq ? 'ไม่มีคิวงาน' : !isGatedInStatus(status) ? 'ยังไม่ Gate-in' : ''
@@ -4010,7 +4113,7 @@ function GateOutView() {
         }
       })
       .sort((a, b) => byYardLocation(a.location, b.location))
-  }, [dn, trackingRows, units, queues])
+  }, [dn, trackingRows, units, seqGroupIndex])
 
   // dnCars can only .filter() rows that already exist HERE — a car whose queue
   // item carries this DN's group but whose tracking row never synced to this
@@ -4040,7 +4143,7 @@ function GateOutView() {
   const onScanDn = (raw: string) => {
     const g = normGroup(raw)
     if (!g) return
-    const n = trackingRows.filter(r => rowGroup(r, queues) === g).length
+    const n = trackingRows.filter(r => rowGroupFast(r, seqGroupIndex) === g).length
     if (!n) { toast('err', `ไม่พบ DN / เลข Grouping: ${raw}`); return }
     setVin(null); setDn(g); setSessionOut([])
   }
@@ -4511,24 +4614,11 @@ function RelocationView() {
     [...(row?.history ?? [])].filter(e => e.field === 'Location' || e.field === LOCATION_KEY).reverse(),
   [row])
 
-  // ── ตำแหน่งปัจจุบัน self-heal ─────────────────────────────────────────────
-  // A Relocation/Driver scan can log its Location history line and then have
-  // its cloud write to the `units` table silently fail — a later full units
-  // re-pull reverts the car to its OLD spot while the separately-persisted
-  // (separately retried) history line stays put, leaving "ตำแหน่งปัจจุบัน"
-  // pointing at the wrong block forever even though ประวัติการย้าย is right
-  // (see #428). Whenever the latest FIELD-SCAN move is newer than the last
-  // time this unit's spot was actually confirmed (parkedAt), trust the move
-  // and correct the spot — never over a fresher, unlogged move (e.g. the
-  // yard-plan's auto-park tool, which never touches this VIN's history).
-  useEffect(() => {
-    if (!unit || !moves[0] || !isScanLocationEntry(moves[0])) return
-    if (moves[0].at <= (unit.parkedAt ?? 0)) return
-    const fixed = parseYardLocCode(moves[0].to)
-    if (!fixed) return
-    if (unit.block === fixed.block && unit.row === fixed.row && unit.slot === fixed.slot) return
-    updateLocations([{ vin: unit.vin, block: fixed.block, row: fixed.row, slot: fixed.slot, modelName: unit.modelName, color: unit.color }])
-  }, [unit, moves, updateLocations])
+  // ตำแหน่งปัจจุบันที่ไม่ตรงกับประวัติการสแกนล่าสุด (เช่น การเขียน `units` พลาด
+  // ตอนย้ายรถ) เคยถูกแก้เองเงียบๆ ที่นี่ทุกครั้งที่เปิดการ์ดรถคันนี้ — ตำแหน่ง/
+  // โลเคชั่นต้องมาจากข้อมูลที่กรอกเข้าไปจริงเท่านั้น (สแกน/แอดมินแก้เอง) ระบบ
+  // ห้ามปรับเปลี่ยนเอง แม้จะตั้งใจ "ซ่อม" ก็ตาม — ถ้าไม่ตรงกันจริง ให้แอดมินกด
+  // ซ่อมเองที่ Settings (ดู repairOrphanPositions ใน useTracking.ts)
 
   // one field, written the way the upload file writes a lane: "R14" (block +
   // column). The token resolves to the block it NAMES — name-first, so an
