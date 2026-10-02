@@ -723,6 +723,36 @@ function VinInput({
   // live camera track — zoom / torch are applied straight onto it where the
   // device supports them (Android Chrome: both · iOS 17+: zoom only)
   const trackRef = useRef<MediaStreamTrack | null>(null)
+  // "อุ่นกล้องไว้สั้นๆ" หลังสแกนสำเร็จ — getUserMedia() ใหม่ทุกครั้งสั่งฮาร์ดแวร์
+  // ให้ไล่หาโฟกัส/ปรับแสงใหม่ตั้งแต่ศูนย์ (ขั้นตอนฟิสิกส์ของเลนส์/เซนเซอร์ ไม่ใช่
+  // โค้ดที่ไม่มีประสิทธิภาพ) ซึ่งเห็นชัดบนชิปถูก ๆ ตอนสแกนรถคันต่อ ๆ ไปติดกัน —
+  // เคยลอง "จอดกล้องไว้" ยาวเป็นนาที (#443-470) แล้วต้องย้อนกลับ 2 ครั้ง (#462,
+  // #525) เพราะเซนเซอร์ทำงานต่อเนื่องนานจนเครื่องร้อนสะสมจนถูกหรี่ความเร็ว รอบนี้
+  // จอดไว้แค่สั้น ๆ แทน (CAMERA_WARM_MS) แล้วปล่อยจริงถ้าไม่สแกนต่อภายในเวลานั้น
+  // — ปิดด้วยมือ (ปุ่ม "ปิดกล้อง") หรือสลับสถานี/ปิดหน้าจอยังปล่อยทันทีเหมือนเดิม
+  // ไม่จอด เพราะเป็นสัญญาณว่าจะไม่สแกนต่อจริง ๆ
+  const CAMERA_WARM_MS = 4500
+  const warmStreamRef = useRef<MediaStream | null>(null)
+  const warmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const releaseWarmStream = () => {
+    if (warmTimerRef.current) { clearTimeout(warmTimerRef.current); warmTimerRef.current = null }
+    warmStreamRef.current?.getTracks().forEach((t) => t.stop())
+    warmStreamRef.current = null
+  }
+  // ปิดเมื่อ component นี้ถูก unmount จริง (สลับสถานี/ออกจากหน้า) — กันกล้องค้าง
+  // เปิดอยู่เบื้องหลังเกินช่วงสั้น ๆ ที่ตั้งใจจอดไว้
+  useEffect(() => releaseWarmStream, [])
+  // ดึง stream ที่จอดไว้มาใช้ต่อ — เช็กว่า track ยัง live จริงก่อน (เช่น ผู้ใช้
+  // ถอนสิทธิ์กล้องระหว่างรอ) ไม่งั้นจะได้ preview ดำ
+  const takeWarmStream = (): MediaStream | null => {
+    if (warmTimerRef.current) { clearTimeout(warmTimerRef.current); warmTimerRef.current = null }
+    const s = warmStreamRef.current
+    warmStreamRef.current = null
+    if (!s) return null
+    if (s.getVideoTracks().every((t) => t.readyState === 'live')) return s
+    s.getTracks().forEach((t) => t.stop())
+    return null
+  }
   const [zoomCap, setZoomCap] = useState<{ min: number; max: number; step: number } | null>(null)
   const [zoom, setZoom] = useState(1)
   const [torchCap, setTorchCap] = useState(false)
@@ -794,15 +824,24 @@ function VinInput({
     return () => document.removeEventListener('keydown', onKey, true)
   }, [])
 
-  // Fully release the camera: stop ZXing's decode loop AND every media track,
-  // then detach from the <video> so the OS camera indicator turns off.
-  const stopScan = () => {
+  // Stop the decode loop and detach from the <video> so the preview goes away
+  // either way. `warm`: park the live track for CAMERA_WARM_MS instead of
+  // stopping it for real — only when the track is confirmed still live, so a
+  // revoked permission falls back to a normal full stop. Any other close
+  // (button press, unmount) always passes warm=false — a full, real release.
+  const stopScan = (warm = false) => {
     try { controlsRef.current?.stop() } catch { /* already stopped */ }
     controlsRef.current = null
     const v = videoRef.current
     const s = v?.srcObject as MediaStream | null
-    s?.getTracks().forEach(t => t.stop())
     if (v) v.srcObject = null
+    if (warm && s && s.getVideoTracks().every(t => t.readyState === 'live')) {
+      releaseWarmStream() // a still-parked stream from before this one → really gone first
+      warmStreamRef.current = s
+      warmTimerRef.current = setTimeout(releaseWarmStream, CAMERA_WARM_MS)
+    } else {
+      s?.getTracks().forEach(t => t.stop())
+    }
     trackRef.current = null
     setZoomCap(null); setZoom(1); setTorchCap(false); setTorchOn(false)
     const z0 = Math.min(3, savedScanZoom())
@@ -810,7 +849,7 @@ function VinInput({
   }
 
   const openCamera = () => { setCamErr(''); setCamOpen(true) }
-  const closeCamera = () => { stopScan(); setCamOpen(false) }
+  const closeCamera = (warm = false) => { stopScan(warm); setCamOpen(false) }
 
   // Start the scanner whenever the overlay opens. ZXing manages getUserMedia +
   // srcObject + play() + the continuous decode loop internally, which also
@@ -852,7 +891,7 @@ function VinInput({
 
     const hit = (text?: string | null) => {
       const t = text?.trim().toUpperCase()
-      if (t) { closeCamera(); go(t) }
+      if (t) { closeCamera(true); go(t) } // warm — the next car is usually seconds away
     }
 
     // Path 1 — native BarcodeDetector (Android Chrome): hardware-accelerated and
@@ -870,10 +909,16 @@ function VinInput({
         // จอกล้องค้างดำอยู่เฉย ๆ (วาดกรอบเล็งแล้วแต่ยังไม่มีภาพ) นานกว่าที่ควร
         // .catch(() => []) กันไม่ให้ฝั่งนี้พังแล้วลาก getUserMedia ที่รออยู่คู่กัน
         // ไปด้วย (ถือว่า "ไม่รองรับ" แล้วปล่อยกล้องคืน ไม่ใช่โยน error ทิ้งกล้องค้าง)
-        const [supported, stream] = await Promise.all([
-          cachedSupportedFormats(BD),
-          navigator.mediaDevices.getUserMedia({ video: VIDEO }),
-        ])
+        // สแกนคันก่อนหน้าทิ้งกล้องที่ "โฟกัส/แสงนิ่งแล้ว" ไว้จอดสั้น ๆ หรือเปล่า —
+        // ถ้ามีและยัง live อยู่จริง ใช้ต่อเลย ข้าม getUserMedia (และการไล่หาโฟกัส/
+        // ปรับแสงใหม่ตั้งแต่ศูนย์) ไปทั้งก้อน
+        const warmed = takeWarmStream()
+        const [supported, stream] = warmed
+          ? [await cachedSupportedFormats(BD), warmed]
+          : await Promise.all([
+              cachedSupportedFormats(BD),
+              navigator.mediaDevices.getUserMedia({ video: VIDEO }),
+            ])
         if (cancelled) { stream.getTracks().forEach(t => t.stop()); return true }
         const want = ['qr_code', 'code_128', 'code_39', 'ean_13', 'data_matrix'].filter(f => supported.includes(f))
         if (!want.includes('qr_code')) { stream.getTracks().forEach(t => t.stop()); return false }
@@ -901,7 +946,7 @@ function VinInput({
     const startZxing = async () => {
       const video = videoRef.current
       if (!video || cancelled) return
-      const stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO })
+      const stream = takeWarmStream() ?? await navigator.mediaDevices.getUserMedia({ video: VIDEO })
       if (cancelled) { stream.getTracks().forEach(t => t.stop()); return }
       video.srcObject = stream
       await video.play().catch(() => {})
@@ -998,7 +1043,7 @@ function VinInput({
           <div className="flex items-center justify-between px-4 pb-2 shrink-0"
             style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 14px)' }}>
             <span className="text-white font-bold text-[16px]">{camTitle}</span>
-            <button onClick={closeCamera} className="w-12 h-12 rounded-full flex items-center justify-center shrink-0"
+            <button onClick={() => closeCamera()} className="w-12 h-12 rounded-full flex items-center justify-center shrink-0"
               style={{ background: '#dc2626' }}>
               <X size={24} color="#fff" strokeWidth={3} />
             </button>
@@ -1068,7 +1113,7 @@ function VinInput({
           </div>
           {/* thumb-reach close bar — one tap to leave, no stretching to the top */}
           <div className="px-4 pt-1 shrink-0" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 12px)' }}>
-            <button onClick={closeCamera}
+            <button onClick={() => closeCamera()}
               className="w-full py-3.5 rounded-2xl text-[15px] font-bold text-white flex items-center justify-center gap-2"
               style={{ background: '#dc2626' }}>
               <X size={18} strokeWidth={3} /> ปิดกล้อง
