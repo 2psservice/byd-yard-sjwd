@@ -1226,7 +1226,14 @@ export const useYard = create<YardState>()(
         const guarded = items.filter((it) => it.from && intentional.has(it.vin))
         const plain = [...intentional].filter((v) => !guarded.some((g) => g.vin === v))
         if (plain.length) {
-          db.upsertUnits(plain.map((v) => units[v])).then(() => {
+          // upsertUnits/bulkUpsert is built for the import progress bar and never
+          // rejects — a chunk that exhausts its retries still "finishes" so the
+          // bar reaches 100%. That made the .catch() below (and its pendingPlacements
+          // retry-queue) unreachable for a position write that genuinely, permanently
+          // failed: the write was silently treated as a success while the car's
+          // Location-history line (a separate table, written separately) kept the
+          // real new spot. upsertUnitsStrict reports failure honestly instead.
+          db.upsertUnitsStrict(plain.map((v) => units[v])).then(() => {
             // landed — drop any STALE pendingPlacements an earlier failed move
             // for one of these vins left queued, or flushPendingPlacements'
             // later retry would overwrite this fresh position with that old
