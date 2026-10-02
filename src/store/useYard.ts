@@ -76,6 +76,14 @@ function withModelId(u: Unit): Unit {
  *  this alone does not make a 8-row block stack 20 deep. */
 export const MAX_LANE_DEPTH = 20
 
+/** How one car's position write in updateLocations() ended up — see onSettled. */
+export type PlacementResult = {
+  vin: string
+  status: 'ok' | 'queued' | 'lost'
+  /** `lost` only: where the cloud says the car actually stands */
+  current?: { block?: string; row?: number; slot?: number }
+}
+
 // ── ตำแหน่งรถ: ระบบห้ามแตะ ────────────────────────────────────────────────────
 // เดิมมี "lane compaction" คอยเลื่อนรถขึ้นมาปิดช่องว่างในเลนเองอัตโนมัติ (คันที่
 // 3 เลื่อนขึ้นเป็นคันที่ 2 เมื่อคันหน้าออกไป) แล้วเขียนตำแหน่งใหม่ขึ้น cloud
@@ -249,11 +257,16 @@ interface YardState {
    *  write into a compare-and-set: the move lands only if the car is still
    *  there, so two phones acting on the same lane a moment apart cannot
    *  overwrite each other. Omit it and the write is unconditional, as before. */
+  /** `onSettled` fires once, after EVERY write in the batch has either landed,
+   *  been queued for retry (`queued` — wifi; flushPendingPlacements will land
+   *  it), or lost its compare-and-set (`lost` — only possible for an item
+   *  that carried `from`). A screen that tells the worker "บันทึกแล้ว" must
+   *  wait for it, not for the optimistic local update this call returns on. */
   updateLocations: (items: {
     vin: string; block: string; row: number; slot: number
     modelName?: string; color?: string; gateInAt?: number
     from?: { block?: string; row?: number; slot?: number }
-  }[]) => number
+  }[], onSettled?: (results: PlacementResult[]) => void) => number
   setPolicy: (model: string, patch: Partial<ParkingPolicy>) => void
   loadPolicies: () => Promise<void>
   // --- yard layout editor ---
@@ -1189,7 +1202,7 @@ export const useYard = create<YardState>()(
 
       // Update Location import: place each car into its lane's block/row at the
       // given slot. Creates a minimal unit for VINs not in the system yet.
-      updateLocations: (items) => {
+      updateLocations: (items, onSettled) => {
         const s = get()
         const units = { ...s.units }
         const changed: Unit[] = []
@@ -1225,6 +1238,9 @@ export const useYard = create<YardState>()(
         const intentional = new Set(changed.map((u) => u.vin))
         const guarded = items.filter((it) => it.from && intentional.has(it.vin))
         const plain = [...intentional].filter((v) => !guarded.some((g) => g.vin === v))
+        const results: PlacementResult[] = []
+        let open = (plain.length ? 1 : 0) + (guarded.length ? 1 : 0)
+        const settle = () => { if (--open === 0) onSettled?.(results) }
         if (plain.length) {
           // upsertUnits/bulkUpsert is built for the import progress bar and never
           // rejects — a chunk that exhausts its retries still "finishes" so the
@@ -1244,7 +1260,9 @@ export const useYard = create<YardState>()(
               for (const v of plain) if (next[v]) { delete next[v]; changed = true }
               return changed ? { pendingPlacements: next } : s2
             })
-          }).catch((e) => {
+            for (const v of plain) results.push({ vin: v, status: 'ok' })
+            settle()
+          }, (e) => {
             console.error('[db] updateLocations', e)
             // the optimistic move above already shows on screen, and the caller
             // (e.g. RelocationView) already wrote a Location-history line
@@ -1258,6 +1276,8 @@ export const useYard = create<YardState>()(
               return { pendingPlacements: next }
             })
             scheduleFlushPendingPlacements(get)
+            for (const v of plain) results.push({ vin: v, status: 'queued' })
+            settle()
           })
         }
         if (guarded.length) {
@@ -1278,15 +1298,19 @@ export const useYard = create<YardState>()(
                 // one after the next full re-pull. Queue it the same way the
                 // plain (unguarded) path above does, instead of trusting a
                 // write we never actually confirmed.
-                if (res.transportError) failed.push(it.vin)
-                // genuinely confirmed — drop any stale pendingPlacements an
-                // earlier failed move left queued (see assign() for the scenario)
-                else if (get().pendingPlacements[it.vin]) {
-                  set((s2) => { const next = { ...s2.pendingPlacements }; delete next[it.vin]; return { pendingPlacements: next } })
+                if (res.transportError) { failed.push(it.vin); results.push({ vin: it.vin, status: 'queued' }) }
+                else {
+                  results.push({ vin: it.vin, status: 'ok' })
+                  // genuinely confirmed — drop any stale pendingPlacements an
+                  // earlier failed move left queued (see assign() for the scenario)
+                  if (get().pendingPlacements[it.vin]) {
+                    set((s2) => { const next = { ...s2.pendingPlacements }; delete next[it.vin]; return { pendingPlacements: next } })
+                  }
                 }
                 continue
               }
               lost.push({ vin: it.vin, at: posCode(res.current) || '—' })
+              results.push({ vin: it.vin, status: 'lost', current: res.current })
               // adopt what the cloud says rather than keeping our rejected guess
               // — and drop any stale pending entry, so it doesn't later overwrite
               // this just-reconciled truth either
@@ -1311,6 +1335,7 @@ export const useYard = create<YardState>()(
                 ? `รถ ${lost[0].vin.slice(-6)} เพิ่งถูกย้ายไป ${lost[0].at} โดยเครื่องอื่น — ตำแหน่งนี้ไม่ถูกบันทึก กรุณาสแกนใหม่`
                 : `${lost.length} คันเพิ่งถูกย้ายโดยเครื่องอื่น — ไม่ได้บันทึกทับ กรุณาสแกนใหม่`)
             }
+            settle()
           })()
         }
         return changed.length
