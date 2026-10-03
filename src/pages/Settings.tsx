@@ -97,6 +97,69 @@ function WrongTransferRepair() {
 }
 
 /**
+ * ซ่อมรถที่ถูกย้ายยาร์ดผิด — แบบวางรายชื่อเอง (ชุด 79 คันที่ 60 RAI และชุดต่อ ๆ ไป)
+ * แอดมินวาง VIN ทีละบรรทัด + เลือกยาร์ดที่รถ "ยังจอดอยู่จริง" → คืนรอบของยาร์ดนั้น
+ * จาก __trips ลบรอบปลอม/คิวผีที่ปลายทาง ตั้งเป็น In Yard (ดู repairTransfersFor)
+ * แล้วถ้ายาร์ดที่เลือกอยู่คือยาร์ดเดียวกัน คืนตำแหน่งจอดจากประวัติการสแกนล่าสุด
+ * ต่อให้เลย (repairOrphanPositions) — ไม่ต้องยิงใหม่ทั้งล็อต
+ */
+function TransferRepairByList() {
+  const { currentSite, sites, toast } = useYard()
+  const [vinText, setVinText] = useState('')
+  const [origin, setOrigin] = useState('')
+  const [busy, setBusy] = useState(false)
+  const originId = origin || currentSite || ''
+  const originName = sites.find((s) => s.id === originId)?.name ?? '—'
+  const vins = useMemo(() => [...new Set(vinText.split(/[\s,;]+/).map((v) => v.trim().toUpperCase()).filter((v) => VIN_RE.test(v)))], [vinText])
+  const run = async () => {
+    if (busy || !originId || !vins.length) return
+    if (!window.confirm(`คืนรถ ${vins.length} คัน กลับเป็น In Yard ที่ ${originName}?\n(คืนรอบของ ${originName} จากประวัติ · ลบรอบปลอม/คิวรับรถผีที่ยาร์ดปลายทาง · คันที่ถูกต้องอยู่แล้วจะไม่ถูกแตะ)`)) return
+    setBusy(true)
+    try {
+      const { fixed, skipped } = await useTracking.getState().repairTransfersFor(vins, originId)
+      let msg = fixed ? `คืนค่ารถ ${fixed} คันกลับ ${originName} แล้ว${skipped ? ` · ข้าม ${skipped} คัน (ถูกต้องอยู่แล้ว/ไม่พบ)` : ''}` : 'ไม่พบคันที่ต้องแก้ (ถูกต้องอยู่แล้ว หรือไม่พบ VIN)'
+      if (fixed && currentSite === originId) {
+        const pos = useTracking.getState().repairOrphanPositions()
+        msg += ` · คืนตำแหน่งจอด ${pos.fixed} คัน${pos.collided.length ? ` (ชนกัน ${pos.collided.length} คัน)` : ''}`
+        if (pos.collided.length) window.alert(`ช่องปลายทางมีรถคันอื่นจอดอยู่แล้ว ต้องแก้เอง:\n\n${pos.collided.map((c) => `${c.vin} → ${c.want}`).join('\n')}`)
+      } else if (fixed) {
+        msg += ` · สลับไปยาร์ด ${originName} แล้วกด "ซ่อมตำแหน่งที่ไม่มีการสแกน" เพื่อคืนตำแหน่งจอด`
+      }
+      toast('ok', msg)
+      if (fixed) setVinText('')
+    } finally { setBusy(false) }
+  }
+  return (
+    <section className="panel overflow-hidden mb-4">
+      <div className="px-4 py-3 border-b hairline flex items-center gap-2">
+        <Wrench size={16} style={{ color: 'var(--brand)' }} />
+        <span className="font-semibold text-[14.5px]">ซ่อมรถที่ถูกย้ายยาร์ดผิด (วางรายชื่อเอง)</span>
+      </div>
+      <div className="p-4 space-y-3">
+        <div className="text-[13px] leading-relaxed" style={{ color: 'var(--muted)' }}>
+          รถที่ "เด้ง" เป็น Gate-out ที่ยาร์ดเดิมและไปโผล่เป็น Pre Gate-in ที่ยาร์ดอื่นเองโดยไม่มีใครยิง — วาง VIN ทีละบรรทัด เลือกยาร์ดที่รถยังจอดอยู่จริง แล้วกดคืนค่า
+          ถ้ายาร์ดที่เลือกอยู่ตอนนี้คือยาร์ดนั้น จะคืนตำแหน่งจอดจากประวัติการสแกนล่าสุดให้ด้วย
+        </div>
+        <textarea id="repair-transfer-vins" className="input w-full font-mono text-[12.5px]" rows={5}
+          placeholder={'LGXCE4CC3T2265292\nLGXCE4CC0T2265315\n…'} value={vinText} onChange={(e) => setVinText(e.target.value)} />
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="text-[12.5px] flex items-center gap-2" style={{ color: 'var(--muted)' }}>
+            ยาร์ดที่รถยังจอดอยู่จริง
+            <select id="repair-transfer-origin" className="input py-1.5" value={originId} onChange={(e) => setOrigin(e.target.value)}>
+              {sites.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </label>
+          <span className="text-[12.5px]" style={{ color: 'var(--muted)' }}>{vins.length ? `${vins.length} VIN` : 'ยังไม่มี VIN'}</span>
+          <button id="repair-transfer-list" className="btn btn-ghost py-2 ml-auto" disabled={busy || !vins.length || !originId} onClick={run}>
+            <Wrench size={14} /> {busy ? 'กำลังทำ…' : `คืนค่า ${vins.length} คันกลับ ${originName}`}
+          </button>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+/**
  * ซ่อมรถที่ตำแหน่งในผัง (block/row/slot) ไม่ตรงกับบรรทัดประวัติ "Location"
  * ล่าสุดของคันนั้น — เช่นรถที่เคยถูกปุ่ม "จัดจอดอัตโนมัติ" (ลบไปแล้ว) ย้ายไปโดย
  * ไม่บันทึกประวัติ ดู repairOrphanPositions ทำทีละไซต์ (ไซต์ที่เลือกอยู่)
@@ -884,6 +947,7 @@ export function Settings() {
       {/* ── Data repair (one-off admin actions) ── */}
       <DataRepair />
       <WrongTransferRepair />
+      <TransferRepairByList />
       <OrphanPositionRepair />
       <StackedSlotRepair />
       <StationDateRepair />

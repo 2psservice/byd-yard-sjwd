@@ -203,6 +203,11 @@ interface TrackingState {
    *  (App.tsx) ย้ายไปเป็น Pre Gate-in ที่ 3D LCB ทั้งที่ไม่เคยขยับจริง แอดมิน
    *  กดจากหน้าตั้งค่าครั้งเดียว ปลอดภัยแม้กดซ้ำ (เช็คสภาพก่อนแก้ทุกครั้ง) */
   repairWrongTransfer: () => Promise<{ fixed: number; skipped: number }>
+  /** แบบเดียวกับ repairWrongTransfer แต่รับรายชื่อ VIN + ยาร์ดต้นทางที่รถ "ยังจอดอยู่
+   *  จริง" จากแอดมิน (วางรายชื่อที่หน้าตั้งค่า) — คืนรอบของยาร์ดต้นทางจาก __trips
+   *  ลบรอบปลอม/คิวผีที่ยาร์ดปลายทาง ตั้งเป็น In Yard ที่ต้นทาง ปลอดภัยแม้กดซ้ำ
+   *  ตำแหน่งจอดคืนแยกด้วย repairOrphanPositions (จากประวัติการสแกนล่าสุด) */
+  repairTransfersFor: (vins: string[], originSiteId: string) => Promise<{ fixed: number; skipped: number }>
   /** ซ่อมรถที่ตำแหน่งปัจจุบันในผัง (block/row/slot) ไม่ตรงกับบรรทัดประวัติ
    *  "Location" ล่าสุดของคันนั้น (ไม่นับบล็อกพักรถ WCL ซึ่งจอดอัตโนมัติตอน
    *  Gate-in โดยไม่บันทึกประวัติเป็นปกติอยู่แล้ว) — ถอยตำแหน่งกลับไปที่บรรทัด
@@ -1072,10 +1077,17 @@ export const useTracking = create<TrackingState>()(
        * หลังจากนั้นเงียบๆ ไม่แตะ
        */
       repairWrongTransfer: async () => {
+        const origin = useYard.getState().sites.find((s) => s.name.trim().toLowerCase() === '60 rai')
+        if (!origin) return { fixed: 0, skipped: WRONGLY_TRANSFERRED_VINS.length }
+        return get().repairTransfersFor(WRONGLY_TRANSFERRED_VINS, origin.id)
+      },
+
+      repairTransfersFor: async (vinsIn, originSiteId) => {
+        const vins = [...new Set(vinsIn.map((v) => v.trim().toUpperCase()).filter(Boolean))]
         await get().syncCloud().catch(() => {})
         const { sites, units } = useYard.getState()
-        const origin = sites.find((s) => s.name.trim().toLowerCase() === '60 rai')
-        if (!origin) return { fixed: 0, skipped: WRONGLY_TRANSFERRED_VINS.length }
+        const origin = sites.find((s) => s.id === originSiteId)
+        if (!origin || !vins.length) return { fixed: 0, skipped: vins.length }
         const rows = { ...get().rows }
         const changedRows: TrackRow[] = []
         const nextUnits = { ...units }
@@ -1084,7 +1096,7 @@ export const useTracking = create<TrackingState>()(
         const stripGateOutKeys = (cells: Record<string, string>) => {
           delete cells['Gate Out time stamp']; delete cells['Gate Out Date']; delete cells['Gate Out Time']
         }
-        for (const vin of WRONGLY_TRANSFERRED_VINS) {
+        for (const vin of vins) {
           const r = rows[vin]
           if (!r) continue
           const stillWrong = r.site !== origin.id && (r.cells['Car Status'] || '').trim() === 'Pre Gate-in'
@@ -1139,7 +1151,7 @@ export const useTracking = create<TrackingState>()(
         // __trips (อาจถูกล้างไปแล้วตั้งแต่รอบก่อน) ค้นจาก visit store ตรงๆ:
         // 24 คันนี้ไม่ควรมีรอบที่ปิดจริงที่ 60 RAI เลย (อยู่ที่นั่นต่อเนื่องมาตลอด)
         // รอบที่ปิดที่ 60 RAI ที่เจอจึงเป็นของปลอมทั้งหมด
-        const badVinSet = new Set(WRONGLY_TRANSFERRED_VINS)
+        const badVinSet = new Set(vins)
         const staleVisitIds = Object.values(useVisits.getState().visits)
           .filter((v) => badVinSet.has(v.vin) && v.site === origin.id)
           .map((v) => v.id)
@@ -1158,7 +1170,7 @@ export const useTracking = create<TrackingState>()(
           }).catch(() => {})
         }
         const touchedVins = new Set([...fixedVins, ...staleVisitIds.map((id) => id.split('#')[0])])
-        return { fixed: touchedVins.size, skipped: WRONGLY_TRANSFERRED_VINS.length - touchedVins.size }
+        return { fixed: touchedVins.size, skipped: vins.length - touchedVins.size }
       },
 
       repairOrphanPositions: () => {
@@ -1173,21 +1185,27 @@ export const useTracking = create<TrackingState>()(
         const occupied = new Map<string, string>() // "block-row-slot" → vin
         for (const u of siteUnits) if (u.block && u.row && u.slot) occupied.set(`${u.block}-${u.row}-${u.slot}`, u.vin)
         for (const u of siteUnits) {
-          if (u.block === WCL_STAGING_BLOCK || !u.block || !u.row || !u.slot) continue
+          if (u.block === WCL_STAGING_BLOCK) continue
+          // รถที่ "ไม่มีตำแหน่งเลย" ก็ซ่อมได้ ถ้าประวัติมีการสแกนตำแหน่งไว้ — การย้าย
+          // ยาร์ดผิด (ดู repairTransfersFor) ล้าง block/row/slot ทิ้งทั้งล็อตแต่ไม่ได้
+          // ลบประวัติการสแกน ตำแหน่งที่คนยิงไว้จริงจึงยังคืนได้โดยไม่ต้องยิงใหม่
+          // (รถที่ไม่มีทั้งตำแหน่งและประวัติ = เพิ่งเข้าลาน/จอด WCL ตามปกติ → ข้าม)
+          const placed = !!u.block && !!u.row && !!u.slot
           const r = rows[u.vin]
-          if (!r) { skipped++; continue }
+          if (!r) { if (placed) skipped++; continue }
           const moves = (r.history ?? []).filter((e) => (e.field === 'Location' || e.field === LOCATION_KEY) && isScanLocationEntry(e))
           const last = moves[moves.length - 1]
           const target = last ? parseYardLocCode(last.to) : null
-          if (!target) { skipped++; continue }
+          if (!target) { if (placed) skipped++; continue }
           if (u.block === target.block && u.row === target.row && u.slot === target.slot) continue
           const key = `${target.block}-${target.row}-${target.slot}`
           const occupant = occupied.get(key)
           if (occupant && occupant !== u.vin) { collided.push({ vin: u.vin, want: yardLocFull(target) }); continue }
-          occupied.delete(`${u.block}-${u.row}-${u.slot}`)
+          if (placed) occupied.delete(`${u.block}-${u.row}-${u.slot}`)
           occupied.set(key, u.vin)
-          const from = yardLocFull(u)
-          const fixedUnit: Unit = { ...u, block: target.block, row: target.row, slot: target.slot, parkedAt: Date.now() }
+          const from = placed ? yardLocFull(u) : ''
+          // รถที่เพิ่งคืนจากการย้ายยาร์ดผิดค้างสถานะ GATE_IN ไม่มีช่อง — ได้ช่องคืนก็คือจอดแล้ว
+          const fixedUnit: Unit = { ...u, block: target.block, row: target.row, slot: target.slot, parkedAt: Date.now(), ...(placed ? {} : { status: 'PARKED' as const }) }
           nextUnits[u.vin] = fixedUnit
           changedUnits.push(fixedUnit)
           get().appendHistory(u.vin, { at: Date.now(), by: 'ระบบ (แก้ไขตำแหน่งที่ไม่มีการสแกน)', field: 'Location', from, to: yardLocFull(target) })
@@ -1322,6 +1340,17 @@ export const useTracking = create<TrackingState>()(
             // (หรือแถวที่ยังไม่มีเจ้าของ) — แถวที่รอบสดเป็นของยาร์ดอื่นไม่ใช่ของเรา
             // ไฟล์เก่าของยาร์ดนี้จึงลากรถที่ย้ายไปแล้วกลับมา/ถอดป้ายทิ้งไม่ได้อีก
             if (stale && stale.site && currentSite && stale.site !== currentSite) { otherYard++; skipped++; continue }
+            // ยาร์ดนี้รับรถคันนี้เข้าลานไปแล้ว (ยิง Gate-in / มีคนที่นี่ยืนยันสถานะ
+            // ในลาน) → ไฟล์ระบบกลางที่ยังเชื่อว่ารถอยู่ยาร์ดเดิมย้ายป้ายยาร์ดไม่ได้
+            // — กฎเดียวกับ #531 (ไฟล์ตั้ง Gate-out เองไม่ได้) ขยายมาถึง "ยาร์ด":
+            // คำยืนยันของคนหน้างานชนะไฟล์ ไฟล์แก้ป้ายได้เฉพาะรถที่ยังไม่เคยเข้า
+            // ยาร์ดนี้เลย (Pre Gate-in ที่แค่ติดป้ายผิด) — การย้ายป้ายเฉย ๆ ตรงนี้
+            // คือสิ่งที่ทำให้รถ 79 คันที่ 60 Rai ถูกปิดรอบเป็น Gate-out แล้วไปโผล่
+            // เป็น Pre Gate-in ที่ 3D LCB พร้อมตำแหน่งจอดหายทั้งล็อต
+            if (stale && currentSite
+                && (deriveCarStatus(stale.cells) !== 'Pre Gate-in' || inYardAssertedAt(stale.cells, currentSite) > 0)) {
+              heldInYard++; skipped++; continue
+            }
             if (stale) {
               const ly = (r.cells['Location yard'] ?? '').trim()
               const trueSite = siteIdForLocation(r.cells, sites) // undefined ⇒ a yard with no Site
