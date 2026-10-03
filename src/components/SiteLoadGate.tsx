@@ -7,8 +7,9 @@
  * 1–2 นาที ก่อนเด้งเป็น 3,004 เมื่อ sync ทั้งบริษัทมาถึง ตัวเลขทุกใบในช่วงนั้นผิดหมด
  * (Gate-out 351 / Damage 0 / Pre Gate-in 0) ไม่ใช่แค่น้อย
  *
- *  · overlay (จอแอดมิน): บังทั้งหน้าพร้อมความคืบหน้า "แถวชีต 1,000 / 3,004 · รถในผัง 800"
- *  · banner (มือถือ Yard Ops): แถบเล็กด้านบน ไม่บล็อกการสแกน
+ *  · overlay (จอแอดมิน): บังทั้งหน้าพร้อม "Loading 45%" (แถวชีตของยาร์ด · ค้าง 99%
+ *    จนรถในผังมาครบ)
+ *  · banner (มือถือ Yard Ops): แถบเล็กด้านบน "Loading 45%" ไม่บล็อกการสแกน
  *  · ไม่ค้างตลอดไป: ถ้าไม่มีความคืบหน้าเกิน STALL_MS (เน็ตล่ม) หรือรวมเกิน MAX_MS
  *    ปล่อยหน้าเปิดด้วยของในเครื่อง พร้อมป้าย "กำลังซิงก์" แทน
  */
@@ -56,22 +57,22 @@ export function SiteLoadGate({ mode }: { mode: 'overlay' | 'banner' }) {
   const sinceProgress = now - progressAt
   // รอได้ถ้ายังเดินอยู่ (มีแถวใหม่มาเรื่อย ๆ) และยังไม่ชนเพดานรวม
   const stillWaiting = pending && elapsed < MAX_MS && (rowsLoading ? sinceProgress < STALL_MS : elapsed < STALL_MS)
+  // one number for the whole load: this yard's rows (have / total) — held at 99%
+  // while the yard-plan cars are still arriving, so 100% means everything is in
   const shownTotal = total != null ? Math.max(total, have) : null
-  const pct = shownTotal ? Math.min(100, Math.round((have / shownTotal) * 100)) : null
-  const rowsText = `แถวชีต ${have.toLocaleString()}${shownTotal != null ? ` / ${shownTotal.toLocaleString()}` : ''}`
-  const unitsText = `รถในผัง ${unitsHere.toLocaleString()}${unitsLoading ? '…' : ''}`
+  const rowsPct = !rowsLoading ? 100 : shownTotal ? Math.min(100, Math.floor((have / shownTotal) * 100)) : 0
+  const pct = unitsLoading ? Math.min(rowsPct, 99) : rowsPct
+  void unitsHere
 
   if (mode === 'overlay' && stillWaiting) {
     return (
       <div className="logo-loader-overlay" data-testid="site-load-gate">
         <LogoLoader width={230} />
-        <div className="logo-loader-label">กำลังโหลดข้อมูล {siteName}</div>
         <div style={{ width: 260 }}>
-          <div className="track"><div className="fill" style={{ width: `${pct ?? 15}%`, ...(pct == null ? { opacity: 0.5 } : {}) }} /></div>
-          <div className="flex justify-between mt-2 text-[12px] tabular" style={{ color: '#6b7a99' }}>
-            <span>{rowsText}</span>
-            <span>{unitsText}</span>
-          </div>
+          <div className="track"><div className="fill" style={{ width: `${pct}%` }} /></div>
+        </div>
+        <div className="text-[13px] font-semibold tabular" style={{ color: '#6b7a99', letterSpacing: 0.4 }}>
+          Loading {pct}%
         </div>
       </div>
     )
@@ -82,7 +83,7 @@ export function SiteLoadGate({ mode }: { mode: 'overlay' | 'banner' }) {
   if (!pending && !offlineFresh) return null
   const text = status === 'offline'
     ? `ใช้ข้อมูลในเครื่องไปก่อน · ยังติดต่อคลาวด์ไม่ได้ (${siteName})`
-    : `กำลังโหลด ${siteName} … ${rowsText}${unitsLoading ? ` · ${unitsText}` : ''}`
+    : `Loading ${pct}%`
   return (
     <div data-testid="site-load-banner"
       className="fixed left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full text-[12px] font-semibold tabular shadow-md flex items-center gap-2"
