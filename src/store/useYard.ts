@@ -396,6 +396,42 @@ export function attachPendingPlacement(
   return p ? { ...u, block: p.block, row: p.row, slot: p.slot } : u
 }
 
+/**
+ * ตำแหน่งที่ "คนยิงทีหลัง" ชนะ — ไม่ใช่ตำแหน่งที่ฐานข้อมูลรับทีหลัง
+ *
+ * ทุกการวางรถประทับ parkedAt ด้วยนาฬิกาของเครื่องที่ยิง การยิงรัวหลายคัน (หรือ
+ * 2 เครื่อง) ทำให้ชุดเขียนหลายชุดวิ่งขึ้นคลาวด์พร้อมกัน และชุดเก่าที่มาถึงทีหลัง
+ * ได้ updated_at ใหม่กว่า — realtime/การดึงซ้ำจึงส่ง "ตำแหน่งเก่า" กลับมาทับ
+ * ตำแหน่งที่คนเพิ่งยิง (ตำแหน่งเปลี่ยนเอง/หายเองใน 2-3 วินาที) กฎนี้: ถ้าเครื่องนี้มี
+ * ตำแหน่งที่ยิงใหม่กว่า (ภายในไม่กี่นาทีนี้) และสำเนาที่มาถึงยังมีตำแหน่ง แต่
+ * ประทับเวลาเก่ากว่า → เก็บตำแหน่งของเรา รับส่วนอื่นของสำเนาตามปกติ
+ * สำเนาที่ "ไม่มีตำแหน่ง" (Gate-out / ย้ายยาร์ด / รีเซ็ต) รับเสมอ — นั่นคือรถออกจริง
+ */
+const PLACEMENT_PROTECT_MS = 10 * 60_000
+export function keepNewerPlacement(local: Unit | undefined, incoming: Unit): Unit {
+  if (!local?.block || !local.parkedAt || !incoming.block) return incoming
+  if (Date.now() - local.parkedAt > PLACEMENT_PROTECT_MS) return incoming
+  if ((incoming.parkedAt ?? 0) >= local.parkedAt) return incoming
+  if (incoming.block === local.block && incoming.row === local.row && incoming.slot === local.slot) return incoming
+  return { ...incoming, block: local.block, row: local.row, slot: local.slot, parkedAt: local.parkedAt, status: local.status }
+}
+
+/**
+ * คิวเขียนตำแหน่ง — ทีละชุด ตามลำดับที่คนยิง และส่งเฉพาะ "ความตั้งใจล่าสุด" ของแต่ละคัน
+ *
+ * ยิงตามแถวสร้างเลนใหม่ทั้งเลนทุกครั้งที่ยิง ชุดเขียนของคันที่ 3, 4, 5 เคยวิ่งขึ้น
+ * คลาวด์พร้อมกัน แต่ละชุดมี retry ของตัวเอง ลำดับที่ถึงฐานข้อมูลจึงไม่ใช่ลำดับที่ส่ง
+ * ชุดเก่าที่ถึงทีหลังทับชุดใหม่ → 2 คันในช่องเดียว + ช่องว่าง (ยิง 5 เห็น 4)
+ * คิวนี้ให้ชุดถัดไปรอชุดก่อนเสร็จ และถ้าคันไหนมีคำสั่งใหม่กว่ารออยู่แล้ว ชุดเก่า
+ * ข้ามคันนั้นไปเลย (ชุดใหม่พาตำแหน่งล่าสุดขึ้นไปเอง) หน้าจอยังตอบทันทีเหมือนเดิม
+ */
+let placementChain: Promise<void> = Promise.resolve()
+let placementSeq = 0
+const placementIntent = new Map<string, number>() // vin → seq ของคำสั่งวางล่าสุด
+function enqueuePlacementWrite(job: () => Promise<void>): void {
+  placementChain = placementChain.then(job).catch((e) => console.error('[yard] placement write', e))
+}
+
 let pendingPlacementsFlushing = false
 function scheduleFlushPendingPlacements(get: () => { flushPendingPlacements: () => Promise<void>; pendingPlacements: Record<string, unknown> }, delay = 15_000) {
   if (pendingPlacementsTimer) clearTimeout(pendingPlacementsTimer)
@@ -1259,6 +1295,11 @@ export const useYard = create<YardState>()(
         const results: PlacementResult[] = []
         let open = (plain.length ? 1 : 0) + (guarded.length ? 1 : 0)
         const settle = () => { if (--open === 0) onSettled?.(results) }
+        // ลำดับที่คนยิงคือลำดับที่เขียน (ดู enqueuePlacementWrite): คันไหนมีคำสั่งวาง
+        // ใหม่กว่าเข้าคิวมาแล้ว ชุดนี้ไม่ต้องเขียนคันนั้น — ชุดใหม่พาตำแหน่งล่าสุดไปเอง
+        const seq = ++placementSeq
+        for (const v of intentional) placementIntent.set(v, seq)
+        const superseded = (v: string) => placementIntent.get(v) !== seq
         if (plain.length) {
           // upsertUnits/bulkUpsert is built for the import progress bar and never
           // rejects — a chunk that exhausts its retries still "finishes" so the
@@ -1267,34 +1308,39 @@ export const useYard = create<YardState>()(
           // failed: the write was silently treated as a success while the car's
           // Location-history line (a separate table, written separately) kept the
           // real new spot. upsertUnitsStrict reports failure honestly instead.
-          db.upsertUnitsStrict(plain.map((v) => units[v])).then(() => {
-            // landed — drop any STALE pendingPlacements an earlier failed move
-            // for one of these vins left queued, or flushPendingPlacements'
-            // later retry would overwrite this fresh position with that old
-            // one (see assign() for the full scenario this guards against).
-            set((s2) => {
-              const next = { ...s2.pendingPlacements }
-              let changed = false
-              for (const v of plain) if (next[v]) { delete next[v]; changed = true }
-              return changed ? { pendingPlacements: next } : s2
-            })
-            for (const v of plain) results.push({ vin: v, status: 'ok' })
-            settle()
-          }, (e) => {
-            console.error('[db] updateLocations', e)
-            // the optimistic move above already shows on screen, and the caller
-            // (e.g. RelocationView) already wrote a Location-history line
-            // claiming it succeeded — if this write never lands, a later full
-            // units re-pull silently reverts the car back to its OLD slot while
-            // the history line stays, permanently contradicting it. Queue it so
-            // flushPendingPlacements keeps retrying instead of losing the move.
-            set((s2) => {
-              const next = { ...s2.pendingPlacements }
-              for (const v of plain) { const u = units[v]; next[v] = { vin: v, block: u.block, row: u.row, slot: u.slot } }
-              return { pendingPlacements: next }
-            })
-            scheduleFlushPendingPlacements(get)
-            for (const v of plain) results.push({ vin: v, status: 'queued' })
+          enqueuePlacementWrite(async () => {
+            const live = plain.filter((v) => !superseded(v))
+            for (const v of plain) if (superseded(v)) results.push({ vin: v, status: 'ok' })
+            if (!live.length) { settle(); return }
+            try {
+              await db.upsertUnitsStrict(live.map((v) => units[v]))
+              // landed — drop any STALE pendingPlacements an earlier failed move
+              // for one of these vins left queued, or flushPendingPlacements'
+              // later retry would overwrite this fresh position with that old
+              // one (see assign() for the full scenario this guards against).
+              set((s2) => {
+                const next = { ...s2.pendingPlacements }
+                let changed = false
+                for (const v of live) if (next[v]) { delete next[v]; changed = true }
+                return changed ? { pendingPlacements: next } : s2
+              })
+              for (const v of live) results.push({ vin: v, status: 'ok' })
+            } catch (e) {
+              console.error('[db] updateLocations', e)
+              // the optimistic move above already shows on screen, and the caller
+              // (e.g. RelocationView) already wrote a Location-history line
+              // claiming it succeeded — if this write never lands, a later full
+              // units re-pull silently reverts the car back to its OLD slot while
+              // the history line stays, permanently contradicting it. Queue it so
+              // flushPendingPlacements keeps retrying instead of losing the move.
+              set((s2) => {
+                const next = { ...s2.pendingPlacements }
+                for (const v of live) { const u = units[v]; next[v] = { vin: v, block: u.block, row: u.row, slot: u.slot } }
+                return { pendingPlacements: next }
+              })
+              scheduleFlushPendingPlacements(get)
+              for (const v of live) results.push({ vin: v, status: 'queued' })
+            }
             settle()
           })
         }
@@ -1302,10 +1348,11 @@ export const useYard = create<YardState>()(
           // compare-and-set: a car somebody else moved between our read and this
           // write is left exactly where THEY put it, and the operator is told —
           // silently winning the race is how a car ends up back in a lane it left
-          void (async () => {
+          enqueuePlacementWrite(async () => {
             const lost: { vin: string; at: string }[] = []
             const failed: string[] = []
             for (const it of guarded) {
+              if (superseded(it.vin)) { results.push({ vin: it.vin, status: 'ok' }); continue }
               const res = await db.updatePlacementIfUnchanged({ vin: it.vin, from: it.from! }, units[it.vin])
                 .catch(() => ({ applied: true as const, transportError: true as const }))
               if (res.applied) {
@@ -1354,7 +1401,7 @@ export const useYard = create<YardState>()(
                 : `${lost.length} คันเพิ่งถูกย้ายโดยเครื่องอื่น — ไม่ได้บันทึกทับ กรุณาสแกนใหม่`)
             }
             settle()
-          })()
+          })
         }
         return changed.length
       },
@@ -1622,7 +1669,7 @@ export const useYard = create<YardState>()(
             // sliding the car straight back while its Location-history line
             // kept claiming the move succeeded. Every "adopt cloud wholesale"
             // merge has to re-stamp the pending slot; this one didn't.
-            const c = attachPendingPlacement(s.pendingPlacements, raw)
+            const c = attachPendingPlacement(s.pendingPlacements, keepNewerPlacement(units[raw.vin], raw))
             seen.add(c.vin)
             const cur = units[c.vin]
             if (cur && cur.block === c.block && cur.row === c.row && cur.slot === c.slot && cur.status === c.status) continue
@@ -1777,7 +1824,7 @@ export const useYard = create<YardState>()(
         // (+ damages) had arrived; now they flow in with the layout
         const streamUnits = (batch: Unit[]) => set((s) => {
           const units = { ...s.units }
-          for (const u of batch) units[u.vin] = withPending(u)
+          for (const u of batch) units[u.vin] = withPending(keepNewerPlacement(units[u.vin], u))
           return { units }
         })
         // VIN + ตำแหน่ง มาก่อน: the placement-only pass runs alongside the full
@@ -1788,7 +1835,8 @@ export const useYard = create<YardState>()(
           const units = { ...s.units }
           for (const u of batch) {
             const cur = units[u.vin]
-            units[u.vin] = attachPendingPlacement(pendingPlacementsNow, cur ? { ...u, damages: cur.damages } : withPending(u))
+            const fresh = keepNewerPlacement(cur, u)
+            units[u.vin] = attachPendingPlacement(pendingPlacementsNow, cur ? { ...fresh, damages: cur.damages } : withPending(fresh))
           }
           return { units }
         })
@@ -1800,7 +1848,7 @@ export const useYard = create<YardState>()(
         if (cloud.length || trailers.length) {
           set((s) => {
             const merged: Record<string, Unit> = { ...s.units }
-            for (const u of cloud) merged[u.vin] = withPending(u)
+            for (const u of cloud) merged[u.vin] = withPending(keepNewerPlacement(merged[u.vin], u))
             return { units: merged, trailers: trailers.length ? trailers : s.trailers }
           })
         }
@@ -1862,7 +1910,9 @@ export const useYard = create<YardState>()(
               unitTs.set(r.vin, ts)
               set((s) => {
                 const cur = s.units[r.vin]
-                return { units: { ...s.units, [r.vin]: db.parseUnitRow(r, cur?.damages ?? []) } }
+                // ตำแหน่งที่คนยิงทีหลังชนะ + การย้ายที่ยังรอส่ง — เหมือนทุกจุดที่รับสำเนาจากคลาวด์
+                const next = attachPendingPlacement(s.pendingPlacements, keepNewerPlacement(cur, db.parseUnitRow(r, cur?.damages ?? [])))
+                return { units: { ...s.units, [r.vin]: next } }
               })
             },
           )
