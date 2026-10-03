@@ -7,13 +7,12 @@ import { SelectSiteModal } from './components/SelectSiteModal'
 import { OpsShell } from './components/OpsShell'
 import { useYard, useMe, isOpsOnlyRole } from './store/useYard'
 import { useTrackingRows, useTracking } from './store/useTracking'
-import { useOps, queueTypeOf, repairMissingStationDates } from './store/useOps'
+import { useOps, repairMissingStationDates } from './store/useOps'
 import { useVisits } from './store/useVisits'
 import { startSyncBus, stopSyncBus } from './lib/syncBus'
 import { startKeyboardGuard } from './lib/keyboardGuard'
-import { deriveCarStatus, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY, CAR_STATUS_KEY, CAR_STATUS_SET_SITE_KEY, gateOutScanMs, gateInEvidenceAt, inYardAssertedAt, statusSetAt } from './lib/carStatus'
+import { deriveCarStatus } from './lib/carStatus'
 import { yardLocCode, LAST_LOCATION_KEY } from './lib/groupingImport'
-import { deliveryDestinationSite, siteIdForLocation } from './lib/siteScope'
 import { matchModel } from './lib/sampleData'
 import { isPhone } from './lib/device'
 import { useMasterDefect } from './store/useMasterDefect'
@@ -212,71 +211,18 @@ export default function App() {
       const { units } = useYard.getState()
       const { rows } = useTracking.getState()
       const gone: string[] = []
-      // …and cars the sheet has since moved to ANOTHER yard, whose slot here
-      // was never released. A yard-to-yard gate-out re-files the row at the
-      // destination in the same action, so by the time any sweep looks, the
-      // row reads "Pre Gate-in" over there and NOTHING says Gate-out any
-      // more — the rule above can never catch it. If the scan device had not
-      // loaded this car's unit yet, markDeparted found nothing to release
-      // (units come from the cloud, rows from IndexedDB) and the slot stayed
-      // painted into the lane for good: the plan showed a car that had left.
-      // Send the unit where the sheet says the car is — that frees the slot
-      // AND lets the destination's gate find it.
-      // ── heal: รถที่ "ยาร์ดอื่นรับเข้าไปแล้ว" แต่แถวยังค้างเป็นของยาร์ดเดิม ──
-      // ก่อนมีตัวย้ายรถกลาง (transferToYard) ปลายทางยิงรับรถของยาร์ดอื่นได้โดย
-      // เขียนทับแถวเดิม: ยาร์ดเดิมจึงเห็นรถกลับมาเป็น In Yard พร้อมวันที่/ผู้ตรวจ
-      // ของปลายทาง ทั้งที่รถออกไปแล้ว หลักฐานที่ยังเหลือบนแถวบอกได้ว่ารถไปอยู่
-      // ยาร์ดไหน: (1) มีคนที่ยาร์ดอื่นยืนยันว่ารถอยู่ในลาน หลังรถออกจากที่นี่
-      // (2) รายการรถ (unit) อยู่ยาร์ดอื่นและถูกยิงรับหลังรถออก → ย้ายให้ถูก:
-      // ยาร์ดเดิมอ่านเป็น Gate-out ตามจริง ปลายทางเก็บการยิงรับของตัวเองไว้
-      // (ดู transferRow) — ต้องทำก่อนกฎ "ยาร์ดต้องตรงกับชีต" ด้านล่าง ซึ่งจะ
-      // ดึงรายการรถกลับมายาร์ดเดิมและลบหลักฐานข้อ (2) ทิ้ง
-      // หลักฐานข้อ (3)–(4) มีไว้เผื่อเครื่องที่ยิงรับยังเป็นเวอร์ชันเก่า ซึ่งไม่จด
-      // ว่า "ใครยืนยัน ที่ยาร์ดไหน" (ข้อ 1) และตัวเก็บกวาดของเครื่องเก่าก็ดึงรายการ
-      // รถกลับยาร์ดเดิมจนหลักฐานข้อ (2) หาย — แต่แถวยังบอกได้ว่า "ยิงรับหลังจากออก
-      // ไปแล้ว" (Gate In Time ใหม่กว่า Gate Out Time) เหลือแค่ต้องรู้ว่ายาร์ดไหน:
-      //  (3) ล็อตรับรถของยาร์ดอื่นติ๊กคันนี้ว่ารับแล้ว หลังรถออก
-      //  (4) ปลายทางส่งมอบ (Dealer Location) ในไฟล์ grouping สะกดชื่อยาร์ดของเราเอง
-      {
-        const sites = useYard.getState().sites
-        const queues = useOps.getState().queues
-        const gateInLotAfter = (vin: string, here: string, left: number): string | undefined => {
-          for (const q of queues) {
-            if (!q.site || q.site === here || queueTypeOf(q) !== 'GATEIN') continue
-            const it = q.items.find((i) => i.vin === vin)
-            if (it?.done && (it.doneAt ?? 0) > left) return q.site
-          }
-          return undefined
-        }
-        for (const vin in rows) {
-          const r = rows[vin]
-          const here = r.site ?? siteIdForLocation(r.cells, sites)
-          if (!here) continue
-          const left = gateOutScanMs(r.cells)
-          const setSite = (r.cells[CAR_STATUS_SET_SITE_KEY] || '').trim()
-          const asserted = setSite && setSite !== here ? inYardAssertedAt(r.cells, setSite) : 0
-          let dest: string | undefined
-          if (asserted > 0 && asserted > left) dest = setSite
-          else if (left > 0) {
-            const u = units[vin]
-            if (u?.site && u.site !== here && (u.gateInAt ?? 0) > left) dest = u.site
-            else if (gateInEvidenceAt(r.cells) > left && deriveCarStatus(r.cells) !== 'Gate-out') {
-              dest = gateInLotAfter(vin, here, left)
-                ?? (() => { const d = deliveryDestinationSite(r.cells['Dealer Location'] || '', sites); return d && d.id !== here ? d.id : undefined })()
-            }
-          }
-          if (dest && sites.some((s) => s.id === dest)) { useTracking.getState().transferToYard(vin, dest); continue }
-          // (5) ไฟล์เขียน Gate-out ทับคำยืนยันของยาร์ดนี้เอง — แถวยังมีรอยยืนยัน
-          // "รถอยู่ในลาน" ของยาร์ดนี้ (แอปล้างรอยนี้ทุกครั้งที่เขียนสถานะออก ดู
-          // withHistoryEntry) แต่ช่องสถานะกลับเป็น Gate-out และรถถูกยิงรับหลัง
-          // วันที่ออกนั้นแล้ว = วันที่ออกเป็นของรอบก่อน ไฟล์หลักที่มีบรรทัดเดียว
-          // ต่อคันตีรถกลับเป็น Gate-out ด้วยรอบที่จบไปแล้ว → คืนคำยืนยันของคน
-          if ((r.cells[CAR_STATUS_KEY] || '').trim() === 'Gate-out' && setSite === here
-              && left > 0 && statusSetAt(r.cells) > left && gateInEvidenceAt(r.cells) > left) {
-            useTracking.getState().setCellNoHistory(vin, CAR_STATUS_KEY, 'In Yard')
-          }
-        }
-      }
+      // ── ระบบห้ามย้ายรถข้ามยาร์ดเอง ─────────────────────────────────────────
+      // ตรงนี้เคยมีกฎ "heal" ที่เดาจากหลักฐานบนแถว (ไซต์ที่ยืนยันสถานะ · เวลาออก
+      // กับเวลายิงรับ · ล็อตรับรถของยาร์ดอื่น · ชื่อยาร์ดใน Dealer Location) แล้ว
+      // เรียก transferToYard ให้เองทุก 60 วิ บนทุกเครื่อง — รถที่ย้าย 3D LCB →
+      // 60 Rai ถูกต้องแล้วทุกคันผ่านด่านครึ่งแรกของกฎนั้นอยู่แล้ว (มีรอยออกจาก
+      // ต้นทาง + ยิงรับที่ปลายทาง) เหลือแค่ข้อมูลชิ้นเดียวที่บอกว่า "ปลายทางถัดไป
+      // = 3D LCB" ก็โดนปิดรอบที่ 60 Rai (อ่านเป็น Gate-out) เปิดรอบ Pre Gate-in
+      // ที่ 3D LCB และล้างตำแหน่งจอดทิ้งทั้งล็อต 79 คันพร้อมกัน โดยไม่มีใครทำ
+      // ยาร์ดเปลี่ยนได้จากคนเท่านั้น: ยิง Gate-out ปลายทางยาร์ดเรา (doGateOut) ·
+      // ยิง Gate-in ที่ปลายทาง (doTrackingGateIn) · แอดมินแก้ช่อง Location yard
+      // (applyYardMove) — ไฟล์ระบบกลางก็ย้ายรถที่ยาร์ดนี้รับไปแล้วไม่ได้เช่นกัน
+      // (ดู commitCoInspection) กฎเดียวกับตำแหน่งจอด: ระบบไม่ปรับข้อมูลเอง
 
       const strayed = new Map<string, string[]>() // siteId ปลายทาง → รายชื่อ vin
       for (const vin in units) {
@@ -317,50 +263,11 @@ export default function App() {
         useYard.getState().moveUnitsToSite(vins, siteId)
       }
 
-      // ── auto-transfer: Gate-out to a destination that IS one of our own
-      // yards → file it as Pre Gate-in there, automatically ────────────────
-      // A grouping run's "Delivery Location" sometimes names another yard
-      // this app runs (e.g. "VEHICLE 60Rai") rather than a real dealer — the
-      // car isn't being sold, it's being moved yard-to-yard. The moment such
-      // a car's status truly derives Gate-out, file its current visit away
-      // and start the next one at the destination — reusing the SAME "รอบที่"
-      // round-closing the manual "re-import a sheet, the car came back" path
-      // already uses (see tripHistory.ts / startNewTrip), so this visit's
-      // Walk Around damages travel with the car (moveUnitsToSite never
-      // touches Unit.damages) and this visit's own history is filed, not lost.
-      {
-        const sites = useYard.getState().sites
-        for (const vin in rows) {
-          const r = rows[vin]
-          const dest = deliveryDestinationSite(r.cells['Dealer Location'] || '', sites)
-          if (!dest) continue
-          const curSite = r.site ?? siteIdForLocation(r.cells, sites)
-          if (dest.id === curSite) continue // already there — a real dealer that happens to share a yard's name, or already transferred
-          if (deriveCarStatus(r.cells) !== 'Gate-out') continue // hasn't actually left yet
-          // เหมือนกับที่ doGateOut ทำตอนกดปุ่มโดยตรง — จดไว้เองว่าออกจากยาร์ด
-          // ไหนไปตอนไหน เพราะ startNewTrip ด้านล่างเปลี่ยน Car Status กลับเป็น
-          // Pre Gate-in ทันที ไม่มี live status เหลือให้การ์ด "Gate-out" ของ
-          // ต้นทางอ่านได้อีก (ดู departedFromSite ใน carStatus.ts)
-          if (curSite) {
-            const gateOutAt = parseInt(r.cells['Gate Out Time'] || '', 10)
-            useTracking.getState().updateCell(vin, GATE_OUT_ORIGIN_SITE_KEY, curSite)
-            useTracking.getState().updateCell(vin, GATE_OUT_ORIGIN_AT_KEY, String(Number.isFinite(gateOutAt) && gateOutAt > 0 ? gateOutAt : Date.now()))
-          }
-          useTracking.getState().startNewTrip(vin, { yard: dest.name, keepQueueProgress: true })
-          // แปะเข้าคิวงาน Gate-in ที่ปลายทางด้วย (เหมือนที่ YardOps doGateOut ทำ
-          // ตอนกดปุ่มโดยตรง) ไม่งั้นรถที่ผ่านทางนี้ (เช่น re-import ไฟล์) จะไป
-          // โผล่เป็น "(รอ Gate-in · ยังไม่มีคิวงาน)" ที่การ์ด Pre Gate-in แทน
-          // ชื่อคิวต้องขึ้นต้นด้วยยาร์ด "เจ้าของคิว" เสมอ — คิวนี้เป็นล็อตรับรถ
-          // ของยาร์ดปลายทาง (site = dest.id) ไม่ใช่ของต้นทาง แต่ชื่อเดิม
-          // "Shuttle 3D LCB to 60 RAI" อ่านแล้วเหมือนเป็นงานของ 3D LCB
-          // พอมันถูกปิดตอนยิง gate-in ที่ปลายทาง บันทึกเหตุการณ์จึงดูเหมือน
-          // ยาร์ดต้นทางถูก gate-in ตามไปด้วย ทั้งที่ไม่มีอะไรของต้นทางถูกแตะเลย
-          // รูปแบบ "(ยาร์ด · …)" ยังตรงกับล็อตรับรถที่มาจากการ import ด้วย
-          // บันทึกเหตุการณ์จึงอ่านว่า "Gate-in เสร็จ · (…)" ตามความจริง
-          const originName = sites.find((s) => s.id === curSite)?.name ?? curSite ?? ''
-          useOps.getState().createGateInQueue(`(${dest.name} · shuttle · จาก ${originName})`, [vin], undefined, dest.id)
-        }
-      }
+      // (ตรงนี้เคยมี "auto-transfer": รถที่สถานะอ่านเป็น Gate-out และ Dealer
+      // Location สะกดชื่อยาร์ดของเรา → เปิดรอบ Pre Gate-in ที่ยาร์ดนั้นให้เอง —
+      // ตัดออกด้วยเหตุผลเดียวกับด้านบน ยิง Gate-out ที่ประตู (doGateOut) ย้ายรถ
+      // ให้เองอยู่แล้วตอนกดปุ่ม ส่วน Gate-out ที่แอดมินตั้งเองที่ Unit List ปลายทาง
+      // รับได้ด้วยการยิง Gate-in ตามปกติ ไม่ต้องให้ระบบเดาจากชื่อใน Dealer Location)
 
       // ── model heal: the sheet's รุ่น is the truth — a unit created from an
       // older file keeps a stale class forever (a SEAL 5 painted "SEAL" on the
