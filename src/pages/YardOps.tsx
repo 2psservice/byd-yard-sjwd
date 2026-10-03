@@ -11,7 +11,7 @@ import {
   ArrowRight, Zap, Hand, X, Camera, Pencil, Gauge, Route, Crosshair,
   LogOut, MapPin, ClipboardList, ListChecks, Copy, Check, Images, Sparkles, Download,
 } from 'lucide-react'
-import { useYard, useUnits, useTrips, useBlocks, attachPendingDamages } from '../store/useYard'
+import { useYard, useUnits, useTrips, useBlocks, attachPendingDamages, type PlacementResult } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { overlayInspection } from '../lib/inspectionStatus'
 import { isDamaged, deriveCarStatus, hasLeftGate, IN_YARD_STATUSES, CAR_STATUS_META, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY } from '../lib/carStatus'
@@ -39,7 +39,7 @@ import { yardLocCode, yardLocFull, blockCode, byYardLocation, LAST_LOCATION_KEY,
 import { parseLane } from '../lib/laneImport'
 import { LOCATION_KEY, VIN_PHOTO_CELL } from '../lib/trackingColumns'
 import { blockTag, blockKeyOfTag, resolveBlockByName } from '../lib/format'
-import { fetchUnitsByVins, fetchTrackingRowsByVin, isConfigured } from '../lib/db'
+import { fetchUnitsByVins, fetchUnitsInLane, fetchTrackingRowsByVin, isConfigured } from '../lib/db'
 import { refreshUnitFocus } from '../lib/unitFocus'
 import { laneFromCloud } from '../lib/laneCloud'
 import { useRecentOps } from '../store/useRecentOps'
@@ -4545,6 +4545,9 @@ function RelocationView() {
   const [mode, setMode] = useState<'one' | 'lane'>('one')
   const [laneStr, setLaneStr] = useState('')
   const [laneAdded, setLaneAdded] = useState<{ vin: string; code: string }[]>([])
+  // ผลตรวจทานหลังเขียนเสร็จ (ดู verifyLane): อ่านเลนจากคลาวด์มาเทียบกับที่ยิง ถ้ามี
+  // ช่องซ้อน/คันหาย/เลขคันไม่ตรง ขึ้นเตือนตรงนี้ให้คนยิงแก้ทันที แทนไปเจอในผังทีหลัง
+  const [laneIssue, setLaneIssue] = useState<string | null>(null)
   const lastSaveGuard = useRef(0)          // double-fire guard: single-car save
   const lastLaneHit = useRef({ v: '', at: 0 }) // double-fire guard: lane scans
   // scan order of THIS round (oldest first) — the scan sequence IS the lane
@@ -4833,7 +4836,8 @@ function RelocationView() {
           from: { block: cu.block, row: cu.row, slot: cu.slot } })
       })
       if (!updates.length) return
-      updateLocations(updates)
+      // ตรวจทานหลังคลาวด์รับชุดนี้แล้ว — เฉพาะชุดล่าสุด (gen) ของการยิงรัวชุดนี้
+      updateLocations(updates, (results) => { void verifyLane(gen, L, seq, inc, results) })
       // every car the rebuild moves BESIDES the scanned one (a reordered
       // earlier scan, an incumbent sliding down) gets its own Location history
       // line — the silent slide made a car's position contradict its ประวัติการย้าย
@@ -4856,6 +4860,7 @@ function RelocationView() {
     if (!isConfigured()) buildAndApply(incumbents)
     else laneFromCloud(siteUnits, currentSite, L.blockId, L.slot).then((lane) =>
       buildAndApply(laneOccupants(lane, L.blockId, L.slot).filter(u => !ord.includes(u.vin) && u.vin !== r!.vin)))
+    setLaneIssue(null) // การยิงใหม่เริ่มรอบตรวจทานใหม่
     const code = codeOf(L.blockId, L.slot, pos)
     appendHistory(r.vin, {
       at: Date.now(), by: currentUser, field: 'Location', src: 'scan',
@@ -4867,6 +4872,42 @@ function RelocationView() {
     toast('ok', `${code} · คันที่ ${pos} · ${r.vin.slice(-6)} — ยิงคันถัดไปต่อได้เลย`)
   }
   onLaneScanRef.current = onLaneScan
+
+  /**
+   * ตรวจทานเลนหลังเขียนเสร็จ (ข้อ C): อ่านเลนจริงจากคลาวด์มาเทียบกับที่ยิง —
+   * 2 คันทับช่องเดียว (อีกเครื่องยิงเลนเดียวกันพร้อมกัน) · คันที่ยิงไม่อยู่ในเลน ·
+   * เลขคันไม่ตรง — แจ้งคนยิงทันทีบนจอ ทำเฉพาะชุดล่าสุดของการยิงรัว (gen) และ
+   * ข้ามเมื่อยังมีการเขียนที่รอส่ง (สัญญาณไม่ดี) เพราะคลาวด์ยังไม่ใช่ความจริงตอนนั้น
+   */
+  const verifyLane = async (
+    gen: number, L: ReturnType<typeof laneInfoOf>, seq: string[], inc: Unit[], results: PlacementResult[],
+  ) => {
+    if (!isConfigured() || gen !== laneGenRef.current) return
+    if (results.some(x => x.status === 'queued')) return
+    const lost = new Set(results.filter(x => x.status === 'lost').map(x => x.vin))
+    await new Promise(res => setTimeout(res, 400))
+    if (gen !== laneGenRef.current) return
+    let cloud: Unit[]
+    try { cloud = await fetchUnitsInLane(currentSite, L.slot) } catch { return }
+    if (gen !== laneGenRef.current) return
+    const lane = laneOccupants(cloud, L.blockId, L.slot)
+    const want = new Map<string, number>()
+    seq.forEach((vin, i) => want.set(vin, i + 1))
+    inc.forEach((cu, i) => { if (!lost.has(cu.vin)) want.set(cu.vin, seq.length + 1 + i) })
+    const problems: string[] = []
+    const byRow = new Map<number, string[]>()
+    for (const u of lane) { const a = byRow.get(u.row ?? 0) ?? []; a.push(u.vin); byRow.set(u.row ?? 0, a) }
+    for (const [row, vins] of byRow) if (vins.length > 1) problems.push(`คันที่ ${row} มี ${vins.length} คันทับกัน (${vins.map(v => '…' + v.slice(-6)).join(', ')})`)
+    for (const [vin, row] of want) {
+      const c = lane.find(u => u.vin === vin)
+      if (!c) { if (seq.includes(vin)) problems.push(`…${vin.slice(-6)} ไม่อยู่ในแถวนี้บนระบบ`); continue }
+      if (c.row !== row) problems.push(`…${vin.slice(-6)} ระบบบันทึกเป็นคันที่ ${c.row} (ยิงเป็นคันที่ ${row})`)
+    }
+    if (!problems.length) { setLaneIssue(null); return }
+    const msg = `แถว ${L.blockId}${L.slot}: ${problems.join(' · ')} — กรุณายิงคันนั้นใหม่`
+    setLaneIssue(msg)
+    toast('err', msg)
+  }
 
   const doSave = async () => {
     if (!canSave || !row || nextRow === null) return
@@ -5000,6 +5041,14 @@ function RelocationView() {
               valid ("A1" while typing "A12") — grabbing focus mid-keystroke
               yanked the cursor out of the lane field */}
           {laneReady && <VinInput onScan={onLaneScan} accent="#0ea5e9" autoFocus={false} />}
+
+          {laneIssue && (
+            <div data-testid="lane-issue" className="panel p-3 flex items-start gap-2 text-[12.5px] font-semibold fade-up"
+              style={{ background: '#fef2f2', color: '#b91c1c', border: '1px solid #fecaca' }}>
+              <AlertTriangle size={15} className="shrink-0 mt-0.5" />
+              <span>{laneIssue}</span>
+            </div>
+          )}
 
           {/* live view of the lane, depth order — just-scanned cars highlighted */}
           {laneReady && (laneCars.length > 0 || laneAdded.length > 0) && (
