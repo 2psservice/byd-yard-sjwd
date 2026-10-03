@@ -138,6 +138,21 @@ function initialFilterCols(): string[] {
   return DEFAULT_FILTER_COLS
 }
 
+export interface SiteLoad {
+  siteId: string
+  /** loading = ยังดึงอยู่ · done = แถวของยาร์ดครบแล้ว · offline = ถามคลาวด์ไม่ได้ (ใช้ของในเครื่องไปก่อน) */
+  status: 'loading' | 'done' | 'offline'
+  /** แถวของยาร์ดนี้ที่มีในเครื่องตอนนี้ */
+  have: number
+  /** แถวของยาร์ดนี้ในคลาวด์ (null = นับไม่ได้) */
+  total: number | null
+  startedAt: number
+  /** ครั้งล่าสุดที่มีแถวใหม่มาถึง — ใช้ตัดสินว่า "ค้าง" หรือยังเดินอยู่ */
+  progressAt: number
+}
+// one site load at a time — picking another yard mid-way abandons the old one
+let siteLoadToken = 0
+
 const VIEW_DEFAULT_KEY = 'unit_view_default' // shared cloud config id
 interface ViewDefault { columns?: Column[]; filterCols?: string[]; updatedAt?: number }
 
@@ -155,8 +170,14 @@ interface TrackingState {
    *  SUBSCRIBED — see useYard's unitsRealtimeConnected for why this matters
    *  (the header's "Connected" pill used to be a hardcoded label). */
   realtimeConnected: boolean
+  /** การโหลดแถวของ "ยาร์ดที่เลือกอยู่" (ดู loadSiteRows) — หน้าจอใช้ค้างหน้า loading
+   *  จนแถวของยาร์ดครบ แทนที่จะโชว์ตัวเลขจากแคชบางส่วน (15 แล้วค่อยเด้งเป็น 3,004) */
+  siteLoad: SiteLoad | null
 
   loadFromIdb: () => Promise<void>
+  /** ดึงแถวของยาร์ดนี้จากคลาวด์ก่อนใคร (กรองฝั่งเซิร์ฟเวอร์ ~2 MB) ทยอยใส่ทีละหน้า
+   *  พร้อมความคืบหน้า — เรียกตอนเปิดแอป (ยาร์ดที่จำไว้) และทุกครั้งที่เลือก site */
+  loadSiteRows: (siteId: string) => Promise<void>
   syncCloud: () => Promise<void>
   subscribeRealtime: () => void
   unsubscribeRealtime: () => void
@@ -562,6 +583,65 @@ export const useTracking = create<TrackingState>()(
       lastSync: 0,
       realtimeConnected: false,
       sysHistoryPurged: 0,
+      siteLoad: null,
+
+      loadSiteRows: async (siteId) => {
+        const token = ++siteLoadToken
+        const live = () => siteLoadToken === token
+        const { sites } = useYard.getState()
+        const site = sites.find((s) => s.id === siteId)
+        const countHere = () => {
+          let n = 0
+          for (const r of Object.values(get().rows)) if (siteWorksWith(r, siteId, sites)) n++
+          return n
+        }
+        const now = Date.now()
+        const base: SiteLoad = { siteId, status: 'loading', have: countHere(), total: null, startedAt: now, progressAt: now }
+        if (!site || !db.isConfigured()) { set({ siteLoad: { ...base, status: 'done' } }); return }
+        set({ siteLoad: base })
+        // เป้าหมาย: ยาร์ดนี้มีกี่แถวในคลาวด์ (นับอย่างเดียว เร็ว) — ถ้าในเครื่องมีครบแล้ว
+        // ไม่ต้องรอ เปิดหน้าได้เลย ส่วนความสดใหม่ปล่อยให้ sync ส่วนต่างตามปกติ
+        const total = await db.countTrackingRowsForSite(site)
+        if (!live()) return
+        if (total == null) { set({ siteLoad: { ...base, status: 'offline' } }); return }
+        if (base.have >= total) { set({ siteLoad: { ...base, total, status: 'done' } }); return }
+        set({ siteLoad: { ...base, total } })
+        try {
+          await db.fetchTrackingRowsForSite(site, (batch) => {
+            if (!live()) return
+            // same merge rule as syncCloud: the newer copy wins per VIN, so an edit
+            // made on this device moments ago is never overwritten by an older cloud copy
+            const pull: TrackRow[] = []
+            set((s) => {
+              const rows = { ...s.rows }
+              for (const cr of batch) {
+                if (!hasVin(cr)) continue
+                const lr = rows[cr.vin]
+                if (!lr || (cr.updatedAt ?? 0) > (lr.updatedAt ?? 0)) {
+                  const clean = stripSystemHistory(cr)
+                  rows[cr.vin] = clean; pull.push(clean)
+                  broadcastOnly.delete(cr.vin)
+                  rowShared.set(cr.vin, clean.updatedAt ?? 0)
+                }
+              }
+              return { rows }
+            })
+            if (pull.length) idbBulkPut(pull).catch((e) => console.error('[idb] loadSiteRows put', e))
+            const t = Date.now()
+            set((s) => s.siteLoad && s.siteLoad.siteId === siteId
+              ? { siteLoad: { ...s.siteLoad, have: countHere(), total: Math.max(total, countHere()), progressAt: t } }
+              : s)
+          })
+          if (!live()) return
+          set((s) => s.siteLoad && s.siteLoad.siteId === siteId
+            ? { siteLoad: { ...s.siteLoad, have: countHere(), status: 'done', progressAt: Date.now() } }
+            : s)
+        } catch (e) {
+          console.error('[db] loadSiteRows', e)
+          if (!live()) return
+          set((s) => s.siteLoad && s.siteLoad.siteId === siteId ? { siteLoad: { ...s.siteLoad, status: 'offline' } } : s)
+        }
+      },
 
       loadFromIdb: async () => {
         if (get().loaded) return
@@ -586,28 +666,17 @@ export const useTracking = create<TrackingState>()(
           }
         } catch { /* IndexedDB unavailable — fall through with empty rows */ }
 
-        const hasLocal = Object.keys(rows).length > 0
         // reveal the UI immediately — never block the splash on the network
         set({ rows, loaded: true })
 
-        if (!hasLocal) {
-          // fresh device (e.g. a new phone): pull the ACTIVE yard first — a
-          // server-side "Location yard" filter (~2 MB, not the full 11 MB) — so the
-          // current site fills in fast, before the full background sync
-          const y = useYard.getState()
-          const site = y.sites.find((s) => s.id === y.currentSite)
-          if (site) {
-            try {
-              const siteRows = await db.fetchTrackingRowsForSite(site)
-              if (siteRows.length) {
-                const rec: Record<string, TrackRow> = {}
-                for (const r of siteRows) if (hasVin(r)) rec[r.vin] = stripSystemHistory(r)
-                set({ rows: rec })
-                idbBulkPut(Object.values(rec)).catch(() => {})
-              }
-            } catch { /* fall through to the full sync below */ }
-          }
-        }
+        // the ACTIVE yard first — server-side filtered (~2 MB, not the whole
+        // company's 11 MB+), paged in with progress, and the screen waits on it
+        // (see loadSiteRows + SiteLoadGate). This used to run only on a device
+        // with an EMPTY cache: a device holding a handful of rows for the yard
+        // skipped it and sat on the full sync for 1–2 minutes, so the Dashboard
+        // read 15 In Yard and then jumped to 3,004.
+        const siteId = useYard.getState().currentSite
+        if (siteId) await get().loadSiteRows(siteId).catch(() => {})
         // reconcile every yard in the background (incremental after the first run)
         get().syncCloud()
       },
@@ -726,7 +795,7 @@ export const useTracking = create<TrackingState>()(
         // it as shared so the announcer below doesn't relay it back out again
         for (const r of pull) rowShared.set(r.vin, r.updatedAt ?? 0)
         if (pull.length || drop.length || pruned.length) { set({ rows: merged }) }
-        if (pull.length || pruned.length) idbBulkPut([...pull, ...pruned]).catch(() => {})
+        if (pull.length || pruned.length) idbBulkPut([...pull, ...pruned]).catch((e) => console.error('[idb] syncCloud put', e))
         if (drop.length) idbDelete(drop).catch(() => {})
         // one write per VIN — Postgres rejects a batch that names the same
         // conflict target twice (a pruned row may also be in `push`)
