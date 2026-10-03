@@ -2,7 +2,8 @@
  * Yard Ops — Mobile role-based operations portal
  * Roles: Walk (Gate In) · Driver (Park) · PDI/PM/FC (Inspect) · Mechanic (Repair)
  */
-import { useEffect, useRef, useState, useMemo } from 'react'
+import { useEffect, useRef, useState, useMemo, memo } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { createPortal } from 'react-dom'
 import {
   ScanLine, Car, ShieldCheck, Wrench, ChevronLeft,
@@ -701,7 +702,39 @@ function cachedSupportedFormats(BD: { getSupportedFormats?: () => Promise<string
   return supportedFormatsCache
 }
 
-function VinInput({
+/** เครื่อง RAM น้อย (≤ 3 GB — Helio G35 ฯลฯ): ไม่สั่งซูมเลนส์อัตโนมัติตอนเปิดกล้อง
+ *  (ชิปภาพทำงานหนักขึ้นและบางรุ่นต้องเริ่มสายภาพใหม่) ให้คนเลื่อนเองเมื่อจำเป็น */
+const LOW_END_DEVICE = typeof navigator !== 'undefined' && ((navigator as { deviceMemory?: number }).deviceMemory ?? 4) <= 3
+/** ไม่มีภาพจากกล้องภายในเวลานี้ = สายภาพค้าง → เปิดใหม่เองหนึ่งครั้ง แทนจอดำนิ่ง ๆ */
+const CAMERA_FIRST_FRAME_MS = 4000
+
+/** หยิบหลายช่องจาก store ด้วยการเทียบตื้น — หน้าสถานีที่เคย `useYard()` ทั้งก้อน
+ *  วาดใหม่ทุกครั้งที่อะไรก็ตามใน store เปลี่ยน (realtime ส่งรถมาคันเดียวก็กรองรถ
+ *  ทั้งยาร์ดใหม่) ขณะกล้องเปิดอยู่บนชิปช้า การวาดหน้าแย่ง CPU กับกล้องจนภาพค้าง/ดำ */
+type YardState = ReturnType<typeof useYard.getState>
+function useYardPick<K extends keyof YardState>(...keys: K[]): Pick<YardState, K> {
+  return useYard(useShallow((s) => {
+    const out = {} as Pick<YardState, K>
+    for (const k of keys) out[k] = s[k]
+    return out
+  }))
+}
+
+// หน้ากล้องไม่ต้องวาดใหม่ตามหน้าสถานีแม่: ตัวห่อบาง ๆ นี้วาดใหม่ตามแม่ทุกครั้ง (ถูกมาก)
+// และเก็บ onScan ล่าสุดไว้ใน ref แล้วส่ง "ฟังก์ชันคงที่" ให้ตัวจริงที่ memo ไว้ — ตัวจริง
+// จึงวาดใหม่เฉพาะเมื่อ prop หน้าตาเปลี่ยน แต่ทุกการสแกนยังไปถึงตัวจัดการล่าสุดของ
+// หน้าสถานีเสมอ (ถ้า memo ตัวจริงตรง ๆ แล้วมองข้าม onScan ตัวจริงจะไม่เคยเห็น
+// onScan ใหม่ และสแกนด้วย state ของหน้าสถานีตอนเปิดครั้งแรกไปตลอด)
+type VinInputProps = Parameters<typeof VinInputInner>[0]
+const VinInputMemo = memo(VinInputInner)
+function VinInput(props: VinInputProps) {
+  const latest = useRef(props.onScan)
+  latest.current = props.onScan
+  const stable = useRef((v: string) => latest.current(v)).current
+  return <VinInputMemo {...props} onScan={stable} />
+}
+
+function VinInputInner({
   onScan, accent = 'var(--brand)',
   placeholder = 'VIN / 5 ตัวท้าย…',
   action = 'สแกน / ค้นหา',
@@ -715,6 +748,12 @@ function VinInput({
   const [val, setVal] = useState('')
   const [camOpen, setCamOpen] = useState(false)
   const [camErr, setCamErr] = useState('')
+  // ข้อความสถานะชั่วคราวบนหน้ากล้อง (เช่น "กำลังเปิดกล้องใหม่…") — หายเมื่อภาพแรกมา
+  const [camInfo, setCamInfo] = useState('')
+  // ตัวเฝ้ากล้อง: ขยับเลขนี้ = เริ่มสายภาพใหม่ (ปล่อยกล้องจริงก่อน) · ทำได้ครั้งเดียว
+  // ต่อการเปิดกล้องหนึ่งครั้ง จะได้ไม่วนเปิด-ปิดไม่รู้จบบนเครื่องที่กล้องพังจริง
+  const [camNonce, setCamNonce] = useState(0)
+  const restartedRef = useRef(false)
   const ref = useRef<HTMLInputElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   // ZXing scanner controls — decodes QR + 1D barcodes (Code128/39, EAN, DataMatrix)
@@ -787,7 +826,7 @@ function VinInput({
     // หุบแป้นพิมพ์ก่อนส่งเลขวินออกไป — ไม่งั้นแป้นพิมพ์ค้างทับการ์ดผลลัพธ์
     // และปุ่ม ตกลง (คงไว้จากการแก้ภายหลัง ไม่เกี่ยวกับความเร็วกล้อง)
     ref.current?.blur()
-    onScan(v)
+    onScanRef.current(v) // ตัวจัดการล่าสุดเสมอ — component นี้ memo ไว้ ไม่วาดใหม่ตาม onScan
     setVal('')
   }
 
@@ -848,8 +887,17 @@ function VinInput({
     setDigitalZoom(false); setDz(z0); dzRef.current = z0; opticalRef.current = false
   }
 
-  const openCamera = () => { setCamErr(''); setCamOpen(true) }
+  const openCamera = () => { setCamErr(''); setCamInfo(''); restartedRef.current = false; setCamOpen(true) }
   const closeCamera = (warm = false) => { stopScan(warm); setCamOpen(false) }
+
+  // จอดับ / สลับแอป / ย่อเบราว์เซอร์ขณะกล้องเปิด → ปล่อยกล้องจริงทันที (บางเครื่อง
+  // สายภาพที่ค้างอยู่ตอนจอดับจะกลับมาเป็นภาพดำ และกล้องที่เปิดทิ้งไว้กินแบตเตอรี่/ร้อน)
+  useEffect(() => {
+    if (!camOpen) return
+    const onVis = () => { if (document.visibilityState === 'hidden') closeCamera() }
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [camOpen]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Start the scanner whenever the overlay opens. ZXing manages getUserMedia +
   // srcObject + play() + the continuous decode loop internally, which also
@@ -862,7 +910,17 @@ function VinInput({
     // พิกเซล ต่ำกว่าที่ตัวถอดรหัสไหนจะอ่านได้ 1280×720 (720p) พอสำหรับ QR/บาร์โค้ด
     // VIN ระยะจ่อปกติ และเบากว่า 1440p เดิมราว 80% — เซนเซอร์/ชิปภาพทำงานเบาลง
     // เครื่องไม่ร้อนเร็วจนถูกหรี่ความเร็ว ซึ่งเป็นต้นเหตุของอาการค้าง/จอดำ
-    const VIDEO: MediaTrackConstraints = { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
+    // เฟรมเรต 15 ก็พอ — ตัวถอดรหัสอ่านได้ไม่ถึง 8 เฟรม/วินาทีอยู่แล้ว เซนเซอร์/ชิปภาพ
+    // บนเครื่องถูกจึงไม่ต้องวิ่ง 30 เฟรมเปล่า ๆ (ร้อนน้อยลง ภาพพรีวิวไม่กระตุก)
+    const VIDEO: MediaTrackConstraints = { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 15, max: 24 } }
+
+    // รอ "ภาพแรก" มาถึงก่อนค่อยทำอะไรกับสายภาพ — ชิปกล้องราคาถูกที่โดนสั่งซูม/โฟกัส
+    // ทันทีหลัง play() บางรุ่นเริ่มสายภาพใหม่ (ดำครึ่งวินาที) หรือค้างไปเลย
+    const afterFirstFrame = (video: HTMLVideoElement, fn: () => void) => {
+      const run = () => { if (!cancelled) setTimeout(() => { if (!cancelled) fn() }, 300) }
+      if (video.readyState >= 2 && video.videoWidth) run()
+      else video.addEventListener('loadeddata', run, { once: true })
+    }
 
     // zoom + torch, where the hardware offers them. A slight starting zoom
     // (2×, capped) puts far more pixels on the small sticker code.
@@ -871,22 +929,61 @@ function VinInput({
     const setupTrack = (video: HTMLVideoElement, allowDigital: boolean) => {
       const track = (video.srcObject as MediaStream | null)?.getVideoTracks?.()[0] ?? null
       trackRef.current = track
-      // nudge continuous autofocus — ignored where unsupported, but stops some
-      // devices from locking focus at the wrong distance
-      track?.applyConstraints({ advanced: [{ focusMode: 'continuous' } as MediaTrackConstraintSet] }).catch(() => {})
       const caps = (track?.getCapabilities?.() ?? {}) as MediaTrackCapabilities & { zoom?: { min?: number; max?: number; step?: number }; torch?: boolean }
-      if (caps.zoom && typeof caps.zoom.max === 'number' && caps.zoom.max > (caps.zoom.min ?? 1)) {
+      setTorchCap(!!caps.torch)
+      const hasZoom = !!caps.zoom && typeof caps.zoom.max === 'number' && caps.zoom.max > (caps.zoom.min ?? 1)
+      if (hasZoom) {
         opticalRef.current = true
-        const cap = { min: caps.zoom.min ?? 1, max: caps.zoom.max, step: caps.zoom.step || 0.1 }
+        const cap = { min: caps.zoom!.min ?? 1, max: caps.zoom!.max!, step: caps.zoom!.step || 0.1 }
         setZoomCap(cap)
-        // start at the zoom the worker used LAST time (remembered), capped
-        const z = Math.min(Math.max(savedScanZoom(), cap.min), cap.max)
-        track!.applyConstraints({ advanced: [{ zoom: z } as MediaTrackConstraintSet] })
-          .then(() => setZoom(z)).catch(() => setZoom(cap.min))
+        setZoom(cap.min)
       } else if (allowDigital) {
         setDigitalZoom(true) // slider drives the crop-decode + preview scale
       }
-      setTorchCap(!!caps.torch)
+      afterFirstFrame(video, () => {
+        if (trackRef.current !== track || !track) return // สายภาพนี้ถูกปิด/เปลี่ยนไปแล้ว
+        setCamInfo('')
+        // nudge continuous autofocus — ignored where unsupported, but stops some
+        // devices from locking focus at the wrong distance
+        track.applyConstraints({ advanced: [{ focusMode: 'continuous' } as MediaTrackConstraintSet] }).catch(() => {})
+        // start at the zoom the worker used LAST time (remembered), capped —
+        // เครื่อง RAM น้อยไม่ซูมเอง (ดู LOW_END_DEVICE) แถบเลื่อนยังใช้ได้ตามปกติ
+        if (hasZoom && !LOW_END_DEVICE) {
+          const cap = { min: caps.zoom!.min ?? 1, max: caps.zoom!.max! }
+          const z = Math.min(Math.max(savedScanZoom(), cap.min), cap.max)
+          if (z !== cap.min) {
+            track.applyConstraints({ advanced: [{ zoom: z } as MediaTrackConstraintSet] })
+              .then(() => setZoom(z)).catch(() => setZoom(cap.min))
+          }
+        }
+      })
+    }
+
+    // ตัวเฝ้าสายภาพ: ไม่มีภาพภายใน CAMERA_FIRST_FRAME_MS หรือ track ดับ/เงียบไป →
+    // ปล่อยกล้องจริงแล้วเปิดใหม่หนึ่งครั้ง พร้อมบอกคนยิง แทนปล่อยจอดำนิ่ง ๆ
+    let watchdogOff: (() => void) | null = null
+    const armWatchdog = (video: HTMLVideoElement, stream: MediaStream) => {
+      watchdogOff?.()
+      const track = stream.getVideoTracks()[0]
+      const restart = (why: string) => {
+        if (cancelled || restartedRef.current) return
+        restartedRef.current = true
+        console.warn('[scan] camera restart:', why)
+        setCamInfo('กล้องไม่ตอบสนอง — กำลังเปิดกล้องใหม่…')
+        setCamNonce((n) => n + 1) // cleanup ของ effect นี้ปล่อยกล้องจริง แล้วรอบใหม่เริ่มใหม่
+      }
+      const noFrame = setTimeout(() => { if (video.readyState < 2 || !video.videoWidth) restart('no frame') }, CAMERA_FIRST_FRAME_MS)
+      let muted: ReturnType<typeof setTimeout> | null = null
+      const onEnded = () => restart('track ended')
+      const onMute = () => { muted = setTimeout(() => restart('track muted'), 1500) }
+      const onUnmute = () => { if (muted) { clearTimeout(muted); muted = null } }
+      track?.addEventListener('ended', onEnded)
+      track?.addEventListener('mute', onMute)
+      track?.addEventListener('unmute', onUnmute)
+      watchdogOff = () => {
+        clearTimeout(noFrame); if (muted) clearTimeout(muted)
+        track?.removeEventListener('ended', onEnded); track?.removeEventListener('mute', onMute); track?.removeEventListener('unmute', onUnmute)
+      }
     }
 
     const hit = (text?: string | null) => {
@@ -923,16 +1020,35 @@ function VinInput({
         const want = ['qr_code', 'code_128', 'code_39', 'ean_13', 'data_matrix'].filter(f => supported.includes(f))
         if (!want.includes('qr_code')) { stream.getTracks().forEach(t => t.stop()); return false }
         video.srcObject = stream
+        armWatchdog(video, stream) // ก่อน play(): สายภาพที่ไม่มีเฟรมทำให้ play() ค้างไม่ตอบได้
         await video.play().catch(() => {})
+        // play() ที่ค้างอยู่อาจเพิ่งคืนค่าหลังตัวเฝ้าสั่งเปิดใหม่ไปแล้ว — รอบนี้จบแล้ว
+        // ห้ามสร้างลูปถอดรหัสซ้อนกับรอบใหม่ (จะทับ controlsRef แล้วหยุดลูปใหม่ไม่ได้)
+        if (cancelled) return true
         const det = new BD({ formats: want })
-        const iv = setInterval(async () => {
-          if (video.readyState < 2) return
-          try {
-            const codes = await det.detect(video)
-            if (codes.length) hit(codes[0].rawValue)
-          } catch { /* detector hiccup — next tick */ }
-        }, 120)
-        controlsRef.current = { stop: () => clearInterval(iv) }
+        // ทีละรอบ ไม่ซ้อน: ของเดิมยิง detect() ทุก 120 ms โดยไม่รอรอบก่อนจบ — บนชิปช้า
+        // แต่ละรอบใช้ 200-600 ms (คัดลอกเฟรม 720p ส่งไป Google Play Services) จึงมี
+        // คำสั่งค้างทับกันหลายรอบ CPU/หน่วยความจำพุ่ง จอค้าง ภาพดำ รอบนี้รอให้รอบก่อน
+        // ตอบก่อน และเว้นช่วงตามเวลาที่เครื่องนั้นใช้จริง (เครื่องเร็วยังได้ ~8 รอบ/วิ)
+        let stopped = false
+        let timer: ReturnType<typeof setTimeout> | null = null
+        let period = 120
+        const tickNative = async () => {
+          if (stopped) return
+          if (video.readyState >= 2) {
+            const t0 = performance.now()
+            try {
+              const codes = await det.detect(video)
+              if (stopped) return
+              if (codes.length) { hit(codes[0].rawValue); return }
+            } catch { /* detector hiccup — next tick */ }
+            const dt = performance.now() - t0
+            period = Math.min(400, Math.max(120, Math.round(dt * 1.2)))
+          }
+          if (!stopped) timer = setTimeout(tickNative, period)
+        }
+        timer = setTimeout(tickNative, period)
+        controlsRef.current = { stop: () => { stopped = true; if (timer) clearTimeout(timer) } }
         setupTrack(video, false) // native detector reads the full frame — no crop zoom
         return true
       } catch { return false } // permission error falls through to ZXing for its message
@@ -949,7 +1065,9 @@ function VinInput({
       const stream = takeWarmStream() ?? await navigator.mediaDevices.getUserMedia({ video: VIDEO })
       if (cancelled) { stream.getTracks().forEach(t => t.stop()); return }
       video.srcObject = stream
+      armWatchdog(video, stream)
       await video.play().catch(() => {})
+      if (cancelled) return // ดูเหตุผลเดียวกันใน startNative
 
       // ── decoder: zxing-wasm (the C++ engine compiled to WebAssembly) — near
       // Android-native accuracy and speed on tiny / glarey windshield codes.
@@ -1027,8 +1145,8 @@ function VinInput({
         if (!cancelled) setCamErr('เปิดกล้องไม่สำเร็จ — โปรดอนุญาตสิทธิ์กล้องในเบราว์เซอร์ แล้วลองใหม่')
       }
     })()
-    return () => { cancelled = true; stopScan() }
-  }, [camOpen]) // eslint-disable-line react-hooks/exhaustive-deps
+    return () => { cancelled = true; watchdogOff?.(); stopScan() }
+  }, [camOpen, camNonce]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <>
@@ -1071,6 +1189,11 @@ function VinInput({
             {camErr && (
               <div className="absolute bottom-8 left-4 right-4 text-center text-[13px] py-2 px-4 rounded-xl" style={{ background: 'rgba(0,0,0,0.7)', color: '#fca5a5' }}>
                 {camErr}
+              </div>
+            )}
+            {!camErr && camInfo && (
+              <div data-testid="cam-info" className="absolute bottom-8 left-4 right-4 text-center text-[13px] py-2 px-4 rounded-xl" style={{ background: 'rgba(0,0,0,0.7)', color: '#fde68a' }}>
+                {camInfo}
               </div>
             )}
           </div>
@@ -1470,7 +1593,7 @@ function DamageForm({ onSaveAll, onCancel, vin }: {
    *  whichever station records it first; every station after that just sees it. */
   vin?: string
 }) {
-  const { toast } = useYard()
+  const toast = useYard((s) => s.toast)
   const [rows, setRows] = useState<DmgRow[]>([mkRow()])
   const masterParts = useMasterDefect((s) => s.parts)
   const masterDefects = useMasterDefect((s) => s.defects)
@@ -1686,7 +1809,7 @@ function WalkView() {
   const masterParts = useMasterDefect((s) => s.parts)
   const masterDefects = useMasterDefect((s) => s.defects)
   const allUnits = useUnits() // global (all sites) — for pulling a car's Defect list even if its unit lives in another site
-  const { gateIn, importUnits, addDamage, updateDamage, markTrailerArrived, toast, currentUser } = useYard()
+  const { gateIn, importUnits, addDamage, updateDamage, markTrailerArrived, toast, currentUser } = useYardPick('gateIn', 'importUnits', 'addDamage', 'updateDamage', 'markTrailerArrived', 'toast', 'currentUser')
   const allTrackingRows = useTrackingRows()
   const wrongSite = useWrongSiteHint()
   const { loadFromIdb, updateCell, updateCells, claimPreGateInCandidate, transferToYard } = useTracking()
@@ -2714,7 +2837,8 @@ function DriverView() {
   const wrongSite = useWrongSiteHint()
   const queues = useSiteQueues()
   const { loadFromIdb, updateCell } = useTracking()
-  const { assign, confirmParked, resetParking, toast, currentUser, policies, groupModelsInRow, laneDepth, planMode, startTrip, endTrip, sites, currentSite, loadFromSupabase } = useYard()
+  const { assign, confirmParked, resetParking, toast, currentUser, policies, groupModelsInRow, laneDepth, planMode, startTrip, endTrip, sites, currentSite, loadFromSupabase } =
+    useYardPick('assign', 'confirmParked', 'resetParking', 'toast', 'currentUser', 'policies', 'groupModelsInRow', 'laneDepth', 'planMode', 'startTrip', 'endTrip', 'sites', 'currentSite', 'loadFromSupabase')
   const blocks = useBlocks()
   const { deliverToStation, returnToSlot, markAtWash, markAtLane, setDriving } = useOps()
   const { block: blockGate, modal: gateModal } = useNotGatedIn()
@@ -3292,7 +3416,7 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved, stationTit
   stationTitle: string   // the station menu this panel is on — PDI / PM / FINAL CHECK
   accent: string
 }) {
-  const { addDamage, updateRepairStatus, setInspected, currentUser, toast } = useYard()
+  const { addDamage, updateRepairStatus, setInspected, currentUser, toast } = useYardPick('addDamage', 'updateRepairStatus', 'setInspected', 'currentUser', 'toast')
   const { updateCell } = useTracking()
   const { recordCheck } = useOps()
   const [soc, setSoc] = useState('')
@@ -3424,7 +3548,7 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
   const sites = useYard(s => s.sites)
   const currentSite = useYard(s => s.currentSite)
   const { loadFromIdb } = useTracking()
-  const { setInspected, removeDamage, updateRepairStatus, toast, loadFromSupabase } = useYard()
+  const { setInspected, removeDamage, updateRepairStatus, toast, loadFromSupabase } = useYardPick('setInspected', 'removeDamage', 'updateRepairStatus', 'toast', 'loadFromSupabase')
   const { block: blockGate, blockWith, modal: gateModal } = useNotGatedIn()
   // pull tracking rows (IDB) AND units (cloud) on entry so a scan right after
   // opening the station finds the car instead of racing the initial load.
@@ -3873,7 +3997,7 @@ function MechanicView({ types, accent, stationLabel, emptyLabel, okNgMode = fals
   const wrongSite = useWrongSiteHint()
   const allQueues = useSiteQueues()
   const { loadFromIdb } = useTracking()
-  const { addDamage, removeDamage, updateRepairStatus, setInspected, toast, loadFromSupabase, currentUser } = useYard()
+  const { addDamage, removeDamage, updateRepairStatus, setInspected, toast, loadFromSupabase, currentUser } = useYardPick('addDamage', 'removeDamage', 'updateRepairStatus', 'setInspected', 'toast', 'loadFromSupabase', 'currentUser')
   const { recordCheck } = useOps()
   const { block: blockGate, modal: gateModal } = useNotGatedIn()
   const sites = useYard(s => s.sites)
@@ -4056,7 +4180,7 @@ function GateOutView() {
   const wrongSite = useWrongSiteHint()
   const queues = useSiteQueues()
   const { loadFromIdb, updateCell, startNewTrip } = useTracking()
-  const { toast, currentUser, sites, currentSite, markDeparted } = useYard()
+  const { toast, currentUser, sites, currentSite, markDeparted } = useYardPick('toast', 'currentUser', 'sites', 'currentSite', 'markDeparted')
   const { confirmSeqGateOut, createGateInQueue } = useOps()
   const { block: blockGate, blockWith, modal: gateModal } = useNotGatedIn()
   const [vin, setVin] = useState<string | null>(null)
@@ -4534,7 +4658,7 @@ function RelocationView() {
   const blocks = useBlocks()
   const wrongSite = useWrongSiteHint()
   const { loadFromIdb, appendHistory } = useTracking()
-  const { toast, sites, currentSite, currentUser, updateLocations } = useYard()
+  const { toast, sites, currentSite, currentUser, updateLocations } = useYardPick('toast', 'sites', 'currentSite', 'currentUser', 'updateLocations')
   const { block: blockGate, blockWith: blockGate2, modal: gateModal } = useNotGatedIn()
   const [vin, setVin] = useState<string | null>(null)
   const [fLoc, setFLoc] = useState('')
@@ -5240,7 +5364,7 @@ function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', s
   const trackingRows = useSiteRows()
   const wrongSite = useWrongSiteHint()
   const { loadFromIdb } = useTracking()
-  const { addDamage, updateRepairStatus, toast, importUnits } = useYard()
+  const { addDamage, updateRepairStatus, toast, importUnits } = useYardPick('addDamage', 'updateRepairStatus', 'toast', 'importUnits')
   const { block: blockGate, blockWith, modal: gateModal } = useNotGatedIn()
   const [vin, setVin] = useState<string | null>(null)
   const [showAdd, setShowAdd] = useState(false)
@@ -5545,7 +5669,7 @@ function CheckView() {
   const queues = useSiteQueues()
   const { loadFromIdb } = useTracking()
   const columns = useTracking(s => s.columns)
-  const { toast, loadFromSupabase } = useYard()
+  const { toast, loadFromSupabase } = useYardPick('toast', 'loadFromSupabase')
   const [vin, setVin] = useState<string | null>(null)
   const [ctab, setCtab] = useState<'info' | 'location' | 'work' | 'event' | 'accessory'>('info')
 
@@ -5987,7 +6111,7 @@ const savedStation = (): RoleKey | null => {
 }
 
 export function YardOps() {
-  const { currentUser } = useYard()
+  const currentUser = useYard((s) => s.currentUser)
   const [role, setRoleState] = useState<RoleKey | null>(savedStation)
   const setRole = (r: RoleKey | null) => {
     setRoleState(r)
