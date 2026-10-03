@@ -44,7 +44,7 @@ import { refreshUnitFocus } from '../lib/unitFocus'
 import { laneFromCloud } from '../lib/laneCloud'
 import { useRecentOps } from '../store/useRecentOps'
 import { buildWorkRows, buildEventLog, fmtHistAt, histOf } from '../lib/carHistory'
-import { roundOf } from '../lib/tripHistory'
+import { roundOf, roundHistory } from '../lib/tripHistory'
 import { exportSpecialQueue } from '../lib/opsReport'
 
 // A queue's car list used to render every item at once — fine for a dozen
@@ -4178,7 +4178,7 @@ function GateOutView() {
     if (hasLeftGate(r.cells)) {
       // no field-name matching needed: only a Car Status change ever writes
       // these values, and reversed order finds the LATEST gate-out
-      const ev = [...(r.history ?? [])].reverse()
+      const ev = [...roundHistory(r)].reverse()
         .find(h => h.to === 'Pre Gate-out' || h.to === 'Gate-out')
       const when = ev?.at ? fmtHistAt(ev.at)
         : (r.cells['Gate Out time stamp'] || r.cells['Gate Out Date'] || '').trim()
@@ -4609,10 +4609,11 @@ function RelocationView() {
     return () => { cancelled = true }
   }, [vin, unit])
 
-  // every relocation this car has been through — updateCell logs who/when/where
-  // under the Location column, so the station sees the same trail the admin does
+  // every relocation this car has been through IN THIS YARD's round — updateCell
+  // logs who/when/where under the Location column, so the station sees the same
+  // trail the admin does (moves at the previous yard are its own round's — hidden)
   const moves = useMemo(() =>
-    [...(row?.history ?? [])].filter(e => e.field === 'Location' || e.field === LOCATION_KEY).reverse(),
+    (row ? roundHistory(row) : []).filter(e => e.field === 'Location' || e.field === LOCATION_KEY).reverse(),
   [row])
 
   // ตำแหน่งปัจจุบันที่ไม่ตรงกับประวัติการสแกนล่าสุด (เช่น การเขียน `units` พลาด
@@ -5014,7 +5015,7 @@ function RelocationView() {
                   const color = u.color || tr?.cells['Color'] || '—'
                   // who recorded this car's LAST move and when — the same trail
                   // the single-car mode's ประวัติการย้าย shows
-                  const lastMove = [...(tr?.history ?? [])].filter(e => e.field === 'Location' || e.field === LOCATION_KEY).pop()
+                  const lastMove = (tr ? roundHistory(tr) : []).filter(e => e.field === 'Location' || e.field === LOCATION_KEY).pop()
                   return (
                     <div key={u.vin} className="px-4 py-2 flex items-center gap-3"
                       style={fresh ? { background: 'rgba(22,163,74,0.07)' } : undefined}>

@@ -10,6 +10,7 @@ import { downloadTemplate, downloadVinListTemplate } from '../lib/excel'
 import { parseTrackingWorkbook, parseImportWorkbook, isScanLocationEntry, type ParseResult } from '../lib/excelTracking'
 import { parseLane, parseLaneWorkbook, type LaneParseResult, type LaneRow } from '../lib/laneImport'
 import { coInspectionAccepts, rowInSite, siteForRow, siteWorksWith } from '../lib/siteScope'
+import { roundHistory } from '../lib/tripHistory'
 import { deriveCarStatus, hasLeftGate } from '../lib/carStatus'
 import { pos, blockKeyOfTag, blockTag, resolveBlockByName } from '../lib/format'
 import { yardLocFull } from '../lib/groupingImport'
@@ -214,9 +215,10 @@ export function ImportPage() {
     // the visible move-then-move-back churn.)
     const trRows = useTracking.getState().rows
     const scanHeld = (vin: string): boolean => {
-      const hist = trRows[vin]?.history
-      if (!hist) return false
-      const last = [...hist].reverse().find((e) => e.field === 'Location')
+      const r = trRows[vin]
+      if (!r?.history) return false
+      // only a scan made in THIS yard's round holds the car (a scan at the previous yard is not ours)
+      const last = [...roundHistory(r)].reverse().find((e) => e.field === 'Location')
       return !!last && isScanLocationEntry(last)
     }
     const apply = plan.placements.filter((p) => !scanHeld(p.vin))

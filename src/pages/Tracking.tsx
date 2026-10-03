@@ -28,8 +28,19 @@ const dayKey = (t: number) => new Date(t).toLocaleDateString('th-TH', { day: '2-
 
 export function Tracking() {
   const lang = useYard((s) => s.lang)
-  const units = useUnits()
-  const trips = useTrips()
+  const allUnits = useUnits()
+  const allTrips = useTrips()
+  // แยกข้อมูลยาร์ดใครยาร์ดมัน — แผนที่/เที่ยวขับของรถในยาร์ดนี้เท่านั้น
+  const currentSite = useYard((s) => s.currentSite)
+  const units = useMemo(
+    () => (currentSite ? allUnits.filter((u) => !u.site || u.site === currentSite) : allUnits),
+    [allUnits, currentSite],
+  )
+  const trips = useMemo(() => {
+    if (!currentSite) return allTrips
+    const mine = new Set(units.map((u) => u.vin))
+    return allTrips.filter((t) => mine.has(t.vin))
+  }, [allTrips, units, currentSite])
   const [q, setQ] = useState('')
   const [selVin, setSelVin] = useState<string | null>(null)
   const [selTripId, setSelTripId] = useState<string | null>(null)

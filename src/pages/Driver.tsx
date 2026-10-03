@@ -167,7 +167,13 @@ function DriverCard({ g, lang }: { g: DriverGroup; lang: 'th' | 'en' }) {
 
 export function Driver() {
   const lang  = useYard((s) => s.lang)
-  const units = useUnits()
+  const allUnits = useUnits()
+  // แยกข้อมูลยาร์ดใครยาร์ดมัน — กิจกรรมคนขับของยาร์ดนี้เท่านั้น
+  const currentSite = useYard((s) => s.currentSite)
+  const units = useMemo(
+    () => (currentSite ? allUnits.filter((u) => !u.site || u.site === currentSite) : allUnits),
+    [allUnits, currentSite],
+  )
 
   const groups = useMemo(() => buildGroups(units), [units])
 

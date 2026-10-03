@@ -7,7 +7,7 @@ import type { TrackRow, RowEvent } from './excelTracking'
 import type { Column } from './trackingColumns'
 import { LOCATION_KEY } from './trackingColumns'
 import { yardLocFull } from './groupingImport'
-import { tripsOf } from './tripHistory'
+import { roundHistory } from './tripHistory'
 import type { Unit, Damage } from '../types'
 import type { WorkQueue } from '../store/useOps'
 
@@ -15,11 +15,14 @@ export const fmtHistAt = (t: number) =>
   new Date(t).toLocaleString('th-TH', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' })
 
 // history entries are logged under the COLUMN LABEL (fallback: raw key), so a
-// lookup must accept both spellings of every field it cares about
+// lookup must accept both spellings of every field it cares about.
+// Only THIS round's lines (แยกข้อมูลยาร์ดใครยาร์ดมัน — see roundHistory): what the
+// previous yard did to the car is its own round's business, except the shared
+// inspection work (PDI / PM / Final / defects) which follows the car.
 const labelOf = (columns: Column[], key: string) => columns.find((cc) => cc.key === key)?.label ?? key
 export function histOf(row: TrackRow, columns: Column[], ...keys: string[]): RowEvent[] {
   const names = new Set(keys.flatMap((k) => [k, labelOf(columns, k)]))
-  return (row.history ?? []).filter((h) => names.has(h.field))
+  return roundHistory(row, columns).filter((h) => names.has(h.field))
 }
 export function lastHist(row: TrackRow, columns: Column[], ...keys: string[]): RowEvent | null {
   const a = histOf(row, columns, ...keys)
@@ -110,18 +113,11 @@ export function buildEventLog(
 ): CarEvent[] {
   const c = row.cells
   const log: CarEvent[] = []
-  // rounds the car already finished — it left the yard and came back, so this
-  // visit's sheet is clean and the old one is filed here (see tripHistory.ts)
-  for (const t of tripsOf(c)) {
-    const span = [t.gateIn && `เข้า ${t.gateIn}`, t.gateOut && `ออก ${t.gateOut}`].filter(Boolean).join(' → ')
-    const extra = [t.yard, t.lot && `Lot ${t.lot}`, t.grouping && `Grouping ${t.grouping}`].filter(Boolean).join(' · ')
-    log.push({
-      at: t.closedAt, by: '—', station: `รอบที่ ${t.round}`,
-      text: `ปิดรอบที่ ${t.round}${span ? ` · ${span}` : ''}${extra ? ` · ${extra}` : ''}`,
-      accent: '#0891b2',
-    })
-  }
-  for (const h of row.history ?? []) {
+  // rounds the car already finished at OTHER yards are not listed here any more —
+  // แยกข้อมูลยาร์ดใครยาร์ดมัน: each yard sees only its own round (the closed
+  // round is that yard's own Visit row); only this round's lines plus the
+  // shared inspection work survive (see roundHistory)
+  for (const h of roundHistory(row)) {
     if (h.field === '__damage') { log.push({ at: h.at, by: h.by, station: 'Damage', text: h.to, accent: '#dc2626' }); continue }
     log.push({ at: h.at, by: h.by, text: `แก้ไข ${h.field}: ${h.from || '(ว่าง)'} → ${h.to}` })
   }

@@ -12,7 +12,7 @@
  */
 import type { Site } from '../types'
 import type { TrackRow, RowEvent } from './excelTracking'
-import { tripsOf, TRIPS_CELL, TRIP_SCOPED_KEYS, type TripSnapshot } from './tripHistory'
+import { tripsOf, TRIPS_CELL, isSharedRoundEvent, type TripSnapshot } from './tripHistory'
 import { fmtGateOutStamp, gateOutScanMs } from './carStatus'
 
 export interface Visit {
@@ -70,12 +70,15 @@ export function visitFromTrip(
     if (!cells['Gate Out time stamp']) cells['Gate Out time stamp'] = fmtGateOutStamp(gateOutAt)
   }
   const cutoff = gateOutAt > 0 ? gateOutAt + 60_000 : t.closedAt + 60_000
+  // ประวัติของรอบนี้เท่านั้น: ตั้งแต่รอบก่อนหน้าถูกปิด (ยาร์ดก่อนหน้า) จนรถออก —
+  // ยกเว้นงานที่ใช้ร่วมกัน (defect / PDI / PM / Final) ซึ่งเป็นของตัวรถ
+  const since = tripsOf(liveCells).find((p) => p.round === t.round - 1)?.closedAt ?? 0
   return {
     id: visitId(vin, t.round),
     vin, round: t.round,
     site: siteId ?? siteIdByName(t.yard, sites),
     cells,
-    history: (history ?? []).filter((h) => h.at <= cutoff),
+    history: (history ?? []).filter((h) => h.at <= cutoff && (h.at >= since || isSharedRoundEvent(h))),
     closedAt: t.closedAt,
     gateOutAt,
     updatedAt: Date.now(),
@@ -99,6 +102,3 @@ export function visitToTrackRow(v: Visit): TrackRow {
   delete cells[TRIPS_CELL]
   return { vin: v.vin, site: v.site, cells, history: v.history, updatedAt: v.updatedAt, visitId: v.id }
 }
-
-/** ช่องของรอบที่ยาร์ดต้นทางแก้ได้ (ช่องของตัวรถแก้ที่แถวสด) */
-export const isVisitEditableKey = (key: string) => TRIP_SCOPED_KEYS.includes(key) || key === 'Car Status'
