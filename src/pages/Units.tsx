@@ -34,6 +34,7 @@ import { useUnitsView } from '../store/useUnitsView'
 import { useVisits } from '../store/useVisits'
 import { visitToTrackRow, type Visit } from '../lib/visits'
 import { buildWorkRows, buildEventLog, readingsHist as libReadingsHist, histOf, fmtHistAt, filledDates, PDI_DATE_KEYS, PM_DATE_KEYS } from '../lib/carHistory'
+import { roundHistory } from '../lib/tripHistory'
 
 const DMG_SRC: Record<string, string> = { walkaround: 'Walk-around', pdi: 'PDI', mechanic: 'ช่าง', update: 'Update', yardDefect: 'Defect-Yard', factoryDefect: 'Defect-Factory', whaleDefect: 'Defect-Whale', manual: 'เพิ่มเอง' }
 
@@ -279,9 +280,9 @@ export function Units() {
     () => (departedRows.length ? [...rows, ...departedRows] : rows),
     [rows, departedRows],
   )
-  /** รถที่ออกไปแล้วซึ่งมีแถวรอบ → แก้ได้ที่แถวรอบ · ที่ยังไม่มี → ดูได้อย่างเดียว */
-  const visitOf = useMemo(() => new Map(departedRows.filter((r) => r.visitId).map((r) => [r.vin, r.visitId as string])), [departedRows])
-  const lockedVins = useMemo(() => new Set(departedRows.filter((r) => !r.visitId).map((r) => r.vin)), [departedRows])
+  /** รถที่ออกจากยาร์ดนี้ไปแล้ว — รอบของยาร์ดนี้จบแล้ว เห็นครบ แก้ไม่ได้ (ทั้งแถวรอบ
+   *  และคันที่ยังไม่มีแถวรอบ) — แยกข้อมูลยาร์ดใครยาร์ดมัน */
+  const lockedVins = useMemo(() => new Set(departedRows.map((r) => r.vin)), [departedRows])
   const visCols = useVisibleColumns()
   const { lastImport, loadFromIdb } = useTracking()
   // computed yard-location code (prefix-block+ช่อง+ลำดับ, e.g. "N-R1402"), for the Location column.
@@ -596,7 +597,7 @@ export function Units() {
           <EmptyState />
         ) : tab === 'units' ? (
           <DataGrid rows={filtered} visCols={visCols} sel={sel} setSel={setSel}
-            sortKey={sortKey} sortDir={sortDir} toggleSort={toggleSort} optionsFor={optionsFor} locked={lockedVins} visitOf={visitOf}
+            sortKey={sortKey} sortDir={sortDir} toggleSort={toggleSort} optionsFor={optionsFor} locked={lockedVins}
             footer={<GridFooter sel={sel} shown={filtered.length} total={siteRows.length} lastImport={lastImport} />} />
         ) : tab === 'grouping' ? (
           <GroupingView rows={filtered} visCols={visCols} sel={sel} setSel={setSel}
@@ -621,19 +622,15 @@ interface GridProps {
   rows: TrackRow[]; visCols: Column[]; sel: Set<string>; setSel: React.Dispatch<React.SetStateAction<Set<string>>>
   sortKey: string; sortDir: SortDir; toggleSort: (k: string) => void; optionsFor: (c: Column) => string[]
   footer?: React.ReactNode
-  /** รถที่ออกจากยาร์ดนี้ไปแล้วและยังไม่มีแถวรอบ — ดูได้ แก้ไม่ได้ */
+  /** รถที่ออกจากยาร์ดนี้ไปแล้ว (รอบของยาร์ดนี้จบแล้ว) — ดูได้ แก้ไม่ได้ */
   locked?: Set<string>
-  /** รถที่ออกไปแล้วซึ่งมีแถวรอบของยาร์ดนี้: vin → visit id — การแก้ไขวิ่งไปที่แถวรอบ */
-  visitOf?: Map<string, string>
 }
 
-function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, optionsFor, footer, locked, visitOf }: GridProps) {
+function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, optionsFor, footer, locked }: GridProps) {
   const bulkUpdateLive = useTracking((s) => s.bulkUpdate)
-  // แถวรอบของยาร์ดนี้แก้ที่ store ของแถวรอบ · แถวสดแก้ที่ tracking — ไม่ปนกัน
+  // แถวรอบที่ปิดแล้วอ่านอย่างเดียว (locked กันไว้ที่เมนูแล้ว) — ที่เหลือคือแถวสดของยาร์ดนี้
   const bulkUpdate = (targets: string[], key: string, value: string) => {
-    const visitIds = targets.map((v) => visitOf?.get(v)).filter((x): x is string => !!x)
-    const live = targets.filter((v) => !visitOf?.has(v))
-    if (visitIds.length) useVisits.getState().bulkUpdate(visitIds, key, value)
+    const live = targets.filter((v) => !locked?.has(v))
     if (live.length) bulkUpdateLive(live, key, value)
   }
   const deleteRows = useTracking((s) => s.deleteRows)
@@ -710,7 +707,7 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
     // แยกยาร์ด แยกงาน: รถที่ออกจากยาร์ดนี้ไปแล้ว งานของยาร์ดนี้จบแล้ว — แถวสดเป็น
     // ของยาร์ดปลายทาง การแก้จากที่นี่จะไปลงข้อมูลของเขา (และแก้ช่องยาร์ดจะดึงรถ
     // ของเขากลับมา) จึงดูได้อย่างเดียว
-    if (locked?.has(vin)) { toast('err', 'รถคันนี้ออกจากยาร์ดนี้แล้ว — ข้อมูลเป็นของยาร์ดปลายทาง แก้จากที่นี่ไม่ได้'); return }
+    if (locked?.has(vin)) { toast('err', 'รถคันนี้ออกจากยาร์ดนี้แล้ว — รอบของยาร์ดนี้จบแล้ว ดูได้อย่างเดียว แก้ไขไม่ได้'); return }
     let targets: string[]
     if (sel.has(vin) && sel.size > 0) targets = [...sel].filter((v) => !locked?.has(v))
     else { setSel(new Set([vin])); targets = [vin] }
@@ -735,9 +732,8 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
     const promptApply = (key: string) => {
       const label = colByKey.get(key)?.label ?? key
       // audit trail for THIS field — only meaningful when editing a single car
-      const hist = n === 1
-        ? (rows.find((r) => r.vin === vin)?.history ?? []).filter((h) => h.field === label || h.field === key)
-        : []
+      const one = n === 1 ? rows.find((r) => r.vin === vin) : undefined
+      const hist = one ? roundHistory(one, columns).filter((h) => h.field === label || h.field === key) : []
       setEditInput({ key, label, initial: cur(key), targets, history: hist })
       setMenu(null)
     }
@@ -828,7 +824,7 @@ function DataGrid({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, op
       )
       if (ok) {
         // แถวรอบของยาร์ดนี้ไม่ใช่แถวสด — ลบจากที่นี่ไม่ได้ (จะไปลบรถของยาร์ดปลายทาง)
-        const liveTargets = targets.filter((v) => !visitOf?.has(v))
+        const liveTargets = targets.filter((v) => !locked?.has(v))
         if (liveTargets.length !== targets.length) toast('err', `ข้ามรถที่ออกจากยาร์ดนี้ไปแล้ว ${targets.length - liveTargets.length} คัน — ลบได้เฉพาะรถของยาร์ดนี้`)
         if (liveTargets.length) deleteRows(liveTargets)
         setSel(new Set())

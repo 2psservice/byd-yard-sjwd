@@ -13,7 +13,7 @@ import { supabase } from '../lib/supabase'
 import { onSync, sendSync, type RowMsg, type RowsPayload } from '../lib/syncBus'
 import { useYard, WCL_STAGING_BLOCK } from './useYard'
 import { siteForRow, siteIdForLocation, coInspectionAccepts, departedFromSite, siteWorksWith, rowYardName, CANDIDATE_SITES_KEY } from '../lib/siteScope'
-import { TRIPS_CELL, TRIP_SCOPED_KEYS, tripsOf, type TripSnapshot } from '../lib/tripHistory'
+import { TRIPS_CELL, TRIP_SCOPED_KEYS, ROUND_COPIED_KEYS, tripsOf, roundHistory, type TripSnapshot } from '../lib/tripHistory'
 import { useVisits } from './useVisits'
 import { visitFromTrip, type Visit } from '../lib/visits'
 import { CAR_STATUS_ORDER, CAR_STATUS_KEY, CAR_STATUS_SET_AT_KEY, CAR_STATUS_SET_SITE_KEY, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY, RELEASED_STATUSES, deriveCarStatus, isGateOutStamp, gateOutScanMs, gateInEvidenceAt, inYardAssertedAt, fmtGateOutStamp } from '../lib/carStatus'
@@ -446,6 +446,13 @@ function closeRoundRow(
   for (const k of TRIP_SCOPED_KEYS) {
     const v = (cells[k] ?? '').trim()
     if (v) { cleared[k] = v; delete cells[k] }
+  }
+  // งานตรวจที่ใช้ร่วมกัน (PDI / PM / Final / VOS / ค่าที่วัด) อยู่บนแถวสดต่อ — ยาร์ด
+  // ใหม่นับว่าทำแล้วและทำต่อ — แต่คัดลอกลงก้อนรอบด้วย แถวรอบของยาร์ดเดิมจะได้
+  // แสดงงาน ณ วันที่รถออก ไม่ขยับตามงานที่ยาร์ดใหม่ทำต่อ (ดู ROUND_COPIED_KEYS)
+  for (const k of ROUND_COPIED_KEYS) {
+    const v = (cells[k] ?? '').trim()
+    if (v) cleared[k] = v
   }
   const snap: TripSnapshot = {
     round: closing,
@@ -1193,7 +1200,8 @@ export const useTracking = create<TrackingState>()(
           const placed = !!u.block && !!u.row && !!u.slot
           const r = rows[u.vin]
           if (!r) { if (placed) skipped++; continue }
-          const moves = (r.history ?? []).filter((e) => (e.field === 'Location' || e.field === LOCATION_KEY) && isScanLocationEntry(e))
+          // เฉพาะการสแกนในรอบของยาร์ดนี้ — ตำแหน่งที่ยิงไว้ที่ยาร์ดเดิมไม่ใช่ของที่นี่
+          const moves = roundHistory(r).filter((e) => (e.field === 'Location' || e.field === LOCATION_KEY) && isScanLocationEntry(e))
           const last = moves[moves.length - 1]
           const target = last ? parseYardLocCode(last.to) : null
           if (!target) { if (placed) skipped++; continue }

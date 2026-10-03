@@ -5,7 +5,7 @@
  */
 import type { Site } from '../types'
 import type { TrackRow } from './excelTracking'
-import { tripsOf, TRIPS_CELL, TRIP_SCOPED_KEYS, type TripSnapshot } from './tripHistory'
+import { tripsOf, TRIPS_CELL, TRIP_SCOPED_KEYS, ROUND_COPIED_KEYS, type TripSnapshot } from './tripHistory'
 import { GATE_OUT_ORIGIN_SITE_KEY, CAR_STATUS_KEY, gateOutOriginAt, inYardAssertedAt, fmtGateOutStamp, gateOutScanMs } from './carStatus'
 
 const norm = (s?: string) => (s ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
@@ -203,6 +203,9 @@ export function departedViewFrom(r: TrackRow, siteId: string | null | undefined,
   const cutoff = d.at + DEPARTURE_SETTLE_MS
   const cells: Record<string, string> = { ...r.cells }
   for (const k of TRIP_SCOPED_KEYS) delete cells[k]
+  // งานตรวจที่ใช้ร่วมกันก็ถอดออกก่อนเช่นกัน — ก้อนรอบเก็บค่า ณ วันที่รถออกไว้แล้ว
+  // (ROUND_COPIED_KEYS) PDI/PM ที่ยาร์ดใหม่ทำต่อต้องไม่ทะลุมาในมุมมองของยาร์ดนี้
+  for (const k of ROUND_COPIED_KEYS) delete cells[k]
   Object.assign(cells, d.trip?.cells ?? {})
   const site = sites.find((s) => s.id === siteId)
   if (d.trip?.yard) cells['Location yard'] = d.trip.yard

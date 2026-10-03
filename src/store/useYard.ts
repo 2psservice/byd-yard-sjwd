@@ -1178,14 +1178,26 @@ export const useYard = create<YardState>()(
         for (const vin of vins) {
           const u = before[vin]
           if (!u || u.site === siteId) continue
-          const { block, row, slot, assignedAt, drivingStartedAt, parkedAt, driver, ...rest } = u
+          // แยกข้อมูลยาร์ดใครยาร์ดมัน: ทุกอย่างที่ยาร์ดเดิมบันทึกไว้กับคันรถ (เวลา/ผู้ยิง
+          // Gate-in, ตรวจรอบเดินแล้ว, ล็อต/หาง, แผนจอด, พิกัดล่าสุด) จบที่ยาร์ดเดิม —
+          // ยาร์ดใหม่เริ่มใหม่ทั้งหมด เหลือไว้แค่ตัวรถ (รุ่น สี) และ defect ที่ใช้ร่วมกัน
+          const { block, row, slot, assignedAt, drivingStartedAt, parkedAt, driver,
+            gateInAt, gateInBy, inspected, planMode, lot, lastPos, ...rest } = u
           void block; void row; void slot; void assignedAt; void drivingStartedAt; void parkedAt; void driver
-          const next: Unit = { ...rest, site: siteId, status: 'EXPECTED' }
+          void gateInAt; void gateInBy; void inspected; void planMode; void lot; void lastPos
+          const next: Unit = { ...rest, site: siteId, status: 'EXPECTED', trailer: 0 }
           units[vin] = next
           changed.push(next)
         }
         if (!changed.length) return
-        set({ units })
+        // a parking write still queued for the OLD yard must not land the car
+        // back in that lane after it has left (pendingPlacements retry queue)
+        set((s) => {
+          const pendingPlacements = { ...s.pendingPlacements }
+          let dropped = false
+          for (const c of changed) if (pendingPlacements[c.vin]) { delete pendingPlacements[c.vin]; dropped = true }
+          return dropped ? { units, pendingPlacements } : { units }
+        })
         db.upsertUnits(changed).catch((e) => console.error('[db] moveUnitsToSite', e))
       },
 
