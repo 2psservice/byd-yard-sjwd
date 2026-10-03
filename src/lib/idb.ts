@@ -57,17 +57,26 @@ export async function idbGetAllRows(): Promise<TrackRow[]> {
   })
 }
 
+// one transaction per chunk: a full-company pull is ~57k rows (11 MB+), and a
+// single transaction that size can abort (quota / memory on a weak device) —
+// then NONE of it was saved, the cache stayed at a handful of rows, and the
+// next boot re-downloaded everything again ("โหลดช้าทุกครั้งที่เปิด")
+const PUT_CHUNK = 2000
+
 export async function idbBulkPut(rows: TrackRow[]): Promise<void> {
   if (!rows.length) return
   const db = await openDB()
-  return new Promise((resolve, reject) => {
-    const t = db.transaction(STORE, 'readwrite')
-    const store = t.objectStore(STORE)
-    for (const r of rows) store.put(r)
-    t.oncomplete = () => resolve()
-    t.onerror = () => reject(t.error)
-    t.onabort = () => reject(t.error)
-  })
+  for (let i = 0; i < rows.length; i += PUT_CHUNK) {
+    const chunk = rows.slice(i, i + PUT_CHUNK)
+    await new Promise<void>((resolve, reject) => {
+      const t = db.transaction(STORE, 'readwrite')
+      const store = t.objectStore(STORE)
+      for (const r of chunk) store.put(r)
+      t.oncomplete = () => resolve()
+      t.onerror = () => reject(t.error)
+      t.onabort = () => reject(t.error ?? new Error('idb transaction aborted'))
+    })
+  }
 }
 
 export async function idbPut(row: TrackRow): Promise<void> {

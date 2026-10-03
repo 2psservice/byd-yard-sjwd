@@ -1031,17 +1031,24 @@ export async function countTrackingRows(): Promise<number | null> {
  * completing. Each page also retries a few times (withRetry) before giving up,
  * since yard wifi is exactly the kind of connection this preview exists for.
  */
-export async function fetchTrackingRowsForSite(site: { id: string; name?: string; code?: string }): Promise<TrackRow[]> {
+export async function fetchTrackingRowsForSite(
+  site: { id: string; name?: string; code?: string },
+  /** called with each page as it lands, so the caller can paint progressively
+   *  (the full list is still returned at the end) */
+  onBatch?: (batch: TrackRow[]) => void,
+): Promise<TrackRow[]> {
   if (!isConfigured()) return []
   const PAGE = 1000
   const seen = new Set<string>()
   const out: TrackRow[] = []
   const collect = (batch: TrackRowRow[]) => {
+    const fresh: TrackRow[] = []
     for (const r of batch) {
       const tr = toTrackRow(r)
       if (tr.deletedAt || seen.has(tr.vin)) continue // skip tombstones + cross-filter dupes
-      seen.add(tr.vin); out.push(tr)
+      seen.add(tr.vin); out.push(tr); fresh.push(tr)
     }
+    if (fresh.length && onBatch) onBatch(fresh)
   }
   const fetchBy = async (apply: (q: any) => any) => {
     for (let from = 0; ; from += PAGE) {
@@ -1063,6 +1070,35 @@ export async function fetchTrackingRowsForSite(site: { id: string; name?: string
     await fetchBy((q) => q.eq('cells->>Location yard', key))
   }
   return out
+}
+
+/**
+ * How many live rows the cloud holds for ONE yard — the target of the
+ * "กำลังโหลด 60 RAI … 1,000 / 3,004" progress shown after a site is picked
+ * (see useTracking.loadSiteRows). Same membership as fetchTrackingRowsForSite:
+ * tagged with the site, plus untagged legacy rows whose Location-yard cell
+ * names it. null = could not count (offline / timeout) → progress runs
+ * without a target.
+ */
+export async function countTrackingRowsForSite(site: { id: string; name?: string; code?: string }): Promise<number | null> {
+  if (!isConfigured()) return null
+  const count = async (apply: (q: any) => any): Promise<number | null> => {
+    let res: any = await apply(supabase.from('tracking_rows').select('vin', { count: 'exact', head: true }).is('deleted_at', null))
+    if (res.error && isMissingColumn(res.error)) res = await apply(supabase.from('tracking_rows').select('vin', { count: 'exact', head: true }))
+    if (res.error || res.count == null) return null
+    return res.count as number
+  }
+  try {
+    const tagged = await count((q) => q.eq('site', site.id))
+    if (tagged == null) return null
+    let total = tagged
+    for (const key of [site.name, site.code].filter(Boolean) as string[]) {
+      const legacy = await count((q) => q.is('site', null).eq('cells->>Location yard', key))
+      if (legacy == null) return null
+      total += legacy
+    }
+    return total
+  } catch { return null }
 }
 
 /** บันทึก/อัปเดตรายการรถ (batch ทีละ 500 แถว) */

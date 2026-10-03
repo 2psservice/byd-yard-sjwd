@@ -652,6 +652,12 @@ export const useYard = create<YardState>()(
         set({ currentSite: id, siteModalOpen: false })
         // units/trailers are loaded per-site → fetch the newly selected yard
         get().loadFromSupabase().catch((e) => console.error('[db] setCurrentSite load', e))
+        // …and this yard's tracking rows, server-side filtered, with progress —
+        // the screen waits on them (SiteLoadGate) instead of showing a partial
+        // count from the cache. Lazy import: useTracking imports this store.
+        import('./useTracking')
+          .then((m) => m.useTracking.getState().loadSiteRows(id))
+          .catch((e) => console.error('[db] setCurrentSite rows', e))
       },
       openSiteModal: () => set({ siteModalOpen: true }),
       closeSiteModal: () => set({ siteModalOpen: false }),

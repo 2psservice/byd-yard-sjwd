@@ -5,6 +5,7 @@ import { LogoLoaderOverlay } from './components/LogoLoader'
 import { Toaster } from './components/ui'
 import { SelectSiteModal } from './components/SelectSiteModal'
 import { OpsShell } from './components/OpsShell'
+import { SiteLoadGate } from './components/SiteLoadGate'
 import { useYard, useMe, isOpsOnlyRole } from './store/useYard'
 import { useTrackingRows, useTracking } from './store/useTracking'
 import { useOps, repairMissingStationDates } from './store/useOps'
@@ -427,6 +428,7 @@ export default function App() {
         <OpsShell>
           <Suspense fallback={<LogoLoaderOverlay label="กำลังโหลดหน้า" />}><YardOps /></Suspense>
         </OpsShell>
+        <SiteLoadGate mode="banner" />
         <SelectSiteModal />
         <Toaster />
       </>
@@ -437,6 +439,8 @@ export default function App() {
       <Layout>
         <Suspense fallback={<LogoLoaderOverlay label="กำลังโหลดหน้า" />}>{pages[view]}</Suspense>
       </Layout>
+      {/* หน้า loading ของยาร์ดที่เลือก — รอแถวชีต + รถในผังของยาร์ดครบก่อนเปิดตัวเลข */}
+      <SiteLoadGate mode="overlay" />
       <SelectSiteModal />
       <Toaster />
     </>
