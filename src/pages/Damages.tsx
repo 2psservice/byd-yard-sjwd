@@ -144,8 +144,17 @@ function DamageReportModal({ units, onClose }: { units: Unit[]; onClose: () => v
     if (!total) { toast('err', 'ยังไม่พบ Defect ของ VIN ที่ใส่'); return }
     setBusy(true)
     try {
+      // รูปไม่ได้ถูกโหลดลงเครื่องล่วงหน้าแล้ว (ดู useYard.loadPhotosFor) — ดึงรูปของ
+      // คันที่เลือกมาเป็นชุดก่อนสร้างไฟล์ (สำเนาเฉพาะรายงาน ไม่เก็บลง store)
+      const vins = [...new Set([...yard, ...factory].map((r) => r.unit.vin))]
+      const withPhotos = await useYard.getState().loadPhotosForVins(vins)
+      const fill = (rows: DefectExportRow[]) => rows.map((r) => {
+        const u = withPhotos[r.unit.vin]
+        if (!u) return r
+        return { unit: u, dmg: u.damages.find((d) => d.id === r.dmg.id) ?? r.dmg }
+      })
       await exportDefectPhotoExcel(
-        [{ name: 'Defect-Yard', rows: yard }, { name: 'Defect-Factory', rows: factory }],
+        [{ name: 'Defect-Yard', rows: fill(yard) }, { name: 'Defect-Factory', rows: fill(factory) }],
         trackByVin, `SJWD-Defect-Photo-Report-${matched}คัน-${stamp}.xlsx`)
       toast('ok', `ออกรายงาน Excel พร้อมรูป — ${total} รายการ`)
     } catch (e) { console.error('[damage report] excel+photos', e); toast('err', 'ออกรายงานไม่สำเร็จ') }

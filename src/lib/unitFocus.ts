@@ -18,7 +18,7 @@
  * afford the truth.
  */
 import { fetchUnitsByVins, isConfigured } from './db'
-import { useYard, attachPendingDamages } from '../store/useYard'
+import { useYard, attachPendingDamages, keepLocalPhotos } from '../store/useYard'
 
 const inFlight = new Set<string>()
 
@@ -31,7 +31,10 @@ export async function refreshUnitFocus(vin: string): Promise<boolean> {
   try {
     const [u] = await fetchUnitsByVins([vin])
     if (!u) return false
-    useYard.setState((s) => ({ units: { ...s.units, [u.vin]: attachPendingDamages(s.pendingDamages, u) } }))
+    // สำเนาจากคลาวด์มาแบบไม่มีรูป (ดึงเป็นก้อน) — รูปที่โหลดไว้แล้วต้องตามไป และ
+    // หน้าจอที่โฟกัสคันนี้ให้ดึงรูปของมันต่อ (ครั้งเดียวต่อคัน)
+    useYard.setState((s) => ({ units: { ...s.units, [u.vin]: attachPendingDamages(s.pendingDamages, keepLocalPhotos(s.units[u.vin], u)) } }))
+    if (u.damages.length) useYard.getState().loadPhotosFor(u.vin).catch(() => {})
     return true
   } catch (e) {
     console.error('[db] refreshUnitFocus', vin, e)
