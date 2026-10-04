@@ -403,30 +403,39 @@ const fetchUnitFallback = refreshUnitFocus
 // object, re-fired the effect below, fetched again, forever, at network speed
 // for as long as the car stayed on screen. That is why the ops-scan station
 // crawled, and it was a top source of the database's timeout storm.
-const IMPORTED_DEFECT_SOURCES = new Set(['yardDefect', 'factoryDefect', 'whaleDefect'])
-const hasPhotolessDamage = (u: Unit) =>
-  u.damages.some((d) => !d.photo && !d.photos?.length && !IMPORTED_DEFECT_SOURCES.has(d.source ?? ''))
-/** VINs already given their one heal attempt this session. Deliberately NOT
- *  cleared after a completed fetch: if the cloud copy itself has no photos,
- *  asking again can never produce a different answer — re-asking IS the loop.
- *  Only a fetch that FAILED (transport) is allowed another try later. */
-const vinsPhotoHealTried = new Set<string>()
-/** Force-refresh one VIN from the cloud even though a local copy already
- *  exists — fetchUnitFallback() above deliberately no-ops in that case, which
- *  is right for "missing entirely" but wrong for "present but a photo-less
- *  stub". Skips a car whose local copy still has an unsynced pending defect
- *  (useYard.pendingDamages) so this doesn't race and clobber it. */
-async function fetchUnitPhotoHeal(vin: string): Promise<void> {
-  if (!isConfigured() || vinsPhotoHealTried.has(vin)) return
-  if (Object.values(useYard.getState().pendingDamages).some((p) => p.vin === vin)) return
-  vinsPhotoHealTried.add(vin)
-  try {
-    const [u] = await fetchUnitsByVins([vin])
-    if (u) useYard.setState((s) => ({ units: { ...s.units, [u.vin]: u } }))
-  } catch (e) {
-    console.error('[db] fetchUnitPhotoHeal', e)
-    vinsPhotoHealTried.delete(vin) // transport failure — a later focus may retry
-  }
+/**
+ * รูป Defect มาเฉพาะคันที่คนเปิดดู (ดู useYard.loadPhotosFor / DAMAGE_LIGHT_COLS):
+ * ทุกหน้าสถานีที่แสดง DefectCard เรียก hook นี้ด้วย vin ของรถที่กำลังโฟกัส — ดึงรูป
+ * ครั้งเดียวต่อคัน (เฉพาะคันที่มี Defect) และปล่อยให้ store จำไว้ 50 คันล่าสุด
+ * (แทนตัว "heal" เดิมที่ดึงทั้ง unit พร้อมรูปใหม่ทุกครั้งที่เจอสำเนาไม่มีรูป)
+ */
+function useCarPhotos(vin: string | null | undefined, damageCount: number) {
+  const loadPhotosFor = useYard((s) => s.loadPhotosFor)
+  useEffect(() => {
+    if (vin && damageCount > 0) loadPhotosFor(vin).catch(() => {})
+  }, [vin, damageCount, loadPhotosFor])
+}
+
+/** แถบเล็กเหนือรายการ Defect: "กำลังโหลดรูป…" ระหว่างดึง · ปุ่มลองใหม่เมื่อดึงไม่ได้
+ *  (ไม่มีสัญญาณ) — แสดงเฉพาะเมื่อยังมี Defect ที่ไม่มีรูปในมือ */
+function PhotoLoadHint({ vin, damages }: { vin: string; damages: Damage[] }) {
+  useCarPhotos(vin, damages.length) // วางไว้ตรงที่แสดง Defect = จุดที่ต้องใช้รูป
+  const state = useYard((s) => s.photoLoad[vin])
+  const loadPhotosFor = useYard((s) => s.loadPhotosFor)
+  const missing = damages.some((d) => !d.photo && !d.photos?.length)
+  if (!missing || !damages.length || !isConfigured()) return null
+  if (state === 'loading') return (
+    <div data-testid="photo-loading" className="text-[11.5px] px-1 flex items-center gap-1.5" style={{ color: 'var(--muted)' }}>
+      <span className="animate-pulse">●</span> กำลังโหลดรูป Defect…
+    </div>
+  )
+  if (state === 'err') return (
+    <button data-testid="photo-retry" onClick={() => loadPhotosFor(vin, { force: true })}
+      className="text-[11.5px] px-2 py-1 rounded-lg font-semibold" style={{ background: '#fff7ed', color: '#c2410c' }}>
+      โหลดรูปไม่ได้ (ไม่มีสัญญาณ) · แตะเพื่อลองใหม่
+    </button>
+  )
+  return null
 }
 
 /** Resolve a typed VIN for unit-based roles (Driver / PDI / Mechanic).
@@ -1377,6 +1386,7 @@ function UnitCard({ unit, accent = 'var(--brand)' }: { unit: Unit; accent?: stri
               <button className="ml-auto p-1.5 rounded-lg" style={{ color: 'var(--muted)' }} onClick={() => setWalkOpen(false)}><X size={17} /></button>
             </div>
             <div className="overflow-auto p-3 space-y-2.5">
+              <PhotoLoadHint vin={unit.vin} damages={unit.damages} />
               {openDefectsFirst(walkDmgs).map(d => <DefectCard key={d.id} d={d} />)}
             </div>
           </div>
@@ -3520,6 +3530,7 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved, stationTit
             onCancel={() => setShowNgForm(false)}
           />
         )}
+        <PhotoLoadHint vin={unit.vin} damages={unit.damages} />
         {stationDmgs.length === 0 && !showNgForm
           ? <div className="py-6 text-center text-[12.5px]" style={{ color: 'var(--faint)' }}>— ยังไม่มีรายการ NG —</div>
           : openDefectsFirst(stationDmgs).map(d => (
@@ -3906,6 +3917,7 @@ function PdiView({ types, accent, title }: { types: QueueType[]; accent: string;
           )}
 
           {/* ── Walk around (gate-in) result — so PDI sees the damages found ── */}
+          <PhotoLoadHint vin={unit.vin} damages={unit.damages} />
           {walkDmgs.length === 0 ? (
             <div className="panel p-3 flex items-center gap-2 font-semibold text-[13.5px]" style={{ color: 'var(--st-yard)' }}>
               <ShieldCheck size={17} /> Walk around · OK
@@ -4126,6 +4138,7 @@ function MechanicView({ types, accent, stationLabel, emptyLabel, okNgMode = fals
         <div className="space-y-3 fade-up">
           <UnitCard unit={unit} accent={accent} />
 
+          <PhotoLoadHint vin={unit.vin} damages={unit.damages} />
           {realDefects(unit.damages).length === 0 ? (
             <div className="panel p-5 text-center" style={{ color: 'var(--st-yard)' }}>
               <CheckCircle2 size={28} className="mx-auto mb-2" />
@@ -5460,13 +5473,8 @@ function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', s
     saveDefects(dmgs).finally(() => { savingRef.current = false })
   }
 
-  // this scanned car's local copy has a defect with no photo at all — that's
-  // an IndexedDB boot-cache stub racing a cloud fetch that hasn't landed yet,
-  // not a real defect (every saved one has ≥1 photo). Self-heal it directly
-  // instead of waiting on the site-wide load to eventually catch up.
-  useEffect(() => {
-    if (unit && hasPhotolessDamage(unit)) fetchUnitPhotoHeal(unit.vin)
-  }, [unit])
+  // รูป Defect ของคันนี้มาเฉพาะตอนเปิดดู (ดู useCarPhotos)
+  useCarPhotos(unit?.vin, unit?.damages.length ?? 0)
 
   const onScanRef = useRef<(v: string) => void>(() => {})
   const scanNotFound = useCloudNotFound(onScanRef)
@@ -5559,6 +5567,7 @@ function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', s
             )}
             {damages.length > 0 && (
               <div className="space-y-2">
+                <PhotoLoadHint vin={vin} damages={damages} />
                 {openDefectsFirst(damages).map(d => (
                   <DefectCard key={d.id} d={d}
                     right={<DefectStatusSelect d={d} onChange={s => updateRepairStatus(vin, d.id, s)} />} />
@@ -5586,6 +5595,7 @@ function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', s
           {/* existing damages */}
           {damages.length > 0 && (
             <div className="p-3 space-y-2">
+              <PhotoLoadHint vin={vin} damages={damages} />
               {openDefectsFirst(damages).map(d => (
                 <DefectCard key={d.id} d={d}
                   right={<DefectStatusSelect d={d} onChange={s => updateRepairStatus(vin, d.id, s)} />} />
@@ -6022,6 +6032,7 @@ function CheckView() {
                 full-screen lightbox, and a read-only repair-status badge */}
             {unit && realDefects(unit.damages).length > 0 && (
               <div className="p-3 space-y-2">
+                <PhotoLoadHint vin={unit.vin} damages={unit.damages} />
                 {openDefectsFirst(realDefects(unit.damages)).map(d => (
                   <DefectCard key={d.id} d={d} right={
                     <span className="font-bold rounded-lg px-2.5 py-1.5 whitespace-nowrap shrink-0"

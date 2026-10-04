@@ -228,6 +228,14 @@ interface YardState {
   /** Retry every still-unconfirmed defect write. Safe to call anytime — a no-op
    *  when the queue is empty or a flush is already in flight. */
   flushPendingDamages: () => Promise<void>
+  /** สถานะการดึงรูป Defect ของรถแต่ละคัน (ไม่ persist) — ใช้โชว์ "กำลังโหลดรูป…" / ปุ่มลองใหม่ */
+  photoLoad: Record<string, 'loading' | 'ok' | 'err'>
+  /** ดึงรูป Defect ของรถคันนี้มาใส่สำเนาในเครื่อง — ครั้งเดียวต่อคัน (force = ดึงใหม่)
+   *  และจำไว้แค่ PHOTO_LRU_MAX คันล่าสุด (ดู photoLru) */
+  loadPhotosFor: (vin: string, opts?: { force?: boolean }) => Promise<void>
+  /** หลายคันสำหรับออกรายงานรูป — คืนสำเนา unit ที่มีรูปครบ "โดยไม่เก็บลง store"
+   *  (ชุดรายงานใหญ่กว่าที่หน่วยความจำมือถือควรถือค้าง) */
+  loadPhotosForVins: (vins: string[]) => Promise<Record<string, Unit>>
   /** Placements whose cloud write never landed (retries exhausted — dead
    *  network, backgrounded mid-save). Kept until flushPendingPlacements()
    *  confirms them, so a full units re-pull (visibilitychange / online /
@@ -362,6 +370,32 @@ export function attachPendingDamages(
     .map((p) => p.dmg)
   return extra.length ? { ...u, damages: [...u.damages, ...extra] } : u
 }
+
+/**
+ * รูปที่เครื่องมีอยู่แล้ว ไม่หายเพราะสำเนาใหม่จากคลาวด์มาแบบ "ไม่มีรูป"
+ *
+ * ทุกการดึงเป็นก้อน (เข้ายาร์ด · เลน · รายคัน · realtime) ไม่เอารูปมาด้วยแล้ว (ดู
+ * DAMAGE_LIGHT_COLS ใน db.ts) รูปจะมาเฉพาะคันที่คนเปิดดู (loadPhotosFor) — การรับ
+ * สำเนาใหม่ของคันนั้นจึงต้องพกรูปที่โหลดไว้แล้วติดไปด้วย ไม่งั้นรูปกะพริบหายทุกครั้ง
+ * ที่มีการซิงก์ Defect ที่ "มีรูปมาเอง" (เพิ่งถ่ายบนเครื่องนี้ / payload เล็ก) ชนะเสมอ
+ */
+export function keepLocalPhotos(local: Unit | undefined, incoming: Unit): Unit {
+  if (!local?.damages.length || !incoming.damages.length) return incoming
+  let changed = false
+  const damages = incoming.damages.map((d) => {
+    if (d.photo || d.photos?.length) return d
+    const prev = local.damages.find((x) => x.id === d.id)
+    if (!prev || (!prev.photo && !prev.photos?.length)) return d
+    changed = true
+    return { ...d, photo: prev.photo, photos: prev.photos }
+  })
+  return changed ? { ...incoming, damages } : incoming
+}
+
+/** รถที่โหลดรูปไว้แล้ว เรียงจากเก่าสุด — เกิน PHOTO_LRU_MAX คัน ปล่อยรูปของคันเก่าสุด
+ *  ออกจากหน่วยความจำ (ยกเว้น Defect ที่ยังรอส่งขึ้นคลาวด์ — รูปมีแค่ในเครื่อง) */
+const PHOTO_LRU_MAX = 50
+const photoLru: string[] = []
 
 let pendingDamagesFlushing = false
 function scheduleFlushPendingDamages(get: () => { flushPendingDamages: () => Promise<void>; pendingDamages: Record<string, unknown> }, delay = 15_000) {
@@ -920,6 +954,56 @@ export const useYard = create<YardState>()(
         }),
 
       pendingDamages: {},
+      photoLoad: {},
+      loadPhotosFor: async (vin, opts) => {
+        if (!db.isConfigured() || !vin) return
+        const cur = get().photoLoad[vin]
+        if (!opts?.force && (cur === 'loading' || cur === 'ok')) {
+          // ใช้งานล่าสุด → ไปท้ายคิว (ไม่ถูกปล่อยก่อน)
+          const i = photoLru.indexOf(vin); if (i >= 0) { photoLru.splice(i, 1); photoLru.push(vin) }
+          return
+        }
+        set((s) => ({ photoLoad: { ...s.photoLoad, [vin]: 'loading' } }))
+        try {
+          const photos = await db.fetchDamagePhotosByVins([vin])
+          set((s) => {
+            const u = s.units[vin]
+            const units = u
+              ? { ...s.units, [vin]: { ...u, damages: u.damages.map((d) => { const p = photos.get(d.id); return p ? { ...d, ...p } : d }) } }
+              : s.units
+            return { units, photoLoad: { ...s.photoLoad, [vin]: 'ok' } }
+          })
+          const i = photoLru.indexOf(vin); if (i >= 0) photoLru.splice(i, 1)
+          photoLru.push(vin)
+          // ปล่อยรูปของคันที่เก่าสุดเกินโควตา — เฉพาะรูปที่คลาวด์มีอยู่แล้ว (ดึงใหม่ได้)
+          while (photoLru.length > PHOTO_LRU_MAX) {
+            const old = photoLru.shift()!
+            set((s) => {
+              const u = s.units[old]
+              const pendingIds = new Set(Object.values(s.pendingDamages).filter((p) => p.vin === old).map((p) => p.dmg.id))
+              const photoLoad = { ...s.photoLoad }; delete photoLoad[old]
+              if (!u) return { photoLoad }
+              const damages = u.damages.map((d) => (pendingIds.has(d.id) || (!d.photo && !d.photos?.length) ? d : { ...d, photo: undefined, photos: undefined }))
+              return { units: { ...s.units, [old]: { ...u, damages } }, photoLoad }
+            })
+          }
+        } catch (e) {
+          console.error('[db] loadPhotosFor', vin, e)
+          set((s) => ({ photoLoad: { ...s.photoLoad, [vin]: 'err' } }))
+        }
+      },
+      loadPhotosForVins: async (vins) => {
+        const out: Record<string, Unit> = {}
+        const units = get().units
+        for (const v of vins) if (units[v]) out[v] = units[v]
+        if (!db.isConfigured() || !vins.length) return out
+        const photos = await db.fetchDamagePhotosByVins(vins)
+        for (const v of Object.keys(out)) {
+          const u = out[v]
+          out[v] = { ...u, damages: u.damages.map((d) => { const p = photos.get(d.id); return p && !(d.photo || d.photos?.length) ? { ...d, ...p } : d }) }
+        }
+        return out
+      },
       flushPendingDamages: async () => {
         if (pendingDamagesFlushing) return
         const pending = get().pendingDamages
@@ -1598,7 +1682,7 @@ export const useYard = create<YardState>()(
         // insert hasn't landed yet. A bare overwrite here would erase it, so
         // reattach whatever this device still has queued before adopting.
         const pendingNow = get().pendingDamages
-        for (const u of healed) units[u.vin] = attachPendingDamages(pendingNow, u)
+        for (const u of healed) units[u.vin] = attachPendingDamages(pendingNow, keepLocalPhotos(units[u.vin], u))
         for (const lane of verified.values()) {
           const byDepth = new Map<number, Unit[]>()
           for (const u of lane) {
@@ -1824,7 +1908,7 @@ export const useYard = create<YardState>()(
         // (+ damages) had arrived; now they flow in with the layout
         const streamUnits = (batch: Unit[]) => set((s) => {
           const units = { ...s.units }
-          for (const u of batch) units[u.vin] = withPending(keepNewerPlacement(units[u.vin], u))
+          for (const u of batch) units[u.vin] = withPending(keepLocalPhotos(units[u.vin], keepNewerPlacement(units[u.vin], u)))
           return { units }
         })
         // VIN + ตำแหน่ง มาก่อน: the placement-only pass runs alongside the full
@@ -1848,7 +1932,7 @@ export const useYard = create<YardState>()(
         if (cloud.length || trailers.length) {
           set((s) => {
             const merged: Record<string, Unit> = { ...s.units }
-            for (const u of cloud) merged[u.vin] = withPending(keepNewerPlacement(merged[u.vin], u))
+            for (const u of cloud) merged[u.vin] = withPending(keepLocalPhotos(merged[u.vin], keepNewerPlacement(merged[u.vin], u)))
             return { units: merged, trailers: trailers.length ? trailers : s.trailers }
           })
         }
@@ -2427,9 +2511,12 @@ onSync('dmg', (p: { vins?: string[] }) => {
     useYard.setState((s) => {
       const units = { ...s.units }
       // never let the cloud copy erase a defect, or revert a move, still queued locally
-      for (const u of cloud) units[u.vin] = attachPendingPlacement(s.pendingPlacements, attachPendingDamages(s.pendingDamages, u))
+      for (const u of cloud) units[u.vin] = attachPendingPlacement(s.pendingPlacements, attachPendingDamages(s.pendingDamages, keepLocalPhotos(units[u.vin], u)))
       return { units }
     })
+    // คันที่หน้าจอนี้โหลดรูปไว้แล้ว → ดึงรูปชุดใหม่ด้วย (อีกเครื่องเพิ่งถ่าย/ลบรูป)
+    const st = useYard.getState()
+    for (const u of cloud) if (st.photoLoad[u.vin] === 'ok') st.loadPhotosFor(u.vin, { force: true }).catch(() => {})
   }).catch((e) => console.error('[db] dmg sync pull', e))
 })
 

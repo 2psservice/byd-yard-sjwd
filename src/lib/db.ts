@@ -197,17 +197,56 @@ function rowToUnit(r: DbUnitWithDamages): Unit {
 
 // ── unit operations ───────────────────────────────────────────────────────
 
+/**
+ * Defect columns WITHOUT the photos — the default shape for every bulk read.
+ *
+ * ไม่โหลดรูปลงเครื่องล่วงหน้า: รูปแผลเป็น base64 ใบละ 100-200 KB ยาร์ดที่มีรถติด NG
+ * หลายร้อยคันคือหลายสิบถึงร้อย MB ต่อเครื่องต่อการเข้ายาร์ด บนมือถือ RAM 2-3 GB
+ * นี่คือสิ่งที่ทำให้กล้องดับ/แท็บถูกฆ่า รูปจะถูกดึง "เฉพาะคันที่คนกดเปิดดู"
+ * (useYard.loadPhotosFor) · คอลัมน์ remark/area_th/item_th อาจยังไม่ถูก migrate
+ * บนบางฐาน จึงมีชุดสำรองที่ไม่มีคอลัมน์เหล่านั้น
+ */
+const DAMAGE_LIGHT_COLS = 'id, vin, area, type, severity, note, remark, area_th, item_th, recorded_at, recorded_by, source, station, item, category_ng, category_repair, incharge, status_repair, repair_date, repaired_by, repair_history'
+const DAMAGE_LIGHT_COLS_BASIC = 'id, vin, area, type, severity, note, recorded_at, recorded_by, source, station, item, category_ng, category_repair, incharge, status_repair, repair_date, repaired_by, repair_history'
+export const UNITS_WITH_LIGHT_DAMAGES = `*, damages(${DAMAGE_LIGHT_COLS})`
+const UNITS_WITH_LIGHT_DAMAGES_BASIC = `*, damages(${DAMAGE_LIGHT_COLS_BASIC})`
+/** run a units query with light damages, falling back to the basic column set
+ *  ONLY on a missing-column error (an older database) */
+async function selectUnitsLight(build: (cols: string) => any): Promise<{ data: any; error: any }> {
+  let res = await build(UNITS_WITH_LIGHT_DAMAGES)
+  if (res.error && isMissingColumn(res.error)) res = await build(UNITS_WITH_LIGHT_DAMAGES_BASIC)
+  return res
+}
+
 /** Fetch specific units (+ damages) by VIN — the lane-compaction stale-guard
  *  uses this to check a car's REAL position before overwriting it. Throws on
- *  a query error so the caller can tell "offline" apart from "not found". */
+ *  a query error so the caller can tell "offline" apart from "not found".
+ *  Damages come WITHOUT photos (see DAMAGE_LIGHT_COLS); a screen that shows a
+ *  car's photos asks for them separately (fetchDamagePhotosByVins). */
 export async function fetchUnitsByVins(vins: string[]): Promise<Unit[]> {
   if (!isConfigured() || !vins.length) return []
   const out: Unit[] = []
   for (let i = 0; i < vins.length; i += 200) {
-    const { data, error } = await supabase
-      .from('units').select('*, damages(*)').in('vin', vins.slice(i, i + 200))
+    const slice = vins.slice(i, i + 200)
+    const { data, error } = await selectUnitsLight((cols) => supabase.from('units').select(cols).in('vin', slice))
     if (error) { console.error('[db] fetchUnitsByVins', error); throw error }
     for (const r of (data ?? []) as DbUnitWithDamages[]) out.push(rowToUnit(r))
+  }
+  return out
+}
+
+/** รูปของ Defect ทุกรายการของรถตามรายการ VIN — ดึงตอนคนเปิดดูรถคันนั้น (หรือตอน
+ *  ออกรายงานรูป) คืน map: damage id → รูป · เฉพาะที่หาเจอและมีรูป */
+export async function fetchDamagePhotosByVins(vins: string[]): Promise<Map<string, { photo?: string; photos?: string[] }>> {
+  const out = new Map<string, { photo?: string; photos?: string[] }>()
+  if (!isConfigured() || !vins.length) return out
+  for (let i = 0; i < vins.length; i += 50) {
+    const { data, error } = await supabase.from('damages').select('id, photo_url, photo_urls').in('vin', vins.slice(i, i + 50))
+    if (error) { console.error('[db] fetchDamagePhotosByVins', error); throw error }
+    for (const r of (data ?? []) as { id: string; photo_url: string | null; photo_urls: string[] | null }[]) {
+      if (!r.photo_url && !r.photo_urls?.length) continue
+      out.set(r.id, { photo: r.photo_url ?? r.photo_urls?.[0] ?? undefined, photos: r.photo_urls ?? undefined })
+    }
   }
   return out
 }
@@ -227,9 +266,11 @@ export async function fetchUnitsByVins(vins: string[]): Promise<Unit[]> {
  */
 export async function fetchUnitsInLane(siteId: string | null, slot: number): Promise<Unit[]> {
   if (!isConfigured() || !slot) return []
-  let q = supabase.from('units').select('*, damages(*)').eq('slot', slot)
-  if (siteId) q = q.eq('site_id', siteId)
-  const { data, error } = await q
+  const { data, error } = await selectUnitsLight((cols) => {
+    let q = supabase.from('units').select(cols).eq('slot', slot)
+    if (siteId) q = q.eq('site_id', siteId)
+    return q
+  })
   if (error) { console.error('[db] fetchUnitsInLane', error); throw error }
   return ((data ?? []) as DbUnitWithDamages[]).map(rowToUnit)
 }
@@ -324,9 +365,12 @@ export async function fetchAllUnits(
   }
   if (!total) return []
   const fetchPage = async (p: number, attempt = 0): Promise<Unit[]> => {
-    let q = supabase.from('units').select('*, damages(*)').neq('status', 'DEPARTED')
-    if (siteId) q = (q as any).eq('site_id', siteId)
-    const { data, error } = await (q as any).order('vin').range(p * PAGE, p * PAGE + PAGE - 1)
+    // light damages (no photos) — see DAMAGE_LIGHT_COLS
+    const { data, error } = await selectUnitsLight((cols) => {
+      let q = supabase.from('units').select(cols).neq('status', 'DEPARTED')
+      if (siteId) q = (q as any).eq('site_id', siteId)
+      return (q as any).order('vin').range(p * PAGE, p * PAGE + PAGE - 1)
+    })
     if (error) {
       if (attempt < 2) { await sleep(400 * (attempt + 1)); return fetchPage(p, attempt + 1) }
       console.error('[db] fetchAllUnits page', p, error)
