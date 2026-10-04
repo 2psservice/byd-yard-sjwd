@@ -342,6 +342,8 @@ export default function App() {
     if (import.meta.env.DEV) {
       (window as any).__yard = useYard; (window as any).__ops = useOps; (window as any).__tracking = useTracking; (window as any).__visits = useVisits
       ;(window as any).__repairStationDates = repairMissingStationDates
+      // lets a test drive the cloud writers directly (e.g. photo-preserving upserts)
+      import('./lib/db').then((m) => { (window as any).__db = m }).catch(() => {})
       // lets a test play the part of "another device" announcing a move
       import('./lib/syncBus').then((m) => { (window as any).__sync = m }).catch(() => {})
     }

@@ -535,9 +535,46 @@ function stripOptionalDamageCols<T extends object>(row: T): T {
 export const damageHasPhotos = (d: Pick<Damage, 'photo' | 'photos'>): boolean =>
   !!(d.photo || d.photos?.length)
 
+/**
+ * รูปที่ไม่ได้อยู่ในมือ ห้ามเขียนทับด้วยค่าว่าง
+ *
+ * สำเนา Defect ในเครื่องมักไม่มีรูป (แคช IndexedDB ตัดรูปทิ้ง · คิวรอส่งตัดรูปทิ้ง ·
+ * ต่อไปจะเลิกโหลดรูปล่วงหน้าทั้งยาร์ด) แต่ตัวแปลงแถว (damageToRow) เขียน
+ * photo_url / photo_urls = null เมื่อไม่มีรูป และการ upsert ทั้งแถวจะ "ทับ" รูปจริงใน
+ * คลาวด์ด้วย null — รูปของช่างหายทั้งระบบจากการนำเข้าไฟล์หรือการแก้ข้อความธรรมดา
+ * กฎ: แถวที่ไม่มีรูปในมือ ไม่ส่งคอลัมน์รูปเลย (PostgREST จะไม่แตะคอลัมน์ที่ไม่ได้ส่ง)
+ * ส่วนแถวที่มีรูปจริงส่งตามปกติ — และต้องแยกคำขอกัน เพราะ PostgREST ใช้ "ยูเนียนของ
+ * คีย์ทั้งคำขอ" เป็นรายการคอลัมน์ แถวที่ไม่มีคีย์จะถูกเติม null ให้เอง
+ */
+type DamageRowLike = { photo_url?: string | null; photo_urls?: string[] | null }
+function stripPhotoCols<T extends DamageRowLike>(row: T): Omit<T, 'photo_url' | 'photo_urls'> {
+  const { photo_url, photo_urls, ...rest } = row
+  void photo_url; void photo_urls
+  return rest
+}
+const rowHasPhotos = (row: DamageRowLike) => !!(row.photo_url || row.photo_urls?.length)
+
+/** รูปของ Defect ตามรายการ id — ใช้ตอนจะแก้แถวที่เครื่องไม่มีรูปในมือ (ดึงของจริง
+ *  มารวมก่อน จะได้ไม่เขียนทับด้วยชุดรูปที่ไม่ครบ) คืนเฉพาะที่หาเจอ */
+export async function fetchDamagePhotos(ids: string[]): Promise<Map<string, { photo?: string; photos?: string[] }>> {
+  const out = new Map<string, { photo?: string; photos?: string[] }>()
+  if (!isConfigured() || !ids.length) return out
+  for (let i = 0; i < ids.length; i += 100) {
+    const { data, error } = await supabase.from('damages').select('id, photo_url, photo_urls').in('id', ids.slice(i, i + 100))
+    if (error) { console.error('[db] fetchDamagePhotos', error); throw error }
+    for (const r of (data ?? []) as { id: string; photo_url: string | null; photo_urls: string[] | null }[]) {
+      out.set(r.id, { photo: r.photo_url ?? r.photo_urls?.[0] ?? undefined, photos: r.photo_urls ?? undefined })
+    }
+  }
+  return out
+}
+
 export async function insertDamage(vin: string, d: Damage): Promise<void> {
   if (!isConfigured()) return
-  const row = damageToRow(vin, d)
+  const full = damageToRow(vin, d)
+  // แถวใหม่ที่ไม่มีรูป: ไม่ส่งคอลัมน์รูป — ถ้า id นี้มีอยู่แล้วในคลาวด์ (คิวรอส่งส่งซ้ำ
+  // หลังรีโหลด ซึ่งรูปถูกตัดทิ้งไปแล้ว) จะได้ไม่มีทางทับรูปจริง
+  const row = rowHasPhotos(full) ? full : stripPhotoCols(full)
   // announce the VIN out-of-band: a photo-bearing damage row is too big for the
   // realtime row stream (its event arrives stripped, with no vin), and the old
   // fallback — every device re-pulling the ENTIRE site WITH photos — is what
@@ -876,7 +913,17 @@ export async function upsertDamages(items: { vin: string; d: Damage }[], onProgr
   // with NULL — heterogeneous chunks were randomly NULLing remark/area_th/item_th
   // on rows that happened to share a chunk with a row that had them.
   const rows = items.map(({ vin, d }) => ({ remark: null, area_th: null, item_th: null, ...damageToRow(vin, d) }))
-  await bulkUpsert('damages', rows, 500, 'id', 5, stripOptionalDamageCols, onProgress)
+  // แยกสองกลุ่ม คนละคำขอ (ดู stripPhotoCols): แถวที่มีรูปจริงส่งครบ · แถวที่ไม่มีรูปในมือ
+  // ไม่ส่งคอลัมน์รูป → รูปที่มีอยู่แล้วในคลาวด์ไม่ถูกทับด้วย null
+  const withPhotos = rows.filter(rowHasPhotos)
+  const withoutPhotos = rows.filter((r) => !rowHasPhotos(r)).map(stripPhotoCols)
+  const total = rows.length
+  let doneA = 0, doneB = 0
+  const progress = onProgress ? () => onProgress(doneA + doneB, total) : undefined
+  await Promise.all([
+    bulkUpsert('damages', withPhotos, 500, 'id', 5, stripOptionalDamageCols, progress && ((n) => { doneA = n; progress() })),
+    bulkUpsert('damages', withoutPhotos, 500, 'id', 5, stripOptionalDamageCols, progress && ((n) => { doneB = n; progress() })),
+  ])
   // small interactive batches (admin edit / manual add) whose rows carry photos
   // announce their VINs, so other devices refresh just those cars. A file import
   // of thousands does NOT — its receivers converge through their own site pull,
