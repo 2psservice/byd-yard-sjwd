@@ -251,9 +251,17 @@ export default function App() {
       // the ops-scan gate-out) never ran doGateOut, so it never got its own
       // snapshot; without this a reprinted Grouping / find-car sheet would
       // show "ไม่พบ" for every car this sweep releases
+      //
+      // เขียนได้เฉพาะเมื่อช่องยังว่าง — ห้ามทับค่าที่มีอยู่ เครื่องแต่ละเครื่องถือสำเนา
+      // ตำแหน่งเก่าของรถคันเดียวกันคนละค่า (เครื่องที่พลาด realtime ตอนหลับ และการดึง
+      // units ตอนเข้ายาร์ดกรองรถที่ออกแล้วทิ้ง สำเนาเก่าจึงไม่เคยถูกแก้) ตัวเก็บกวาดของ
+      // ทุกเครื่องเลยผลัดกันเขียน N05 → N08 → N05 … ขึ้นประวัติในชื่อคนที่ล็อกอินอยู่
+      // ทั้งที่ไม่มีใครย้ายรถ และทุกครั้งคือการส่งทั้งแถวจากสำเนาเก่าขึ้นคลาวด์ด้วย
       const snapshotSlot = (vin: string) => {
         const loc = yardLocCode(units[vin])
-        if (loc) useTracking.getState().updateCell(vin, LAST_LOCATION_KEY, loc)
+        if (!loc) return
+        if ((rows[vin]?.cells[LAST_LOCATION_KEY] ?? '').trim()) return // มีค่าอยู่แล้ว — ของจริงคือค่าที่เขียนตอนยิงออก
+        useTracking.getState().updateCell(vin, LAST_LOCATION_KEY, loc)
       }
       if (gone.length) {
         for (const vin of gone) snapshotSlot(vin)

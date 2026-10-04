@@ -1933,6 +1933,27 @@ export const useYard = create<YardState>()(
           set((s) => {
             const merged: Record<string, Unit> = { ...s.units }
             for (const u of cloud) merged[u.vin] = withPending(keepLocalPhotos(merged[u.vin], keepNewerPlacement(merged[u.vin], u)))
+            // ── สำเนาค้าง: เครื่องยังจำว่ารถจอดอยู่ แต่คลาวด์ไม่มีรถคันนั้นในยาร์ดแล้ว ──
+            // การดึงนี้กรองรถที่ออกแล้ว (DEPARTED) ทิ้งเพื่อความเบา เครื่องที่พลาด realtime
+            // ตอนหลับจึงไม่เคยรู้ว่ารถออกไปแล้ว ถือ "รถผี" ไว้เป็นวัน ๆ: ขึ้นบนผังจอด นับใน
+            // การ์ด และตัวเก็บกวาดของทุกเครื่องผลัดกันเขียนช่องจอดสุดท้ายคนละค่าทับกัน
+            // (N05 → N08 → N05 …) ทั้งที่ไม่มีใครย้ายรถ — ตอนนี้เรารู้รายชื่อรถที่ยังอยู่
+            // จริงทั้งยาร์ดแล้ว (การดึงครบ ไม่ครบจะ throw ก่อนถึงบรรทัดนี้) จึงทำสำเนา
+            // ให้ตรงกับคลาวด์ "เฉพาะในเครื่อง" ไม่เขียนอะไรขึ้นคลาวด์ ข้าม: คันที่มีการ
+            // ย้ายรอส่ง (คลาวด์ยังไม่รู้) และคันที่เพิ่งจอด/เข้าลานภายในไม่กี่นาที (เขียน
+            // อาจยังเดินทางไม่ถึง) — realtime จะแก้คืนเองถ้าทายผิด (สำเนาที่มีตำแหน่งชนะ)
+            if (cloud.length) {
+              const here = new Set(cloud.map((u) => u.vin))
+              const recent = Date.now() - 10 * 60_000
+              for (const vin in merged) {
+                const u = merged[vin]
+                if (u.site !== siteId || here.has(vin) || u.status === 'DEPARTED') continue
+                if (!(u.block || u.row || u.slot)) continue
+                if (s.pendingPlacements[vin]) continue
+                if ((u.parkedAt ?? 0) > recent || (u.gateInAt ?? 0) > recent || (u.importedAt ?? 0) > recent) continue
+                merged[vin] = { ...u, status: 'DEPARTED', block: undefined, row: undefined, slot: undefined }
+              }
+            }
             return { units: merged, trailers: trailers.length ? trailers : s.trailers }
           })
         }
