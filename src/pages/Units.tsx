@@ -35,6 +35,7 @@ import { useVisits } from '../store/useVisits'
 import { visitToTrackRow, type Visit } from '../lib/visits'
 import { buildWorkRows, buildEventLog, readingsHist as libReadingsHist, histOf, fmtHistAt, filledDates, PDI_DATE_KEYS, PM_DATE_KEYS } from '../lib/carHistory'
 import { roundHistory } from '../lib/tripHistory'
+import { fetchDamagePhotos } from '../lib/db'
 
 const DMG_SRC: Record<string, string> = { walkaround: 'Walk-around', pdi: 'PDI', mechanic: 'ช่าง', update: 'Update', yardDefect: 'Defect-Yard', factoryDefect: 'Defect-Factory', whaleDefect: 'Defect-Whale', manual: 'เพิ่มเอง' }
 
@@ -1920,6 +1921,11 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
   // form, so removing a row now takes edit-first + confirm.
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editForm, setEditForm] = useState(BLANK_DMG_FORM)
+  // รูปในฟอร์มแก้ถูกแตะหรือยัง — ถ้าไม่แตะ จะไม่ส่งคอลัมน์รูปตอนบันทึก (สำเนาในเครื่อง
+  // มักไม่มีรูป การส่งชุดรูปว่างกลับไปคือการลบรูปจริงในคลาวด์) · และจำไว้ว่าตอนเปิดฟอร์ม
+  // เครื่องมีรูปของแถวนี้ไหม — ถ้าไม่มีแล้วคนเพิ่มรูป ต้องดึงรูปจริงมารวมก่อนบันทึก
+  const [editPhotosDirty, setEditPhotosDirty] = useState(false)
+  const editHadPhotos = useRef(false)
   const [tab, setTab] = useState<'overview' | 'work' | 'timeline' | 'location' | 'pdi' | 'final' | 'pm' | 'damages' | 'event'>('overview')
   const [lightbox, setLightbox] = useState<{ photos: string[]; index: number } | null>(null)
   // แยกยาร์ด แยกงาน: ประวัติของรถบนหน้านี้แสดงเฉพาะงานของ "ยาร์ดที่กำลังยืนอยู่"
@@ -2352,6 +2358,8 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
               }
               const startEdit = (d: typeof damages[number]) => {
                 setEditingId(d.id)
+                setEditPhotosDirty(false)
+                editHadPhotos.current = !!(d.photos?.length || d.photo)
                 setEditForm({
                   position: partLabel(d, 'en'), defect: defectLabel(d, 'en'),
                   categoryNG: d.categoryNG ?? '', categoryRepair: d.categoryRepair ?? '',
@@ -2361,10 +2369,28 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                   photos: d.photos?.length ? d.photos : (d.photo ? [d.photo] : []),
                 })
               }
-              const cancelEdit = () => { setEditingId(null); setEditForm(BLANK_DMG_FORM) }
-              const saveEdit = (d: typeof damages[number]) => {
+              const cancelEdit = () => { setEditingId(null); setEditForm(BLANK_DMG_FORM); setEditPhotosDirty(false) }
+              const saveEdit = async (d: typeof damages[number]) => {
                 if (!editForm.position.trim() && !editForm.defect.trim()) { window.alert('กรุณากรอกอย่างน้อย Position หรือ Defect/NG'); return }
                 const ep = resolvePart(editForm.position.trim()), ed = resolveDefect(editForm.defect.trim())
+                // ส่งคอลัมน์รูปเฉพาะเมื่อคนแตะรูปจริง · ถ้าตอนเปิดฟอร์มเครื่องไม่มีรูปของแถวนี้
+                // (ยังไม่ได้โหลด) แต่คนเพิ่มรูปใหม่ ให้ดึงรูปจริงจากคลาวด์มาวางหน้าก่อน
+                // ไม่งั้นชุดรูปใหม่ (ที่มีแค่ใบที่เพิ่งเพิ่ม) จะทับรูปเดิมหาย
+                let photoPatch: { photos?: string[]; photo?: string } = {}
+                if (editPhotosDirty) {
+                  let photos = editForm.photos
+                  if (!editHadPhotos.current && photos.length) {
+                    try {
+                      const cloud = (await fetchDamagePhotos([d.id])).get(d.id)
+                      const existing = cloud?.photos?.length ? cloud.photos : (cloud?.photo ? [cloud.photo] : [])
+                      photos = [...existing, ...photos.filter((p) => !existing.includes(p))]
+                    } catch {
+                      useYard.getState().toast('err', 'ดึงรูปเดิมของ Defect นี้ไม่ได้ (สัญญาณ) — ยังไม่บันทึกรูป กรุณาลองใหม่')
+                      return
+                    }
+                  }
+                  photoPatch = { photos: photos.length ? photos : undefined, photo: photos[0] }
+                }
                 // Status Repair goes through updateRepairStatus so the change is
                 // audited (repairHistory + repairedBy + repairDate) exactly like the
                 // inline dropdown — the raw patch used to bypass all of that.
@@ -2382,8 +2408,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                   // only override the repair date when the admin actually typed one —
                   // updateRepairStatus above already stamps it on resolve
                   ...(editForm.repairDate ? { repairDate: fromDateInput(editForm.repairDate) } : {}),
-                  photos: editForm.photos.length ? editForm.photos : undefined,
-                  photo: editForm.photos[0],
+                  ...photoPatch,
                 })
                 cancelEdit()
               }
@@ -2462,7 +2487,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
                               <td className="px-1 py-1.5"><Combo id="dl-e-pos" value={editForm.position} onChange={(v) => setEditForm({ ...editForm, position: v })} pairs={dmgOpts.positionPairs} placeholder="Position" /></td>
                               <td className="px-1 py-1.5 space-y-1">
                                 <Combo id="dl-e-defect" value={editForm.defect} onChange={(v) => setEditForm({ ...editForm, defect: v })} pairs={dmgOpts.defectPairs} placeholder="Defect/NG" />
-                                <DmgPhotoPicker photos={editForm.photos} onChange={(photos) => setEditForm({ ...editForm, photos })} />
+                                <DmgPhotoPicker photos={editForm.photos} onChange={(photos) => { setEditForm({ ...editForm, photos }); setEditPhotosDirty(true) }} />
                               </td>
                               <td className="px-1 py-1.5"><Combo id="dl-e-catNG" value={editForm.categoryNG} onChange={(v) => setEditForm({ ...editForm, categoryNG: v })} options={dmgOpts.catNG} placeholder="Cat NG" /></td>
                               <td className="px-1 py-1.5"><Combo id="dl-e-catRepair" value={editForm.categoryRepair} onChange={(v) => setEditForm({ ...editForm, categoryRepair: v })} options={dmgOpts.catRepair} placeholder="Cat (Repair)" /></td>
