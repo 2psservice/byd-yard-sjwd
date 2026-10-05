@@ -13,6 +13,7 @@ import type { View } from '../types'
 import { Segmented, cx } from './ui'
 import { LogoMark } from './Logo'
 import { isTouch } from '../lib/device'
+import { InAppBrowserBanner } from './InAppBrowserBanner'
 
 const NAV: { view: View; icon: ReactNode }[] = [
   { view: 'dashboard', icon: <LayoutDashboard size={18} /> },
@@ -204,6 +205,7 @@ export function Layout({ children }: { children: ReactNode }) {
       )}
 
       <div className="flex-1 flex flex-col min-w-0">
+        <InAppBrowserBanner />
         {/* topbar */}
         <header className="flex items-center gap-2 sm:gap-3 px-3 sm:px-4 h-12 border-b hairline shrink-0" style={{ background: 'var(--glass)', backdropFilter: 'blur(22px) saturate(180%)', WebkitBackdropFilter: 'blur(22px) saturate(180%)' }}>
           <button className={cx('btn btn-ghost p-2 shrink-0', !isTouch && 'lg:hidden')} onClick={() => setMobileNav(true)}><Menu size={18} /></button>
