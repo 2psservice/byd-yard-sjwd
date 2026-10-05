@@ -712,6 +712,11 @@ const LOW_END_DEVICE = typeof navigator !== 'undefined' && ((navigator as { devi
 const CAMERA_FIRST_FRAME_MS = 4000
 /** ข้อความระหว่างภาพกล้องขึ้นแล้วแต่ตัวถอดรหัส (wasm/worker) ยังโหลดไม่เสร็จ */
 const DECODER_NOTE = 'กำลังเตรียมตัวอ่านโค้ด…'
+/** ช่วงห่างระหว่างการดึงภาพไปถอดรหัส (ms) — rAF เดินทุกเฟรม แต่ถอดรหัสห่างกันเท่านี้ */
+const DECODE_MIN_MS = 100
+const DECODE_MAX_MS = 250
+/** ตัวนับสำหรับซิม (dev เท่านั้น) — window.__scanStats */
+type ScanStats = { decodes: number; inflight: number; inflightMax: number; lastMs: number; kind: string; frames: number; periodMs: number; gaps: number[] }
 
 /** หยิบหลายช่องจาก store ด้วยการเทียบตื้น — หน้าสถานีที่เคย `useYard()` ทั้งก้อน
  *  วาดใหม่ทุกครั้งที่อะไรก็ตามใน store เปลี่ยน (realtime ส่งรถมาคันเดียวก็กรองรถ
@@ -915,11 +920,12 @@ function VinInputInner({
     // พิกเซล ต่ำกว่าที่ตัวถอดรหัสไหนจะอ่านได้ 1280×720 (720p) พอสำหรับ QR/บาร์โค้ด
     // VIN ระยะจ่อปกติ และเบากว่า 1440p เดิมราว 80% — เซนเซอร์/ชิปภาพทำงานเบาลง
     // เครื่องไม่ร้อนเร็วจนถูกหรี่ความเร็ว ซึ่งเป็นต้นเหตุของอาการค้าง/จอดำ
-    // เฟรมเรต 15 ก็พอ — ตัวถอดรหัสอ่านได้ไม่ถึง 8 เฟรม/วินาทีอยู่แล้ว เซนเซอร์/ชิปภาพ
-    // บนเครื่องถูกจึงไม่ต้องวิ่ง 30 เฟรมเปล่า ๆ (ร้อนน้อยลง ภาพพรีวิวไม่กระตุก)
-    // ทุกค่าเป็น ideal — ห้ามมี max/exact: `frameRate max 24` ที่เคยใส่เป็นเงื่อนไขบังคับ
-    // กล้องหลังของมือถือราคาถูกบางรุ่นให้แค่ 30 fps ตายตัว ขอกล้องไม่ผ่านเลย (จอดำ)
-    const VIDEO: MediaTrackConstraints = { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 15 } }
+    // ไม่ตั้งเฟรมเรตเลย — ปล่อยกล้องวิ่งตามปกติของเครื่อง: `frameRate max 24` ที่เคยใส่
+    // เป็นเงื่อนไขบังคับ กล้องหลังของมือถือราคาถูกบางรุ่นให้แค่ 30 fps ตายตัว ขอกล้องไม่
+    // ผ่านเลย (จอดำ) และบาง HAL แม้เป็น ideal ก็ตีความแปลก ๆ จังหวะการดึงภาพไปถอดรหัส
+    // ควบคุมฝั่งเราด้วย requestAnimationFrame (ดูลูปใน startScan) ไม่ต้องไปบีบกล้อง
+    // ทุกค่าที่เหลือเป็น ideal — ห้ามมี max/exact
+    const VIDEO: MediaTrackConstraints = { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
     // ขอกล้อง — ถ้าชุดเงื่อนไขหลักถูกปฏิเสธ (HAL แปลก ๆ) ลองชุดเรียบที่สุดอีกครั้งก่อนยอมแพ้
     const openStream = async (): Promise<MediaStream> => {
       try { return await navigator.mediaDevices.getUserMedia({ video: VIDEO }) }
@@ -1048,48 +1054,59 @@ function VinInputInner({
 
       const canvas = document.createElement('canvas')
       const ctx = canvas.getContext('2d', { willReadFrequently: true })
-      // ทีละรอบ ไม่ซ้อน และเว้นช่วงตามเวลาที่เครื่องนั้นใช้จริง (90-400 ms) — เครื่องเร็ว
-      // ได้ ~10 รอบ/วิ เครื่องช้าไม่ถูกงานถอดรหัสทับถมจนภาพพรีวิวค้าง
+      // จังหวะดึงภาพ: requestAnimationFrame — เดินตามรอบวาดจอของเครื่อง (ไม่ชนกับการ
+      // วาดพรีวิว) และหยุดเองเมื่อแท็บถูกซ่อน/จอดับ ไม่เผาซีพียูเปล่า ๆ แต่ "ไม่ถอดรหัสทุก
+      // เฟรม": เว้นห่าง 100-250 ms ตามเวลาที่เครื่องนั้นใช้ถอดรหัสจริง (เครื่องเร็ว ~10
+      // รอบ/วิ เครื่องช้า 4 รอบ/วิ) และทีละรอบไม่ซ้อน — ระหว่างรอผลเฟรมที่มาถึงถูกข้าม
+      // กล้องเองปล่อยให้วิ่ง 30 fps ตามปกติ (ไม่บีบ frameRate ใน getUserMedia แล้ว)
       let stopped = false
-      let timer: ReturnType<typeof setTimeout> | null = null
-      let period = 90
+      let raf = 0
+      let period = DECODE_MIN_MS
+      let lastAt = 0
+      let busy = false
       let tick = 0
-      const stats = import.meta.env.DEV ? ((window as unknown as { __scanStats?: { decodes: number; inflight: number; inflightMax: number; lastMs: number; kind: string } }).__scanStats
-        = { decodes: 0, inflight: 0, inflightMax: 0, lastMs: 0, kind: decoder.kind }) : null
-      const tickScan = async () => {
+      const stats = import.meta.env.DEV ? ((window as unknown as { __scanStats?: ScanStats }).__scanStats
+        = { decodes: 0, inflight: 0, inflightMax: 0, lastMs: 0, kind: decoder.kind, frames: 0, periodMs: period, gaps: [] as number[] }) : null
+      const frame = (now: number) => {
         if (stopped) return
+        raf = requestAnimationFrame(frame)
+        if (stats) stats.frames++
         // sim hook (dev เท่านั้น): ยัดผลสแกนแทนการถอดรหัสจริง — กล้องปลอมไม่มีบาร์โค้ด
         const forced = import.meta.env.DEV ? (window as unknown as { __nextDetectText?: string | null }).__nextDetectText : null
         if (forced) { (window as unknown as { __nextDetectText?: string | null }).__nextDetectText = null; hit(forced); return }
-        if (ctx && video.readyState >= 2 && video.videoWidth && video.videoHeight) {
-          const vw = video.videoWidth, vh = video.videoHeight
-          // crop factor: with lens zoom the frame is already magnified → a mild
-          // 1.6× aim-box crop; without it the slider's digital zoom drives it
-          const factor = opticalRef.current ? 1.6 : Math.max(1.6, dzRef.current)
-          const full = ++tick % 3 === 0
-          const cw = full ? vw : Math.round(vw / factor)
-          const ch = full ? vh : Math.round(vh / factor)
-          // cap the decode surface at ~1024 px wide — plenty for the wasm engine,
-          // and each frame decodes in tens of ms instead of hundreds on a slow chip
-          const scale = Math.min(1, 1024 / cw)
-          canvas.width = Math.max(2, Math.round(cw * scale))
-          canvas.height = Math.max(2, Math.round(ch * scale))
-          ctx.drawImage(video, (vw - cw) >> 1, (vh - ch) >> 1, cw, ch, 0, 0, canvas.width, canvas.height)
-          const t0 = performance.now()
-          if (stats) { stats.inflight++; stats.inflightMax = Math.max(stats.inflightMax, stats.inflight); stats.decodes++ }
-          try {
-            const text = await decoder.decode(ctx.getImageData(0, 0, canvas.width, canvas.height))
-            if (stopped) return
-            if (text) { hit(text); return }
-          } catch { /* decoder hiccup — next tick */ }
-          finally { if (stats) { stats.inflight--; stats.lastMs = performance.now() - t0 } }
-          const dt = performance.now() - t0
-          period = Math.min(400, Math.max(90, Math.round(dt * 1.2)))
-        }
-        if (!stopped) timer = setTimeout(tickScan, period)
+        if (busy || now - lastAt < period) return
+        if (!ctx || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return
+        if (stats && lastAt) { stats.gaps.push(Math.round(now - lastAt)); if (stats.gaps.length > 200) stats.gaps.shift() }
+        lastAt = now
+        const vw = video.videoWidth, vh = video.videoHeight
+        // crop factor: with lens zoom the frame is already magnified → a mild
+        // 1.6× aim-box crop; without it the slider's digital zoom drives it
+        const factor = opticalRef.current ? 1.6 : Math.max(1.6, dzRef.current)
+        const full = ++tick % 3 === 0
+        const cw = full ? vw : Math.round(vw / factor)
+        const ch = full ? vh : Math.round(vh / factor)
+        // cap the decode surface at ~1024 px wide — plenty for the wasm engine,
+        // and each frame decodes in tens of ms instead of hundreds on a slow chip
+        const scale = Math.min(1, 1024 / cw)
+        canvas.width = Math.max(2, Math.round(cw * scale))
+        canvas.height = Math.max(2, Math.round(ch * scale))
+        ctx.drawImage(video, (vw - cw) >> 1, (vh - ch) >> 1, cw, ch, 0, 0, canvas.width, canvas.height)
+        const t0 = performance.now()
+        busy = true
+        if (stats) { stats.inflight++; stats.inflightMax = Math.max(stats.inflightMax, stats.inflight); stats.decodes++ }
+        decoder.decode(ctx.getImageData(0, 0, canvas.width, canvas.height))
+          .then((text) => { if (!stopped && text) hit(text) })
+          .catch(() => { /* decoder hiccup — next frame */ })
+          .finally(() => {
+            busy = false
+            const dt = performance.now() - t0
+            // เว้นช่วงถัดไปตามเวลาที่ใช้จริง ×1.2 แต่ไม่ต่ำกว่า 100 / ไม่เกิน 250 ms
+            period = Math.min(DECODE_MAX_MS, Math.max(DECODE_MIN_MS, Math.round(dt * 1.2)))
+            if (stats) { stats.inflight--; stats.lastMs = dt; stats.periodMs = period }
+          })
       }
-      timer = setTimeout(tickScan, period)
-      controlsRef.current = { stop: () => { stopped = true; if (timer) clearTimeout(timer) } }
+      raf = requestAnimationFrame(frame)
+      controlsRef.current = { stop: () => { stopped = true; cancelAnimationFrame(raf) } }
     }
 
     ;(async () => {
