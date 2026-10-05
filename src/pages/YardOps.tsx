@@ -2,7 +2,7 @@
  * Yard Ops — Mobile role-based operations portal
  * Roles: Walk (Gate In) · Driver (Park) · PDI/PM/FC (Inspect) · Mechanic (Repair)
  */
-import { useEffect, useRef, useState, useMemo, memo } from 'react'
+import { useEffect, useRef, useState, useMemo, useCallback, memo } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { createPortal } from 'react-dom'
 import {
@@ -117,23 +117,26 @@ function useSiteUnits(): Unit[] {
   return useMemo(() => (currentSite ? all.filter((u) => !u.site || u.site === currentSite) : all), [all, currentSite])
 }
 /** Explains a failed scan: if the VIN exists but belongs to another yard,
- *  name that yard instead of the misleading "ไม่พบ VIN". */
+ *  name that yard instead of the misleading "ไม่พบ VIN".
+ *  อ่านจาก store ตอนเรียก (ตอนสแกนไม่เจอเท่านั้น) — ไม่ subscribe และไม่สร้าง overlay 57k แถวทุกครั้งที่
+ *  rows/units เปลี่ยน: เดิมสถานีละหลายชุดทำงานซ้ำทุกครั้งที่ข้อมูลไหลเข้า (ตอน login/โหลดยาร์ด) แย่ง CPU
+ *  จนมือถือเก่ากล้องดำ/ค้าง ทั้งที่ผลลัพธ์ใช้แค่ vin กับ site ของแถว (overlay แค่แก้สถานะตรวจ) */
 function useWrongSiteHint(): (v: string) => string | null {
-  const allRows = useTrackingRows()
-  const sites = useYard((s) => s.sites)
-  const currentSite = useYard((s) => s.currentSite)
-  return (v: string) => {
+  return useCallback((v: string) => {
+    const { currentSite, sites } = useYard.getState()
     if (!currentSite) return null
-    let r = allRows.find((x) => x.vin === v)
+    const rows = useTracking.getState().rows
+    let r: TrackRow | undefined = rows[v]
     if (!r && v.length <= 8) {
-      const hits = allRows.filter((x) => x.vin.endsWith(v))
-      if (hits.length === 1) r = hits[0]
+      let hit: TrackRow | undefined, n = 0
+      for (const k in rows) if (k.endsWith(v) && ++n === 1) hit = rows[k]
+      if (n === 1) r = hit
     }
     if (!r || rowInSite(r, currentSite, sites)) return null
     const owner = sites.find((s) => s.id === r!.site)?.name ?? (r.cells['Location yard'] || 'site อื่น')
     const cur = sites.find((s) => s.id === currentSite)?.name ?? ''
     return `VIN …${r.vin.slice(-8)} อยู่ site "${owner}" — ไม่ตรงกับ site งานปัจจุบัน (${cur})`
-  }
+  }, [])
 }
 
 /** Tracking-sheet header for the DN / delivery grouping number (two spaces). */
@@ -1927,7 +1930,6 @@ function WalkView() {
   const allUnits = useUnits() // global (all sites) — for pulling a car's Defect list even if its unit lives in another site
   const { gateIn, importUnits, addDamage, updateDamage, markTrailerArrived, toast, currentUser } = useYardPick('gateIn', 'importUnits', 'addDamage', 'updateDamage', 'markTrailerArrived', 'toast', 'currentUser')
   const allTrackingRows = useTrackingRows()
-  const wrongSite = useWrongSiteHint()
   const { loadFromIdb, updateCell, updateCells, claimPreGateInCandidate, transferToYard } = useTracking()
   const { toggleDone } = useOps()
   const { blockWith, modal: gateModal } = useNotGatedIn()
@@ -2950,7 +2952,6 @@ function DriverView() {
   const units = useSiteUnits()
   const trips = useTrips()
   const trackingRows = useSiteRows()
-  const wrongSite = useWrongSiteHint()
   const queues = useSiteQueues()
   const { loadFromIdb, updateCell } = useTracking()
   const { assign, confirmParked, resetParking, toast, currentUser, policies, groupModelsInRow, laneDepth, planMode, startTrip, endTrip, sites, currentSite, loadFromSupabase } =
@@ -3669,7 +3670,6 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved, stationTit
 function PdiView({ types, accent, title }: { types: QueueType[]; accent: string; title: string }) {
   const units = useSiteUnits()
   const trackingRows = useSiteRows()
-  const wrongSite = useWrongSiteHint()
   const allQueues = useSiteQueues()
   const sites = useYard(s => s.sites)
   const currentSite = useYard(s => s.currentSite)
@@ -4121,7 +4121,6 @@ function MechanicView({ types, accent, stationLabel, emptyLabel, okNgMode = fals
 }) {
   const units = useSiteUnits()
   const trackingRows = useSiteRows()
-  const wrongSite = useWrongSiteHint()
   const allQueues = useSiteQueues()
   const { loadFromIdb } = useTracking()
   const { addDamage, removeDamage, updateRepairStatus, setInspected, toast, loadFromSupabase, currentUser } = useYardPick('addDamage', 'removeDamage', 'updateRepairStatus', 'setInspected', 'toast', 'loadFromSupabase', 'currentUser')
@@ -4305,7 +4304,6 @@ function MechanicView({ types, accent, stationLabel, emptyLabel, okNgMode = fals
 function GateOutView() {
   const trackingRows = useSiteRows()
   const units = useSiteUnits()
-  const wrongSite = useWrongSiteHint()
   const queues = useSiteQueues()
   const { loadFromIdb, updateCell, startNewTrip } = useTracking()
   const { toast, currentUser, sites, currentSite, markDeparted } = useYardPick('toast', 'currentUser', 'sites', 'currentSite', 'markDeparted')
@@ -4784,7 +4782,6 @@ function RelocationView() {
   const trackingRows = useSiteRows()
   const siteUnits = useSiteUnits()
   const blocks = useBlocks()
-  const wrongSite = useWrongSiteHint()
   const { loadFromIdb, appendHistory } = useTracking()
   const { toast, sites, currentSite, currentUser, updateLocations } = useYardPick('toast', 'sites', 'currentSite', 'currentUser', 'updateLocations')
   const { block: blockGate, blockWith: blockGate2, modal: gateModal } = useNotGatedIn()
@@ -5508,7 +5505,6 @@ function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', s
   { accent?: string; stationName?: string; source?: DamageSource; recentKey?: string; richCard?: boolean; showStockCheck?: boolean } = {}) {
   const units = useSiteUnits()
   const trackingRows = useSiteRows()
-  const wrongSite = useWrongSiteHint()
   const { loadFromIdb } = useTracking()
   const { addDamage, updateRepairStatus, toast, importUnits } = useYardPick('addDamage', 'updateRepairStatus', 'toast', 'importUnits')
   const { block: blockGate, blockWith, modal: gateModal } = useNotGatedIn()
@@ -5807,7 +5803,6 @@ function CheckHistLine({ icon, label, who, time, color }: { icon: React.ReactNod
 function CheckView() {
   const trackingRows = useSiteRows()
   const units = useSiteUnits()
-  const wrongSite = useWrongSiteHint()
   const allTrips = useTrips()
   const queues = useSiteQueues()
   const { loadFromIdb } = useTracking()
