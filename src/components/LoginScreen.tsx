@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Eye, EyeOff, AlertCircle } from 'lucide-react'
 import { useYard } from '../store/useYard'
 import { LogoLoaderOverlay } from './LogoLoader'
+import { InAppBrowserBanner } from './InAppBrowserBanner'
 
 const BRAND = '#1B4FA8'
 const BRAND2 = '#E85D1E'
@@ -39,6 +40,8 @@ export function LoginScreen() {
       overflow: 'hidden',
       fontFamily: 'system-ui, -apple-system, sans-serif',
     }}>
+
+      <div style={{ position: 'relative', zIndex: 2 }}><InAppBrowserBanner /></div>
 
       {/* ── Faint car watermark (background) ── */}
       <img

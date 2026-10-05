@@ -82,5 +82,6 @@ export default defineConfig({
       },
     }),
   ],
-  server: { port: 5173, host: true },
+  // allowedHosts: เปิดผ่าน cloudflared tunnel (*.trycloudflare.com) เพื่อทดสอบกล้องบนมือถือผ่าน HTTPS
+  server: { port: 5173, host: true, allowedHosts: ['.trycloudflare.com'] },
 })

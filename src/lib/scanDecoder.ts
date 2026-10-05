@@ -96,6 +96,47 @@ async function createJsDecoder(): Promise<ScanDecoder> {
   }
 }
 
+async function loadBitmap(file: Blob): Promise<{ src: CanvasImageSource; w: number; h: number; close: () => void }> {
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const b = await createImageBitmap(file)
+      return { src: b, w: b.width, h: b.height, close: () => b.close?.() }
+    } catch { /* เบราว์เซอร์บางรุ่นอ่าน blob ตรง ๆ ไม่ได้ — ใช้ <img> แทน */ }
+  }
+  const url = URL.createObjectURL(file)
+  try {
+    const img = new Image()
+    img.src = url
+    await img.decode()
+    return { src: img, w: img.naturalWidth, h: img.naturalHeight, close: () => {} }
+  } finally { URL.revokeObjectURL(url) }
+}
+
+/**
+ * ถอดรหัสบาร์โค้ดจาก "รูปถ่าย" (โหมดสำรองเมื่อเปิดกล้องสดไม่ได้ — ถ่ายด้วยกล้องระบบผ่าน
+ * <input capture>) ลองหลายขนาด/หลายครอปเพราะรูปจากกล้องมือถือใหญ่ 8-13 MP แต่โค้ดอาจเล็ก
+ */
+export async function decodeImageFile(file: Blob, decoder: ScanDecoder): Promise<string | null> {
+  const bmp = await loadBitmap(file)
+  try {
+    const canvas = document.createElement('canvas')
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
+    if (!ctx || !bmp.w || !bmp.h) return null
+    for (const maxW of [1600, 1000, 2400]) {
+      for (const crop of [1, 0.6]) {
+        const cw = Math.round(bmp.w * crop), ch = Math.round(bmp.h * crop)
+        const scale = Math.min(1, maxW / cw)
+        canvas.width = Math.max(2, Math.round(cw * scale))
+        canvas.height = Math.max(2, Math.round(ch * scale))
+        ctx.drawImage(bmp.src, (bmp.w - cw) >> 1, (bmp.h - ch) >> 1, cw, ch, 0, 0, canvas.width, canvas.height)
+        const text = await decoder.decode(ctx.getImageData(0, 0, canvas.width, canvas.height))
+        if (text) return text
+      }
+    }
+    return null
+  } finally { bmp.close() }
+}
+
 /** สร้างตัวถอดรหัสที่ดีที่สุดที่เครื่องนี้ทำได้ (worker → wasm → js) */
 export async function createScanDecoder(): Promise<ScanDecoder> {
   return (await createWorkerDecoder()) ?? (await createWasmDecoder()) ?? (await createJsDecoder())

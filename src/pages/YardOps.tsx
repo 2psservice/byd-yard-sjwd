@@ -43,7 +43,8 @@ import { blockTag, blockKeyOfTag, resolveBlockByName } from '../lib/format'
 import { fetchUnitsByVins, fetchUnitsInLane, fetchTrackingRowsByVin, isConfigured } from '../lib/db'
 import { refreshUnitFocus } from '../lib/unitFocus'
 import { laneFromCloud } from '../lib/laneCloud'
-import { createScanDecoder, type ScanDecoder } from '../lib/scanDecoder'
+import { createScanDecoder, decodeImageFile, type ScanDecoder } from '../lib/scanDecoder'
+import { IN_APP_BROWSER, IS_LINE_BROWSER, IS_ANDROID, openExternal, openChromeIntent, copyLink } from '../lib/inAppBrowser'
 import { useRecentOps } from '../store/useRecentOps'
 import { buildWorkRows, buildEventLog, fmtHistAt, histOf } from '../lib/carHistory'
 import { roundOf, roundHistory } from '../lib/tripHistory'
@@ -708,6 +709,30 @@ function sharedScanDecoder(): Promise<ScanDecoder> {
 /** เครื่อง RAM น้อย (≤ 3 GB — Helio G35 ฯลฯ): ไม่สั่งซูมเลนส์อัตโนมัติตอนเปิดกล้อง
  *  (ชิปภาพทำงานหนักขึ้นและบางรุ่นต้องเริ่มสายภาพใหม่) ให้คนเลื่อนเองเมื่อจำเป็น */
 const LOW_END_DEVICE = typeof navigator !== 'undefined' && ((navigator as { deviceMemory?: number }).deviceMemory ?? 4) <= 3
+/** แปลง error ของ getUserMedia เป็นข้อความที่บอกวิธีแก้ได้หน้างาน — ท้ายข้อความมี [ชื่อ error]
+ *  ให้ถ่ายหน้าจอส่งมาวิเคราะห์ได้ (Chrome บางเครื่องปฏิเสธเงียบ ๆ โดยไม่ถามสิทธิ์) */
+async function describeCamError(e: unknown): Promise<string> {
+  const name = (e as { name?: string } | null)?.name ?? 'Error'
+  // Chrome ใส่เหตุผลไว้ใน message: "Permission denied" (กดไม่อนุญาต/บล็อกไว้) ·
+  // "Permission dismissed" (ปิด prompt) · "Permission denied by system" (Android ปิดสิทธิ์กล้องของเบราว์เซอร์)
+  const detail = String((e as { message?: string } | null)?.message ?? '').slice(0, 60)
+  const tag = ` [${name}${detail ? `: ${detail}` : ''}]`
+  if (name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError') {
+    let state = ''
+    try { state = (await navigator.permissions.query({ name: 'camera' as PermissionName })).state } catch { /* ไม่รองรับ */ }
+    if (IN_APP_BROWSER) return 'หน้านี้เปิดอยู่ในเบราว์เซอร์ของแอป LINE/โซเชียล ซึ่งไม่อนุญาตให้ใช้กล้อง — กด "เปิดใน Chrome" ด้านล่าง หรือคัดลอกลิงก์ไปวางใน Chrome (หรือเปิดจากแอป SJWD) · หรือใช้ปุ่มถ่ายรูป' + tag
+    // Chrome รุ่นใหม่ใช้ไอคอนปรับแต่ง (⚙/แถบเลื่อน) แทนแม่กุญแจ — บอกตำแหน่งแทนรูปไอคอน
+    const fix = 'แตะไอคอนทางซ้ายของที่อยู่เว็บ (🔒 หรือ ⚙) → สิทธิ์ → กล้อง → อนุญาต (หรือ "รีเซ็ตสิทธิ์") ·และเช็กที่ ตั้งค่าเครื่อง → แอป → เบราว์เซอร์ที่ใช้ → สิทธิ์ → กล้อง'
+    if (/system/i.test(detail)) return 'เครื่องปิดสิทธิ์กล้องของเบราว์เซอร์นี้ — ' + fix + ' หรือใช้ปุ่มถ่ายรูปด้านล่าง' + tag
+    if (state === 'prompt') return 'เบราว์เซอร์ไม่แสดงหน้าต่างขอสิทธิ์กล้อง (อาจเปิดในหน้าต่างย่อย/แอปอื่น) — ลองเปิดเว็บใน Chrome หรือเบราว์เซอร์หลักโดยตรง · ' + fix + ' หรือใช้ปุ่มถ่ายรูปด้านล่าง' + tag
+    return 'สิทธิ์กล้องถูกบล็อก — ' + fix + ' แล้วลองใหม่ · หรือใช้ปุ่มถ่ายรูปด้านล่าง' + tag
+  }
+  if (name === 'NotFoundError' || name === 'DevicesNotFoundError' || name === 'OverconstrainedError') return 'ไม่พบกล้องในเครื่องนี้' + tag
+  if (name === 'NotReadableError' || name === 'TrackStartError' || name === 'AbortError') return 'เปิดกล้องไม่ได้ — อาจมีแอปอื่นใช้กล้องอยู่ ปิดแอปนั้นแล้วลองใหม่' + tag
+  if (name === 'NotSupportedError' || name === 'TypeError') return 'เบราว์เซอร์นี้ไม่รองรับการเปิดกล้องสด — ใช้ปุ่มถ่ายรูปด้านล่างแทน' + tag
+  return 'เปิดกล้องไม่สำเร็จ — ลองใหม่ หรือใช้ปุ่มถ่ายรูปด้านล่าง' + tag
+}
+
 /** ไม่มีภาพจากกล้องภายในเวลานี้ = สายภาพค้าง → เปิดใหม่เองหนึ่งครั้ง แทนจอดำนิ่ง ๆ */
 const CAMERA_FIRST_FRAME_MS = 4000
 /** ข้อความระหว่างภาพกล้องขึ้นแล้วแต่ตัวถอดรหัส (wasm/worker) ยังโหลดไม่เสร็จ */
@@ -897,6 +922,65 @@ function VinInputInner({
     setDigitalZoom(false); setDz(z0); dzRef.current = z0; opticalRef.current = false
   }
 
+  // โหมดสำรอง: เปิดกล้องสดไม่ได้ (สิทธิ์ถูกบล็อก ฯลฯ) → ถ่ายรูปด้วยกล้องระบบ แล้วถอดรหัสจากรูป
+  const photoRef = useRef<HTMLInputElement>(null)
+  const [photoBusy, setPhotoBusy] = useState(false)
+  const onPhotoPicked = async (files: FileList | null) => {
+    const f = files?.[0]
+    if (photoRef.current) photoRef.current.value = '' // เลือกไฟล์เดิมซ้ำได้
+    if (photoPickRef.current) photoPickRef.current.value = ''
+    if (!f) return
+    setPhotoBusy(true)
+    try {
+      const text = await decodeImageFile(f, await sharedScanDecoder())
+      if (text) { closeCamera(); go(text) }
+      else setCamErr('อ่านโค้ดจากรูปไม่ได้ — ถ่ายใหม่ให้โค้ดอยู่กลางภาพ ใกล้และชัดขึ้น หรือพิมพ์ VIN เอง')
+    } catch (e) {
+      console.error('[scan] photo decode', e)
+      setCamErr('อ่านรูปไม่สำเร็จ — ลองถ่ายใหม่ หรือพิมพ์ VIN เอง')
+    } finally { setPhotoBusy(false) }
+  }
+
+  // เบราว์เซอร์บางตัวไม่สนใจ capture (เปิดตัวเลือกไฟล์ทั่วไปแทนกล้อง) จึงมีปุ่มเลือกรูปจากเครื่องคู่กัน
+  const photoPickRef = useRef<HTMLInputElement>(null)
+  const onCopyLink = async () => { if (await copyLink()) setCamInfo('คัดลอกลิงก์แล้ว — ไปวางในแถบที่อยู่ของ Chrome') }
+  const photoButtons = (
+    <div className="space-y-2">
+    {IN_APP_BROWSER && (
+      <div className="flex gap-2">
+        {IS_LINE_BROWSER && (
+          <button data-testid="open-external" onClick={openExternal}
+            className="flex-1 py-3 rounded-xl text-[14px] font-bold text-white" style={{ background: '#16a34a' }}>
+            เปิดใน Chrome
+          </button>
+        )}
+        {IS_ANDROID && (
+          <button data-testid="open-intent" onClick={openChromeIntent}
+            className="flex-1 py-3 rounded-xl text-[14px] font-bold text-white" style={{ background: '#2563eb' }}>
+            Chrome (intent)
+          </button>
+        )}
+        <button data-testid="copy-link" onClick={() => void onCopyLink()}
+          className="flex-1 py-3 rounded-xl text-[14px] font-bold" style={{ background: 'rgba(255,255,255,0.15)', color: '#fff' }}>
+          คัดลอกลิงก์
+        </button>
+      </div>
+    )}
+    <div className="flex gap-2">
+      <button data-testid="cam-photo-fallback" disabled={photoBusy} onClick={() => photoRef.current?.click()}
+        className="flex-1 py-3 rounded-xl text-[14px] font-bold text-white flex items-center justify-center gap-2 disabled:opacity-60"
+        style={{ background: accent }}>
+        <Camera size={18} /> {photoBusy ? 'กำลังอ่านรูป…' : 'ถ่ายรูปบาร์โค้ด'}
+      </button>
+      <button data-testid="cam-photo-pick" disabled={photoBusy} onClick={() => photoPickRef.current?.click()}
+        className="flex-1 py-3 rounded-xl text-[14px] font-bold flex items-center justify-center gap-2 disabled:opacity-60"
+        style={{ background: 'rgba(255,255,255,0.15)', color: '#fff' }}>
+        เลือกรูปจากเครื่อง
+      </button>
+    </div>
+    </div>
+  )
+
   const openCamera = () => { setCamErr(''); setCamInfo(''); restartedRef.current = false; setCamOpen(true) }
   const closeCamera = (warm = false) => { stopScan(warm); setCamOpen(false) }
 
@@ -1028,6 +1112,8 @@ function VinInputInner({
       const decoderPromise = sharedScanDecoder()
       decoderPromise.catch(() => {}) // รายงานตอนรอจริงด้านล่าง ไม่ให้เป็น unhandled rejection
       const warmed = takeWarmStream()
+      // ไม่มี mediaDevices = ไม่ใช่ HTTPS หรือเบราว์เซอร์ไม่รองรับ → ไปสาขา error ที่ชัดเจน
+      if (!warmed && !navigator.mediaDevices?.getUserMedia) throw new DOMException('no mediaDevices', 'NotSupportedError')
       const stream = warmed ?? await openStream()
       if (cancelled) { if (!warmed) stream.getTracks().forEach(t => t.stop()); else { warmStreamRef.current = stream; warmTimerRef.current = setTimeout(releaseWarmStream, CAMERA_WARM_MS) } return }
       video.srcObject = stream
@@ -1114,7 +1200,8 @@ function VinInputInner({
         await startScan()
       } catch (e) {
         console.error('[scan] camera', e)
-        if (!cancelled) setCamErr('เปิดกล้องไม่สำเร็จ — โปรดอนุญาตสิทธิ์กล้องในเบราว์เซอร์ แล้วลองใหม่')
+        const msg = await describeCamError(e)
+        if (!cancelled) setCamErr(msg)
       }
     })()
     return () => { cancelled = true; watchdogOff?.(); stopScan() }
@@ -1159,8 +1246,9 @@ function VinInputInner({
               </div>
             </div>
             {camErr && (
-              <div className="absolute bottom-8 left-4 right-4 text-center text-[13px] py-2 px-4 rounded-xl" style={{ background: 'rgba(0,0,0,0.7)', color: '#fca5a5' }}>
-                {camErr}
+              <div className="absolute bottom-4 left-4 right-4 text-center text-[13px] py-3 px-4 rounded-xl space-y-3" style={{ background: 'rgba(0,0,0,0.75)', color: '#fca5a5' }}>
+                <div>{camErr}</div>
+                {photoButtons}
               </div>
             )}
             {!camErr && camInfo && (
@@ -1218,6 +1306,11 @@ function VinInputInner({
         document.body,
       )}
 
+      <input ref={photoRef} type="file" accept="image/*" capture="environment" className="hidden"
+        onChange={e => void onPhotoPicked(e.target.files)} />
+      <input ref={photoPickRef} type="file" accept="image/*" className="hidden"
+        onChange={e => void onPhotoPicked(e.target.files)} />
+
       {/* Input row */}
       <div className="space-y-3">
         <div className="flex gap-2">
@@ -1250,7 +1343,10 @@ function VinInputInner({
           <ScanLine size={20} /> {action}
         </button>
         {camErr && !camOpen && (
-          <div className="text-[12px] text-center py-1" style={{ color: '#ef4444' }}>{camErr}</div>
+          <div className="space-y-2">
+            <div className="text-[12px] text-center py-1" style={{ color: '#ef4444' }}>{camErr}</div>
+            <div className="rounded-xl p-2" style={{ background: 'rgba(0,0,0,0.75)' }}>{photoButtons}</div>
+          </div>
         )}
       </div>
     </>
