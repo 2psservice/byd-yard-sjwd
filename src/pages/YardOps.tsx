@@ -710,6 +710,8 @@ function sharedScanDecoder(): Promise<ScanDecoder> {
 const LOW_END_DEVICE = typeof navigator !== 'undefined' && ((navigator as { deviceMemory?: number }).deviceMemory ?? 4) <= 3
 /** ไม่มีภาพจากกล้องภายในเวลานี้ = สายภาพค้าง → เปิดใหม่เองหนึ่งครั้ง แทนจอดำนิ่ง ๆ */
 const CAMERA_FIRST_FRAME_MS = 4000
+/** ข้อความระหว่างภาพกล้องขึ้นแล้วแต่ตัวถอดรหัส (wasm/worker) ยังโหลดไม่เสร็จ */
+const DECODER_NOTE = 'กำลังเตรียมตัวอ่านโค้ด…'
 
 /** หยิบหลายช่องจาก store ด้วยการเทียบตื้น — หน้าสถานีที่เคย `useYard()` ทั้งก้อน
  *  วาดใหม่ทุกครั้งที่อะไรก็ตามใน store เปลี่ยน (realtime ส่งรถมาคันเดียวก็กรองรถ
@@ -915,7 +917,19 @@ function VinInputInner({
     // เครื่องไม่ร้อนเร็วจนถูกหรี่ความเร็ว ซึ่งเป็นต้นเหตุของอาการค้าง/จอดำ
     // เฟรมเรต 15 ก็พอ — ตัวถอดรหัสอ่านได้ไม่ถึง 8 เฟรม/วินาทีอยู่แล้ว เซนเซอร์/ชิปภาพ
     // บนเครื่องถูกจึงไม่ต้องวิ่ง 30 เฟรมเปล่า ๆ (ร้อนน้อยลง ภาพพรีวิวไม่กระตุก)
-    const VIDEO: MediaTrackConstraints = { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 15, max: 24 } }
+    // ทุกค่าเป็น ideal — ห้ามมี max/exact: `frameRate max 24` ที่เคยใส่เป็นเงื่อนไขบังคับ
+    // กล้องหลังของมือถือราคาถูกบางรุ่นให้แค่ 30 fps ตายตัว ขอกล้องไม่ผ่านเลย (จอดำ)
+    const VIDEO: MediaTrackConstraints = { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 15 } }
+    // ขอกล้อง — ถ้าชุดเงื่อนไขหลักถูกปฏิเสธ (HAL แปลก ๆ) ลองชุดเรียบที่สุดอีกครั้งก่อนยอมแพ้
+    const openStream = async (): Promise<MediaStream> => {
+      try { return await navigator.mediaDevices.getUserMedia({ video: VIDEO }) }
+      catch (e) {
+        const name = (e as { name?: string })?.name ?? ''
+        if (name === 'NotAllowedError' || name === 'SecurityError') throw e // สิทธิ์ — ลองใหม่ก็ไม่ช่วย
+        console.warn('[scan] getUserMedia fallback to basic constraints:', name)
+        return navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+      }
+    }
 
     // รอ "ภาพแรก" มาถึงก่อนค่อยทำอะไรกับสายภาพ — ชิปกล้องราคาถูกที่โดนสั่งซูม/โฟกัส
     // ทันทีหลัง play() บางรุ่นเริ่มสายภาพใหม่ (ดำครึ่งวินาที) หรือค้างไปเลย
@@ -945,7 +959,8 @@ function VinInputInner({
       }
       afterFirstFrame(video, () => {
         if (trackRef.current !== track || !track) return // สายภาพนี้ถูกปิด/เปลี่ยนไปแล้ว
-        setCamInfo('')
+        // ภาพมาแล้ว → ล้างข้อความสถานะกล้อง แต่ถ้ากำลังรอตัวถอดรหัสอยู่ให้คงข้อความนั้นไว้
+        setCamInfo((m) => (m === DECODER_NOTE ? m : ''))
         // nudge continuous autofocus — ignored where unsupported, but stops some
         // devices from locking focus at the wrong distance
         track.applyConstraints({ advanced: [{ focusMode: 'continuous' } as MediaTrackConstraintSet] }).catch(() => {})
@@ -1000,12 +1015,14 @@ function VinInputInner({
     const startScan = async () => {
       const video = videoRef.current
       if (!video || cancelled) return
-      // ขอกล้องและเตรียมตัวถอดรหัสพร้อมกัน (ตัวถอดรหัสโหลดครั้งเดียวต่อเซสชัน)
+      // ภาพกล้องขึ้นจอก่อนเสมอ — ตัวถอดรหัสโหลดคู่ขนานไป ไม่ให้ภาพรอ: รอบก่อนรอให้
+      // ตัวถอดรหัสพร้อมก่อนค่อยต่อภาพ (Promise.all) บนเน็ตลาน/ชิปช้าการโหลด wasm
+      // ~450 KB + คอมไพล์กินหลายวินาที (worker สร้างไม่ได้ = รอ 8 วิ) ระหว่างนั้น
+      // กล้องเปิดแล้วแต่จอดำเงียบ ๆ และตัวเฝ้ายังไม่ถูกติดตั้ง
+      const decoderPromise = sharedScanDecoder()
+      decoderPromise.catch(() => {}) // รายงานตอนรอจริงด้านล่าง ไม่ให้เป็น unhandled rejection
       const warmed = takeWarmStream()
-      const [stream, decoder] = await Promise.all([
-        warmed ?? navigator.mediaDevices.getUserMedia({ video: VIDEO }),
-        sharedScanDecoder(),
-      ])
+      const stream = warmed ?? await openStream()
       if (cancelled) { if (!warmed) stream.getTracks().forEach(t => t.stop()); else { warmStreamRef.current = stream; warmTimerRef.current = setTimeout(releaseWarmStream, CAMERA_WARM_MS) } return }
       video.srcObject = stream
       armWatchdog(video, stream) // ก่อน play(): สายภาพที่ไม่มีเฟรมทำให้ play() ค้างไม่ตอบได้
@@ -1013,6 +1030,21 @@ function VinInputInner({
       // play() ที่ค้างอยู่อาจเพิ่งคืนค่าหลังตัวเฝ้าสั่งเปิดใหม่ไปแล้ว — รอบนี้จบแล้ว
       // ห้ามสร้างลูปถอดรหัสซ้อนกับรอบใหม่ (จะทับ controlsRef แล้วหยุดลูปใหม่ไม่ได้)
       if (cancelled) return
+      setupTrack(video, true) // ซูม/ไฟฉาย/โฟกัส พร้อมตั้งแต่ภาพขึ้น ไม่ต้องรอตัวถอดรหัส
+
+      // รอตัวถอดรหัส — ถ้านานกว่าครึ่งวินาทีบอกคนยิงว่ากำลังเตรียม (ภาพขึ้นแล้ว เล็งได้เลย)
+      const slowNote = setTimeout(() => { if (!cancelled) setCamInfo(DECODER_NOTE) }, 500)
+      let decoder: ScanDecoder
+      try { decoder = await decoderPromise }
+      catch (e) {
+        clearTimeout(slowNote)
+        console.error('[scan] decoder', e)
+        if (!cancelled) setCamErr('โหลดตัวอ่านโค้ดไม่สำเร็จ — เช็กสัญญาณแล้วปิด/เปิดกล้องใหม่')
+        return
+      }
+      clearTimeout(slowNote)
+      if (cancelled) return
+      setCamInfo((m) => (m === DECODER_NOTE ? '' : m))
 
       const canvas = document.createElement('canvas')
       const ctx = canvas.getContext('2d', { willReadFrequently: true })
@@ -1058,7 +1090,6 @@ function VinInputInner({
       }
       timer = setTimeout(tickScan, period)
       controlsRef.current = { stop: () => { stopped = true; if (timer) clearTimeout(timer) } }
-      setupTrack(video, true)
     }
 
     ;(async () => {
