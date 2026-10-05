@@ -1980,6 +1980,9 @@ useTracking.subscribe((s, prev) => {
   if (s.rows === prev.rows) return
   for (const vin in s.rows) {
     const r = s.rows[vin]
+    // ออบเจ็กต์แถวเดิมเป๊ะ = ไม่ได้เปลี่ยน และเคยผ่านลูปนี้ (หรือถูกทำเครื่องหมายแชร์แล้ว) ในรอบก่อน — ข้ามได้เลย
+    // (ถูกกว่าไล่ค้น rowShared ต่อแถวมาก; ลูปนี้อยู่ใน set() ทุกครั้ง บน 62k แถว)
+    if (r === prev.rows[vin]) continue
     const at = r.updatedAt ?? 0
     if (rowShared.get(vin) === at) continue
     const first = prev.rows[vin] === undefined
@@ -2081,6 +2084,21 @@ function defectsAllCleared(vin: string): boolean {
   return !!u && !hasOpenBodyDefect(u.damages)
 }
 
+// "NG ที่ยังไม่ได้จัดสรร" เป็นฟังก์ชันของ cells ล้วน ๆ และแถวเป็นออบเจ็กต์ที่ไม่ถูกแก้ในที่เดิม (store สร้างใหม่ทุกครั้งที่เปลี่ยน)
+// จึงจำผลต่อออบเจ็กต์แถวไว้ — ตัวนี้รันหลังทุกครั้งที่ store tracking/yard เปลี่ยน และเดิมคำนวณทุกแถว (62k) ใหม่ทุกครั้ง
+// (บนมือถือ CPU ช้าเป็นงานค้างหลายวินาที กล้องขอไม่ผ่านระหว่างนั้น)
+const vinStatusCandidateCache = new WeakMap<TrackRow, boolean>()
+function isUnallocatedNg(r: TrackRow): boolean {
+  let hit = vinStatusCandidateCache.get(r)
+  if (hit === undefined) {
+    const c = r.cells
+    hit = NG_VIN_STATUSES.has((c['Vin Of Status'] || '').trim().toLowerCase())
+      && !((c['Allocation Date'] || '').trim() || (c[GROUPING_NUMBER_KEY] || '').trim())
+    vinStatusCandidateCache.set(r, hit)
+  }
+  return hit
+}
+
 let vinStatusTimer: ReturnType<typeof setTimeout> | null = null
 function reconcileVinOfStatus() {
   // never act on a stale snapshot: a fresh load starts from IndexedDB (often
@@ -2094,9 +2112,8 @@ function reconcileVinOfStatus() {
   const { rows } = useTracking.getState()
   const dirty: string[] = []
   for (const vin in rows) {
+    if (!isUnallocatedNg(rows[vin])) continue // ไม่ใช่ NG หรือจัดสรรแล้ว
     const c = rows[vin].cells
-    if (!NG_VIN_STATUSES.has((c['Vin Of Status'] || '').trim().toLowerCase())) continue
-    if ((c['Allocation Date'] || '').trim() || (c[GROUPING_NUMBER_KEY] || '').trim()) continue // already allocated
     const finalOk = OK_FINAL_STATUSES.has((c['Final Status'] || '').trim().toLowerCase())
     if (finalOk || defectsAllCleared(vin)) dirty.push(vin)
   }
