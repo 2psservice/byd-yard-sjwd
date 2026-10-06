@@ -1228,8 +1228,11 @@ export async function fetchTrackingRowsForSite(
     await Promise.all(Array.from({ length: SITE_PULL_CONCURRENCY }, worker))
   }
   await fetchBy((q) => q.eq('site', site.id))
+  // แถวเก่าที่ "ยังไม่มีป้ายไซต์" แต่ช่อง Location yard ระบุยาร์ดนี้ — ต้องกรอง site is null ให้ตรงกับตัวนับ
+  // (countTrackingRowsForSite) ไม่งั้นรอบนี้ดึงแถวของยาร์ดที่ติดป้ายแล้วซ้ำอีกทั้งชุด (NYB2: 20,469 แถว มีของเก่าจริงแค่ 111)
+  // แล้วถูก seen ทิ้ง = ดาวน์โหลดเกือบ 2 เท่าโดยเปล่าประโยชน์
   for (const key of [site.name, site.code].filter(Boolean) as string[]) {
-    await fetchBy((q) => q.eq('cells->>Location yard', key))
+    await fetchBy((q) => q.is('site', null).eq('cells->>Location yard', key))
   }
   return out
 }

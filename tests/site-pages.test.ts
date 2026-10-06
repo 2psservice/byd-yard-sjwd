@@ -61,6 +61,16 @@ describe('fetchTrackingRowsForSite', () => {
     expect(batches.flat()).toEqual(table.map((r) => r.vin))
   })
 
+  it('รอบของเก่า (ไม่มีป้ายไซต์) ไม่ดึงซ้ำแถวที่ติดป้ายไซต์แล้ว: ดาวน์โหลดรวม ≈ จำนวนแถวจริง ไม่ใช่ 2 เท่า', async () => {
+    const tagged = Array.from({ length: 5_000 }, (_, i) => mk(i, 'S1', SITE.name))
+    const legacy = Array.from({ length: 111 }, (_, i) => mk(10_000 + i, null, SITE.name))
+    const { stats, res } = await run([...tagged, ...legacy])
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+    expect(res.v).toHaveLength(5_111) // ครบ: ติดป้าย + ของเก่า
+    expect(stats.rowsServed, 'ดึงมาไม่เกินแถวจริง + หน้าว่าง').toBe(5_111)
+  })
+
   it('หน้าสุดท้ายพอดี 1,000 แถว: หยุดถูก ไม่ขาด ไม่วนไม่รู้จบ', async () => {
     const table = Array.from({ length: 3_000 }, (_, i) => mk(i, 'S1', SITE.name))
     const { res, stats } = await run(table)
