@@ -1570,8 +1570,19 @@ export const stageOf = (item: QueueItem): QueueStage => item.stage ?? 'queued'
  */
 export const isPreGateInQueue = (q: WorkQueue): boolean => !isSequenceQueue(q) && queueTypeOf(q) === 'GATEIN'
 
-export const isSequenceQueue = (q: WorkQueue): boolean =>
-  q.kind === 'sequence' || q.items.some((i) => i.laneLoad != null || i.dest != null)
+// จำผลต่อ "อาร์เรย์ items" (store สร้างอาร์เรย์ใหม่ทุกครั้งที่รายการเปลี่ยน): คิวที่ไม่ได้ติดป้าย kind ต้องไล่ทุกรายการจนครบเพื่อตอบว่า
+// "ไม่ใช่คิวส่งรถ" และฟังก์ชันนี้ถูกเรียกต่อรายการในลูป (isPreGateInQueue / reconcile / selector) — โปรไฟล์หน้าแรกหลัง login:
+// self time ~430ms (9.7%) ตัวเดียว
+const sequenceQueueMemo = new WeakMap<QueueItem[], boolean>()
+export const isSequenceQueue = (q: WorkQueue): boolean => {
+  if (q.kind === 'sequence') return true
+  let hit = sequenceQueueMemo.get(q.items)
+  if (hit === undefined) {
+    hit = q.items.some((i) => i.laneLoad != null || i.dest != null)
+    sequenceQueueMemo.set(q.items, hit)
+  }
+  return hit
+}
 
 /** Delivery-sequence stage for one car: queued → wash → lane → gated-out. */
 export function seqStageOf(i: QueueItem): 'queued' | 'wash' | 'lane' | 'gateout' {
