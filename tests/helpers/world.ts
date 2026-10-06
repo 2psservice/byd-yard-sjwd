@@ -73,6 +73,7 @@ export class World {
       upsertUnits: async (units: Unit[]) => world.write(units),
       upsertUnit: async (u: Unit) => world.write([u]),
       fetchUnitPlacements: async () => [...world.cloud.values()].map((u) => ({ ...u })),
+      fetchUnitsByVins: async (vins: string[]) => vins.map((v) => world.cloud.get(v)).filter((u): u is Unit => !!u).map((u) => ({ ...u })),
       updatePlacementIfUnchanged: async (guard: { vin: string; from: { block?: string; row?: number; slot?: number } }, next: Unit) => {
         const cur = world.cloud.get(guard.vin)
         if (cur && (cur.block !== guard.from.block || cur.row !== guard.from.row || cur.slot !== guard.from.slot)) {
