@@ -58,3 +58,58 @@ describe('Gate-out ข้ามยาร์ด แล้วอัปโหลด
     expect(useTracking.getState().rows.V2.site).toBe('S1')
   })
 })
+
+describe('realtime broadcast ต้องพาป้ายไซต์ไปพร้อมข้อมูลช่อง', () => {
+  beforeEach(() => { vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] }); vi.setSystemTime(new Date('2026-10-06T08:00:00Z')) })
+  afterEach(() => { vi.useRealTimers(); vi.resetModules() })
+
+  async function setupBus() {
+    vi.resetModules(); localStorage.clear()
+    const handlers: Record<string, (p: unknown) => void> = {}
+    const sent: { event: string; payload: any }[] = []
+    vi.doMock('../src/lib/supabase', () => ({
+      isConfigured: () => true,
+      supabase: { channel: () => ({ on() { return this }, subscribe() { return this }, send: async () => 'ok' }), removeChannel() {} },
+    }))
+    vi.doMock('../src/lib/syncBus', async (orig) => ({
+      ...(await orig<object>()),
+      onSync: (e: string, h: (p: unknown) => void) => { handlers[e] = h },
+      sendSync: (event: string, payload: object) => { sent.push({ event, payload }) },
+    }))
+    vi.doMock('../src/lib/db', async (orig) => ({
+      ...(await orig<object>()), isConfigured: () => true,
+      upsertVisits: async () => {}, upsertTrackingRows: async () => {}, bulkUpsert: async () => {}, deleteTrackingRows: async () => {},
+    }))
+    const { useTracking } = await import('../src/store/useTracking')
+    const { useYard } = await import('../src/store/useYard')
+    useYard.setState({ sites: [S1, S2], currentSite: 'S1' })
+    return { useTracking, handlers, sent }
+  }
+  const base = { vin: 'V1', history: [], updatedAt: 1_000, site: 'S1', cells: { Vin: 'V1', 'Car Status': 'In Yard', 'Location yard': S1.name } }
+
+  it('รับข้อความที่ยาร์ดปลายทางส่งมา: ป้ายไซต์ต้องเปลี่ยนไปพร้อมข้อมูลช่อง (ไม่ค้าง S1 แล้วโผล่เป็น Pre Gate-in ที่ยาร์ดเก่า)', async () => {
+    const { useTracking, handlers } = await setupBus()
+    useTracking.setState({ loaded: true, rows: { V1: base } })
+    handlers.status({ rows: [{ vin: 'V1', at: Date.now(), site: 'S2', cells: { Vin: 'V1', 'Car Status': 'Pre Gate-in', 'Location yard': S2.name } }] })
+    const r = useTracking.getState().rows.V1
+    expect(r.cells['Car Status']).toBe('Pre Gate-in')
+    expect(r.site).toBe('S2')
+  })
+
+  it('ข้อความแบบเก่า (ไม่มี site) ยังรับได้ และคงป้ายเดิมของเครื่องนี้', async () => {
+    const { useTracking, handlers } = await setupBus()
+    useTracking.setState({ loaded: true, rows: { V1: base } })
+    handlers.status({ rows: [{ vin: 'V1', at: Date.now(), cells: { Vin: 'V1', 'Car Status': 'PDI', 'Location yard': S1.name } }] })
+    const r = useTracking.getState().rows.V1
+    expect(r.cells['Car Status']).toBe('PDI'); expect(r.site).toBe('S1')
+  })
+
+  it('ฝั่งส่ง: แนบ site ของแถวไปกับ broadcast', async () => {
+    const { useTracking, sent } = await setupBus()
+    useTracking.setState({ loaded: true, rows: { V1: base } })
+    useTracking.setState((s) => ({ rows: { ...s.rows, V1: { ...s.rows.V1, site: 'S2', updatedAt: Date.now(), cells: { ...s.rows.V1.cells, 'Car Status': 'Pre Gate-in' } } } }))
+    await vi.advanceTimersByTimeAsync(300)
+    const msg = sent.find((x) => x.event === 'status')?.payload.rows[0]
+    expect(msg?.vin).toBe('V1'); expect(msg?.site).toBe('S2')
+  })
+})

@@ -2023,7 +2023,7 @@ useTracking.subscribe((s, prev) => {
     // changed HERE, so this device owns the row again and may write it back
     broadcastOnly.delete(vin)
     if (first) continue // a row arriving from the initial load is not an edit
-    pendingRows.set(vin, { vin, cells: r.cells ?? {}, at })
+    pendingRows.set(vin, { vin, cells: r.cells ?? {}, at, site: r.site ?? null })
   }
   if (pendingRows.size && !rowsTimer) rowsTimer = setTimeout(flushRows, 250)
 })
@@ -2049,7 +2049,9 @@ onSync('status', (p: RowsPayload) => {
       rowShared.set(m.vin, at) // mark as shared BEFORE the set() so it is not echoed back
       broadcastOnly.add(m.vin)
       // history is deliberately not on the wire — keep the copy this device has
-      const row: TrackRow = { ...cur, cells: m.cells, updatedAt: at }
+      // ป้ายไซต์เดินทางไปพร้อมข้อมูลช่อง (ข้อความรุ่นเก่าไม่มี site → คงป้ายเดิม)
+      const site = m.site === undefined ? cur.site : (m.site ?? undefined)
+      const row: TrackRow = { ...cur, cells: m.cells, site, updatedAt: at }
       next[m.vin] = row
       fresh.push(row)
       hit++
