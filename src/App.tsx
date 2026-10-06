@@ -9,6 +9,7 @@ import { SiteLoadGate } from './components/SiteLoadGate'
 import { useYard, useMe, isOpsOnlyRole } from './store/useYard'
 import { useTrackingRows, useTracking, cloudSyncedThisSession } from './store/useTracking'
 import { isConfigured } from './lib/supabase'
+import { siteIdForLocation } from './lib/siteScope'
 import { useOps, repairMissingStationDates } from './store/useOps'
 import { useVisits } from './store/useVisits'
 import { startSyncBus, stopSyncBus } from './lib/syncBus'
@@ -69,6 +70,7 @@ export default function App() {
   const unsubscribeUnits = useYard((s) => s.unsubscribeRealtime)
   const hasUnits = useYard((s) => Object.keys(s.units).length > 0)
   const currentSite = useYard((s) => s.currentSite)
+  const unitsCloudDone = useYard((s) => s.unitsCloudDone)
   const openSiteModal = useYard((s) => s.openSiteModal)
   const trackingRows = useTrackingRows()
   const trackingLoaded = useTracking((s) => s.loaded)
@@ -232,7 +234,13 @@ export default function App() {
       // (applyYardMove) — ไฟล์ระบบกลางก็ย้ายรถที่ยาร์ดนี้รับไปแล้วไม่ได้เช่นกัน
       // (ดู commitCoInspection) กฎเดียวกับตำแหน่งจอด: ระบบไม่ปรับข้อมูลเอง
 
-      const strayed = new Map<string, string[]>() // siteId ปลายทาง → รายชื่อ vin
+      // ── ตัวกวาด "ยาร์ดของ unit ต้องตรงกับป้ายยาร์ดของแถวชีต" ถูกถอดออก (6 ต.ค.) ──
+      // เดิม: ป้ายไม่ตรง → moveUnitsToSite ให้เอง ซึ่ง "ล้างช่องจอดทิ้ง + ตั้ง EXPECTED
+      // + เขียนคลาวด์" โดยไม่ลงประวัติ Location — รถที่เพิ่งยิง Relocation ที่ 60 RAI
+      // (unit ประทับยาร์ดของเครื่องที่ยิง) แต่แถวชีตยังติดป้ายยาร์ดอื่น จึงหายจากผัง
+      // ภายใน 60 วิ ทั้งบล็อก F/L/N โดยไม่มีใครสั่ง ยาร์ดเปลี่ยนได้จากคนเท่านั้น
+      // (ดูคอมเมนต์ด้านบน) ป้ายที่ไม่ตรงปล่อยไว้ให้แอดมินตัดสิน — ตำแหน่งที่คนยิงคง
+      // อยู่ตามที่ยิง (คืนตำแหน่งที่เคยถูกล้าง: Settings → คืนตำแหน่งตามบล็อก)
       for (const vin in units) {
         const u = units[vin]
         const r = rows[vin]
@@ -240,19 +248,7 @@ export default function App() {
         // กฎ "ปล่อยช่องจอดคืน" ใช้กับรถที่กินช่องอยู่เท่านั้น — รถที่ไม่มีช่อง
         // ก็ไม่มีอะไรให้ปล่อย
         const positioned = u.block != null || u.row != null || u.slot != null
-        if (positioned && deriveCarStatus(r.cells) === 'Gate-out') { gone.push(vin); continue }
-        // ส่วนกฎ "ยาร์ดต้องตรงกับชีต" ใช้กับรถทุกคัน ไม่ว่าจะมีช่องจอดหรือไม่
-        //
-        // ของเดิมข้ามรถที่ไม่มีช่องจอดไปตั้งแต่ต้นลูป ซึ่งกลายเป็นหลุมดำ: ตัว
-        // ย้ายยาร์ด (moveUnitsToSite) เก็บช่องจอดทิ้งเสมอตอนย้าย รถที่ถูกย้าย
-        // มาแล้วครั้งหนึ่งจึงไม่มีช่องจอดอีกเลย และจะไม่ถูกตรวจซ้ำตลอดไป —
-        // พอชีตย้ายรถไปยาร์ดอื่นทีหลัง รถค้างอยู่ยาร์ดเดิมถาวร กลายเป็นรถผี
-        // ที่โผล่บนการ์ด Pre Gate-in และ Damage ของยาร์ดที่ไม่เคยนำเข้าข้อมูล
-        if (r.site && u.site && r.site !== u.site) {
-          const list = strayed.get(r.site) ?? []
-          list.push(vin)
-          strayed.set(r.site, list)
-        }
+        if (positioned && deriveCarStatus(r.cells) === 'Gate-out') gone.push(vin)
       }
       // snapshot each car's last slot before it is cleared — this path (unlike
       // the ops-scan gate-out) never ran doGateOut, so it never got its own
@@ -273,12 +269,6 @@ export default function App() {
       if (gone.length) {
         for (const vin of gone) snapshotSlot(vin)
         useYard.getState().markDepartedMany(gone)
-      }
-      for (const [siteId, vins] of strayed) {
-        // ไม่ snapshotSlot ที่นี่: แถวของรถพวกนี้ย้ายไปยาร์ดปลายทางแล้ว (closeRoundRow ย้าย Last Yard Location ของรอบเดิมเข้า
-        // ประวัติรอบที่ปิดไปแล้ว) ช่อง "Last Yard Location" ที่เห็นตอนนี้เป็นของรอบใหม่ของยาร์ดปลายทาง — เครื่องที่ยังถือตำแหน่ง
-        // ของยาร์ดเดิมไว้เขียนมันลงไปทำให้ใบจัดกลุ่มของยาร์ดใหม่ขึ้นตำแหน่งของยาร์ดเก่า (ข้อมูลยาร์ดเดิมติดไปกับรถ)
-        useYard.getState().moveUnitsToSite(vins, siteId)
       }
 
       // (ตรงนี้เคยมี "auto-transfer": รถที่สถานะอ่านเป็น Gate-out และ Dealer
@@ -320,6 +310,32 @@ export default function App() {
     if (import.meta.env.DEV) (window as unknown as { __sweepNow?: () => void }).__sweepNow = sweep
     return () => { clearTimeout(t); clearInterval(iv) }
   }, [loggedInUserId])
+
+  // ── คืนตำแหน่งครั้งเดียว (6 ต.ค.): บล็อก F / L / N ของ 60 RAI ──────────────
+  // ตัวกวาด "ป้ายยาร์ดไม่ตรง → ย้ายยาร์ด/ล้างช่องเอง" (ถอดออกด้านบนแล้ว) ล้างช่อง
+  // จอดของรถที่เพิ่งยิง Relocation ทั้งสามบล็อกทิ้งโดยไม่ลงประวัติ — ประวัติ Location
+  // ยังอยู่ครบ จึงคืนจากบรรทัดล่าสุดที่คนบันทึก (restorePositionsInBlocks) ทำครั้งเดียว
+  // ต่อเครื่อง เฉพาะเครื่องแอดมินที่เลือก 60 RAI อยู่ หลังรถและแถวชีตโหลดครบ ไม่ทับ
+  // ช่องที่มีรถอื่นจอด ไม่แตะรถที่มีช่องแล้ว ทำซ้ำบนเครื่องอื่นก็ไม่มีอะไรให้แก้เพิ่ม
+  useEffect(() => {
+    if (!loggedInUserId || opsOnly || !trackingLoaded || !unitsCloudDone || !currentSite) return
+    const KEY = 'sjwd-restore-fln-60rai-20261006'
+    try { if (localStorage.getItem(KEY)) return } catch { return }
+    if (siteIdForLocation({ 'Location yard': '60 RAI' }, sites) !== currentSite) return
+    let cancelled = false
+    const t = setTimeout(async () => {
+      try {
+        const res = await useTracking.getState().restorePositionsInBlocks(['F', 'L', 'N'])
+        if (cancelled) return
+        try { localStorage.setItem(KEY, String(Date.now())) } catch { /* เครื่องไม่ให้เก็บ — รอบหน้าก็ไม่มีอะไรให้แก้แล้ว */ }
+        if (res.fixed || res.collided.length) {
+          useYard.getState().toast(res.collided.length ? 'info' : 'ok',
+            `คืนตำแหน่งรถบล็อก F/L/N ของ 60 RAI ${res.fixed} คัน${res.collided.length ? ` · ช่องถูกจอดทับ ${res.collided.length} คัน: ${res.collided.map((c) => `${c.vin.slice(-6)}→${c.want}`).join(', ')}` : ''}`)
+        }
+      } catch (e) { console.error('[restore] F/L/N 60 RAI', e) } // ไม่ตั้งธง — เปิดครั้งหน้าลองใหม่
+    }, 12_000)
+    return () => { cancelled = true; clearTimeout(t) }
+  }, [loggedInUserId, opsOnly, trackingLoaded, unitsCloudDone, currentSite, sites])
 
   // ── realtime catch-up: a tab that slept or lost network missed events ──
   // Realtime keeps the yard plan live, but a phone in a pocket or a laptop

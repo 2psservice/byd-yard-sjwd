@@ -238,6 +238,12 @@ interface TrackingState {
    *  หรือไม่มีประวัติ Location เลยให้ถอยไป จะข้ามไปเฉยๆ ไม่แตะ — กดจากหน้า
    *  ตั้งค่าซ้ำได้ปลอดภัย (เช็คสภาพก่อนแก้ทุกครั้ง) */
   repairOrphanPositions: () => { fixed: number; collided: { vin: string; want: string }[]; skipped: number }
+  /** คืนตำแหน่งที่ถูกล้าง "เฉพาะบล็อกที่ระบุ" ของยาร์ดที่เลือกอยู่ จากบรรทัดประวัติ
+   *  Location ล่าสุดของรอบนี้ (ที่คน/ops scan บันทึกไว้) — รถที่แถวชีตอยู่ยาร์ดนี้
+   *  และ unit ไม่มีช่อง (หรือไม่มี unit ในเครื่องเลย เช่นถูกตั้ง DEPARTED/EXPECTED
+   *  ไปแล้ว ดึงจากคลาวด์มาต่อ) · ช่องที่มีรถอื่นจอดอยู่ไม่ทับ · รถที่ชีตอ่านเป็น
+   *  Gate-out ไม่แตะ · เขียนประวัติทุกคันที่คืน · กดซ้ำได้ปลอดภัย */
+  restorePositionsInBlocks: (blocks: string[]) => Promise<{ fixed: number; collided: { vin: string; want: string }[]; skipped: number }>
   commitCoInspection: (res: ParseResult) => { updated: number; added: number; skipped: number; gateOut: number; moved: number; otherYard: number; heldInYard: number }
   /** Set a cell and log it. `src: 'scan'` marks the write as a FIELD STATION
    *  action (ops-scan), which is what lets a report tell a real recording apart
@@ -1294,6 +1300,62 @@ export const useTracking = create<TrackingState>()(
           db.upsertUnits(changedUnits).catch((e) => console.error('[db] repairOrphanPositions', e))
         }
         return { fixed: changedUnits.length, collided, skipped }
+      },
+
+      restorePositionsInBlocks: async (blocksIn) => {
+        const want = new Set(blocksIn.map((b) => b.trim().toUpperCase()).filter(Boolean))
+        const { currentSite } = useYard.getState()
+        const out = { fixed: 0, collided: [] as { vin: string; want: string }[], skipped: 0 }
+        if (!currentSite || !want.size) return out
+        const rows = get().rows
+        const units0 = useYard.getState().units
+        // ช่องที่ยาร์ดนี้ครองอยู่ตอนเริ่ม (ทุกบล็อก) — เช็คชนกับสภาพจริง ไม่ทับรถที่จอดอยู่
+        const occupied = new Map<string, string>()
+        for (const u of Object.values(units0)) {
+          if (u.site === currentSite && u.status !== 'DEPARTED' && u.block && u.row && u.slot) occupied.set(`${u.block}-${u.row}-${u.slot}`, u.vin)
+        }
+        // เป้าหมาย: แถวชีตที่อยู่ยาร์ดนี้ · ไม่ใช่รถที่ออก/ยังไม่เข้า · บรรทัด Location ล่าสุด
+        // ของรอบนี้ (ที่คนบันทึก) ชี้ไปบล็อกที่ระบุ · และ unit ไม่มีช่องอยู่ (ถูกล้างไป)
+        const plan: { vin: string; target: { block: string; row: number; slot: number } }[] = []
+        for (const r of Object.values(rows)) {
+          if (r.deletedAt || r.site !== currentSite) continue
+          const st = deriveCarStatus(r.cells)
+          if (st === 'Gate-out' || st === 'Pre Gate-out' || st === 'Pre Gate-in') continue
+          const moves = roundHistory(r).filter((e) => (e.field === 'Location' || e.field === LOCATION_KEY) && isScanLocationEntry(e))
+          const last = moves[moves.length - 1]
+          const target = last ? parseYardLocCode(last.to) : null
+          if (!target || !want.has(target.block)) continue
+          const u = units0[r.vin]
+          if (u && u.site === currentSite && u.status !== 'DEPARTED' && u.block && u.row && u.slot) continue // มีช่องอยู่แล้ว — ไม่แตะ
+          plan.push({ vin: r.vin, target })
+        }
+        if (!plan.length) return out
+        // unit ที่เครื่องนี้ไม่มี (ถูกตั้ง DEPARTED แล้วการดึงรถในยาร์ดกรองทิ้ง) → ดึงตัวจริง
+        // จากคลาวด์มาต่อ ไม่สร้างใหม่จากความว่างเปล่า (รุ่น/สี/defect ต้องเป็นของเดิม)
+        const missing = plan.filter((p) => !units0[p.vin]).map((p) => p.vin)
+        const fromCloud = new Map<string, Unit>()
+        if (missing.length) for (const u of await db.fetchUnitsByVins(missing)) fromCloud.set(u.vin, u)
+        const now = Date.now()
+        const nextUnits = { ...useYard.getState().units }
+        const changed: Unit[] = []
+        for (const { vin, target } of plan) {
+          const key = `${target.block}-${target.row}-${target.slot}`
+          const occ = occupied.get(key)
+          if (occ && occ !== vin) { out.collided.push({ vin, want: yardLocFull(target) }); continue }
+          const base = nextUnits[vin] ?? fromCloud.get(vin)
+          if (!base) { out.skipped++; continue } // ไม่มี unit ทั้งในเครื่องและคลาวด์ — ไม่เดา
+          const fixed: Unit = { ...base, site: currentSite, block: target.block, row: target.row, slot: target.slot, status: 'PARKED', parkedAt: now, importedAt: base.importedAt || now }
+          nextUnits[vin] = fixed
+          changed.push(fixed)
+          occupied.set(key, vin)
+          get().appendHistory(vin, { at: now, by: 'ระบบ (คืนตำแหน่งที่ถูกล้าง)', field: 'Location', from: '', to: yardLocFull(target) })
+          out.fixed++
+        }
+        if (changed.length) {
+          useYard.setState({ units: nextUnits })
+          await db.upsertUnitsStrict(changed) // โยน error ถ้าไม่ถึงคลาวด์ — หน้าตั้งค่าแจ้งให้กดใหม่
+        }
+        return out
       },
 
       /**
