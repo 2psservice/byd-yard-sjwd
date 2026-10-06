@@ -113,3 +113,63 @@ describe('realtime broadcast ต้องพาป้ายไซต์ไปพ
     expect(msg?.vin).toBe('V1'); expect(msg?.site).toBe('S2')
   })
 })
+
+describe('Gate-out ข้ามยาร์ดต้องเป็นการเขียนก้อนเดียว (ไม่มีสถานะกลางทางหลุดไปฐานข้อมูล)', () => {
+  beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-10-06T08:00:00Z')) })
+  afterEach(() => { vi.useRealTimers(); vi.resetModules() })
+
+  async function setupPush() {
+    vi.resetModules(); localStorage.clear()
+    const pushed: any[][] = []
+    vi.doMock('../src/lib/supabase', () => ({
+      isConfigured: () => true,
+      supabase: { channel: () => ({ on() { return this }, subscribe() { return this }, send: async () => 'ok' }), removeChannel() {} },
+    }))
+    vi.doMock('../src/lib/db', async (orig) => ({
+      ...(await orig<object>()), isConfigured: () => true,
+      upsertVisits: async () => {}, bulkUpsert: async () => {}, deleteTrackingRows: async () => {},
+      upsertTrackingRows: async (rows: any[]) => { pushed.push(rows.map((r) => JSON.parse(JSON.stringify(r)))) },
+    }))
+    const { useTracking } = await import('../src/store/useTracking')
+    const { useYard } = await import('../src/store/useYard')
+    useYard.setState({ sites: [S1, S2], currentSite: 'S1' })
+    const r = { vin: 'V1', site: 'S1', history: [], updatedAt: 1_000,
+      cells: { Vin: 'V1', 'Car Status': 'In Yard', 'Location yard': S1.name, 'Gate In (Rayong yard)': '20/09/2026', 'Dealer Location': S2.name } }
+    useTracking.setState({ loaded: true, rows: { V1: r } })
+    return { useTracking, pushed }
+  }
+
+  it('transferToYard พร้อม gateOut: เขียนแถวครั้งเดียว site=ปลายทาง · มีป้ายต้นทาง · รอบเก่าถูกปิดพร้อมเวลาออกและช่องจอดสุดท้าย · ประวัติบอกว่า Gate-out', async () => {
+    const { useTracking, pushed } = await setupPush()
+    const at = Date.now()
+    const ok = useTracking.getState().transferToYard('V1', 'S2', {
+      at, queue: false,
+      gateOut: { stampText: '06/10/2026 15:00', at, lastLocation: 'L7306' },
+    })
+    expect(ok).toBe(true)
+    expect(pushed.length, 'ส่งขึ้นฐานข้อมูลครั้งเดียว').toBe(1)
+    const row = pushed[0][0]
+    expect(row.site).toBe('S2')
+    expect(row.cells['Car Status']).toBe('Pre Gate-in')
+    expect(row.cells['Gate Out From Site']).toBe('S1')
+    const trips = JSON.parse(row.cells['__trips'])
+    expect(trips).toHaveLength(1)
+    expect(trips[0].cells['Gate Out time stamp']).toBe('06/10/2026 15:00')
+    expect(trips[0].cells['Last Yard Location']).toBe('L7306')
+    expect(row.history.some((h: any) => h.field === 'Car Status' && h.from === 'In Yard' && h.to === 'Gate-out')).toBe(true)
+    // แถวสดต้องไม่มีของรอบเก่าค้าง
+    expect(row.cells['Gate Out time stamp'] ?? '').toBe('')
+    expect(row.cells['Last Yard Location'] ?? '').toBe('')
+  })
+
+  it('(อ้างอิงพฤติกรรมเดิม) ลำดับเดิม updateCell หลายครั้ง + startNewTrip ส่งขึ้นฐานข้อมูลหลายครั้ง และมีแถวกลางทางที่ site ยังเป็นยาร์ดต้นทาง', async () => {
+    const { useTracking, pushed } = await setupPush()
+    const g = useTracking.getState()
+    g.updateCell('V1', 'Car Status', 'Gate-out')
+    g.updateCell('V1', 'Gate Out time stamp', '06/10/2026 15:00')
+    g.updateCell('V1', 'Gate Out Time', String(Date.now()))
+    g.startNewTrip('V1', { yard: S2.name, keepQueueProgress: true })
+    expect(pushed.length).toBeGreaterThan(1)
+    expect(pushed.slice(0, -1).some((p) => p[0].site === 'S1')).toBe(true)
+  })
+})
