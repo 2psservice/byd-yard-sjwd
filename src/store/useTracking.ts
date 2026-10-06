@@ -1566,8 +1566,11 @@ export const useTracking = create<TrackingState>()(
             // ยาร์ดนี้เลย (Pre Gate-in ที่แค่ติดป้ายผิด) — การย้ายป้ายเฉย ๆ ตรงนี้
             // คือสิ่งที่ทำให้รถ 79 คันที่ 60 Rai ถูกปิดรอบเป็น Gate-out แล้วไปโผล่
             // เป็น Pre Gate-in ที่ 3D LCB พร้อมตำแหน่งจอดหายทั้งล็อต
+            // รถที่ "เพิ่งย้ายเข้ามา" (Gate-out จากยาร์ดอื่นแล้วเริ่มรอบใหม่ที่นี่) ก็เป็น Pre Gate-in ที่ยังไม่มีคนยืนยันเหมือนกัน
+            // แต่ไม่ใช่รถติดป้ายผิด — แถวมีป้ายต้นทาง/ก้อนรอบที่ปิดแล้ว ไฟล์หลักที่ยังเขียนยาร์ดเดิมห้ามลากกลับ
+            const transferredIn = !!stale && (!!stale.cells[GATE_OUT_ORIGIN_SITE_KEY] || tripsOf(stale.cells).length > 0)
             if (stale && currentSite
-                && (deriveCarStatus(stale.cells) !== 'Pre Gate-in' || inYardAssertedAt(stale.cells, currentSite) > 0)) {
+                && (transferredIn || deriveCarStatus(stale.cells) !== 'Pre Gate-in' || inYardAssertedAt(stale.cells, currentSite) > 0)) {
               heldInYard++; skipped++; continue
             }
             if (stale) {
