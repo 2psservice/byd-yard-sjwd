@@ -1613,6 +1613,10 @@ export function hasArrived(cells: Record<string, string>): boolean {
  * falls back to the flag; there is nothing else to read.
  */
 export function gateInArrived(i: QueueItem): boolean {
+  // ล็อตจดไว้เองว่ารถ "มาแล้วและออกไปแล้ว" (reconcileGateOuts ตราไว้ตอนเห็นรถออกจากยาร์ดของล็อต) — แถวสดอาจเป็น
+  // Pre Gate-in รอบใหม่ของยาร์ดปลายทางที่รถย้ายไป ซึ่งไม่ใช่ "ยังไม่มาถึง" ของล็อตนี้ (หน้า Gate-in ซ่อนรายการแบบนี้อยู่แล้ว
+  // ส่วน Dashboard อ่านล็อตดิบ จึงเคยนับค้างเป็น "ยังไม่มาถึง" และล็อตไม่เคยจบ)
+  if (i.gatedOut) return true
   const cells = useTracking.getState().rows[i.vin]?.cells
   return cells ? hasArrived(cells) : i.done
 }
@@ -1635,6 +1639,7 @@ export function queueProgress(q: WorkQueue) {
   if (isPreGateInQueue(q)) {
     const rows = useTracking.getState().rows
     const done = q.items.reduce((n, i) => {
+      if (i.gatedOut) return n + 1 // ล็อตจดว่ามาแล้วออกไปแล้ว — ดู gateInArrived
       const cells = rows[i.vin]?.cells
       return n + (cells ? (hasArrived(cells) ? 1 : 0) : (i.done ? 1 : 0))
     }, 0)
