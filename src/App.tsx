@@ -7,7 +7,8 @@ import { SelectSiteModal } from './components/SelectSiteModal'
 import { OpsShell } from './components/OpsShell'
 import { SiteLoadGate } from './components/SiteLoadGate'
 import { useYard, useMe, isOpsOnlyRole } from './store/useYard'
-import { useTrackingRows, useTracking } from './store/useTracking'
+import { useTrackingRows, useTracking, cloudSyncedThisSession } from './store/useTracking'
+import { isConfigured } from './lib/supabase'
 import { useOps, repairMissingStationDates } from './store/useOps'
 import { useVisits } from './store/useVisits'
 import { startSyncBus, stopSyncBus } from './lib/syncBus'
@@ -209,6 +210,12 @@ export default function App() {
   useEffect(() => {
     if (!loggedInUserId) return
     const sweep = () => {
+      // ห้ามเขียนจากสำเนาที่อาจเก่า: เครื่องที่เพิ่งเปิด/ตื่นจากหลับถือสำเนา units/rows จาก IndexedDB ที่เก่าเป็นชั่วโมง และตัวกวางานนี้ "เขียนทั้งแถว"
+      // ขึ้นคลาวด์ด้วยเวลาใหม่ (updateCell) — ทับค่าที่เครื่องอื่นเพิ่งแก้ (N05 → N08 → N05 สลับกันเองทั้งที่ไม่มีใครย้ายรถ)
+      // จึงรอจนเซสชันนี้ซิงก์แถวกับดึงรถของยาร์ดนี้จากคลาวด์เสร็จ และไม่ทำงานตอนแท็บถูกซ่อน (ไทเมอร์ที่ถูกหน่วง/ข้อมูลเก่าสุด)
+      // (กติกาเดียวกับ reconcileVinOfStatus ใน useTracking) ออฟไลน์/ไม่ได้ตั้งค่าคลาวด์ = ทำงานตามเดิม
+      if (document.visibilityState !== 'visible') return
+      if (isConfigured() && (!useYard.getState().unitsCloudDone || !cloudSyncedThisSession())) return
       const { units } = useYard.getState()
       const { rows } = useTracking.getState()
       const gone: string[] = []
@@ -268,7 +275,9 @@ export default function App() {
         useYard.getState().markDepartedMany(gone)
       }
       for (const [siteId, vins] of strayed) {
-        for (const vin of vins) snapshotSlot(vin)
+        // ไม่ snapshotSlot ที่นี่: แถวของรถพวกนี้ย้ายไปยาร์ดปลายทางแล้ว (closeRoundRow ย้าย Last Yard Location ของรอบเดิมเข้า
+        // ประวัติรอบที่ปิดไปแล้ว) ช่อง "Last Yard Location" ที่เห็นตอนนี้เป็นของรอบใหม่ของยาร์ดปลายทาง — เครื่องที่ยังถือตำแหน่ง
+        // ของยาร์ดเดิมไว้เขียนมันลงไปทำให้ใบจัดกลุ่มของยาร์ดใหม่ขึ้นตำแหน่งของยาร์ดเก่า (ข้อมูลยาร์ดเดิมติดไปกับรถ)
         useYard.getState().moveUnitsToSite(vins, siteId)
       }
 

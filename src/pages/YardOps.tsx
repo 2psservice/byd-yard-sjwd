@@ -3008,14 +3008,18 @@ function DriverView() {
   const doAssign = (slot: { block: string; row: number; slot: number }) => {
     if (!unit) return
     const from = unit.block && unit.row && unit.slot ? yardLocFull(unit) : ''
-    assign(unit.vin, slot, driverName, planMode)
-    startTrip(unit.vin, driverName, 'Gate', `${blockCode(slot.block)}${slot.slot}.${slot.row}`)
-    // the parking assignment IS a position edit — log it like any relocation,
-    // so no screen can ever hold a position that no history line explains
-    useTracking.getState().appendHistory(unit.vin, {
-      at: Date.now(), by: driverName, field: 'Location', src: 'scan',
-      from, to: yardLocFull({ block: slot.block, slot: slot.slot, row: slot.row }),
+    const at = Date.now()
+    // the parking assignment IS a position edit — log it like any relocation, so no screen can ever hold a position that
+    // no history line explains — but only AFTER the cloud has answered (ok / queued for retry): the line used to be written
+    // the instant the button was tapped, even when assign() refused (slot already taken) or the write then failed
+    const placed = assign(unit.vin, slot, driverName, planMode, () => {
+      useTracking.getState().appendHistory(unit.vin, {
+        at, by: driverName, field: 'Location', src: 'scan',
+        from, to: yardLocFull({ block: slot.block, slot: slot.slot, row: slot.row }),
+      })
     })
+    if (!placed) return // ช่องชน/ไม่มีรถ — assign แจ้งแล้ว ไม่เริ่มทริป ไม่ลงประวัติ ไม่แจ้งสำเร็จ
+    startTrip(unit.vin, driverName, 'Gate', `${blockCode(slot.block)}${slot.slot}.${slot.row}`)
     toast('ok', `${unit.vin.slice(-6)} → ${blockCode(slot.block)}${slot.slot}.${slot.row}`)
   }
   const doPark = () => {
@@ -3067,11 +3071,16 @@ function DriverView() {
     } else {
       if (proc.slot) {
         const from = unit.block && unit.row && unit.slot ? yardLocFull(unit) : ''
-        assign(unit.vin, proc.slot, driverName, planMode); confirmParked(unit.vin)
-        useTracking.getState().appendHistory(unit.vin, {
-          at: Date.now(), by: driverName, field: 'Location', src: 'scan',
-          from, to: yardLocFull({ block: proc.slot.block, slot: proc.slot.slot, row: proc.slot.row }),
+        const at = Date.now(), slot = proc.slot, vinNow = unit.vin
+        // ประวัติลงหลังคลาวด์ตอบ และ confirmParked เฉพาะเมื่อ assign รับคำสั่งแล้ว (ช่องชน = ไม่มีอะไรถูกวาง ห้ามประกาศจอดที่ตำแหน่งเดิม)
+        // — ทั้งสองเขียนผ่านคิวเขียนตำแหน่งเดียวกัน ลำดับ ASSIGNED → PARKED ถูกต้องเสมอ
+        const placed = assign(vinNow, slot, driverName, planMode, () => {
+          useTracking.getState().appendHistory(vinNow, {
+            at, by: driverName, field: 'Location', src: 'scan',
+            from, to: yardLocFull({ block: slot.block, slot: slot.slot, row: slot.row }),
+          })
         })
+        if (placed) confirmParked(vinNow)
       }
       returnToSlot(proc.queueId, unit.vin, driverName)
       updateCell(unit.vin, 'Car Status', YARD_STATUS)

@@ -253,7 +253,11 @@ interface YardState {
    *  factoryDefect → Defect-Factory); defaults to 'manual' (→ Defect-Yard). */
   addManualDamageBulk: (vins: string[], f: { position?: string; defect?: string; categoryNG?: string; categoryRepair?: string; incharge?: string; note?: string; date?: string; statusRepair?: string; repairDate?: string; severity?: 'minor' | 'major'; source?: import('../types').DamageSource }) => number
   suggest: (vin: string) => SlotCandidate | null
-  assign: (vin: string, slot: { block: string; row: number; slot: number }, driver?: string, mode?: 'AUTO' | 'SEMI') => void
+  /** วางรถลงช่อง (ASSIGNED) — คืน true เมื่อ "รับคำสั่ง" แล้ว (ปรับในเครื่องแล้ว) / false เมื่อไม่มีรถหรือช่องชนกับรถคันอื่น (แจ้ง toast แล้ว ไม่มีอะไรถูกเขียน)
+   *  `onSettled` ถูกเรียกครั้งเดียวหลังเขียนคลาวด์: 'ok' = ลงแล้ว · 'queued' = เขียนไม่สำเร็จ เข้าคิวรอลองใหม่ (flushPendingPlacements)
+   *  หน้าจอที่จะบันทึกประวัติ/อ้างว่าเสร็จต้องรอ onSettled ไม่ใช่ค่าที่คืนทันที */
+  assign: (vin: string, slot: { block: string; row: number; slot: number }, driver?: string, mode?: 'AUTO' | 'SEMI',
+    onSettled?: (status: 'ok' | 'queued') => void) => boolean
   confirmParked: (vin: string) => void
   resetParking: (vin: string) => void
   /** Move cars to another yard: re-tag the unit, release the slot it held in the
@@ -464,6 +468,18 @@ let placementSeq = 0
 const placementIntent = new Map<string, number>() // vin → seq ของคำสั่งวางล่าสุด
 function enqueuePlacementWrite(job: () => Promise<void>): void {
   placementChain = placementChain.then(job).catch((e) => console.error('[yard] placement write', e))
+}
+
+/** เขียน "รถออกแล้ว" ขึ้นคลาวด์ไม่สำเร็จ → ลองใหม่ (หน่วงเพิ่มขึ้น สูงสุด 5 ครั้ง) — เดิม markDeparted ใช้ upsertUnits ที่ไม่เคย reject
+ *  เขียนพลาดเงียบ ๆ: คลาวด์ยังถือช่องจอดของรถที่ออกไปแล้ว (รถผีกินช่อง) และตัวกวางานรอบถัดไปก็ไม่เห็นเพราะสำเนาในเครื่องถูกล้างไปแล้ว
+ *  ลองใหม่เฉพาะรถที่ยังเป็น DEPARTED ไม่มีช่องในเครื่อง (ถ้าเพิ่งถูกวางใหม่ ไม่ทับ) */
+function retryDepartedWrite(get: () => { units: Record<string, Unit> }, vins: string[], attempt = 1) {
+  if (attempt > 5) return
+  setTimeout(async () => {
+    const live = vins.map((v) => get().units[v]).filter((u): u is Unit => !!u && u.status === 'DEPARTED' && !u.block)
+    if (!live.length) return
+    try { await db.upsertUnitsStrict(live) } catch (e) { console.error('[db] departed retry', attempt, e); retryDepartedWrite(get, vins, attempt + 1) }
+  }, Math.min(15_000 * 1.5 ** (attempt - 1), 60_000))
 }
 
 let pendingPlacementsFlushing = false
@@ -837,8 +853,14 @@ export const useYard = create<YardState>()(
         units[vin] = { ...u, status: 'DEPARTED', block: undefined, row: undefined, slot: undefined }
         // the car that leaves frees ONLY its own place — every other car in the
         // lane stays exactly where the yard put it
-        set({ units })
-        db.upsertUnits([units[vin]]).catch((e) => console.error('[db] markDeparted', e))
+        // และทิ้งตำแหน่งที่ค้างรอส่งของคันนี้ด้วย — ไม่งั้น attachPendingPlacement/flushPendingPlacements ใส่ช่องเก่ากลับให้รถที่ออกไปแล้ว
+        // (รถ gate-out ได้ช่องคืนมา กิน/ชนช่องของรถคันอื่น และตัวกวางานจับว่า "รถออกแล้วแต่มีช่อง" วนซ้ำ)
+        set((s) => {
+          if (!s.pendingPlacements[vin]) return { units }
+          const pendingPlacements = { ...s.pendingPlacements }; delete pendingPlacements[vin]
+          return { units, pendingPlacements }
+        })
+        db.upsertUnitsStrict([units[vin]]).catch((e) => { console.error('[db] markDeparted', e); retryDepartedWrite(get, [vin]) })
       },
 
       markDepartedMany: (vins) => {
@@ -853,8 +875,13 @@ export const useYard = create<YardState>()(
           cleared.push(updated)
         }
         if (!cleared.length) return
-        set({ units })
-        db.upsertUnits(cleared).catch((e) => console.error('[db] markDepartedMany', e))
+        set((s) => {
+          if (!cleared.some((u) => s.pendingPlacements[u.vin])) return { units }
+          const pendingPlacements = { ...s.pendingPlacements }
+          for (const u of cleared) delete pendingPlacements[u.vin]
+          return { units, pendingPlacements }
+        })
+        db.upsertUnitsStrict(cleared).catch((e) => { console.error('[db] markDepartedMany', e); retryDepartedWrite(get, cleared.map((u) => u.vin)) })
       },
 
       markTrailerArrived: (no, arrived = true) => {
@@ -1064,6 +1091,7 @@ export const useYard = create<YardState>()(
           for (const [vin, p] of entries) {
             const u = get().units[vin]
             if (!u) { done.push([vin, p]); continue } // car gone locally — nothing left to place
+            if (u.status === 'DEPARTED') { done.push([vin, p]); continue } // รถออกไปแล้ว — ห้ามใส่ช่องกลับให้ (ทิ้งรายการนี้)
             try {
               // Strict, not upsertUnits: bulkUpsert never rejects (a chunk that
               // gives up still "finishes"), so a retry that failed again was
@@ -1235,10 +1263,10 @@ export const useYard = create<YardState>()(
         return autoAssign(withModelId(u), curBlocks(get()), get().policies, Object.values(get().units), get().groupModelsInRow, get().laneDepth)
       },
 
-      assign: (vin, slot, driver, mode) => {
+      assign: (vin, slot, driver, mode, onSettled) => {
         const s0 = get()
         const u0 = s0.units[vin]
-        if (!u0) return
+        if (!u0) return false
         // สองคนขับ (หรือ auto-suggest บนสองเครื่อง) อาจได้ช่องเดียวกันถ้าข้อมูล
         // ยังไม่ทันซิงก์ระหว่างกัน — เช็คจากสิ่งที่เครื่องนี้รู้ล่าสุดก่อนเขียน
         // ทับ ไม่ใช่ lock ข้ามเครื่องแบบสมบูรณ์ (ยังมีช่องที่สองเครื่องกดห่างกัน
@@ -1248,7 +1276,7 @@ export const useYard = create<YardState>()(
           (o.status === 'PARKED' || o.status === 'ASSIGNED'))
         if (clash) {
           s0.toast('err', `ช่องนี้มีรถคันอื่นจอดอยู่แล้ว (...${clash.vin.slice(-6)}) — เลือกช่องใหม่`)
-          return
+          return false
         }
         set((s) => {
           const u = s.units[vin]
@@ -1261,34 +1289,34 @@ export const useYard = create<YardState>()(
             assignedAt: now, drivingStartedAt: now,
             driver: driver || s.currentDriver,
           }
-          db.upsertUnit(updated).then(() => {
-            // this write just landed, so it IS the current truth — drop any
-            // stale pendingPlacements[vin] an EARLIER failed move left queued.
-            // Without this, a failed move queues {A,1,1}; the operator rescans
-            // the same car into {B,2,3} and THIS write succeeds outright (no
-            // catch, so the queue is never touched) — flushPendingPlacements'
-            // retry timer then fires later, reads the now-current unit, and
-            // overwrites it back to the stale {A,1,1} it never cleared.
+          // เข้าคิวเขียนตำแหน่งเดียวกับ updateLocations/confirmParked (ทีละชุดตามลำดับที่คนยิง): เดิมเขียนเองนอกคิว
+          // arriveProc เรียก assign แล้ว confirmParked ต่อกัน → 2 คำขอเต็มแถววิ่งขึ้นคลาวด์พร้อมกัน ถึงสลับลำดับได้
+          // (ASSIGNED ทับ PARKED)
+          enqueuePlacementWrite(async () => {
+            try {
+              await db.upsertUnit(updated)
+            } catch (e) {
+              console.error('[db] assign', e)
+              // same gap updateLocations already guards against (see attachPendingPlacement): the slot already shows on
+              // screen — if this write never lands, refreshPlacements' next 3-minute pull silently slides the car back to
+              // its OLD slot. Queue it so flushPendingPlacements keeps retrying instead of losing the move.
+              set((s2) => ({
+                pendingPlacements: { ...s2.pendingPlacements, [vin]: { vin, block: slot.block, row: slot.row, slot: slot.slot } },
+              }))
+              scheduleFlushPendingPlacements(get)
+              try { onSettled?.('queued') } catch (e2) { console.error('[assign] onSettled', e2) }
+              return
+            }
+            // this write just landed, so it IS the current truth — drop any stale pendingPlacements[vin] an EARLIER failed
+            // move left queued, or flushPendingPlacements' retry would overwrite it back to the stale slot
             if (get().pendingPlacements[vin]) {
               set((s2) => { const next = { ...s2.pendingPlacements }; delete next[vin]; return { pendingPlacements: next } })
             }
-          }).catch((e) => {
-            console.error('[db] assign', e)
-            // same gap updateLocations already guards against (see
-            // attachPendingPlacement): the scan already logged this move into
-            // the car's Location history as successful, and the slot already
-            // shows on screen — if this write never lands, refreshPlacements'
-            // next 3-minute pull (or any other full re-pull) silently slides
-            // the car back to its OLD slot while the history line keeps
-            // claiming the move succeeded, forever. Queue it so
-            // flushPendingPlacements keeps retrying instead of losing the move.
-            set((s2) => ({
-              pendingPlacements: { ...s2.pendingPlacements, [vin]: { vin, block: slot.block, row: slot.row, slot: slot.slot } },
-            }))
-            scheduleFlushPendingPlacements(get)
+            try { onSettled?.('ok') } catch (e) { console.error('[assign] onSettled', e) }
           })
           return { units: { ...s.units, [vin]: updated } }
         })
+        return true
       },
 
       confirmParked: (vin) =>
@@ -1296,7 +1324,19 @@ export const useYard = create<YardState>()(
           const u = s.units[vin]
           if (!u || !u.block) return s
           const updated: Unit = { ...u, status: 'PARKED', parkedAt: Date.now() }
-          db.upsertUnit(updated).catch((e) => console.error('[db] confirmParked', e))
+          // ผ่านคิวเขียนตำแหน่งเดียวกับ assign (ลำดับ ASSIGNED → PARKED ถูกต้องเสมอ) และถ้าเขียนไม่สำเร็จเข้าคิวรอลองใหม่เหมือน assign
+          // — เดิมแค่ log error แล้ว refresh รอบถัดไปดึงสถานะ/ตำแหน่งเก่ากลับ
+          enqueuePlacementWrite(async () => {
+            try {
+              await db.upsertUnit(updated)
+            } catch (e) {
+              console.error('[db] confirmParked', e)
+              set((s2) => ({
+                pendingPlacements: { ...s2.pendingPlacements, [vin]: { vin, block: updated.block, row: updated.row, slot: updated.slot } },
+              }))
+              scheduleFlushPendingPlacements(get)
+            }
+          })
           return { units: { ...s.units, [vin]: updated } }
         }),
 
@@ -2119,8 +2159,12 @@ export const useYard = create<YardState>()(
                 set((s) => {
                   const merged: Record<string, Unit> = { ...s.units }
                   // never let the cloud copy erase a defect, or revert a move,
-                  // still queued locally
-                  for (const u of cloud) merged[u.vin] = attachPendingPlacement(s.pendingPlacements, attachPendingDamages(s.pendingDamages, u))
+                  // still queued locally — หรือที่เพิ่งย้ายและกำลังเดินทางขึ้นคลาวด์ (keepNewerPlacement เหมือนทุกจุดรับสำเนาจากคลาวด์)
+                  // และไม่กระจายตำแหน่งที่เพิ่งรับมาต่อเป็น moves (markAdopted)
+                  for (const u of cloud) {
+                    merged[u.vin] = attachPendingPlacement(s.pendingPlacements, attachPendingDamages(s.pendingDamages, keepNewerPlacement(merged[u.vin], u)))
+                    markAdopted(merged[u.vin])
+                  }
                   return { units: merged }
                 })
               }).catch(() => {})
@@ -2554,8 +2598,12 @@ onSync('dmg', (p: { vins?: string[] }) => {
     if (!cloud.length) return
     useYard.setState((s) => {
       const units = { ...s.units }
-      // never let the cloud copy erase a defect, or revert a move, still queued locally
-      for (const u of cloud) units[u.vin] = attachPendingPlacement(s.pendingPlacements, attachPendingDamages(s.pendingDamages, keepLocalPhotos(units[u.vin], u)))
+      // never let the cloud copy erase a defect, or revert a move, still queued locally — หรือที่เพิ่งย้ายและกำลังเดินทางขึ้นคลาวด์
+      // (keepNewerPlacement) และไม่กระจายตำแหน่งที่เพิ่งรับมาต่อเป็น moves (markAdopted)
+      for (const u of cloud) {
+        units[u.vin] = attachPendingPlacement(s.pendingPlacements, attachPendingDamages(s.pendingDamages, keepLocalPhotos(units[u.vin], keepNewerPlacement(units[u.vin], u))))
+        markAdopted(units[u.vin])
+      }
       return { units }
     })
     // คันที่หน้าจอนี้โหลดรูปไว้แล้ว → ดึงรูปชุดใหม่ด้วย (อีกเครื่องเพิ่งถ่าย/ลบรูป)
