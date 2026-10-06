@@ -51,6 +51,8 @@ let syncInFlight = false
 // a blank) Car Status beat the real "In Yard" everywhere — session-only, so
 // it always starts false on a fresh load regardless of what was persisted.
 let cloudSyncedOnce = false
+/** เซสชันนี้ซิงก์กับคลาวด์สำเร็จอย่างน้อยหนึ่งรอบแล้วหรือยัง — งานเบื้องหลังที่ "เขียนจากสำเนาในเครื่อง" ต้องรอก่อน (สำเนาจาก IndexedDB อาจเก่าเป็นชั่วโมง) */
+export const cloudSyncedThisSession = () => cloudSyncedOnce
 // a realtime payload can arrive with the record body stripped (Supabase drops it
 // when the row exceeds the channel's max_record_bytes — a car with a long cell
 // set + audit history reaches that). The event then carries no VIN, so nothing

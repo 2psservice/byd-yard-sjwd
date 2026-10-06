@@ -13,6 +13,7 @@ import {
   LogOut, MapPin, ClipboardList, ListChecks, Copy, Check, Images, Sparkles, Download,
 } from 'lucide-react'
 import { useYard, useUnits, useTrips, useBlocks, attachPendingDamages, type PlacementResult } from '../store/useYard'
+import { planLaneUpdates, recordableDrafts } from '../lib/laneRebuild'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { overlayInspection } from '../lib/inspectionStatus'
 import { isDamaged, deriveCarStatus, hasLeftGate, IN_YARD_STATUSES, CAR_STATUS_META, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY } from '../lib/carStatus'
@@ -3007,14 +3008,18 @@ function DriverView() {
   const doAssign = (slot: { block: string; row: number; slot: number }) => {
     if (!unit) return
     const from = unit.block && unit.row && unit.slot ? yardLocFull(unit) : ''
-    assign(unit.vin, slot, driverName, planMode)
-    startTrip(unit.vin, driverName, 'Gate', `${blockCode(slot.block)}${slot.slot}.${slot.row}`)
-    // the parking assignment IS a position edit — log it like any relocation,
-    // so no screen can ever hold a position that no history line explains
-    useTracking.getState().appendHistory(unit.vin, {
-      at: Date.now(), by: driverName, field: 'Location', src: 'scan',
-      from, to: yardLocFull({ block: slot.block, slot: slot.slot, row: slot.row }),
+    const at = Date.now()
+    // the parking assignment IS a position edit — log it like any relocation, so no screen can ever hold a position that
+    // no history line explains — but only AFTER the cloud has answered (ok / queued for retry): the line used to be written
+    // the instant the button was tapped, even when assign() refused (slot already taken) or the write then failed
+    const placed = assign(unit.vin, slot, driverName, planMode, () => {
+      useTracking.getState().appendHistory(unit.vin, {
+        at, by: driverName, field: 'Location', src: 'scan',
+        from, to: yardLocFull({ block: slot.block, slot: slot.slot, row: slot.row }),
+      })
     })
+    if (!placed) return // ช่องชน/ไม่มีรถ — assign แจ้งแล้ว ไม่เริ่มทริป ไม่ลงประวัติ ไม่แจ้งสำเร็จ
+    startTrip(unit.vin, driverName, 'Gate', `${blockCode(slot.block)}${slot.slot}.${slot.row}`)
     toast('ok', `${unit.vin.slice(-6)} → ${blockCode(slot.block)}${slot.slot}.${slot.row}`)
   }
   const doPark = () => {
@@ -3066,11 +3071,16 @@ function DriverView() {
     } else {
       if (proc.slot) {
         const from = unit.block && unit.row && unit.slot ? yardLocFull(unit) : ''
-        assign(unit.vin, proc.slot, driverName, planMode); confirmParked(unit.vin)
-        useTracking.getState().appendHistory(unit.vin, {
-          at: Date.now(), by: driverName, field: 'Location', src: 'scan',
-          from, to: yardLocFull({ block: proc.slot.block, slot: proc.slot.slot, row: proc.slot.row }),
+        const at = Date.now(), slot = proc.slot, vinNow = unit.vin
+        // ประวัติลงหลังคลาวด์ตอบ และ confirmParked เฉพาะเมื่อ assign รับคำสั่งแล้ว (ช่องชน = ไม่มีอะไรถูกวาง ห้ามประกาศจอดที่ตำแหน่งเดิม)
+        // — ทั้งสองเขียนผ่านคิวเขียนตำแหน่งเดียวกัน ลำดับ ASSIGNED → PARKED ถูกต้องเสมอ
+        const placed = assign(vinNow, slot, driverName, planMode, () => {
+          useTracking.getState().appendHistory(vinNow, {
+            at, by: driverName, field: 'Location', src: 'scan',
+            from, to: yardLocFull({ block: slot.block, slot: slot.slot, row: slot.row }),
+          })
         })
+        if (placed) confirmParked(vinNow)
       }
       returnToSlot(proc.queueId, unit.vin, driverName)
       updateCell(unit.vin, 'Car Status', YARD_STATUS)
@@ -4754,6 +4764,9 @@ function RelocationView() {
   // async (cloud-verified) rebuild only applies if no newer scan happened —
   // a late verify from an earlier scan must not overwrite a newer rebuild
   const laneGenRef = useRef(0)
+  // รถที่ยิงแล้วแต่ยังไม่ได้ลง "ยิงล่าสุด" (reloc:save) — ลงหลังคลาวด์ตอบ โดยชุดเขียนใดก็ตามที่ครอบรถคันนั้น (รอบที่ถูกรอบใหม่แทนที่
+  // ไม่เคยเขียน แต่รอบใหม่ครอบทั้ง seq จึงลงให้) vin → ตัวช่วยเรียกตอนเสร็จ
+  const lanePendingRecentRef = useRef<Set<string>>(new Set())
   // walking direction: 'head' = 1st scan is คันที่ 1 · 'tail' = the worker
   // walks tail→head in ONE pass, so each NEW scan becomes คันที่ 1 and the
   // earlier scans slide down — the FIRST scan ends up last
@@ -4764,6 +4777,7 @@ function RelocationView() {
     if (d === laneDir) return
     setLaneDir(d)
     laneOrderRef.current = []
+    lanePendingRecentRef.current.clear()
     laneGenRef.current++
     setLaneAdded([])
     toast('info', d === 'tail' ? 'ยิงจากท้ายแถว — คันที่ยิงล่าสุดจะเป็นคันที่ 1' : 'ยิงจากหัวแถว — คันแรกที่ยิงเป็นคันที่ 1')
@@ -4966,7 +4980,6 @@ function RelocationView() {
       return
     }
     if (!passGateGuard(r)) { blockGate(r.vin, r.cells['Model name'] ?? r.cells['Model'] ?? ''); return }
-    const u = siteUnits.find(x => x.vin === r!.vin)
     // the same scan can reach here twice (wedge + debounce racing) before the
     // store re-renders — the second pass would double-place with stale data
     if (lastLaneHit.current.v === r.vin && Date.now() - lastLaneHit.current.at < 1500) return
@@ -5004,48 +5017,44 @@ function RelocationView() {
     // incumbent list is verified against the CLOUD first — only cars the cloud
     // still parks in this lane slide — then the batch applies. Offline (or no
     // cloud configured) keeps the old trust-local behavior.
-    type LocUpdate = {
-      vin: string; block: string; row: number; slot: number; modelName?: string; color?: string
-      from?: { block?: string; row?: number; slot?: number }
-    }
     const gen = ++laneGenRef.current
+    const scannedAt = Date.now()
+    lanePendingRecentRef.current.add(r.vin)
+    const codeAtPos = (vin: string) => codeOf(L.blockId, L.slot, seq.indexOf(vin) + 1)
+    // ลง "ยิงล่าสุด" ให้รถที่ยิงแล้วและมีใน seq ของชุดนี้ (ยกเว้นคันที่ถูกเครื่องอื่นย้ายไปก่อน) — เรียกหลังคลาวด์ตอบ/หรือไม่ต้องเขียนอะไร
+    const settleRecent = (results: PlacementResult[]) => {
+      for (const vin of [...lanePendingRecentRef.current]) {
+        if (!seq.includes(vin)) continue
+        if (results.some(x => x.vin === vin && x.status === 'lost')) { lanePendingRecentRef.current.delete(vin); continue }
+        lanePendingRecentRef.current.delete(vin)
+        recordRecent('reloc:save', vin, `ย้ายไป ${codeAtPos(vin)}`)
+      }
+    }
     /** Scanned cars (`seq`) are written exactly where the worker put them — no
      *  `from` compare-and-set: the scan IS the truth. Only the incumbents
      *  sliding down behind them (cars nobody scanned) keep the guard, so a car
-     *  another phone moved away meanwhile is not dragged back into this lane. */
+     *  another phone moved away meanwhile is not dragged back into this lane.
+     *
+     *  ประวัติการย้าย ("Location") ของทุกคันที่ถูกย้ายจริง (คันที่ยิง + คันที่ถูกเลื่อน) ลงหลังคลาวด์ตอบแล้วเท่านั้น (ok / รอส่ง)
+     *  ไม่ใช่ตอนกดยิง — เดิมลงทันทีก่อนเขียน เขียนล้ม/ถูกข้ามแล้วประวัติยังบอกว่าย้ายแล้ว (ประวัติไม่ตรงตำแหน่ง, ยิง 5 เห็น 4) */
     const buildAndApply = (inc: typeof incumbents) => {
-      if (gen !== laneGenRef.current) return // a newer scan supersedes this rebuild
-      const updates: LocUpdate[] = []
-      seq.forEach((vin, i) => {
-        const cu = siteUnits.find(x => x.vin === vin)
-        const row = i + 1
-        if (cu && cu.block === L.blockId && cu.slot === L.slot && cu.row === row) return // already right
-        const tr2 = vin === r!.vin ? r : trackingRows.find(x => x.vin === vin)
-        updates.push({ vin, block: L.blockId, row, slot: L.slot,
-          modelName: cu?.modelName || tr2?.cells['Model name'] || tr2?.cells['Model'] || undefined,
-          color: cu?.color || tr2?.cells['Color'] || undefined })
+      if (gen !== laneGenRef.current) return // a newer scan supersedes this rebuild (รอบใหม่ครอบทั้ง seq และลงประวัติ/ยิงล่าสุดให้)
+      const { updates, drafts } = planLaneUpdates({
+        seq, inc, blockId: L.blockId, slot: L.slot,
+        unitOf: (vin) => siteUnits.find(x => x.vin === vin),
+        rowOf: (vin) => (vin === r!.vin ? r : trackingRows.find(x => x.vin === vin)),
+        codeOf, locOf: yardLocFull,
       })
-      inc.forEach((cu, i) => {
-        const row = seq.length + 1 + i
-        if (cu.block === L.blockId && cu.slot === L.slot && cu.row === row) return
-        updates.push({ vin: cu.vin, block: L.blockId, row, slot: L.slot, modelName: cu.modelName, color: cu.color,
-          from: { block: cu.block, row: cu.row, slot: cu.slot } })
-      })
-      if (!updates.length) return
+      if (!updates.length) { settleRecent([]); return } // ทุกคันอยู่ตำแหน่งที่ยิงอยู่แล้ว — ไม่มีอะไรต้องเขียน/ลงประวัติ
       // ตรวจทานหลังคลาวด์รับชุดนี้แล้ว — เฉพาะชุดล่าสุด (gen) ของการยิงรัวชุดนี้
-      updateLocations(updates, (results) => { void verifyLane(gen, L, seq, inc, results) })
-      // every car the rebuild moves BESIDES the scanned one (a reordered
-      // earlier scan, an incumbent sliding down) gets its own Location history
-      // line — the silent slide made a car's position contradict its ประวัติการย้าย
-      for (const up of updates) {
-        if (up.vin === r!.vin) continue
-        const cu = siteUnits.find(x => x.vin === up.vin)
-        appendHistory(up.vin, {
-          at: Date.now(), by: currentUser, field: 'Location', src: 'scan',
-          from: cu ? yardLocFull(cu) : '',
-          to: codeOf(L.blockId, L.slot, up.row),
-        })
-      }
+      updateLocations(updates, (results) => {
+        for (const d of recordableDrafts(drafts, results)) {
+          appendHistory(d.vin, { at: scannedAt, by: currentUser, field: 'Location', src: 'scan', from: d.from, to: d.to })
+        }
+        settleRecent(results)
+        if (results.some(x => x.status === 'queued')) toast('info', 'สัญญาณไม่ดี — บันทึกตำแหน่งไว้ในเครื่องแล้ว กำลังรอส่งขึ้นระบบ')
+        void verifyLane(gen, L, seq, inc, results)
+      })
     }
     // The incumbent list is derived from THIS device's units, and that cuts both
     // ways: a car it still shows here may have been relocated elsewhere (sliding
@@ -5054,18 +5063,18 @@ function RelocationView() {
     // two cars end up claiming one square. Ask the cloud for the whole lane and
     // rebuild from that. Offline / slow wifi keeps the old trust-local behaviour.
     if (!isConfigured()) buildAndApply(incumbents)
-    else laneFromCloud(siteUnits, currentSite, L.blockId, L.slot).then((lane) =>
-      buildAndApply(laneOccupants(lane, L.blockId, L.slot).filter(u => !ord.includes(u.vin) && u.vin !== r!.vin)))
+    else laneFromCloud(siteUnits, currentSite, L.blockId, L.slot)
+      .then((lane) => buildAndApply(laneOccupants(lane, L.blockId, L.slot).filter(u => !ord.includes(u.vin) && u.vin !== r!.vin)))
+      .catch((e) => {
+        // เดิมไม่มี .catch — buildAndApply โยน error แล้วการยิงหายเงียบ ๆ (ประวัติ/แจ้งสำเร็จไปแล้วแต่ไม่มีอะไรถูกเขียน)
+        console.error('[lane] rebuild failed', e)
+        toast('err', 'คำนวณแถวจากระบบไม่สำเร็จ — ใช้ข้อมูลในเครื่องแทน ตรวจตำแหน่งอีกครั้ง')
+        try { buildAndApply(incumbents) } catch (e2) { console.error('[lane] local rebuild failed', e2); toast('err', 'บันทึกตำแหน่งไม่สำเร็จ — ยิงคันนั้นใหม่') }
+      })
     setLaneIssue(null) // การยิงใหม่เริ่มรอบตรวจทานใหม่
-    const code = codeOf(L.blockId, L.slot, pos)
-    appendHistory(r.vin, {
-      at: Date.now(), by: currentUser, field: 'Location', src: 'scan',
-      from: u?.block && u.row && u.slot ? yardLocFull(u) : '',
-      to: code,
-    })
-    recordRecent('reloc:save', r.vin, `ย้ายไป ${code}`)
     setLaneAdded(seq.map((vin, i) => ({ vin, code: codeOf(L.blockId, L.slot, i + 1) })))
-    toast('ok', `${code} · คันที่ ${pos} · ${r.vin.slice(-6)} — ยิงคันถัดไปต่อได้เลย`)
+    // ตอบรับทันทีเพื่อให้ยิงคันถัดไปต่อได้ แต่ไม่อ้างว่า "สำเร็จ" — ประวัติ/ยิงล่าสุดลงหลังคลาวด์ตอบ (ดู buildAndApply)
+    toast('info', `${codeOf(L.blockId, L.slot, pos)} · คันที่ ${pos} · ${r.vin.slice(-6)} — รับแล้ว กำลังบันทึก ยิงคันถัดไปต่อได้เลย`)
   }
   onLaneScanRef.current = onLaneScan
 
@@ -5192,7 +5201,7 @@ function RelocationView() {
                 setLaneStr(v)
                 // reset the scan round only on a real lane edit — a handheld
                 // burst appending a VIN here is NOT a lane change
-                if (v === '' || parseLane(v)) { setLaneAdded([]); laneOrderRef.current = []; laneGenRef.current++ }
+                if (v === '' || parseLane(v)) { setLaneAdded([]); laneOrderRef.current = []; lanePendingRecentRef.current.clear(); laneGenRef.current++ }
               }}
             />
             {laneReady ? (
