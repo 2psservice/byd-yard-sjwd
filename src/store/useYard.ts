@@ -1060,19 +1060,26 @@ export const useYard = create<YardState>()(
         if (!entries.length) return
         pendingPlacementsFlushing = true
         try {
-          const done: string[] = []
+          const done: [string, typeof entries[number][1]][] = []
           for (const [vin, p] of entries) {
             const u = get().units[vin]
-            if (!u) { done.push(vin); continue } // car gone locally — nothing left to place
+            if (!u) { done.push([vin, p]); continue } // car gone locally — nothing left to place
             try {
-              await db.upsertUnits([{ ...u, block: p.block, row: p.row, slot: p.slot }])
-              done.push(vin)
+              // Strict, not upsertUnits: bulkUpsert never rejects (a chunk that
+              // gives up still "finishes"), so a retry that failed again was
+              // dropped from the queue as if it had landed — the cloud kept the
+              // old slot and the next refresh slid the car back (ตำแหน่งไม่ตรง
+              // กับที่ยิงล่าสุด). A throw here keeps the entry; the scheduler retries.
+              await db.upsertUnitsStrict([{ ...u, block: p.block, row: p.row, slot: p.slot }])
+              done.push([vin, p])
             } catch (e) { console.error('[db] flushPendingPlacements', vin, e) }
           }
           if (done.length) {
             set((s) => {
               const next = { ...s.pendingPlacements }
-              for (const vin of done) delete next[vin]
+              // only the entry we actually wrote — a newer move queued for the
+              // same car while this write was in flight must survive
+              for (const [vin, p] of done) if (next[vin] === p) delete next[vin]
               return { pendingPlacements: next }
             })
           }
@@ -1759,13 +1766,19 @@ export const useYard = create<YardState>()(
             if (cur && cur.block === c.block && cur.row === c.row && cur.slot === c.slot && cur.status === c.status) continue
             // keep everything this device knows that the light pass does not carry
             units[c.vin] = cur ? { ...cur, block: c.block, row: c.row, slot: c.slot, status: c.status, site: c.site } : c
+            markAdopted(units[c.vin]) // มาจากคลาวด์ ไม่ใช่การย้ายของเครื่องนี้ — ห้ามกระจายต่อเป็น moves
             changed++
           }
           // a car this device still parks here but the cloud no longer lists is
           // one that left through another device — free its square
+          // …ยกเว้นคันที่ยังเขียนไม่ถึงคลาวด์ (มีย้ายรอส่ง) หรือเพิ่งจอด/ย้ายในไม่กี่นาทีนี้ — คลาวด์ยัง
+          // ไม่รู้จักมันเพราะงานเขียนยังเดินทางอยู่ ไม่ใช่เพราะรถออก (loadFromSupabase ข้ามสองกรณีนี้แล้ว)
+          const recent = Date.now() - PLACEMENT_PROTECT_MS
           for (const u of Object.values(units)) {
             if (u.site !== siteId || !u.block || seen.has(u.vin)) continue
+            if (s.pendingPlacements[u.vin] || (u.parkedAt ?? 0) > recent) continue
             units[u.vin] = { ...u, status: 'DEPARTED', block: undefined, row: undefined, slot: undefined }
+            markAdopted(units[u.vin])
             changed++
           }
           return changed ? { units } : s
@@ -1908,7 +1921,7 @@ export const useYard = create<YardState>()(
         // (+ damages) had arrived; now they flow in with the layout
         const streamUnits = (batch: Unit[]) => set((s) => {
           const units = { ...s.units }
-          for (const u of batch) units[u.vin] = withPending(keepLocalPhotos(units[u.vin], keepNewerPlacement(units[u.vin], u)))
+          for (const u of batch) { units[u.vin] = withPending(keepLocalPhotos(units[u.vin], keepNewerPlacement(units[u.vin], u))); markAdopted(units[u.vin]) }
           return { units }
         })
         // VIN + ตำแหน่ง มาก่อน: the placement-only pass runs alongside the full
@@ -1921,6 +1934,7 @@ export const useYard = create<YardState>()(
             const cur = units[u.vin]
             const fresh = keepNewerPlacement(cur, u)
             units[u.vin] = attachPendingPlacement(pendingPlacementsNow, cur ? { ...fresh, damages: cur.damages } : withPending(fresh))
+            markAdopted(units[u.vin])
           }
           return { units }
         })
@@ -1932,7 +1946,7 @@ export const useYard = create<YardState>()(
         if (cloud.length || trailers.length) {
           set((s) => {
             const merged: Record<string, Unit> = { ...s.units }
-            for (const u of cloud) merged[u.vin] = withPending(keepLocalPhotos(merged[u.vin], keepNewerPlacement(merged[u.vin], u)))
+            for (const u of cloud) { merged[u.vin] = withPending(keepLocalPhotos(merged[u.vin], keepNewerPlacement(merged[u.vin], u))); markAdopted(merged[u.vin]) }
             // ── สำเนาค้าง: เครื่องยังจำว่ารถจอดอยู่ แต่คลาวด์ไม่มีรถคันนั้นในยาร์ดแล้ว ──
             // การดึงนี้กรองรถที่ออกแล้ว (DEPARTED) ทิ้งเพื่อความเบา เครื่องที่พลาด realtime
             // ตอนหลับจึงไม่เคยรู้ว่ารถออกไปแล้ว ถือ "รถผี" ไว้เป็นวัน ๆ: ขึ้นบนผังจอด นับใน
@@ -1952,6 +1966,7 @@ export const useYard = create<YardState>()(
                 if (s.pendingPlacements[vin]) continue
                 if ((u.parkedAt ?? 0) > recent || (u.gateInAt ?? 0) > recent || (u.importedAt ?? 0) > recent) continue
                 merged[vin] = { ...u, status: 'DEPARTED', block: undefined, row: undefined, slot: undefined }
+                markAdopted(merged[vin])
               }
             }
             return { units: merged, trailers: trailers.length ? trailers : s.trailers }
@@ -2017,6 +2032,7 @@ export const useYard = create<YardState>()(
                 const cur = s.units[r.vin]
                 // ตำแหน่งที่คนยิงทีหลังชนะ + การย้ายที่ยังรอส่ง — เหมือนทุกจุดที่รับสำเนาจากคลาวด์
                 const next = attachPendingPlacement(s.pendingPlacements, keepNewerPlacement(cur, db.parseUnitRow(r, cur?.damages ?? [])))
+                markAdopted(next)
                 return { units: { ...s.units, [r.vin]: next } }
               })
             },
@@ -2418,6 +2434,10 @@ const posSig = (u?: Unit) =>
  *  Comparing against it is what stops a received move being echoed straight
  *  back out again. */
 const posShared = new Map<string, string>()
+/** ตำแหน่งที่เพิ่งรับมาจากคลาวด์ (realtime / refresh / โหลด) ไม่ใช่การย้ายของเครื่องนี้ — ทำเครื่องหมายว่า
+ *  "แชร์แล้ว" เพื่อไม่ให้ตัวกระจาย moves ประกาศมันซ้ำ: เครื่องที่ถือสำเนาเก่าเคยกระจายตำแหน่งเก่า
+ *  (ที่เพิ่งดึงมา) ในนาม "การย้ายใหม่" ไปทับตำแหน่งที่คนเพิ่งยิงบนทุกเครื่อง (ตำแหน่งเด้งกลับ) */
+function markAdopted(u: Unit | undefined) { if (u) posShared.set(u.vin, posSig(u)) }
 const pendingMoves = new Map<string, MoveMsg>()
 let movesTimer: ReturnType<typeof setTimeout> | null = null
 /** More than a handful of cars changing at once is a bulk load / re-sync, not
@@ -2458,7 +2478,10 @@ onSync('moves', (p: MovesPayload) => {
     for (const m of moves) {
       const cur = units[m.vin]
       if (!cur) continue // this device does not hold the car — its own load will bring it
-      const next: Unit = { ...cur, block: m.block, row: m.row, slot: m.slot, status: (m.status as Unit['status']) ?? cur.status }
+      // เหมือน realtime/refresh: ตำแหน่งที่เครื่องนี้เพิ่งยิง (ใหม่กว่า m.at) หรือยังรอส่งขึ้นคลาวด์ ต้องไม่ถูก
+      // ประกาศเก่าทับ — ที่ผ่านมาช่องทางนี้รับทุกอย่างทันที จึงเป็นทางที่ตำแหน่งเด้งกลับได้
+      const incoming: Unit = { ...cur, block: m.block, row: m.row, slot: m.slot, status: (m.status as Unit['status']) ?? cur.status, parkedAt: m.at }
+      const next = attachPendingPlacement(s.pendingPlacements, keepNewerPlacement(cur, incoming))
       const sig = posSig(next)
       if (posSig(cur) === sig) { posShared.set(m.vin, sig); continue }
       posShared.set(m.vin, sig) // mark as shared BEFORE the set() so it is not echoed back
