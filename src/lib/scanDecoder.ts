@@ -27,48 +27,66 @@ export interface ScanDecoder {
 const OPTS = { formats: ['QRCode', 'Code128', 'Code39', 'EAN13', 'DataMatrix'], tryHarder: true, maxNumberOfSymbols: 1 } as const
 const WORKER_READY_MS = 8000
 
+/** sim hook (dev เท่านั้น): window.__scanFailPaths = ['videoframe', 'bitmap'] → worker แกล้งพังขั้นเตรียมภาพ
+ *  ของทางนั้น (จำลอง iPhone/WebKit ที่ createImageBitmap จาก VideoFrame/ตัวเลือกย่อขนาดไม่ทำงาน) */
+function testFail(path: string): { __fail?: string } {
+  if (!import.meta.env.DEV || typeof window === 'undefined') return {}
+  const f = (window as unknown as { __scanFailPaths?: string[] }).__scanFailPaths
+  return f?.includes(path) ? { __fail: path } : {}
+}
+
+/** iPhone/iPad — ทุกเบราว์เซอร์บน iOS คือ WebKit (รวม Chrome/LINE) ซึ่งมี VideoFrame/OffscreenCanvas
+ *  แต่ createImageBitmap จากเฟรม + ตัวเลือกย่อขนาดทำงานไม่ครบ → ใช้ทางดึงภาพเดิม (canvas) ที่พิสูจน์แล้ว */
+export const IS_IOS = typeof navigator !== 'undefined' &&
+  (/iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && (navigator.maxTouchPoints ?? 0) > 1))
+
 async function createWorkerDecoder(): Promise<ScanDecoder | null> {
   if (typeof Worker === 'undefined') return null
   let worker: Worker
   try {
     worker = new Worker(new URL('./scanDecoder.worker.ts', import.meta.url), { type: 'module' })
   } catch { return null }
-  const pending = new Map<number, (text: string | null) => void>()
+  // reject = ขั้นเตรียมภาพใน worker พัง (ดู scanDecoder.worker.ts err) — ผู้เรียกต้องถอยทางดึงภาพ
+  const pending = new Map<number, { resolve: (text: string | null) => void; reject: (e: Error) => void }>()
   let seq = 0
   let offscreen = false
   const ready = await new Promise<boolean>((resolve) => {
     const t = setTimeout(() => resolve(false), WORKER_READY_MS)
-    worker.onmessage = (e: MessageEvent<{ type: string; id?: number; text?: string | null; offscreen?: boolean }>) => {
+    worker.onmessage = (e: MessageEvent<{ type: string; id?: number; text?: string | null; offscreen?: boolean; err?: string }>) => {
       if (e.data?.type === 'ready') { clearTimeout(t); offscreen = !!e.data.offscreen; resolve(true); return }
-      if (e.data?.type === 'result' && e.data.id != null) { pending.get(e.data.id)?.(e.data.text ?? null); pending.delete(e.data.id) }
+      if (e.data?.type === 'result' && e.data.id != null) {
+        const p = pending.get(e.data.id); pending.delete(e.data.id)
+        if (!p) return
+        if (e.data.err) p.reject(new Error(e.data.err)); else p.resolve(e.data.text ?? null)
+      }
     }
     worker.onerror = () => { clearTimeout(t); resolve(false) }
   })
   if (!ready) { worker.terminate(); return null }
   return {
     kind: 'worker',
-    decode: (img) => new Promise<string | null>((resolve) => {
+    decode: (img) => new Promise<string | null>((resolve, reject) => {
       const id = ++seq
-      pending.set(id, resolve)
+      pending.set(id, { resolve, reject })
       // โอนบัฟเฟอร์ไปเลย (ไม่คัดลอก) — ผู้เรียกไม่ใช้ ImageData นี้ต่อ
       const buf = img.data.buffer as ArrayBuffer
       worker.postMessage({ id, width: img.width, height: img.height, buf }, [buf])
     }),
     ...(offscreen && typeof createImageBitmap === 'function' ? {
-      decodeBitmap: (bmp: ImageBitmap) => new Promise<string | null>((resolve) => {
+      decodeBitmap: (bmp: ImageBitmap) => new Promise<string | null>((resolve, reject) => {
         const id = ++seq
-        pending.set(id, resolve)
-        worker.postMessage({ id, bitmap: bmp }, [bmp]) // โอนกรรมสิทธิ์ ไม่คัดลอกพิกเซล
+        pending.set(id, { resolve, reject })
+        worker.postMessage({ id, bitmap: bmp, ...testFail('bitmap') }, [bmp]) // โอนกรรมสิทธิ์ ไม่คัดลอกพิกเซล
       }),
       ...(typeof VideoFrame !== 'undefined' ? {
-        decodeVideoFrame: (frame: VideoFrame, crop: { sx: number; sy: number; cw: number; ch: number; outW: number; outH: number }) => new Promise<string | null>((resolve) => {
+        decodeVideoFrame: (frame: VideoFrame, crop: { sx: number; sy: number; cw: number; ch: number; outW: number; outH: number }) => new Promise<string | null>((resolve, reject) => {
           const id = ++seq
-          pending.set(id, resolve)
-          worker.postMessage({ id, frame, ...crop }, [frame])
+          pending.set(id, { resolve, reject })
+          worker.postMessage({ id, frame, ...crop, ...testFail('videoframe') }, [frame])
         }),
       } : {}),
     } : {}),
-    dispose: () => { worker.terminate(); for (const r of pending.values()) r(null); pending.clear() },
+    dispose: () => { worker.terminate(); for (const r of pending.values()) r.resolve(null); pending.clear() },
   }
 }
 
