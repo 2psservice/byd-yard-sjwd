@@ -35,3 +35,6 @@ Thumbs.db
 
 # ── Claude Code local settings ──
 .claude/settings.local.json
+
+# สำรองฐานข้อมูล (scripts/backup-supabase.mjs) — มีข้อมูลจริง ห้ามขึ้น git
+backups/

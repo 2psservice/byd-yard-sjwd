@@ -738,11 +738,15 @@ async function describeCamError(e: unknown): Promise<string> {
 const CAMERA_FIRST_FRAME_MS = 4000
 /** ข้อความระหว่างภาพกล้องขึ้นแล้วแต่ตัวถอดรหัส (wasm/worker) ยังโหลดไม่เสร็จ */
 const DECODER_NOTE = 'กำลังเตรียมตัวอ่านโค้ด…'
-/** ช่วงห่างระหว่างการดึงภาพไปถอดรหัส (ms) — rAF เดินทุกเฟรม แต่ถอดรหัสห่างกันเท่านี้ */
-const DECODE_MIN_MS = 100
+/** ช่วงห่างระหว่างการดึงภาพไปถอดรหัส (ms) — rAF เดินทุกเฟรม แต่ถอดรหัสห่างกันเท่านี้
+ *  เครื่อง RAM น้อย: ไม่ถี่กว่า 200 ms (วัดแล้วการดึงภาพบนเธรดหลักกิน ~100-150 ms/เฟรม) */
+const DECODE_MIN_MS = LOW_END_DEVICE ? 200 : 100
 const DECODE_MAX_MS = 250
+/** ความกว้างสูงสุดของภาพที่ส่งไปถอดรหัส — 1024 px พอสำหรับ wasm; เครื่อง RAM น้อยใช้ 640
+ *  (พิกเซลน้อยลง 2.5 เท่า อ่าน VIN ระยะจ่อปกติยังได้) */
+const DECODE_MAX_W = LOW_END_DEVICE ? 640 : 1024
 /** ตัวนับสำหรับซิม (dev เท่านั้น) — window.__scanStats */
-type ScanStats = { decodes: number; inflight: number; inflightMax: number; lastMs: number; kind: string; frames: number; periodMs: number; gaps: number[] }
+type ScanStats = { decodes: number; inflight: number; inflightMax: number; lastMs: number; kind: string; frames: number; periodMs: number; gaps: number[]; path: 'videoframe' | 'bitmap' | 'canvas' }
 
 /** หยิบหลายช่องจาก store ด้วยการเทียบตื้น — หน้าสถานีที่เคย `useYard()` ทั้งก้อน
  *  วาดใหม่ทุกครั้งที่อะไรก็ตามใน store เปลี่ยน (realtime ส่งรถมาคันเดียวก็กรองรถ
@@ -1139,6 +1143,14 @@ function VinInputInner({
       if (cancelled) return
       setCamInfo((m) => (m === DECODER_NOTE ? '' : m))
 
+      // ทางดึงภาพ (วัดบนซีพียูช้า 6 เท่า เธรดหลักต่อเฟรม): 'videoframe' = new VideoFrame(video)
+      // แค่ตัวชี้ไปที่เฟรม โอนให้ worker ครอป/ย่อ/อ่านพิกเซลเอง ~16 ms · 'bitmap' =
+      // createImageBitmap(video, ครอป, ย่อ) แล้วโอน ~86 ms · 'canvas' = drawImage+getImageData
+      // บนเธรดหลัก ~213 ms (ทางเดิม — กิน 60% ของเธรดหลักตลอดที่กล้องเปิด คือต้นเหตุพรีวิว
+      // ค้าง/จอดำบนเครื่องสเปกต่ำ) ใช้ทางที่เบาที่สุดที่เครื่องนั้นมี ถ้าทางใดโยน error ถอยลง
+      // ทางถัดไปทั้งรอบนี้ (ไม่ลองซ้ำทุกเฟรม)
+      let useVideoFrame = !!decoder.decodeVideoFrame && typeof VideoFrame !== 'undefined'
+      let useBitmap = !!decoder.decodeBitmap && typeof createImageBitmap === 'function'
       const canvas = document.createElement('canvas')
       const ctx = canvas.getContext('2d', { willReadFrequently: true })
       // จังหวะดึงภาพ: requestAnimationFrame — เดินตามรอบวาดจอของเครื่อง (ไม่ชนกับการ
@@ -1153,7 +1165,7 @@ function VinInputInner({
       let busy = false
       let tick = 0
       const stats = import.meta.env.DEV ? ((window as unknown as { __scanStats?: ScanStats }).__scanStats
-        = { decodes: 0, inflight: 0, inflightMax: 0, lastMs: 0, kind: decoder.kind, frames: 0, periodMs: period, gaps: [] as number[] }) : null
+        = { decodes: 0, inflight: 0, inflightMax: 0, lastMs: 0, kind: decoder.kind, frames: 0, periodMs: period, gaps: [] as number[], path: useVideoFrame ? 'videoframe' : useBitmap ? 'bitmap' : 'canvas' }) : null
       const frame = (now: number) => {
         if (stopped) return
         raf = requestAnimationFrame(frame)
@@ -1172,16 +1184,30 @@ function VinInputInner({
         const full = ++tick % 3 === 0
         const cw = full ? vw : Math.round(vw / factor)
         const ch = full ? vh : Math.round(vh / factor)
-        // cap the decode surface at ~1024 px wide — plenty for the wasm engine,
+        // cap the decode surface (DECODE_MAX_W) — plenty for the wasm engine,
         // and each frame decodes in tens of ms instead of hundreds on a slow chip
-        const scale = Math.min(1, 1024 / cw)
-        canvas.width = Math.max(2, Math.round(cw * scale))
-        canvas.height = Math.max(2, Math.round(ch * scale))
-        ctx.drawImage(video, (vw - cw) >> 1, (vh - ch) >> 1, cw, ch, 0, 0, canvas.width, canvas.height)
+        const scale = Math.min(1, DECODE_MAX_W / cw)
+        const outW = Math.max(2, Math.round(cw * scale))
+        const outH = Math.max(2, Math.round(ch * scale))
+        const sx = (vw - cw) >> 1, sy = (vh - ch) >> 1
         const t0 = performance.now()
         busy = true
         if (stats) { stats.inflight++; stats.inflightMax = Math.max(stats.inflightMax, stats.inflight); stats.decodes++ }
-        decoder.decode(ctx.getImageData(0, 0, canvas.width, canvas.height))
+        const viaCanvas = () => {
+          canvas.width = outW; canvas.height = outH
+          ctx.drawImage(video, sx, sy, cw, ch, 0, 0, outW, outH)
+          return decoder.decode(ctx.getImageData(0, 0, outW, outH))
+        }
+        const viaBitmap = () => createImageBitmap(video, sx, sy, cw, ch, { resizeWidth: outW, resizeHeight: outH, resizeQuality: 'low' })
+          .then((bmp) => decoder.decodeBitmap!(bmp))
+        let job: Promise<string | null>
+        if (useVideoFrame) {
+          try { job = decoder.decodeVideoFrame!(new VideoFrame(video), { sx, sy, cw, ch, outW, outH }) }
+          catch (e) { console.warn('[scan] VideoFrame path unavailable — bitmap/canvas', e); useVideoFrame = false; if (stats) stats.path = useBitmap ? 'bitmap' : 'canvas'; job = useBitmap ? viaBitmap() : viaCanvas() }
+        } else if (useBitmap) {
+          job = viaBitmap().catch((e) => { console.warn('[scan] bitmap path unavailable — canvas', e); useBitmap = false; if (stats) stats.path = 'canvas'; return viaCanvas() })
+        } else job = viaCanvas()
+        job
           .then((text) => { if (!stopped && text) hit(text) })
           .catch(() => { /* decoder hiccup — next frame */ })
           .finally(() => {
