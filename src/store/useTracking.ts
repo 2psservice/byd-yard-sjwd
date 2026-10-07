@@ -10,6 +10,7 @@ import { parseYardLocCode, yardLocFull } from '../lib/groupingImport'
 import { idbBulkPut, idbClear, idbDelete, idbGetAllRows, idbPut } from '../lib/idb'
 import * as db from '../lib/db'
 import { supabase } from '../lib/supabase'
+import { loadMark } from '../lib/loadMarks'
 import { onSync, sendSync, type RowMsg, type RowsPayload } from '../lib/syncBus'
 import { useYard, WCL_STAGING_BLOCK } from './useYard'
 import { siteForRow, siteIdForLocation, coInspectionAccepts, departedFromSite, siteWorksWith, rowYardName, rowInSite, CANDIDATE_SITES_KEY } from '../lib/siteScope'
@@ -647,6 +648,7 @@ export const useTracking = create<TrackingState>()(
 
       loadSiteRows: async (siteId) => {
         const token = ++siteLoadToken
+        loadMark('site-load-start')
         const live = () => siteLoadToken === token
         const { sites } = useYard.getState()
         const site = sites.find((s) => s.id === siteId)
@@ -662,9 +664,10 @@ export const useTracking = create<TrackingState>()(
         // เป้าหมาย: ยาร์ดนี้มีกี่แถวในคลาวด์ (นับอย่างเดียว เร็ว) — ถ้าในเครื่องมีครบแล้ว
         // ไม่ต้องรอ เปิดหน้าได้เลย ส่วนความสดใหม่ปล่อยให้ sync ส่วนต่างตามปกติ
         const total = await db.countTrackingRowsForSite(site)
+        loadMark('site-count')
         if (!live()) return
         if (total == null) { set({ siteLoad: { ...base, status: 'offline' } }); return }
-        if (base.have >= total) { set({ siteLoad: { ...base, total, status: 'done' } }); return }
+        if (base.have >= total) { loadMark('site-rows-cached'); set({ siteLoad: { ...base, total, status: 'done' } }); return }
         set({ siteLoad: { ...base, total } })
         try {
           await db.fetchTrackingRowsForSite(site, (batch) => {
@@ -693,6 +696,7 @@ export const useTracking = create<TrackingState>()(
               ? { siteLoad: { ...s.siteLoad, have: countHere(), total: Math.max(total, countHere()), progressAt: t } }
               : s)
           })
+          loadMark('site-rows-done')
           if (!live()) return
           set((s) => s.siteLoad && s.siteLoad.siteId === siteId
             ? { siteLoad: { ...s.siteLoad, have: countHere(), status: 'done', progressAt: Date.now() } }
@@ -754,6 +758,7 @@ export const useTracking = create<TrackingState>()(
         syncInFlight = true
         try {
         const startedAt = Date.now()
+        loadMark('sync-start')
         const lastSync = get().lastSync ?? 0
         const local = get().rows
         const hasLocal = Object.keys(local).length > 0
@@ -884,6 +889,7 @@ export const useTracking = create<TrackingState>()(
         }
         if (outgoing.size) pushRows([...outgoing.values()])
         set({ lastSync: startedAt })
+        loadMark('sync-done')
         cloudSyncedOnce = true
         // a full run has now seen — and cleaned — every row; don't force another
         if (!incremental) set({ sysHistoryPurged: SYS_HISTORY_PURGE_V })
