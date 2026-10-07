@@ -12,10 +12,7 @@
  *                                ไปที่เฟรม ไม่คัดลอกพิกเซลบนเธรดหลักเลย worker ครอป/ย่อเองด้วย
  *                                createImageBitmap(frame, …) แล้วอ่านพิกเซล (วัด: เธรดหลัก ~16 ms/
  *                                เฟรม เทียบ bitmap 86 / canvas 213 บนซีพียูช้า 6 เท่า)
- * ตอบ: { type: 'result', id, text | null, err? } · ตอนพร้อม: { type: 'ready', offscreen }
- *  err = ขั้น "เตรียมภาพ" (ครอป/ย่อ/อ่านพิกเซลจาก frame/bitmap) พัง หรือได้ภาพว่าง — ห้ามตอบเป็น
- *  "ไม่เจอโค้ด" เงียบ ๆ: iPhone (WebKit) มี VideoFrame แต่ createImageBitmap จากเฟรม/ตัวเลือกย่อ
- *  ทำงานไม่ครบ ทุกเฟรมเลยกลายเป็นภาพว่าง → สแกนไม่ติดเลยโดยไม่มีใครรู้ ฝั่งกล้องต้องรู้แล้วถอยทาง
+ * ตอบ: { type: 'result', id, text | null } · ตอนพร้อม: { type: 'ready', offscreen }
  */
 import { readBarcodes, prepareZXingModule } from 'zxing-wasm/reader'
 import wasmUrl from 'zxing-wasm/reader/zxing_reader.wasm?url'
@@ -34,23 +31,14 @@ let ctx: OffscreenCanvasRenderingContext2D | null = null
   port.postMessage({ type: 'ready', offscreen: hasOffscreen })
 })()
 
-type Msg = ({ id: number; width: number; height: number; buf: ArrayBuffer } | { id: number; bitmap: ImageBitmap }
-  | { id: number; frame: VideoFrame; sx: number; sy: number; cw: number; ch: number; outW: number; outH: number }) & { __fail?: string }
-
-/** ภาพที่อ่านได้ว่างเปล่าทั้งภาพ (alpha 0 ทุกจุดที่สุ่ม) = เตรียมภาพไม่สำเร็จ ไม่ใช่ "ไม่มีโค้ด" */
-function isBlank(img: ImageData): boolean {
-  const d = img.data, n = img.width * img.height
-  if (!n) return true
-  for (let k = 0; k < 24; k++) { const i = Math.floor((n * (k + 0.5)) / 24) * 4; if (d[i + 3] !== 0) return false }
-  return true
-}
+type Msg = { id: number; width: number; height: number; buf: ArrayBuffer } | { id: number; bitmap: ImageBitmap }
+  | { id: number; frame: VideoFrame; sx: number; sy: number; cw: number; ch: number; outW: number; outH: number }
 
 port.onmessage = async (e: MessageEvent<Msg>) => {
   const { id } = e.data
   let text: string | null = null
-  let img: ImageData
   try {
-    if (e.data.__fail) throw new Error(`test: ${e.data.__fail}`) // sim hook (dev เท่านั้น ฝั่งส่ง)
+    let img: ImageData
     if ('frame' in e.data) {
       const { frame, sx, sy, cw, ch, outW, outH } = e.data
       let bmp: ImageBitmap
@@ -75,12 +63,7 @@ port.onmessage = async (e: MessageEvent<Msg>) => {
     } else {
       img = new ImageData(new Uint8ClampedArray(e.data.buf), e.data.width, e.data.height)
     }
-    if (!('buf' in e.data) && isBlank(img)) throw new Error('blank frame')
-  } catch (err) {
-    port.postMessage({ type: 'result', id, text: null, err: String((err as Error)?.message ?? err) })
-    return
-  }
-  try { text = (await readBarcodes(img, OPTS as never))[0]?.text ?? null }
-  catch { /* decoder hiccup — caller tries the next frame */ }
+    text = (await readBarcodes(img, OPTS as never))[0]?.text ?? null
+  } catch { /* decoder hiccup — caller tries the next frame */ }
   port.postMessage({ type: 'result', id, text })
 }
