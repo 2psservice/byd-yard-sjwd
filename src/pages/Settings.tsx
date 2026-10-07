@@ -160,6 +160,55 @@ function TransferRepairByList() {
 }
 
 /**
+ * แยกยาร์ดขั้นที่ 1 — ตรวจว่าตาราง station_checks (ช่องร่วมต่อคัน: PDI/PM/FINAL/ค่าวัด) ตรงกับ
+ * ช่องในชีตของยาร์ดที่เลือกอยู่หรือยัง (อ่านอย่างเดียว ไม่แก้อะไร) ใช้ยืนยันก่อนสลับการอ่าน
+ * ไปใช้ตารางในขั้นถัดไป · "ไม่มีในตาราง" > 0 หลัง backfill = ยังไม่ได้รัน SQL หรือรันไม่ครบ
+ */
+function StationChecksAudit() {
+  const { currentSite, sites } = useYard()
+  const [busy, setBusy] = useState(false)
+  const [res, setRes] = useState<Awaited<ReturnType<ReturnType<typeof useTracking.getState>['auditStationChecks']>> | null>(null)
+  const [err, setErr] = useState('')
+  const siteName = sites.find((s) => s.id === currentSite)?.name ?? '—'
+  const run = async () => {
+    if (busy) return
+    setBusy(true); setErr(''); setRes(null)
+    try { setRes(await useTracking.getState().auditStationChecks()) }
+    catch { setErr('อ่านตารางไม่สำเร็จ — ตรวจสอบว่ารัน supabase-station-checks.sql แล้ว และการเชื่อมต่อปกติ') }
+    finally { setBusy(false) }
+  }
+  return (
+    <section className="panel overflow-hidden mb-4">
+      <div className="px-4 py-3 border-b hairline flex items-center gap-2">
+        <ClipboardCheck size={16} style={{ color: 'var(--brand)' }} />
+        <span className="font-semibold text-[14.5px]">ตรวจตาราง station_checks (แยกยาร์ด ขั้นที่ 1)</span>
+      </div>
+      <div className="p-4 space-y-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="text-[13px] leading-relaxed flex-1" style={{ minWidth: 260, color: 'var(--muted)' }}>
+            เทียบช่องร่วมต่อคัน (PDI/RE-PDI · PM · Final check · ค่าวัด · สถานะตรวจ) ในชีตของ <b>{siteName}</b> กับตาราง <code>station_checks</code> — อ่านอย่างเดียว ไม่แก้อะไร
+          </div>
+          <button id="audit-station-checks" className="btn btn-ghost py-2" disabled={busy || !currentSite} onClick={run}>
+            <ClipboardCheck size={14} /> {busy ? 'กำลังตรวจ…' : `ตรวจ ${siteName}`}
+          </button>
+        </div>
+        {err && <div className="text-[12.5px]" style={{ color: '#b91c1c' }}>{err}</div>}
+        {res && (
+          <div data-testid="station-checks-audit" className="text-[12.5px] space-y-1">
+            <div>แถวชีต {res.rows.toLocaleString()} · ช่องร่วมที่มีค่า {res.sheetCells.toLocaleString()} · <b style={{ color: '#15803d' }}>ตรงกัน {res.equal.toLocaleString()}</b> · <b style={{ color: res.missingInTable ? '#b91c1c' : 'inherit' }}>ไม่มีในตาราง {res.missingInTable.toLocaleString()}</b> · <b style={{ color: res.differ ? '#b91c1c' : 'inherit' }}>ค่าต่าง {res.differ.toLocaleString()}</b> · มีเฉพาะในตาราง {res.onlyInTable.toLocaleString()}</div>
+            {res.samples.length > 0 && (
+              <div className="max-h-48 overflow-y-auto border hairline rounded-lg p-2 font-mono text-[11.5px]">
+                {res.samples.map((x, i) => <div key={i}>{x.vin} · {x.key}: ชีต "{x.sheet}" / ตาราง "{x.table}"</div>)}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+/**
  * ซ่อมรถที่ตำแหน่งในผัง (block/row/slot) ไม่ตรงกับบรรทัดประวัติ "Location"
  * ล่าสุดของคันนั้น — เช่นรถที่เคยถูกปุ่ม "จัดจอดอัตโนมัติ" (ลบไปแล้ว) ย้ายไปโดย
  * ไม่บันทึกประวัติ ดู repairOrphanPositions ทำทีละไซต์ (ไซต์ที่เลือกอยู่)
@@ -949,6 +998,7 @@ export function Settings() {
       <WrongTransferRepair />
       <TransferRepairByList />
       <OrphanPositionRepair />
+      <StationChecksAudit />
       <StackedSlotRepair />
       <StationDateRepair />
 

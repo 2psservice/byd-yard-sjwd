@@ -12,8 +12,9 @@ import * as db from '../lib/db'
 import { supabase } from '../lib/supabase'
 import { onSync, sendSync, type RowMsg, type RowsPayload } from '../lib/syncBus'
 import { useYard, WCL_STAGING_BLOCK } from './useYard'
-import { siteForRow, siteIdForLocation, coInspectionAccepts, departedFromSite, siteWorksWith, rowYardName, CANDIDATE_SITES_KEY } from '../lib/siteScope'
+import { siteForRow, siteIdForLocation, coInspectionAccepts, departedFromSite, siteWorksWith, rowYardName, rowInSite, CANDIDATE_SITES_KEY } from '../lib/siteScope'
 import { TRIPS_CELL, TRIP_SCOPED_KEYS, ROUND_COPIED_KEYS, tripsOf, roundHistory, type TripSnapshot } from '../lib/tripHistory'
+import { sharedCellsOf, sharedDelta, auditStationChecks, type StationChecksAudit } from '../lib/stationChecks'
 import { useVisits } from './useVisits'
 import { visitFromTrip, type Visit } from '../lib/visits'
 import { CAR_STATUS_ORDER, CAR_STATUS_KEY, CAR_STATUS_SET_AT_KEY, CAR_STATUS_SET_SITE_KEY, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY, RELEASED_STATUSES, deriveCarStatus, isGateOutStamp, gateOutScanMs, gateInEvidenceAt, inYardAssertedAt, fmtGateOutStamp } from '../lib/carStatus'
@@ -76,6 +77,35 @@ function pushRows(rows: TrackRow[]): void {
   db.upsertTrackingRows(rows)
     .then(() => { for (const r of rows) failedPush.delete(r.vin) })
     .catch(() => { for (const r of rows) failedPush.add(r.vin) })
+  pushSharedCells(rows)
+}
+
+// ── แยกยาร์ดขั้นที่ 1: เขียนสองทาง — ช่องร่วมต่อคัน (PDI/PM/FINAL/ค่าวัด) ไปตาราง station_checks ──
+// pushRows คือทางเดียวที่ทุกการแก้/นำเข้าไฟล์ผ่าน จึงเทียบที่นี่: ค่าช่องร่วมที่เครื่องนี้รู้ครั้งก่อน
+// (sharedKnown — seed ตอนแถวเข้ามาจาก IDB/คลาวด์) vs ค่าในแถวที่ส่ง → ส่งเฉพาะที่เปลี่ยน
+// ส่งไม่สำเร็จจำไว้ (failedShared) ให้ syncCloud ส่งซ้ำ · cache อัปเดตเมื่อส่งสำเร็จเท่านั้น
+const sharedKnown = new Map<string, Record<string, string>>()
+const failedShared = new Set<string>()
+/** จำค่าช่องร่วมของแถวที่ "มาจากคลาวด์/IDB" (ไม่ต้องส่ง — คลาวด์มีแล้ว) */
+function seedShared(rows: Iterable<TrackRow>): void {
+  for (const r of rows) if (r?.vin) sharedKnown.set(r.vin, sharedCellsOf(r))
+}
+function pushSharedCells(rows: TrackRow[]): void {
+  if (!db.isConfigured()) return
+  const by = useYard.getState().currentUser
+  const site = useYard.getState().currentSite ?? undefined
+  const delta = rows.flatMap((r) => sharedDelta(sharedKnown.get(r.vin), r, by, site))
+  if (!delta.length) return
+  const touched = new Set(delta.map((d) => d.vin))
+  const snapshot = new Map<string, Record<string, string>>()
+  for (const r of rows) if (touched.has(r.vin)) snapshot.set(r.vin, sharedCellsOf(r))
+  db.upsertStationChecks(delta)
+    .then(() => { for (const [vin, sig] of snapshot) { sharedKnown.set(vin, sig); failedShared.delete(vin) } })
+    .catch(() => { for (const vin of touched) failedShared.add(vin) })
+  if (import.meta.env.DEV) {
+    const w = window as unknown as { __stationChecksSent?: { vin: string; key: string; value: string }[] }
+    ;(w.__stationChecksSent ??= []).push(...delta.map((d) => ({ vin: d.vin, key: d.key, value: d.value })))
+  }
 }
 
 /** A car that no longer exists must not keep sitting in a station's work queue.
@@ -238,6 +268,8 @@ interface TrackingState {
    *  หรือไม่มีประวัติ Location เลยให้ถอยไป จะข้ามไปเฉยๆ ไม่แตะ — กดจากหน้า
    *  ตั้งค่าซ้ำได้ปลอดภัย (เช็คสภาพก่อนแก้ทุกครั้ง) */
   repairOrphanPositions: () => { fixed: number; collided: { vin: string; want: string }[]; skipped: number }
+  /** แยกยาร์ดขั้นที่ 1: ตรวจว่าตาราง station_checks ตรงกับช่องร่วมในชีตของยาร์ดที่เลือก (อ่านอย่างเดียว) */
+  auditStationChecks: () => Promise<StationChecksAudit>
   /** คืนตำแหน่งที่ถูกล้าง "เฉพาะบล็อกที่ระบุ" ของยาร์ดที่เลือกอยู่ จากบรรทัดประวัติ
    *  Location ล่าสุดของรอบนี้ (ที่คน/ops scan บันทึกไว้) — รถที่แถวชีตอยู่ยาร์ดนี้
    *  และ unit ไม่มีช่อง (หรือไม่มี unit ในเครื่องเลย เช่นถูกตั้ง DEPARTED/EXPECTED
@@ -632,6 +664,7 @@ export const useTracking = create<TrackingState>()(
                   rowShared.set(cr.vin, clean.updatedAt ?? 0)
                 }
               }
+              seedShared(pull) // แถวจากคลาวด์ — ช่องร่วมอยู่ในตารางแล้ว ไม่ต้องส่งซ้ำ
               return { rows }
             })
             if (pull.length) idbBulkPut(pull).catch((e) => console.error('[idb] loadSiteRows put', e))
@@ -675,6 +708,7 @@ export const useTracking = create<TrackingState>()(
         } catch { /* IndexedDB unavailable — fall through with empty rows */ }
 
         // reveal the UI immediately — never block the splash on the network
+        seedShared(Object.values(rows))
         set({ rows, loaded: true })
 
         // the ACTIVE yard first — server-side filtered (~2 MB, not the whole
@@ -802,6 +836,7 @@ export const useTracking = create<TrackingState>()(
         // a row that arrived FROM the cloud is already common knowledge — record
         // it as shared so the announcer below doesn't relay it back out again
         for (const r of pull) rowShared.set(r.vin, r.updatedAt ?? 0)
+        if (pull.length) seedShared(pull)
         if (pull.length || drop.length || pruned.length) { set({ rows: merged }) }
         if (pull.length || pruned.length) idbBulkPut([...pull, ...pruned]).catch((e) => console.error('[idb] syncCloud put', e))
         if (drop.length) idbDelete(drop).catch(() => {})
@@ -818,6 +853,12 @@ export const useTracking = create<TrackingState>()(
           // row gone (deleted meanwhile) → nothing left to deliver, stop tracking it
           if (!r || !hasVin(r) || cloudByVin.get(vin)?.deletedAt) { failedPush.delete(vin); continue }
           if (!broadcastOnly.has(vin)) outgoing.set(vin, r)
+        }
+        // ช่องร่วมที่ส่งไม่สำเร็จ — ส่งซ้ำ (เทียบกับค่าที่รู้ครั้งก่อนอีกครั้ง)
+        if (failedShared.size) {
+          const retry = [...failedShared].map((vin) => get().rows[vin]).filter((r): r is TrackRow => !!r)
+          failedShared.clear()
+          pushSharedCells(retry)
         }
         if (outgoing.size) pushRows([...outgoing.values()])
         set({ lastSync: startedAt })
@@ -1302,6 +1343,13 @@ export const useTracking = create<TrackingState>()(
         return { fixed: changedUnits.length, collided, skipped }
       },
 
+      auditStationChecks: async () => {
+        const { currentSite, sites } = useYard.getState()
+        const rows = Object.values(get().rows).filter((r) => !r.deletedAt && (!currentSite || rowInSite(r, currentSite, sites)))
+        const table = await db.fetchStationChecksByVins(rows.map((r) => r.vin))
+        return auditStationChecks(rows, table)
+      },
+
       restorePositionsInBlocks: async (blocksIn) => {
         const want = new Set(blocksIn.map((b) => b.trim().toUpperCase()).filter(Boolean))
         const { currentSite } = useYard.getState()
@@ -1665,7 +1713,7 @@ export const useTracking = create<TrackingState>()(
           }
           return adopted ? { rows } : s
         })
-        if (fresh.length) idbBulkPut(fresh).catch(() => {})
+        if (fresh.length) { seedShared(fresh); idbBulkPut(fresh).catch(() => {}) }
         return adopted
       },
 

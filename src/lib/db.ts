@@ -8,6 +8,7 @@ import { sendSync } from './syncBus'
 import type { AppUser, Block, Damage, Site, Trailer, Unit } from '../types'
 import type { DbDamage, DbTrailer, DbUnit, DbUnitWithDamages } from './database.types'
 import type { TrackRow } from './excelTracking'
+import type { StationCheck } from './stationChecks'
 import type { WorkQueue } from '../store/useOps'
 
 export { isConfigured } from './supabase'
@@ -1225,6 +1226,36 @@ export async function upsertTrackingRows(rows: TrackRow[]): Promise<void> {
     }
     if (error) { console.error('[db] upsertTrackingRows chunk', i, error); throw error }
   }
+}
+
+// ── station_checks — ช่องร่วมต่อคัน (PDI/PM/FINAL/ค่าวัด) แยกยาร์ดขั้นที่ 1 (lib/stationChecks.ts) ──
+export interface DbStationCheck { vin: string; key: string; value: string; at: string | null; by: string | null; src: string | null; site_id: string | null; updated_at?: string }
+
+/** เขียนช่องร่วมที่เปลี่ยน (เรียกจาก pushRows) — ทีละ 500 ล้มเหลว = โยน ให้ผู้เรียกจำไว้ส่งใหม่ */
+export async function upsertStationChecks(items: StationCheck[]): Promise<void> {
+  if (!isConfigured() || !items.length) return
+  const CHUNK = 500
+  for (let i = 0; i < items.length; i += CHUNK) {
+    const slice = items.slice(i, i + CHUNK).map((c): DbStationCheck => ({
+      vin: c.vin, key: c.key, value: c.value ?? '',
+      at: c.at ? new Date(c.at).toISOString() : null, by: c.by ?? null, src: c.src ?? null, site_id: c.site ?? null,
+      updated_at: new Date().toISOString(),
+    }))
+    const { error } = await withRetry(() => supabase.from('station_checks').upsert(slice, { onConflict: 'vin,key' }))
+    if (error) { console.error('[db] upsertStationChecks chunk', i, error); throw error }
+  }
+}
+
+/** ค่าช่องร่วมของรถตามรายการ VIN (เครื่องมือตรวจใน Settings / ขั้นถัดไปใช้อ่าน) */
+export async function fetchStationChecksByVins(vins: string[]): Promise<StationCheck[]> {
+  if (!isConfigured() || !vins.length) return []
+  const out: StationCheck[] = []
+  for (let i = 0; i < vins.length; i += 200) {
+    const { data, error } = await supabase.from('station_checks').select('vin, key, value, at, by, src, site_id').in('vin', vins.slice(i, i + 200))
+    if (error) { console.error('[db] fetchStationChecksByVins', error); throw error }
+    for (const r of (data ?? []) as DbStationCheck[]) out.push({ vin: r.vin, key: r.key, value: r.value ?? '', at: r.at ? new Date(r.at).getTime() : undefined, by: r.by ?? undefined, src: r.src ?? undefined, site: r.site_id ?? undefined })
+  }
+  return out
 }
 
 /** ลบรถออกจาก Unit List — soft-delete (tombstone): เขียน `deleted_at` แทนการลบแถวจริง
