@@ -1151,8 +1151,14 @@ function VinInputInner({
       // ทางถัดไปทั้งรอบนี้ (ไม่ลองซ้ำทุกเฟรม)
       // iPhone (WebKit ทุกเบราว์เซอร์บน iOS): ใช้ canvas ตรง ๆ — ทางใหม่สองทางให้ "ภาพว่าง" บน iOS
       // ทุกเฟรม (สแกนไม่ติดเลย ทั้งที่ภาพกล้องขึ้นปกติ — รายงาน 7 ต.ค. หลัง #566)
-      let useVideoFrame = !IS_IOS && !!decoder.decodeVideoFrame && typeof VideoFrame !== 'undefined'
-      let useBitmap = !IS_IOS && !!decoder.decodeBitmap && typeof createImageBitmap === 'function'
+      // ปิดทาง videoframe/bitmap ทุกเครื่อง (7 ต.ค.): Android จริงจอดำหลัง #566 — VideoFrame "ยืม"
+      // บัฟเฟอร์ภาพของกล้องไว้ระหว่าง worker ครอป/ย่อ กล้องมือถือมีบัฟเฟอร์แค่ 3-4 ช่อง ยืมค้าง =
+      // ไม่มีที่ใส่ภาพใหม่ พรีวิวค้าง/ดำ (กล้องจำลองในเครื่องทดสอบไม่มีข้อจำกัดนี้ จึงไม่เห็น)
+      // กลับไปดึงภาพแบบก่อน #566 (canvas คัดลอกพิกเซลแล้วคืนบัฟเฟอร์ทันที) โดยคงภาพ 640 px +
+      // เว้นช่วง 200 ms บนเครื่อง RAM น้อยไว้ — โค้ดทางใหม่ยังอยู่ เปิดกลับได้ที่นี่ที่เดียว
+      const FAST_FRAME_PATHS = false
+      let useVideoFrame = FAST_FRAME_PATHS && !IS_IOS && !!decoder.decodeVideoFrame && typeof VideoFrame !== 'undefined'
+      let useBitmap = FAST_FRAME_PATHS && !IS_IOS && !!decoder.decodeBitmap && typeof createImageBitmap === 'function'
       const canvas = document.createElement('canvas')
       const ctx = canvas.getContext('2d', { willReadFrequently: true })
       // จังหวะดึงภาพ: requestAnimationFrame — เดินตามรอบวาดจอของเครื่อง (ไม่ชนกับการ
