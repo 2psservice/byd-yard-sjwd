@@ -15,6 +15,12 @@
 export interface ScanDecoder {
   kind: 'worker' | 'wasm' | 'js'
   decode: (img: ImageData) => Promise<string | null>
+  /** ทางลัดสำหรับกล้องสด (เฉพาะ worker ที่มี OffscreenCanvas): รับ ImageBitmap ที่ครอป/ย่อแล้ว
+   *  โอนไปให้ worker อ่านพิกเซลเอง — เธรดหลักไม่ต้อง drawImage/getImageData ต่อเฟรม */
+  decodeBitmap?: (bmp: ImageBitmap) => Promise<string | null>
+  /** ทางที่เบาที่สุด (worker + OffscreenCanvas + WebCodecs): โอน VideoFrame ของเฟรมสดไปให้ worker
+   *  ครอป/ย่อ/อ่านพิกเซลเองทั้งหมด — เธรดหลักไม่คัดลอกพิกเซลเลย */
+  decodeVideoFrame?: (frame: VideoFrame, crop: { sx: number; sy: number; cw: number; ch: number; outW: number; outH: number }) => Promise<string | null>
   dispose: () => void
 }
 
@@ -29,10 +35,11 @@ async function createWorkerDecoder(): Promise<ScanDecoder | null> {
   } catch { return null }
   const pending = new Map<number, (text: string | null) => void>()
   let seq = 0
+  let offscreen = false
   const ready = await new Promise<boolean>((resolve) => {
     const t = setTimeout(() => resolve(false), WORKER_READY_MS)
-    worker.onmessage = (e: MessageEvent<{ type: string; id?: number; text?: string | null }>) => {
-      if (e.data?.type === 'ready') { clearTimeout(t); resolve(true); return }
+    worker.onmessage = (e: MessageEvent<{ type: string; id?: number; text?: string | null; offscreen?: boolean }>) => {
+      if (e.data?.type === 'ready') { clearTimeout(t); offscreen = !!e.data.offscreen; resolve(true); return }
       if (e.data?.type === 'result' && e.data.id != null) { pending.get(e.data.id)?.(e.data.text ?? null); pending.delete(e.data.id) }
     }
     worker.onerror = () => { clearTimeout(t); resolve(false) }
@@ -47,6 +54,20 @@ async function createWorkerDecoder(): Promise<ScanDecoder | null> {
       const buf = img.data.buffer as ArrayBuffer
       worker.postMessage({ id, width: img.width, height: img.height, buf }, [buf])
     }),
+    ...(offscreen && typeof createImageBitmap === 'function' ? {
+      decodeBitmap: (bmp: ImageBitmap) => new Promise<string | null>((resolve) => {
+        const id = ++seq
+        pending.set(id, resolve)
+        worker.postMessage({ id, bitmap: bmp }, [bmp]) // โอนกรรมสิทธิ์ ไม่คัดลอกพิกเซล
+      }),
+      ...(typeof VideoFrame !== 'undefined' ? {
+        decodeVideoFrame: (frame: VideoFrame, crop: { sx: number; sy: number; cw: number; ch: number; outW: number; outH: number }) => new Promise<string | null>((resolve) => {
+          const id = ++seq
+          pending.set(id, resolve)
+          worker.postMessage({ id, frame, ...crop }, [frame])
+        }),
+      } : {}),
+    } : {}),
     dispose: () => { worker.terminate(); for (const r of pending.values()) r(null); pending.clear() },
   }
 }

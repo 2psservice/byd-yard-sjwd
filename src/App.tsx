@@ -53,6 +53,14 @@ const sameDay = (a: number, b: number) => new Date(a).toDateString() === new Dat
 // with QAQ), so anything in this family is import junk to purge everywhere
 const isJunkVin = (v: string) => v.startsWith('QAQA')
 
+/** มี unit อย่างน้อย 1 คันไหม — จำผลต่อก้อน units (WeakMap) ดู hasUnits ใน App */
+const hasAnyUnitCache = new WeakMap<object, boolean>()
+function hasAnyUnit(units: Record<string, unknown>): boolean {
+  let v = hasAnyUnitCache.get(units)
+  if (v === undefined) { v = false; for (const _k in units) { v = true; break } hasAnyUnitCache.set(units, v) }
+  return v
+}
+
 export default function App() {
   const loggedInUserId = useYard((s) => s.loggedInUserId)
   const me = useMe()
@@ -67,7 +75,10 @@ export default function App() {
   const loadFromSupabase = useYard((s) => s.loadFromSupabase)
   const subscribeUnits = useYard((s) => s.subscribeRealtime)
   const unsubscribeUnits = useYard((s) => s.unsubscribeRealtime)
-  const hasUnits = useYard((s) => Object.keys(s.units).length > 0)
+  // ตัวเลือกนี้รันใหม่ทุกครั้งที่ store เปลี่ยน (หลายร้อยครั้งระหว่างโหลดยาร์ด) — `Object.keys(units)`
+  // และแม้แต่ for-in นับ/เตรียมคีย์ 3,000 ตัวทุกครั้ง (โปรไฟล์บนซีพียูช้า: 3-4 วิ ตอนกล้องกำลังเปิด)
+  // จำคำตอบไว้ต่อ "ก้อน units" (เปลี่ยนก้อนเฉพาะตอน units เปลี่ยนจริง) จึงนับแค่ครั้งละก้อน
+  const hasUnits = useYard((s) => hasAnyUnit(s.units))
   const currentSite = useYard((s) => s.currentSite)
   const unitsCloudDone = useYard((s) => s.unitsCloudDone)
   const openSiteModal = useYard((s) => s.openSiteModal)
