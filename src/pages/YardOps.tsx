@@ -5040,7 +5040,26 @@ function RelocationView() {
     const dir = laneDirRef.current
     if (ord.includes(r.vin)) {
       const seq0 = dir === 'tail' ? [...ord].reverse() : ord
-      toast('info', `ยิงคันนี้แล้ว — คันที่ ${seq0.indexOf(r.vin) + 1}`)
+      const dupPos = seq0.indexOf(r.vin) + 1
+      const u = siteUnits.find(x => x.vin === r!.vin)
+      // ยิงซ้ำ = "ตรวจแล้วซ่อม": ตอบแค่ "ยิงคันนี้แล้ว" โดยไม่ดูว่ารถอยู่ที่นั่นจริงไหม ทำให้คันที่ถูกเด้งไปที่อื่น
+      // (ข้อความตำแหน่งเก่า/เขียนไม่ถึงคลาวด์) ยิงกี่ครั้งก็ไม่กลับ — คนหน้างานไม่มีทางรู้ว่าต้องเปลี่ยนแถวแล้วเปลี่ยนกลับ
+      // ตรงตำแหน่งแล้ว → ข้อความเดิม · ไม่ตรง → เขียนตำแหน่งที่ยิงไว้ใหม่ (คันที่สแกนคือความจริง ไม่มี `from`)
+      const here = !!(u && u.block && blockKeyOfTag(u.block) === L.blockId && u.slot === L.slot && u.row === dupPos)
+      if (here) { toast('info', `ยิงคันนี้แล้ว — คันที่ ${dupPos}`); return }
+      const was = u?.block && u.row && u.slot ? yardLocFull(u) : ''
+      const code = codeOf(L.blockId, L.slot, dupPos)
+      const gen2 = laneGenRef.current
+      const seq2 = seq0.slice()
+      updateLocations([{ vin: r.vin, block: L.blockId, row: dupPos, slot: L.slot,
+        modelName: u?.modelName || r.cells['Model name'] || r.cells['Model'] || undefined, color: u?.color || r.cells['Color'] || undefined }],
+      (results) => {
+        const r0 = results.find(x => x.vin === r!.vin)
+        if (r0?.status === 'lost') { toast('err', `แก้ตำแหน่ง ${code} ไม่สำเร็จ — กรุณายิงใหม่`); return }
+        appendHistory(r!.vin, { at: Date.now(), by: currentUser, field: 'Location', src: 'scan', from: was, to: code })
+        toast('ok', `${code} · คันที่ ${dupPos} · ${r!.vin.slice(-6)} — แก้ตำแหน่งให้แล้ว${was ? ` (เดิม ${was})` : ''}`)
+        void verifyLane(gen2, L, seq2, [], results)
+      })
       return
     }
     const incumbents = L.cars.filter(x => !ord.includes(x.vin) && x.vin !== r!.vin)
