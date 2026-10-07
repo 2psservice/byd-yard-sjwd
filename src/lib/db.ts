@@ -1250,10 +1250,20 @@ export async function upsertStationChecks(items: StationCheck[]): Promise<void> 
 export async function fetchStationChecksByVins(vins: string[]): Promise<StationCheck[]> {
   if (!isConfigured() || !vins.length) return []
   const out: StationCheck[] = []
-  for (let i = 0; i < vins.length; i += 200) {
-    const { data, error } = await supabase.from('station_checks').select('vin, key, value, at, by, src, site_id').in('vin', vins.slice(i, i + 200))
-    if (error) { console.error('[db] fetchStationChecksByVins', error); throw error }
-    for (const r of (data ?? []) as DbStationCheck[]) out.push({ vin: r.vin, key: r.key, value: r.value ?? '', at: r.at ? new Date(r.at).getTime() : undefined, by: r.by ?? undefined, src: r.src ?? undefined, site: r.site_id ?? undefined })
+  // PostgREST คืนสูงสุด 1,000 แถวต่อคำขอแล้ว "ตัดเงียบ ๆ" — 200 คัน × ~10 ช่อง (ลมยาง 4 ล้อ + SOC +
+  // แรงดัน + สถานะ) เกินได้ง่าย เครื่องมือตรวจเคยรายงาน "ไม่มีในตาราง 2,482" ทั้งที่ตารางครบ
+  // → ชุดละ 100 คัน และไล่หน้าด้วย range จนได้น้อยกว่าหน้า
+  const PAGE = 1000
+  for (let i = 0; i < vins.length; i += 100) {
+    const slice = vins.slice(i, i + 100)
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await supabase.from('station_checks').select('vin, key, value, at, by, src, site_id')
+        .in('vin', slice).order('vin').order('key').range(from, from + PAGE - 1)
+      if (error) { console.error('[db] fetchStationChecksByVins', error); throw error }
+      const batch = (data ?? []) as DbStationCheck[]
+      for (const r of batch) out.push({ vin: r.vin, key: r.key, value: r.value ?? '', at: r.at ? new Date(r.at).getTime() : undefined, by: r.by ?? undefined, src: r.src ?? undefined, site: r.site_id ?? undefined })
+      if (batch.length < PAGE) break
+    }
   }
   return out
 }
