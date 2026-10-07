@@ -44,7 +44,7 @@ import { blockTag, blockKeyOfTag, resolveBlockByName } from '../lib/format'
 import { fetchUnitsByVins, fetchUnitsInLane, fetchTrackingRowsByVin, isConfigured } from '../lib/db'
 import { refreshUnitFocus } from '../lib/unitFocus'
 import { laneFromCloud } from '../lib/laneCloud'
-import { createScanDecoder, decodeImageFile, type ScanDecoder } from '../lib/scanDecoder'
+import { createScanDecoder, decodeImageFile, type ScanDecoder, IS_IOS } from '../lib/scanDecoder'
 import { IN_APP_BROWSER, IS_LINE_BROWSER, IS_ANDROID, openExternal, openChromeIntent, copyLink } from '../lib/inAppBrowser'
 import { useRecentOps } from '../store/useRecentOps'
 import { buildWorkRows, buildEventLog, fmtHistAt, histOf } from '../lib/carHistory'
@@ -1149,8 +1149,10 @@ function VinInputInner({
       // บนเธรดหลัก ~213 ms (ทางเดิม — กิน 60% ของเธรดหลักตลอดที่กล้องเปิด คือต้นเหตุพรีวิว
       // ค้าง/จอดำบนเครื่องสเปกต่ำ) ใช้ทางที่เบาที่สุดที่เครื่องนั้นมี ถ้าทางใดโยน error ถอยลง
       // ทางถัดไปทั้งรอบนี้ (ไม่ลองซ้ำทุกเฟรม)
-      let useVideoFrame = !!decoder.decodeVideoFrame && typeof VideoFrame !== 'undefined'
-      let useBitmap = !!decoder.decodeBitmap && typeof createImageBitmap === 'function'
+      // iPhone (WebKit ทุกเบราว์เซอร์บน iOS): ใช้ canvas ตรง ๆ — ทางใหม่สองทางให้ "ภาพว่าง" บน iOS
+      // ทุกเฟรม (สแกนไม่ติดเลย ทั้งที่ภาพกล้องขึ้นปกติ — รายงาน 7 ต.ค. หลัง #566)
+      let useVideoFrame = !IS_IOS && !!decoder.decodeVideoFrame && typeof VideoFrame !== 'undefined'
+      let useBitmap = !IS_IOS && !!decoder.decodeBitmap && typeof createImageBitmap === 'function'
       const canvas = document.createElement('canvas')
       const ctx = canvas.getContext('2d', { willReadFrequently: true })
       // จังหวะดึงภาพ: requestAnimationFrame — เดินตามรอบวาดจอของเครื่อง (ไม่ชนกับการ
@@ -1200,12 +1202,24 @@ function VinInputInner({
         }
         const viaBitmap = () => createImageBitmap(video, sx, sy, cw, ch, { resizeWidth: outW, resizeHeight: outH, resizeQuality: 'low' })
           .then((bmp) => decoder.decodeBitmap!(bmp))
+        // ทางใดพัง (โยนตอนสร้าง หรือ worker ตอบ err = เตรียมภาพไม่สำเร็จ/ภาพว่าง) → ถอยทางถัดไป
+        // ทั้งรอบ แล้วถอดรหัสเฟรมนี้ซ้ำด้วยทางใหม่ทันที — ห้ามนับเป็น "ไม่เจอโค้ด" เงียบ ๆ
+        const dropBitmap = (e: unknown) => {
+          console.warn('[scan] bitmap path unusable — canvas', e)
+          useBitmap = false; if (stats) stats.path = 'canvas'
+          return viaCanvas()
+        }
+        const dropVideoFrame = (e: unknown) => {
+          console.warn('[scan] VideoFrame path unusable — bitmap/canvas', e)
+          useVideoFrame = false; if (stats) stats.path = useBitmap ? 'bitmap' : 'canvas'
+          return useBitmap ? viaBitmap().catch(dropBitmap) : viaCanvas()
+        }
         let job: Promise<string | null>
         if (useVideoFrame) {
-          try { job = decoder.decodeVideoFrame!(new VideoFrame(video), { sx, sy, cw, ch, outW, outH }) }
-          catch (e) { console.warn('[scan] VideoFrame path unavailable — bitmap/canvas', e); useVideoFrame = false; if (stats) stats.path = useBitmap ? 'bitmap' : 'canvas'; job = useBitmap ? viaBitmap() : viaCanvas() }
+          try { job = decoder.decodeVideoFrame!(new VideoFrame(video), { sx, sy, cw, ch, outW, outH }).catch(dropVideoFrame) }
+          catch (e) { job = dropVideoFrame(e) }
         } else if (useBitmap) {
-          job = viaBitmap().catch((e) => { console.warn('[scan] bitmap path unavailable — canvas', e); useBitmap = false; if (stats) stats.path = 'canvas'; return viaCanvas() })
+          job = viaBitmap().catch(dropBitmap)
         } else job = viaCanvas()
         job
           .then((text) => { if (!stopped && text) hit(text) })
