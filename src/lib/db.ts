@@ -1133,6 +1133,8 @@ export async function fetchTrackingRows(sinceMs?: number): Promise<TrackRow[]> {
 /** full pull แบ่งตารางเป็นกี่ช่วงดึงพร้อมกัน — เดิมยิง "ทุกหน้า" พร้อมกัน (62k แถว = 63 หน้า) แล้วหน้าลึก ๆ ล้มด้วย statement timeout
  *  ตอนนี้ดึงแบบ keyset (ต่อจาก VIN) กี่ช่วงขนานกัน (ดูคอมเมนต์ใน fetchTrackingRows) */
 export const FULL_PULL_CONCURRENCY = 4
+/** แถวของยาร์ดเดียว (loadSiteRows) ดึงพร้อมกันกี่หน้า */
+export const SITE_PULL_CONCURRENCY = 4
 
 /**
  * How many LIVE tracking rows the cloud holds (tombstones excluded) — one HEAD
@@ -1188,10 +1190,14 @@ export async function fetchTrackingRowsForSite(
     }
     if (fresh.length && onBatch) onBatch(fresh)
   }
+  // หน้าละ PAGE แถว ดึงทีละ SITE_PULL_CONCURRENCY หน้าพร้อมกัน — เดิมรอทีละหน้า: ยาร์ด NYB2 (20,580 แถว = 21 หน้า)
+  // ใช้ 19 วินาทีจากการรอเครือข่ายล้วน ๆ (วัด 1→19.0 s, 4→5.1 s, 8→3.1 s) ส่วนจำกัดไว้ที่ 4 ไม่ใช่ทุกหน้าพร้อมกัน เพราะ
+  // คำขอรถของยาร์ด (units) วิ่งอยู่ขนานกัน และมือถือเก่ารับ JSON หลายหน้าซ้อนกันไม่ไหว (ดู FULL_PULL_CONCURRENCY)
+  // ผลของแต่ละหน้าถูกส่งเข้า collect/onBatch "เรียงตามเลขหน้า" เสมอ แม้หน้าท้ายเสร็จก่อน
   const fetchBy = async (apply: (q: any) => any) => {
-    for (let from = 0; ; from += PAGE) {
+    const fetchPage = (from: number): Promise<TrackRowRow[]> => {
       const run = (cols: string) => apply(supabase.from('tracking_rows').select(cols)).order('vin').range(from, from + PAGE - 1)
-      const batch = await withRetry(async () => {
+      return withRetry(async () => {
         let res: any = await run('vin, cells, updated_at, site, history, deleted_at')
         if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at, site, history')
         if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at, site')
@@ -1199,13 +1205,34 @@ export async function fetchTrackingRowsForSite(
         if (res.error) console.error('[db] fetchTrackingRowsForSite', res.error)
         return res
       }).then((res: any) => (res.data ?? []) as TrackRowRow[])
-      collect(batch)
-      if (batch.length < PAGE) break
     }
+    const landed = new Map<number, TrackRowRow[]>()
+    let nextFetch = 0 // หน้าถัดไปที่ต้องไปขอ
+    let nextCollect = 0 // หน้าถัดไปที่ต้องส่งเข้า collect (ต้องเรียง)
+    let end = Infinity // หน้าที่ไม่ต้องขออีกแล้ว (หลังเจอหน้าสั้น)
+    let failed = false
+    const worker = async () => {
+      while (!failed) {
+        const p = nextFetch++
+        if (p >= end) return
+        try { landed.set(p, await fetchPage(p * PAGE)) } catch (e) { failed = true; throw e } // ล้ม = โยน ไม่กลืนเป็นหน้าว่าง
+        while (nextCollect < end && landed.has(nextCollect)) {
+          const batch = landed.get(nextCollect)!
+          landed.delete(nextCollect)
+          collect(batch)
+          if (batch.length < PAGE) end = nextCollect + 1
+          nextCollect++
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: SITE_PULL_CONCURRENCY }, worker))
   }
   await fetchBy((q) => q.eq('site', site.id))
+  // แถวเก่าที่ "ยังไม่มีป้ายไซต์" แต่ช่อง Location yard ระบุยาร์ดนี้ — ต้องกรอง site is null ให้ตรงกับตัวนับ
+  // (countTrackingRowsForSite) ไม่งั้นรอบนี้ดึงแถวของยาร์ดที่ติดป้ายแล้วซ้ำอีกทั้งชุด (NYB2: 20,469 แถว มีของเก่าจริงแค่ 111)
+  // แล้วถูก seen ทิ้ง = ดาวน์โหลดเกือบ 2 เท่าโดยเปล่าประโยชน์
   for (const key of [site.name, site.code].filter(Boolean) as string[]) {
-    await fetchBy((q) => q.eq('cells->>Location yard', key))
+    await fetchBy((q) => q.is('site', null).eq('cells->>Location yard', key))
   }
   return out
 }

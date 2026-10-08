@@ -188,7 +188,7 @@ function isStationWorkStatus(v: string): boolean {
  * Derive a Car Status from imported sheet fields when not set explicitly. An
  * admin can override it; the importer stamps 'Pre Gate-in' on new vehicles.
  */
-export function deriveCarStatus(c: Record<string, string>): string {
+function deriveCarStatusUncached(c: Record<string, string>): string {
   // Total loss (write-off) is a definitive terminal fact about the vehicle —
   // it wins over the lifecycle status so a written-off car is always visible.
   if (/total\s*loss/i.test(c['Vin Of Status'] || '')) return 'Total loss'
@@ -231,6 +231,36 @@ export function deriveCarStatus(c: Record<string, string>): string {
   const loc = c['Location yard'] || ''
   if (storage || /yard/i.test(loc)) return 'In Yard'
   return 'In Yard' // was 'Gate-in' — the stage is retired, this fallback reads as In Yard too
+}
+
+// ── แคชผล deriveCarStatus ต่อ "ออบเจ็กต์ cells" ─────────────────────────────────────────────────────────────────
+// ฟังก์ชันนี้ถูกเรียกต่อแถวใน useMemo หลายชุดของหน้าหลักทุกครั้งที่ข้อมูลเปลี่ยน (หลายหมื่นแถว × หลายรอบ) — โปรไฟล์หน้าแรกหลัง
+// login บนโน้ตบุ๊กพบเป็นอันดับต้น ๆ (self time 398ms ของ ~4.5s ก่อนนับ regex ในลูก) ผลขึ้นกับ cells + เวลาเท่านั้น (Pre Gate-out →
+// Gate-out ที่ flush 09:30) แถวเป็นออบเจ็กต์ที่ไม่ถูกแก้ในที่เดิม จึงจำผลต่อออบเจ็กต์ ผูกกับ "รอบ flush" (เปลี่ยนทุก 09:30 ตามเวลา
+// ท้องถิ่น) และเทียบค่า Car Status / Vin Of Status ดิบซ้ำอีกชั้น กันกรณีมีโค้ดแก้ cells ที่เดิม (เช่น ImportPage ตั้ง Pre Gate-in)
+let flushFrom = 0, flushUntil = 0, flushId = 0
+function currentFlushEpoch(): number {
+  const now = Date.now()
+  if (now < flushFrom || now >= flushUntil) {
+    const d = new Date(now)
+    const b = new Date(d.getFullYear(), d.getMonth(), d.getDate(), GATE_OUT_FLUSH_H, GATE_OUT_FLUSH_M, 0, 0)
+    if (b.getTime() <= now) b.setDate(b.getDate() + 1) // 09:30 ถัดไปหลัง "ตอนนี้"
+    flushUntil = b.getTime()
+    const prev = new Date(b); prev.setDate(prev.getDate() - 1)
+    flushFrom = prev.getTime()
+    flushId++
+  }
+  return flushId
+}
+interface StatusMemo { epoch: number; car: string | undefined; vos: string | undefined; status: string }
+const statusMemo = new WeakMap<Record<string, string>, StatusMemo>()
+export function deriveCarStatus(c: Record<string, string>): string {
+  const epoch = currentFlushEpoch()
+  const hit = statusMemo.get(c)
+  if (hit && hit.epoch === epoch && hit.car === c['Car Status'] && hit.vos === c['Vin Of Status']) return hit.status
+  const status = deriveCarStatusUncached(c)
+  statusMemo.set(c, { epoch, car: c['Car Status'], vos: c['Vin Of Status'], status })
+  return status
 }
 
 /**

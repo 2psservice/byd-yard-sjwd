@@ -83,7 +83,6 @@ export default function App() {
   const currentSite = useYard((s) => s.currentSite)
   const unitsCloudDone = useYard((s) => s.unitsCloudDone)
   const openSiteModal = useYard((s) => s.openSiteModal)
-  const trackingRows = useTrackingRows()
   const trackingLoaded = useTracking((s) => s.loaded)
   const loadFromIdb = useTracking((s) => s.loadFromIdb)
   const subscribeTracking = useTracking((s) => s.subscribeRealtime)
@@ -397,17 +396,26 @@ export default function App() {
   // but only AFTER a cloud sync completed (lastSync > 0). On a fresh device the
   // first non-empty set is the site-scoped partial load; purging against it
   // deleted every unit whose VIN wasn't in that subset.
+  // อ่านจาก store ตอนเงื่อนไขครบเท่านั้น (subscribe + เช็กราคาถูก) — เดิมเรียก useTrackingRows() ที่ราก:
+  // สร้าง overlay 57k แถวและวาดทั้งแอปใหม่ทุกครั้งที่ rows/units เปลี่ยน ทั้งที่ใช้แค่ครั้งเดียวตอนล้างข้อมูล
   useEffect(() => {
-    if (!purgedRef.current && trackingRows.length > 0 && useTracking.getState().lastSync > 0) {
+    const tryPurge = () => {
+      if (purgedRef.current) return
+      const st = useTracking.getState()
+      if (st.lastSync <= 0) return
+      const vins = Object.values(st.rows).map((r) => r.vin)
+      if (!vins.length) return
       purgedRef.current = true
       // data fix: tombstone-delete leaked placeholder codes so they never
       // resurface from another device's cache, and keep them OUT of the
       // keep-set below so any stray unit of theirs is purged the same pass
-      const junk = trackingRows.filter((r) => isJunkVin(r.vin)).map((r) => r.vin)
+      const junk = vins.filter((v) => isJunkVin(v))
       if (junk.length) useTracking.getState().deleteRows(junk)
-      purgeNonTracking(new Set(trackingRows.filter((r) => !isJunkVin(r.vin)).map((r) => r.vin)))
+      purgeNonTracking(new Set(vins.filter((v) => !isJunkVin(v))))
     }
-  }, [trackingRows, purgeNonTracking])
+    tryPurge()
+    return useTracking.subscribe(tryPurge)
+  }, [purgeNonTracking])
 
   // the same placeholder codes also sit inside work queues (the import that
   // created them added them to a Pre Gate-in queue) — strip them wherever found

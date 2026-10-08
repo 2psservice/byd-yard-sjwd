@@ -1,3 +1,4 @@
+import { loadMark } from '../lib/loadMarks'
 import { useMemo } from 'react'
 import { create } from 'zustand'
 import { persist, type PersistStorage, type StorageValue } from 'zustand/middleware'
@@ -1916,6 +1917,7 @@ export const useYard = create<YardState>()(
         // "ไม่แสดงบนผัง" math is transient, so the plan shows a loading chip
         // instead of a shrinking number (re-armed on every site switch too)
         set({ unitsCloudDone: false })
+        loadMark('units-start')
         try {
         // 3) yard-plan layout FIRST, on its own: the block list is a few KB and
         //    comes back in a blink, while fetchAllUnits pages through ~800 cars
@@ -2013,6 +2015,7 @@ export const useYard = create<YardState>()(
           })
         }
         set({ unitsCloudDone: true })
+        loadMark('units-done')
           loadRetry = 0 // landed — the next failure starts from the short delay again
         } catch (e) {
           // a partial/failed fetch must NOT flip unitsCloudDone — that would

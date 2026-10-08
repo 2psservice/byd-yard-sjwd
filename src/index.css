@@ -361,3 +361,13 @@ kbd.k { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10.5p
 .ctx-sub.toright { left: 100%; }
 .ctx-sub.toleft { right: 100%; }
 .ctx-sub .ctx-item { padding-top: 6px; padding-bottom: 6px; }
+
+/* Android phones (isLiteFx in lib/device.ts): no frosted-glass blur. backdrop-filter re-blurs the page behind
+   it whenever that page changes — fine on an iPhone, a stutter on an older Android GPU (the site picker and the
+   camera view sit over a page that is still loading). The glass surfaces get a near-opaque fill instead, so
+   nothing shows through where the blur used to hide it. */
+html.lite-fx { --glass: rgba(255, 255, 255, 0.97); }
+html.lite-fx *, html.lite-fx *::before, html.lite-fx *::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}

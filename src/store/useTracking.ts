@@ -10,6 +10,7 @@ import { parseYardLocCode, yardLocFull } from '../lib/groupingImport'
 import { idbBulkPut, idbClear, idbDelete, idbGetAllRows, idbPut } from '../lib/idb'
 import * as db from '../lib/db'
 import { supabase } from '../lib/supabase'
+import { loadMark } from '../lib/loadMarks'
 import { onSync, sendSync, type RowMsg, type RowsPayload } from '../lib/syncBus'
 import { useYard, WCL_STAGING_BLOCK } from './useYard'
 import { siteForRow, siteIdForLocation, coInspectionAccepts, departedFromSite, siteWorksWith, rowYardName, rowInSite, CANDIDATE_SITES_KEY } from '../lib/siteScope'
@@ -54,6 +55,26 @@ let syncInFlight = false
 let cloudSyncedOnce = false
 /** เซสชันนี้ซิงก์กับคลาวด์สำเร็จอย่างน้อยหนึ่งรอบแล้วหรือยัง — งานเบื้องหลังที่ "เขียนจากสำเนาในเครื่อง" ต้องรอก่อน (สำเนาจาก IndexedDB อาจเก่าเป็นชั่วโมง) */
 export const cloudSyncedThisSession = () => cloudSyncedOnce
+
+/** รอ "หน้าแรกพร้อม" (รถของยาร์ดโหลดเสร็จ = unitsCloudDone) ก่อนเริ่มซิงก์ทั้งบริษัท — ไม่เกิน SYNC_AFTER_FIRST_SCREEN_MS เผื่อโหลดรถล้ม/ช้ามาก
+ *  ไม่มียาร์ดที่เลือก (หน้าเลือกยาร์ดยังเปิดอยู่) หรือไม่ได้ตั้งค่าคลาวด์ → เริ่มทันทีเหมือนเดิม; เรียกซ้ำระหว่างรอ = รวมเป็นครั้งเดียว */
+export const SYNC_AFTER_FIRST_SCREEN_MS = 20_000
+let syncWaiting = false
+export function syncCloudWhenReady(run: () => void, siteId: string | null, waitMs = SYNC_AFTER_FIRST_SCREEN_MS): void {
+  if (!siteId || useYard.getState().unitsCloudDone) { run(); return }
+  if (syncWaiting) return
+  syncWaiting = true
+  let off: (() => void) | null = null
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const go = () => {
+    if (!syncWaiting) return
+    syncWaiting = false
+    off?.(); if (timer) clearTimeout(timer)
+    run()
+  }
+  off = useYard.subscribe((s) => { if (s.unitsCloudDone) go() })
+  timer = setTimeout(go, waitMs)
+}
 // a realtime payload can arrive with the record body stripped (Supabase drops it
 // when the row exceeds the channel's max_record_bytes — a car with a long cell
 // set + audit history reaches that). The event then carries no VIN, so nothing
@@ -627,6 +648,7 @@ export const useTracking = create<TrackingState>()(
 
       loadSiteRows: async (siteId) => {
         const token = ++siteLoadToken
+        loadMark('site-load-start')
         const live = () => siteLoadToken === token
         const { sites } = useYard.getState()
         const site = sites.find((s) => s.id === siteId)
@@ -642,9 +664,10 @@ export const useTracking = create<TrackingState>()(
         // เป้าหมาย: ยาร์ดนี้มีกี่แถวในคลาวด์ (นับอย่างเดียว เร็ว) — ถ้าในเครื่องมีครบแล้ว
         // ไม่ต้องรอ เปิดหน้าได้เลย ส่วนความสดใหม่ปล่อยให้ sync ส่วนต่างตามปกติ
         const total = await db.countTrackingRowsForSite(site)
+        loadMark('site-count')
         if (!live()) return
         if (total == null) { set({ siteLoad: { ...base, status: 'offline' } }); return }
-        if (base.have >= total) { set({ siteLoad: { ...base, total, status: 'done' } }); return }
+        if (base.have >= total) { loadMark('site-rows-cached'); set({ siteLoad: { ...base, total, status: 'done' } }); return }
         set({ siteLoad: { ...base, total } })
         try {
           await db.fetchTrackingRowsForSite(site, (batch) => {
@@ -673,6 +696,7 @@ export const useTracking = create<TrackingState>()(
               ? { siteLoad: { ...s.siteLoad, have: countHere(), total: Math.max(total, countHere()), progressAt: t } }
               : s)
           })
+          loadMark('site-rows-done')
           if (!live()) return
           set((s) => s.siteLoad && s.siteLoad.siteId === siteId
             ? { siteLoad: { ...s.siteLoad, have: countHere(), status: 'done', progressAt: Date.now() } }
@@ -720,7 +744,9 @@ export const useTracking = create<TrackingState>()(
         const siteId = useYard.getState().currentSite
         if (siteId) await get().loadSiteRows(siteId).catch(() => {})
         // reconcile every yard in the background (incremental after the first run)
-        get().syncCloud()
+        // — แต่ไม่แข่งกับหน้าแรก: ซิงก์ทั้งบริษัท (full pull ~62k แถว/114 MB JSON เกือบทุกเช้า) เคยเริ่มทันทีหลังแถวของยาร์ดมาถึง
+        // ขนานกับการโหลดรถของยาร์ด (ช่วง "Loading 99%") วัดจริง 1.7 s → 10.7 s; รอรถโหลดเสร็จก่อน (เพดาน SYNC_AFTER_FIRST_SCREEN_MS)
+        syncCloudWhenReady(() => get().syncCloud(), siteId)
       },
 
       // Two-way merge between this device (IndexedDB) and Supabase, keyed by VIN
@@ -732,6 +758,7 @@ export const useTracking = create<TrackingState>()(
         syncInFlight = true
         try {
         const startedAt = Date.now()
+        loadMark('sync-start')
         const lastSync = get().lastSync ?? 0
         const local = get().rows
         const hasLocal = Object.keys(local).length > 0
@@ -862,6 +889,7 @@ export const useTracking = create<TrackingState>()(
         }
         if (outgoing.size) pushRows([...outgoing.values()])
         set({ lastSync: startedAt })
+        loadMark('sync-done')
         cloudSyncedOnce = true
         // a full run has now seen — and cleaned — every row; don't force another
         if (!incremental) set({ sysHistoryPurged: SYS_HISTORY_PURGE_V })
@@ -1980,6 +2008,9 @@ useTracking.subscribe((s, prev) => {
   if (s.rows === prev.rows) return
   for (const vin in s.rows) {
     const r = s.rows[vin]
+    // ออบเจ็กต์แถวเดิมเป๊ะ = ไม่ได้เปลี่ยน และเคยผ่านลูปนี้ (หรือถูกทำเครื่องหมายแชร์แล้ว) ในรอบก่อน — ข้ามได้เลย
+    // (ถูกกว่าไล่ค้น rowShared ต่อแถวมาก; ลูปนี้อยู่ใน set() ทุกครั้ง บน 62k แถว)
+    if (r === prev.rows[vin]) continue
     const at = r.updatedAt ?? 0
     if (rowShared.get(vin) === at) continue
     const first = prev.rows[vin] === undefined
@@ -2081,6 +2112,21 @@ function defectsAllCleared(vin: string): boolean {
   return !!u && !hasOpenBodyDefect(u.damages)
 }
 
+// "NG ที่ยังไม่ได้จัดสรร" เป็นฟังก์ชันของ cells ล้วน ๆ และแถวเป็นออบเจ็กต์ที่ไม่ถูกแก้ในที่เดิม (store สร้างใหม่ทุกครั้งที่เปลี่ยน)
+// จึงจำผลต่อออบเจ็กต์แถวไว้ — ตัวนี้รันหลังทุกครั้งที่ store tracking/yard เปลี่ยน และเดิมคำนวณทุกแถว (62k) ใหม่ทุกครั้ง
+// (บนมือถือ CPU ช้าเป็นงานค้างหลายวินาที กล้องขอไม่ผ่านระหว่างนั้น)
+const vinStatusCandidateCache = new WeakMap<TrackRow, boolean>()
+function isUnallocatedNg(r: TrackRow): boolean {
+  let hit = vinStatusCandidateCache.get(r)
+  if (hit === undefined) {
+    const c = r.cells
+    hit = NG_VIN_STATUSES.has((c['Vin Of Status'] || '').trim().toLowerCase())
+      && !((c['Allocation Date'] || '').trim() || (c[GROUPING_NUMBER_KEY] || '').trim())
+    vinStatusCandidateCache.set(r, hit)
+  }
+  return hit
+}
+
 let vinStatusTimer: ReturnType<typeof setTimeout> | null = null
 function reconcileVinOfStatus() {
   // never act on a stale snapshot: a fresh load starts from IndexedDB (often
@@ -2094,9 +2140,8 @@ function reconcileVinOfStatus() {
   const { rows } = useTracking.getState()
   const dirty: string[] = []
   for (const vin in rows) {
+    if (!isUnallocatedNg(rows[vin])) continue // ไม่ใช่ NG หรือจัดสรรแล้ว
     const c = rows[vin].cells
-    if (!NG_VIN_STATUSES.has((c['Vin Of Status'] || '').trim().toLowerCase())) continue
-    if ((c['Allocation Date'] || '').trim() || (c[GROUPING_NUMBER_KEY] || '').trim()) continue // already allocated
     const finalOk = OK_FINAL_STATUSES.has((c['Final Status'] || '').trim().toLowerCase())
     if (finalOk || defectsAllCleared(vin)) dirty.push(vin)
   }

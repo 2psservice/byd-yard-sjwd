@@ -13,6 +13,7 @@
  *  · ไม่ค้างตลอดไป: ถ้าไม่มีความคืบหน้าเกิน STALL_MS (เน็ตล่ม) หรือรวมเกิน MAX_MS
  *    ปล่อยหน้าเปิดด้วยของในเครื่อง พร้อมป้าย "กำลังซิงก์" แทน
  */
+import { loadMark } from '../lib/loadMarks'
 import { useEffect, useMemo, useState } from 'react'
 import { useTracking } from '../store/useTracking'
 import { useYard } from '../store/useYard'
@@ -35,6 +36,9 @@ export function SiteLoadGate({ mode }: { mode: 'overlay' | 'banner' }) {
   const rowsLoading = active && siteLoad!.status === 'loading'
   const unitsLoading = active && !unitsCloudDone
   const pending = rowsLoading || unitsLoading
+
+  // ป้ายหยุดบล็อกแล้ว (แถวของยาร์ด + รถครบ) — จุดสิ้นสุดของ "ป้าย Loading" ที่ผู้ใช้จับเวลา
+  useEffect(() => { if (active && !pending) loadMark('gate-clear') }, [active, pending])
 
   // นาฬิกาเดินเฉพาะตอนที่กำลังรอ — ใช้ตัดสินว่า "ค้าง" หรือยังเดินอยู่
   useEffect(() => {

@@ -36,3 +36,10 @@ export const isPhone = (() => {
   if (uaData?.mobile === true) return true
   return isTouch && shortSide < 600
 })()
+
+/**
+ * Android phone: skip the frosted-glass blur (see `html.lite-fx` in index.css). backdrop-filter re-blurs
+ * everything behind it every time that content changes — free on an iPhone, a stutter on an older Android
+ * GPU, worst on the screens that sit over a page that is still loading (the site picker, the camera view).
+ */
+export const isLiteFx = isPhone && /Android/i.test(ua)
