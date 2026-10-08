@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Eye, EyeOff, AlertCircle } from 'lucide-react'
 import { useYard } from '../store/useYard'
 import { LogoLoaderOverlay } from './LogoLoader'
 import { InAppBrowserBanner } from './InAppBrowserBanner'
+import { BuildStamp } from './BuildStamp'
 
 const BRAND = '#1B4FA8'
 const BRAND2 = '#E85D1E'
@@ -16,6 +17,9 @@ export function LoginScreen() {
   const [remember, setRemember] = useState(false)
   const [err, setErr]           = useState('')
   const [loading, setLoading]   = useState(false)
+
+  // บอก main.tsx ว่าอยู่หน้า login (ไม่มีงานค้าง) → อัปเดตเวอร์ชันใหม่ได้เลย
+  useEffect(() => { window.dispatchEvent(new Event('sjwd-login-shown')) }, [])
 
   const doLogin = () => {
     if (!username.trim()) { setErr('กรุณาใส่ชื่อผู้ใช้'); return }
@@ -31,7 +35,7 @@ export function LoginScreen() {
   if (loading) return <LogoLoaderOverlay label="กำลังเข้าสู่ระบบ" />
 
   return (
-    <div className="app-safe" style={{
+    <div className="app-safe" data-login-screen style={{
       minHeight: '100dvh',
       background: 'linear-gradient(160deg, #f0f4fb 0%, #e6ecf7 60%, #dce5f3 100%)',
       display: 'flex',
@@ -191,6 +195,7 @@ export function LoginScreen() {
             </button>
           </div>
 
+          <div style={{ marginTop: 16, textAlign: 'center' }}><BuildStamp /></div>
         </div>
       </div>
     </div>

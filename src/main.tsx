@@ -20,7 +20,7 @@ import '@fontsource/jetbrains-mono/700.css'
 import App from './App'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { escapeInAppBrowser } from './lib/inAppBrowser'
-import { markAutoUpdate, readLastAutoUpdate, shouldAutoUpdate, shouldAutoUpdateOnResume, trackInteraction } from './lib/autoUpdate'
+import { markAutoUpdate, readLastAutoUpdate, shouldAutoUpdate, shouldAutoUpdateOnLogin, shouldAutoUpdateOnResume, trackInteraction } from './lib/autoUpdate'
 import { isLiteFx } from './lib/device'
 import './index.css'
 
@@ -50,6 +50,16 @@ document.addEventListener('visibilitychange', () => {
   userTouched.reset() // นับการแตะตั้งแต่กลับมา ไม่ใช่การแตะก่อนทิ้งแอปไว้
   if (updateWaiting && autoOnResume(now)) { markAutoUpdate(now); showUpdateBanner(true) }
 })
+// หน้า login (LoginScreen ยิงอีเวนต์ตอนแสดง): ยังไม่ล็อกอิน = ไม่มีงานค้าง → ถ้ามีเวอร์ชันใหม่รออยู่ อัปเดตเลย
+const autoOnLoginScreen = () => {
+  const now = Date.now()
+  if (!updateWaiting || !shouldAutoUpdateOnLogin({ now, lastAutoAt: readLastAutoUpdate() })) return
+  markAutoUpdate(now)
+  const bar = document.getElementById('sw-update-banner')
+  if (bar) bar.querySelector('button')?.click() // แถบรออยู่แล้ว → กดปุ่มอัปเดตแทน
+  else showUpdateBanner(true)
+}
+window.addEventListener('sjwd-login-shown', autoOnLoginScreen)
 const updateSW = registerSW({
   immediate: true,
   onRegisteredSW(_url, registration) {
@@ -66,6 +76,7 @@ const updateSW = registerSW({
     updateWaiting = true
     const auto = shouldAutoUpdate({ now, loadedAt: pageLoadedAt, interacted: userTouched(), lastAutoAt: readLastAutoUpdate() })
       || autoOnResume(now)
+      || (!!document.querySelector('[data-login-screen]') && shouldAutoUpdateOnLogin({ now, lastAutoAt: readLastAutoUpdate() }))
     if (auto) markAutoUpdate(now)
     showUpdateBanner(auto)
   },
