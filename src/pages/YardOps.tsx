@@ -3,6 +3,7 @@
  * Roles: Walk (Gate In) · Driver (Park) · PDI/PM/FC (Inspect) · Mechanic (Repair)
  */
 import { useEffect, useRef, useState, useMemo, useCallback, memo } from 'react'
+import { BuildStamp } from '../components/BuildStamp'
 import { useShallow } from 'zustand/react/shallow'
 import { createPortal } from 'react-dom'
 import {
@@ -6372,12 +6373,13 @@ export function YardOps() {
           </div>
 
           {/* status strip */}
-          <div className="panel p-4 mt-2 flex items-center gap-3">
+          <div className="panel p-4 mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
             <div className="flex items-center gap-1.5 text-[12px] font-medium"
               style={{ color: 'var(--st-yard)' }}>
               <span className="live">●</span> Live
             </div>
             <div className="text-[12px]" style={{ color: 'var(--muted)' }}>SJWD Yard Control · {currentUser}</div>
+            <BuildStamp className="w-full" />
           </div>
         </div>
       )}
