@@ -54,6 +54,26 @@ let syncInFlight = false
 let cloudSyncedOnce = false
 /** เซสชันนี้ซิงก์กับคลาวด์สำเร็จอย่างน้อยหนึ่งรอบแล้วหรือยัง — งานเบื้องหลังที่ "เขียนจากสำเนาในเครื่อง" ต้องรอก่อน (สำเนาจาก IndexedDB อาจเก่าเป็นชั่วโมง) */
 export const cloudSyncedThisSession = () => cloudSyncedOnce
+
+/** รอ "หน้าแรกพร้อม" (รถของยาร์ดโหลดเสร็จ = unitsCloudDone) ก่อนเริ่มซิงก์ทั้งบริษัท — ไม่เกิน SYNC_AFTER_FIRST_SCREEN_MS เผื่อโหลดรถล้ม/ช้ามาก
+ *  ไม่มียาร์ดที่เลือก (หน้าเลือกยาร์ดยังเปิดอยู่) หรือไม่ได้ตั้งค่าคลาวด์ → เริ่มทันทีเหมือนเดิม; เรียกซ้ำระหว่างรอ = รวมเป็นครั้งเดียว */
+export const SYNC_AFTER_FIRST_SCREEN_MS = 20_000
+let syncWaiting = false
+export function syncCloudWhenReady(run: () => void, siteId: string | null, waitMs = SYNC_AFTER_FIRST_SCREEN_MS): void {
+  if (!siteId || useYard.getState().unitsCloudDone) { run(); return }
+  if (syncWaiting) return
+  syncWaiting = true
+  let off: (() => void) | null = null
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const go = () => {
+    if (!syncWaiting) return
+    syncWaiting = false
+    off?.(); if (timer) clearTimeout(timer)
+    run()
+  }
+  off = useYard.subscribe((s) => { if (s.unitsCloudDone) go() })
+  timer = setTimeout(go, waitMs)
+}
 // a realtime payload can arrive with the record body stripped (Supabase drops it
 // when the row exceeds the channel's max_record_bytes — a car with a long cell
 // set + audit history reaches that). The event then carries no VIN, so nothing
@@ -720,7 +740,9 @@ export const useTracking = create<TrackingState>()(
         const siteId = useYard.getState().currentSite
         if (siteId) await get().loadSiteRows(siteId).catch(() => {})
         // reconcile every yard in the background (incremental after the first run)
-        get().syncCloud()
+        // — แต่ไม่แข่งกับหน้าแรก: ซิงก์ทั้งบริษัท (full pull ~62k แถว/114 MB JSON เกือบทุกเช้า) เคยเริ่มทันทีหลังแถวของยาร์ดมาถึง
+        // ขนานกับการโหลดรถของยาร์ด (ช่วง "Loading 99%") วัดจริง 1.7 s → 10.7 s; รอรถโหลดเสร็จก่อน (เพดาน SYNC_AFTER_FIRST_SCREEN_MS)
+        syncCloudWhenReady(() => get().syncCloud(), siteId)
       },
 
       // Two-way merge between this device (IndexedDB) and Supabase, keyed by VIN
