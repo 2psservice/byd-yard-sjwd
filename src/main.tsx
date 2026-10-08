@@ -20,7 +20,7 @@ import '@fontsource/jetbrains-mono/700.css'
 import App from './App'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { escapeInAppBrowser } from './lib/inAppBrowser'
-import { markAutoUpdate, readLastAutoUpdate, shouldAutoUpdate, trackInteraction } from './lib/autoUpdate'
+import { markAutoUpdate, readLastAutoUpdate, shouldAutoUpdate, shouldAutoUpdateOnResume, trackInteraction } from './lib/autoUpdate'
 import './index.css'
 
 // เปิดจากลิงก์ใน LINE/โซเชียล → เด้งไป Chrome ก่อนเริ่มทำงาน (เบราว์เซอร์ฝังตัวบล็อกกล้อง)
@@ -34,6 +34,20 @@ escapeInAppBrowser()
 // เครื่องที่ไม่กดแถบจะไม่ค้างเวอร์ชันเก่าเป็นวัน
 const pageLoadedAt = Date.now()
 const userTouched = trackInteraction()
+// กลับมาเปิดแอปหลังทิ้งเบื้องหลังนาน (หน้าค้างในหน่วยความจำข้ามวัน): จดว่าซ่อนเมื่อไหร่/กลับมาเมื่อไหร่ และมีเวอร์ชันใหม่รออยู่หรือยัง
+let hiddenAt: number | null = null
+let resumedAt: number | null = null
+let updateWaiting = false
+const autoOnResume = (now: number) => resumedAt != null && shouldAutoUpdateOnResume({
+  now, hiddenAt, resumedAt, interactedSinceResume: userTouched(), lastAutoAt: readLastAutoUpdate(),
+})
+document.addEventListener('visibilitychange', () => {
+  const now = Date.now()
+  if (document.visibilityState === 'hidden') { hiddenAt = now; return }
+  resumedAt = now
+  userTouched.reset() // นับการแตะตั้งแต่กลับมา ไม่ใช่การแตะก่อนทิ้งแอปไว้
+  if (updateWaiting && autoOnResume(now)) { markAutoUpdate(now); showUpdateBanner(true) }
+})
 const updateSW = registerSW({
   immediate: true,
   onRegisteredSW(_url, registration) {
@@ -47,7 +61,9 @@ const updateSW = registerSW({
   },
   onNeedRefresh() {
     const now = Date.now()
+    updateWaiting = true
     const auto = shouldAutoUpdate({ now, loadedAt: pageLoadedAt, interacted: userTouched(), lastAutoAt: readLastAutoUpdate() })
+      || autoOnResume(now)
     if (auto) markAutoUpdate(now)
     showUpdateBanner(auto)
   },

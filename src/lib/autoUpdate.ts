@@ -11,6 +11,8 @@
 /** ช่วง "เพิ่งเปิดแอป" ที่ยังถือว่าไม่มีงานค้าง */
 export const AUTO_UPDATE_WINDOW_MS = 90_000
 export const AUTO_UPDATE_COOLDOWN_MS = 10 * 60_000
+/** ทิ้งแอปไว้เบื้องหลังนานเท่านี้ขึ้นไป ถึงถือว่า "กลับมาเริ่มงานใหม่" (สลับ LINE ไปตอบสั้น ๆ อาจมีฟอร์มที่กรอกค้าง ไม่นับ) */
+export const AUTO_UPDATE_RESUME_HIDDEN_MS = 4 * 60 * 60_000
 const KEY = 'sjwd-auto-update-at'
 
 export interface AutoUpdateInput {
@@ -33,14 +35,41 @@ export function shouldAutoUpdate(i: AutoUpdateInput): boolean {
   return true
 }
 
-/** เริ่มฟังการแตะ/พิมพ์ — คืนฟังก์ชันถามว่า "มีการแตะแล้วหรือยัง" (ฟังแบบ capture ไม่ขวางเหตุการณ์) */
-export function trackInteraction(target: EventTarget = window): () => boolean {
+export interface ResumeInput {
+  now: number
+  /** ครั้งล่าสุดที่หน้าแอปถูกซ่อน (สลับไปแอปอื่น/ล็อกจอ) — null = ยังไม่เคย */
+  hiddenAt: number | null
+  /** เวลาที่กลับมาเห็นหน้าแอปอีกครั้ง */
+  resumedAt: number
+  /** แตะ/พิมพ์อะไรตั้งแต่กลับมาแล้วหรือยัง */
+  interactedSinceResume: boolean
+  lastAutoAt: number | null
+}
+
+/**
+ * กลับมาเปิดแอปหลังทิ้งเบื้องหลังนาน (หน้าแอปค้างในหน่วยความจำเป็นวัน ไม่เคย "เปิดใหม่" เลยไม่เข้ากฎตอนเปิดแอป)
+ * ทิ้งนานเกิน AUTO_UPDATE_RESUME_HIDDEN_MS + เพิ่งกลับมา + ยังไม่แตะ → อัปเดตเองได้ (ความเสี่ยง: ฟอร์มที่กรอกค้างแล้วทิ้งนานขนาดนั้นจะหาย)
+ */
+export function shouldAutoUpdateOnResume(i: ResumeInput): boolean {
+  if (i.hiddenAt == null) return false
+  if (i.resumedAt - i.hiddenAt < AUTO_UPDATE_RESUME_HIDDEN_MS) return false
+  if (i.interactedSinceResume) return false
+  if (i.now - i.resumedAt > AUTO_UPDATE_WINDOW_MS) return false
+  if (i.lastAutoAt != null) {
+    const since = i.now - i.lastAutoAt
+    if (since < 0 || since < AUTO_UPDATE_COOLDOWN_MS) return false
+  }
+  return true
+}
+
+/** เริ่มฟังการแตะ/พิมพ์ — คืนฟังก์ชันถามว่า "มีการแตะแล้วหรือยัง" (ฟังแบบ capture ไม่ขวางเหตุการณ์) · `.reset()` เริ่มนับใหม่ */
+export function trackInteraction(target: EventTarget = window): (() => boolean) & { reset: () => void } {
   let touched = false
   const mark = () => { touched = true }
   for (const type of ['pointerdown', 'keydown', 'touchstart']) {
     target.addEventListener(type, mark, { capture: true, passive: true })
   }
-  return () => touched
+  return Object.assign(() => touched, { reset: () => { touched = false } })
 }
 
 export function readLastAutoUpdate(): number | null {
