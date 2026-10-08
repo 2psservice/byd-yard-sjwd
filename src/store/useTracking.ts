@@ -6,7 +6,7 @@ import type { Column } from '../lib/trackingColumns'
 import { defaultColumns, reconcileColumns, columnNameKey, duplicatesBuiltIn, MAX_FILTERS, DEFAULT_FILTER_COLS, LOCATION_KEY } from '../lib/trackingColumns'
 import type { ParseResult, RowEvent, TrackRow } from '../lib/excelTracking'
 import { parseTrackingWorkbook, isScanLocationEntry } from '../lib/excelTracking'
-import { parseYardLocCode, yardLocFull } from '../lib/groupingImport'
+import { parseYardLocCode, yardLocFull, LAST_LOCATION_KEY } from '../lib/groupingImport'
 import { idbBulkPut, idbClear, idbDelete, idbGetAllRows, idbPut } from '../lib/idb'
 import * as db from '../lib/db'
 import { supabase } from '../lib/supabase'
@@ -261,7 +261,12 @@ interface TrackingState {
   /** ย้ายรถไปยาร์ดอื่น: ปิดรอบที่ยาร์ดเดิม (อ่านเป็น Gate-out ที่นั่น) แล้วเปิด
    *  รอบใหม่ที่ปลายทาง — ดู transferRow. `at` = เวลาที่ออก ถ้าแถวไม่มีรอยยิงออก
    *  คืน true เมื่อย้ายจริง (false = อยู่ที่นั่นอยู่แล้ว / ไม่รู้จักยาร์ด) */
-  transferToYard: (vin: string, destSiteId: string, opts?: { at?: number; queue?: boolean }) => boolean
+  transferToYard: (vin: string, destSiteId: string, opts?: {
+    at?: number; queue?: boolean
+    /** Gate-out ที่ประตู (YardOps.doGateOut) — ลงค่า Gate-out + เวลาออก + ช่องจอดสุดท้าย + ประวัติ แล้วปิดรอบ/ย้ายป้ายในแถวเดียวกัน
+     *  เขียนขึ้นคลาวด์ครั้งเดียว (เดิมเป็น updateCell หลายครั้ง + startNewTrip แต่ละครั้งส่งแยกกัน → แถวกลางทางที่ป้ายยังเป็นยาร์ดต้นทางหลุดไปทับได้) */
+    gateOut?: { stampText: string; at: number; lastLocation?: string }
+  }) => boolean
   /** แอดมินยืนยันว่ารถ "ไม่เคยอยู่" ยาร์ด purgeSiteId (ข้อมูลมั่ว): ล้างทุกร่องรอยของยาร์ดนั้น
    *  (ป้ายออก · รอบที่ปิด · แถวรอบ) แล้วให้แถวสดเป็นของ destSiteId — ไม่ปิดรอบ ไม่สร้างประวัติปลอม
    *  คืนจำนวนแถวที่แตะ */
@@ -1106,7 +1111,21 @@ export const useTracking = create<TrackingState>()(
         if (!r) return false
         const { currentUser: by, sites } = useYard.getState()
         const origin = r.site ?? siteIdForLocation(r.cells, sites)
-        const moved = transferRow(r, destSiteId, by, sites, opts?.at)
+        let src = r
+        if (opts?.gateOut) {
+          const g = opts.gateOut
+          const cells: Record<string, string> = { ...r.cells, 'Car Status': 'Gate-out', 'Gate Out time stamp': g.stampText, 'Gate Out Time': String(g.at) }
+          if (g.lastLocation) cells[LAST_LOCATION_KEY] = g.lastLocation
+          const ev = (field: string, from: string, to: string): RowEvent => ({ at: g.at, by, field, from, to })
+          src = {
+            ...r, cells,
+            history: [...(r.history ?? []),
+              ev('Car Status', r.cells['Car Status'] ?? '', 'Gate-out'),
+              ev('Gate Out time stamp', r.cells['Gate Out time stamp'] ?? '', g.stampText),
+            ].slice(-MAX_ROW_HISTORY),
+          }
+        }
+        const moved = transferRow(src, destSiteId, by, sites, opts?.at ?? opts?.gateOut?.at)
         if (!moved) return false
         useVisits.getState().add([moved.visit])
         set({ rows: { ...get().rows, [vin]: moved.out } })
@@ -1566,8 +1585,11 @@ export const useTracking = create<TrackingState>()(
             // ยาร์ดนี้เลย (Pre Gate-in ที่แค่ติดป้ายผิด) — การย้ายป้ายเฉย ๆ ตรงนี้
             // คือสิ่งที่ทำให้รถ 79 คันที่ 60 Rai ถูกปิดรอบเป็น Gate-out แล้วไปโผล่
             // เป็น Pre Gate-in ที่ 3D LCB พร้อมตำแหน่งจอดหายทั้งล็อต
+            // รถที่ "เพิ่งย้ายเข้ามา" (Gate-out จากยาร์ดอื่นแล้วเริ่มรอบใหม่ที่นี่) ก็เป็น Pre Gate-in ที่ยังไม่มีคนยืนยันเหมือนกัน
+            // แต่ไม่ใช่รถติดป้ายผิด — แถวมีป้ายต้นทาง/ก้อนรอบที่ปิดแล้ว ไฟล์หลักที่ยังเขียนยาร์ดเดิมห้ามลากกลับ
+            const transferredIn = !!stale && (!!stale.cells[GATE_OUT_ORIGIN_SITE_KEY] || tripsOf(stale.cells).length > 0)
             if (stale && currentSite
-                && (deriveCarStatus(stale.cells) !== 'Pre Gate-in' || inYardAssertedAt(stale.cells, currentSite) > 0)) {
+                && (transferredIn || deriveCarStatus(stale.cells) !== 'Pre Gate-in' || inYardAssertedAt(stale.cells, currentSite) > 0)) {
               heldInYard++; skipped++; continue
             }
             if (stale) {
@@ -2020,7 +2042,7 @@ useTracking.subscribe((s, prev) => {
     // changed HERE, so this device owns the row again and may write it back
     broadcastOnly.delete(vin)
     if (first) continue // a row arriving from the initial load is not an edit
-    pendingRows.set(vin, { vin, cells: r.cells ?? {}, at })
+    pendingRows.set(vin, { vin, cells: r.cells ?? {}, at, site: r.site ?? null })
   }
   if (pendingRows.size && !rowsTimer) rowsTimer = setTimeout(flushRows, 250)
 })
@@ -2046,7 +2068,9 @@ onSync('status', (p: RowsPayload) => {
       rowShared.set(m.vin, at) // mark as shared BEFORE the set() so it is not echoed back
       broadcastOnly.add(m.vin)
       // history is deliberately not on the wire — keep the copy this device has
-      const row: TrackRow = { ...cur, cells: m.cells, updatedAt: at }
+      // ป้ายไซต์เดินทางไปพร้อมข้อมูลช่อง (ข้อความรุ่นเก่าไม่มี site → คงป้ายเดิม)
+      const site = m.site === undefined ? cur.site : (m.site ?? undefined)
+      const row: TrackRow = { ...cur, cells: m.cells, site, updatedAt: at }
       next[m.vin] = row
       fresh.push(row)
       hit++

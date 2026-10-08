@@ -4306,7 +4306,7 @@ function GateOutView() {
   const trackingRows = useSiteRows()
   const units = useSiteUnits()
   const queues = useSiteQueues()
-  const { loadFromIdb, updateCell, startNewTrip } = useTracking()
+  const { loadFromIdb, updateCell, startNewTrip, transferToYard } = useTracking()
   const { toast, currentUser, sites, currentSite, markDeparted } = useYardPick('toast', 'currentUser', 'sites', 'currentSite', 'markDeparted')
   const { confirmSeqGateOut, createGateInQueue } = useOps()
   const { block: blockGate, blockWith, modal: gateModal } = useNotGatedIn()
@@ -4475,37 +4475,51 @@ function GateOutView() {
     if (!row) return
     const now = new Date()
     const ts = stamp(now)
-    updateCell(row.vin, 'Car Status', isYardTransfer ? 'Gate-out' : 'Pre Gate-out')
-    updateCell(row.vin, 'Gate Out time stamp', ts)
-    updateCell(row.vin, 'Gate Out Time', String(now.getTime())) // epoch → 09:30 flush calc
     // snapshot the slot this car is leaving BEFORE markDeparted clears it — a
     // reprinted Grouping / find-car sheet still needs to say where it stood
     const lastLoc = yardLocCode(parked)
-    if (lastLoc) updateCell(row.vin, LAST_LOCATION_KEY, lastLoc)
-    markDeparted(row.vin) // release the parking slot — the car left it for the preload lane
-    // close the delivery-sequence item too, if this car belongs to one
-    if (seqHit) confirmSeqGateOut(seqHit.queue.id, row.vin, currentUser)
-    // yard-to-yard: file this visit away and open the next one at the
-    // destination right now — the gate operator's tap is what the other
-    // yard's Pre Gate-in board is waiting on, not the next 60-วิ sweep tick
-    // (see App.tsx, which still catches any case that slips through here —
-    // e.g. this same transfer happening via a re-imported sheet instead)
+    // ข้ามยาร์ด: เขียนแถวครั้งเดียว (Gate-out + ปิดรอบ + ย้ายป้ายไซต์ + ป้ายต้นทาง) ผ่าน transferToYard
+    // เดิมเป็น updateCell หลายครั้ง + startNewTrip ต่อกัน แต่ละครั้งส่งขึ้นคลาวด์แยก — แถวกลางทางที่ป้ายยังเป็นยาร์ดนี้
+    // ถึงปลายทางทีหลังแถวสุดท้ายได้ ยาร์ดนี้เลยเห็นรถเป็น Pre Gate-in ของตัวเองอีกรอบ
+    // ป้ายต้นทาง (GATE_OUT_ORIGIN_*) transferRow จดให้เอง จึงไม่ต้องเขียนที่นี่
+    // ปล่อยช่องจอดก่อนย้ายป้ายเสมอ (เหมือนลำดับเดิม): moveUnitsToSite ตั้ง unit เป็น EXPECTED ของยาร์ดปลายทาง
+    // ถ้า markDeparted มาทีหลังจะเขียน DEPARTED ทับ unit ของปลายทาง
     if (isYardTransfer) {
-      // startNewTrip ด้านล่างจะเปลี่ยน Car Status กลับเป็น Pre Gate-in ทันที
-      // (คนละ tick เดียวกับบรรทัด Gate-out ด้านบน) — ต้นทางจึงไม่มีทางเห็น
-      // สถานะ Gate-out ค้างให้อ่านได้อีกเลย การ์ด "Gate-out" ของยาร์ดนี้เลย
-      // ค้าง 0 ตลอดไม่ว่าจะสแกนออกกี่คัน ต้องจดไว้เองว่า "ออกจากยาร์ดนี้ไปแล้ว
-      // เมื่อไหร่" แยกจากสถานะสด (ดู departedFromSite ใน carStatus.ts)
-      updateCell(row.vin, GATE_OUT_ORIGIN_SITE_KEY, currentSite ?? '')
-      updateCell(row.vin, GATE_OUT_ORIGIN_AT_KEY, String(now.getTime()))
-      startNewTrip(row.vin, { yard: transferDest!.name, keepQueueProgress: true })
+      markDeparted(row.vin)
+      if (seqHit) confirmSeqGateOut(seqHit.queue.id, row.vin, currentUser)
+    }
+    let transferred = false
+    if (isYardTransfer) {
+      transferred = transferToYard(row.vin, transferDest!.id, {
+        at: now.getTime(), queue: false,
+        gateOut: { stampText: ts, at: now.getTime(), lastLocation: lastLoc || undefined },
+      })
+    }
+    if (!transferred) {
+      updateCell(row.vin, 'Car Status', isYardTransfer ? 'Gate-out' : 'Pre Gate-out')
+      updateCell(row.vin, 'Gate Out time stamp', ts)
+      updateCell(row.vin, 'Gate Out Time', String(now.getTime())) // epoch → 09:30 flush calc
+      if (lastLoc) updateCell(row.vin, LAST_LOCATION_KEY, lastLoc)
+    }
+    if (!isYardTransfer) {
+      markDeparted(row.vin) // release the parking slot — the car left it for the preload lane
+      // close the delivery-sequence item too, if this car belongs to one
+      if (seqHit) confirmSeqGateOut(seqHit.queue.id, row.vin, currentUser)
+    }
+    // yard-to-yard: the gate operator's tap is what the other yard's Pre Gate-in
+    // board is waiting on, not the next 60-วิ sweep tick (App.tsx still catches
+    // any case that slips through here)
+    if (isYardTransfer) {
+      if (!transferred) {
+        // ทางถอย: ย้ายแบบก้อนเดียวไม่สำเร็จ (เช่นไม่รู้จักยาร์ดปลายทาง) → ลำดับเดิม
+        updateCell(row.vin, GATE_OUT_ORIGIN_SITE_KEY, currentSite ?? '')
+        updateCell(row.vin, GATE_OUT_ORIGIN_AT_KEY, String(now.getTime()))
+        startNewTrip(row.vin, { yard: transferDest!.name, keepQueueProgress: true })
+      }
       // แปะเข้าคิวงาน Gate-in ที่ปลายทางด้วย ไม่งั้นการ์ด "Pre Gate-in" ที่นั่น
       // จะเห็นแค่ "(รอ Gate-in · ยังไม่มีคิวงาน)" เหมือนรถลอยไม่มีที่มา —
       // createGateInQueue หาคิวชื่อเดียวกันที่ยังเปิดอยู่แล้วแปะเพิ่ม ไม่สร้างซ้ำ
-      // ทุกครั้งที่มีรถย้ายมาอีกคัน (เหมือนคิวงาน Pre Gate-in ปกติจากการ import)
       // ชื่อคิวขึ้นต้นด้วยยาร์ด "เจ้าของคิว" เสมอ — คิวนี้เป็นของปลายทาง
-      // (ดูเหตุผลเต็มที่ App.tsx จุดเดียวกัน) ชื่อเดิมอ่านแล้วเหมือนเป็นงาน
-      // ของยาร์ดต้นทาง ทำให้บันทึกเหตุการณ์ดูเหมือนต้นทางถูก gate-in ตามไปด้วย
       const originName = sites.find(s => s.id === currentSite)?.name ?? currentSite ?? ''
       createGateInQueue(`(${transferDest!.name} · shuttle · จาก ${originName})`, [row.vin], currentUser, transferDest!.id)
     }
