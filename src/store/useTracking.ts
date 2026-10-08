@@ -1389,7 +1389,7 @@ export const useTracking = create<TrackingState>()(
         // เป้าหมาย: แถวชีตที่อยู่ยาร์ดนี้ · ไม่ใช่รถที่ออก/ยังไม่เข้า · unit ไม่มีช่องบนผังของยาร์ดนี้
         // (ถูกล้างไป / ค้างช่องของยาร์ดอื่น / บล็อกนอกผังเมื่อ offMap) · บรรทัด Location ล่าสุด
         // ของรอบนี้ (ที่คนบันทึก) ชี้ไปบล็อกที่ระบุ — ไม่มีบรรทัดยิง = ไม่เดา (noHistory)
-        const plan: { vin: string; target: { block: string; row: number; slot: number }; from: string }[] = []
+        const plan: { vin: string; target: { block: string; row: number; slot: number }; lastAt: number }[] = []
         for (const r of Object.values(rows)) {
           if (r.deletedAt || r.site !== currentSite) continue
           const st = deriveCarStatus(r.cells)
@@ -1402,37 +1402,43 @@ export const useTracking = create<TrackingState>()(
           const target = last ? parseYardLocCode(last.to) : null
           if (!target) { out.noHistory++; continue }
           if (!want.has(target.block)) { out.otherBlock++; continue }
-          // unit ยังถือช่องอยู่ (ยาร์ดอื่น / บล็อกนอกผัง) และถูกวางช่องนั้น "หลัง" การยิงครั้งนี้
-          // → ช่องนั้นใหม่กว่า ไม่ทับ (เผื่อนาฬิกาต่างเครื่อง 60 วิ)
-          if (held && (u.parkedAt ?? 0) > last.at + 60_000) { out.movedSince.push({ vin: r.vin, at: yardLocFull(u) }); continue }
-          plan.push({ vin: r.vin, target, from: held ? yardLocFull(u) : '' })
+          plan.push({ vin: r.vin, target, lastAt: last.at })
         }
         if (!plan.length) return out
-        // unit ที่เครื่องนี้ไม่มี (ถูกตั้ง DEPARTED แล้วการดึงรถในยาร์ดกรองทิ้ง) → ดึงตัวจริง
-        // จากคลาวด์มาต่อ ไม่สร้างใหม่จากความว่างเปล่า (รุ่น/สี/defect ต้องเป็นของเดิม)
+        // unit ที่เครื่องนี้ไม่มี (ถูกตั้ง DEPARTED แล้วการดึงรถในยาร์ดกรองทิ้ง · หรือเป็นของยาร์ดอื่นที่
+        // เครื่องนี้ไม่ได้โหลด) → ดึงตัวจริงจากคลาวด์มาต่อ ไม่สร้างใหม่จากความว่างเปล่า (รุ่น/สี/defect
+        // ต้องเป็นของเดิม) และตัวจากคลาวด์ก็ต้องผ่านด่าน "ถูกวางที่อื่นหลังยิง" เหมือนตัวในเครื่อง
         const missing = plan.filter((p) => !units0[p.vin]).map((p) => p.vin)
         const fromCloud = new Map<string, Unit>()
         if (missing.length) for (const u of await db.fetchUnitsByVins(missing)) fromCloud.set(u.vin, u)
         const now = Date.now()
-        const nextUnits = { ...useYard.getState().units }
+        const liveUnits = useYard.getState().units // หลัง await — ใช้สำเนาล่าสุดของเครื่อง
         const changed: Unit[] = []
-        for (const { vin, target, from } of plan) {
+        const lines: { vin: string; from: string; to: string }[] = []
+        for (const { vin, target, lastAt } of plan) {
           const key = posKey(target)
           const occ = occupied.get(key)
           if (occ && occ !== vin) { out.collided.push({ vin, want: yardLocFull(target) }); continue }
-          const base = nextUnits[vin] ?? fromCloud.get(vin)
+          const base = liveUnits[vin] ?? fromCloud.get(vin)
           if (!base) { out.skipped++; continue } // ไม่มี unit ทั้งในเครื่องและคลาวด์ — ไม่เดา
-          if (base.site === currentSite && base.block && base.row && base.slot) occupied.delete(posKey(base)) // ช่องนอกผังเดิมว่างลง
-          const fixed: Unit = { ...base, site: currentSite, block: target.block, row: target.row, slot: target.slot, status: 'PARKED', parkedAt: now, importedAt: base.importedAt || now }
-          nextUnits[vin] = fixed
-          changed.push(fixed)
+          const baseHeld = base.status !== 'DEPARTED' && !!base.block && !!base.row && !!base.slot
+          // unit ยังถือช่องอยู่ (ยาร์ดอื่น / บล็อกนอกผัง / ในคลาวด์) และถูกวางช่องนั้น "หลัง" การยิง
+          // ครั้งนี้ → ช่องนั้นใหม่กว่า ไม่ทับ (เผื่อนาฬิกาต่างเครื่อง 60 วิ)
+          if (baseHeld && (base.parkedAt ?? 0) > lastAt + 60_000) { out.movedSince.push({ vin, at: yardLocFull(base) }); continue }
+          if (baseHeld && base.site === currentSite && posKey(base) === key) continue // อยู่ช่องนั้นอยู่แล้ว — ไม่มีอะไรให้คืน
+          if (baseHeld && base.site === currentSite) occupied.delete(posKey(base)) // ช่องนอกผังเดิมว่างลง
+          changed.push({ ...base, site: currentSite, block: target.block, row: target.row, slot: target.slot, status: 'PARKED', parkedAt: now, importedAt: base.importedAt || now })
           occupied.set(key, vin)
-          get().appendHistory(vin, { at: now, by: 'ระบบ (คืนตำแหน่งที่ถูกล้าง)', field: 'Location', from, to: yardLocFull(target) })
-          out.fixed++
+          lines.push({ vin, from: baseHeld ? yardLocFull(base) : '', to: yardLocFull(target) })
         }
         if (changed.length) {
-          useYard.setState({ units: nextUnits })
-          await db.upsertUnitsStrict(changed) // โยน error ถ้าไม่ถึงคลาวด์ — หน้าตั้งค่าแจ้งให้กดใหม่
+          // คลาวด์ก่อน: ไม่ถึงคลาวด์ = โยน error ออกไปทั้งก้อน เครื่องนี้ไม่ถูกแตะ ไม่ลงประวัติ (ผู้เรียก
+          // ลองใหม่รอบหน้าได้ — ไม่งั้นเครื่องจะเห็นตำแหน่งที่คลาวด์ไม่มี และรอบหน้าข้ามเพราะ "มีช่องแล้ว")
+          await db.upsertUnitsStrict(changed)
+          // ทับเฉพาะคันที่คืน บนสำเนาล่าสุด — ไม่เอาทั้งแผนที่เก่าไปทับการเปลี่ยนแปลงที่เข้ามาระหว่างรอ
+          useYard.setState((s) => { const units = { ...s.units }; for (const f of changed) units[f.vin] = f; return { units } })
+          for (const l of lines) get().appendHistory(l.vin, { at: now, by: 'ระบบ (คืนตำแหน่งที่ถูกล้าง)', field: 'Location', from: l.from, to: l.to })
+          out.fixed = changed.length
         }
         return out
       },
