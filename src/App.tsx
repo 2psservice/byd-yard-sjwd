@@ -344,23 +344,31 @@ export default function App() {
     if (!job) return
     try { if (localStorage.getItem(job.key)) return } catch { return }
     let cancelled = false
-    const t = setTimeout(async () => {
+    let t: ReturnType<typeof setTimeout>
+    const run = async () => {
+      if (cancelled) return
+      // แถวชีต/ประวัติในเครื่องมาจาก IDB ก่อนซิงก์ — ห้ามตัดสินจากสำเนาเก่า (กติกาเดียวกับตัวกวาดด้านบน)
+      // ยังซิงก์ไม่เสร็จ → รอแล้วลองใหม่ทุก 10 วิ จนกว่าจะเสร็จ (ปิดแท็บ/เปลี่ยนยาร์ด = หยุด)
+      if (isConfigured() && !cloudSyncedThisSession()) { t = setTimeout(run, 10_000); return }
       try {
         const res = await useTracking.getState().restorePositionsInBlocks(job.blocks, { offMap: job.offMap })
-        if (cancelled) return
+        // งานเสร็จแล้วจริง (คลาวด์รับแล้ว) — ตั้งธง/แจ้งผลเสมอ แม้ effect ถูกเริ่มใหม่ระหว่างรอ (unitsCloudDone
+        // กระพริบตอน catch-up / sites เปลี่ยน) ไม่งั้นรอบถัดไปจะวิ่งซ้ำแล้วแจ้ง "คืน 0 คัน" ทั้งที่คืนไปแล้ว
         try { localStorage.setItem(job.key, String(Date.now())) } catch { /* เครื่องไม่ให้เก็บ — รอบหน้าก็ไม่มีอะไรให้แก้แล้ว */ }
         console.info('[restore]', job.label, res)
         if (res.fixed || res.collided.length || res.movedSince.length || res.noHistory) {
           const parts = [`คืนตำแหน่งรถ${job.label} ${res.fixed} คัน`]
           if (res.collided.length) parts.push(`ช่องถูกจอดทับ ${res.collided.length} คัน: ${res.collided.slice(0, 8).map((c) => `${c.vin.slice(-6)}→${c.want}`).join(', ')}${res.collided.length > 8 ? ' …' : ''}`)
-          if (res.movedSince.length) parts.push(`ถูกวางช่องอื่นหลังยิง ${res.movedSince.length} คัน (ไม่ทับ)`)
+          if (res.movedSince.length) parts.push(`ถือช่องอื่นอยู่ไม่เก่ากว่าการยิง ${res.movedSince.length} คัน (ไม่ทับ ให้คนตัดสิน)`)
           if (res.noHistory) parts.push(`ไม่มีประวัติยิงในรอบนี้ ${res.noHistory} คัน (ต้องยิงใหม่)`)
           if (res.otherBlock) parts.push(`ยิงล่าสุดเป็นบล็อกนอกรายการ ${res.otherBlock} คัน`)
+          if (res.unreached) parts.push(`ยกเลิกขับก่อนถึงช่อง ${res.unreached} คัน (ไม่คืน)`)
           if (res.skipped) parts.push(`ไม่มีข้อมูลรถ ${res.skipped} คัน`)
           useYard.getState().toast(res.collided.length || res.movedSince.length || res.noHistory ? 'info' : 'ok', parts.join(' · '), 20_000)
         }
       } catch (e) { console.error('[restore]', job.label, e) } // ไม่ตั้งธง — เปิดครั้งหน้าลองใหม่
-    }, 12_000)
+    }
+    t = setTimeout(run, 12_000)
     return () => { cancelled = true; clearTimeout(t) }
   }, [loggedInUserId, opsOnly, trackingLoaded, unitsCloudDone, currentSite, sites])
 

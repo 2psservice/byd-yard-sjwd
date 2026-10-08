@@ -18,9 +18,12 @@ export interface RestorePositionsResult {
   skipped: number
   /** ไม่มีบรรทัดยิงตำแหน่งในรอบนี้เลย — ไม่เดา ต้องยิงใหม่ */
   noHistory: number
-  /** บรรทัดยิงล่าสุดชี้ไปบล็อกที่ไม่อยู่ในรายการที่ขอคืน */
+  /** บรรทัดยิงล่าสุดชี้ไปบล็อกที่ไม่อยู่ในรายการที่ขอคืน (หรือผังไม่ได้วาด) */
   otherBlock: number
-  /** unit ถูกวางช่องอื่น (ยาร์ดอื่น/บล็อกนอกผัง) หลังการยิงครั้งนั้น — ของใหม่กว่า ไม่ทับ */
+  /** unit เป็น GATE_IN ไม่มีช่อง แต่มีบรรทัดยิง = คนขับรับงานไปช่องนั้นแล้วยกเลิก รถไม่เคยถึงช่อง — ไม่คืน */
+  unreached: number
+  /** unit ยังถือช่องอื่นอยู่ (ยาร์ดอื่น/บล็อกนอกผัง) ที่ไม่ได้เก่ากว่าการยิงครั้งนั้นชัดเจน — วางทีหลัง /
+   *  วางพร้อมกัน (ยิงครั้งเดียวกันจากเครื่องที่เลือกยาร์ดไม่ตรงป้าย) / ไม่มีเวลาวาง — ไม่ทับ ให้คนตัดสิน */
   movedSince: { vin: string; at: string }[]
 }
 import { idbBulkPut, idbClear, idbDelete, idbGetAllRows, idbPut } from '../lib/idb'
@@ -33,7 +36,7 @@ import { TRIPS_CELL, TRIP_SCOPED_KEYS, ROUND_COPIED_KEYS, tripsOf, roundHistory,
 import { sharedCellsOf, sharedDelta, auditStationChecks, type StationChecksAudit } from '../lib/stationChecks'
 import { useVisits } from './useVisits'
 import { visitFromTrip, type Visit } from '../lib/visits'
-import { CAR_STATUS_ORDER, CAR_STATUS_KEY, CAR_STATUS_SET_AT_KEY, CAR_STATUS_SET_SITE_KEY, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY, RELEASED_STATUSES, deriveCarStatus, isGateOutStamp, gateOutScanMs, gateInEvidenceAt, inYardAssertedAt, fmtGateOutStamp } from '../lib/carStatus'
+import { CAR_STATUS_ORDER, CAR_STATUS_KEY, CAR_STATUS_SET_AT_KEY, CAR_STATUS_SET_SITE_KEY, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY, RELEASED_STATUSES, IN_YARD_STATUSES, deriveCarStatus, isGateOutStamp, gateOutScanMs, gateInEvidenceAt, inYardAssertedAt, fmtGateOutStamp } from '../lib/carStatus'
 import type { Site, Unit } from '../types'
 import { hasOpenBodyDefect } from '../lib/damageLabel'
 import { overlayInspection } from '../lib/inspectionStatus'
@@ -1372,13 +1375,17 @@ export const useTracking = create<TrackingState>()(
       restorePositionsInBlocks: async (blocksIn, opts) => {
         const want = new Set(blocksIn.map((b) => b.trim().toUpperCase()).filter(Boolean))
         const { currentSite, blocksBySite } = useYard.getState()
-        const out: RestorePositionsResult = { fixed: 0, collided: [], skipped: 0, noHistory: 0, otherBlock: 0, movedSince: [] }
+        const out: RestorePositionsResult = { fixed: 0, collided: [], skipped: 0, noHistory: 0, otherBlock: 0, unreached: 0, movedSince: [] }
         if (!currentSite || !want.size) return out
+        // ห้ามตัดสินจากสำเนาเก่า: แถว/ประวัติในเครื่องมาจาก IDB ก่อนซิงก์ และการคืนเขียนทั้งแถวขึ้นคลาวด์
+        // ด้วยเวลาใหม่ (appendHistory → pushRows) — ซิงก์ให้เสร็จก่อน ซิงก์ไม่ได้ = โยน ไม่คืน (รอบหน้าลองใหม่)
+        await get().syncCloud()
+        if (db.isConfigured() && !cloudSyncedThisSession()) throw new Error('ยังซิงก์แถวชีตกับคลาวด์ไม่สำเร็จ — ยังไม่คืนตำแหน่ง')
         const rows = get().rows
         const units0 = useYard.getState().units
         // ป้ายบล็อกที่ผังของยาร์ดนี้วาดอยู่ (คีย์เดียวกับที่ Yard Plan ใช้จัดรถลงช่อง) — ใช้เมื่อ
         // opts.offMap: unit ที่มีช่องแต่บล็อกไม่อยู่บนผังนี้ = ไม่มีตำแหน่งบนผังเหมือนกัน
-        const drawn = new Set((blocksBySite[currentSite] ?? blocksBySite._global ?? []).filter((b) => (b.kind ?? 'park') === 'park').map(blockTag))
+        const drawn = new Set((blocksBySite[currentSite] ?? []).filter((b) => (b.kind ?? 'park') === 'park').map(blockTag)) // กฎเดียวกับ useBlocks — ไม่ถอยไป _global
         // คีย์ช่องใช้ป้ายบล็อกแบบย่อ (A ↔ AA) เหมือนผัง — ไม่งั้นเช็คชนพลาดเมื่อ unit ติดป้ายคนละสะกด
         const posKey = (u: { block?: string; row?: number; slot?: number }) => `${blockKeyOfTag(u.block)}-${u.row}-${u.slot}`
         // ช่องที่ยาร์ดนี้ครองอยู่ตอนเริ่ม (ทุกบล็อก) — เช็คชนกับสภาพจริง ไม่ทับรถที่จอดอยู่
@@ -1392,8 +1399,7 @@ export const useTracking = create<TrackingState>()(
         const plan: { vin: string; target: { block: string; row: number; slot: number }; lastAt: number }[] = []
         for (const r of Object.values(rows)) {
           if (r.deletedAt || r.site !== currentSite) continue
-          const st = deriveCarStatus(r.cells)
-          if (st === 'Gate-out' || st === 'Pre Gate-out' || st === 'Pre Gate-in') continue
+          if (!IN_YARD_STATUSES.has(deriveCarStatus(r.cells))) continue // กฎเดียวกับ Yard Plan นับ "In Yard" (Preload/Gate-out/Pre Gate-in ไม่ใช่)
           const u = units0[r.vin]
           const held = !!(u && u.status !== 'DEPARTED' && u.block && u.row && u.slot)
           if (held && u.site === currentSite && (!opts?.offMap || drawn.has(blockKeyOfTag(u.block)))) continue // มีช่องบนผังนี้อยู่แล้ว — ไม่แตะ
@@ -1401,16 +1407,16 @@ export const useTracking = create<TrackingState>()(
           const last = moves[moves.length - 1]
           const target = last ? parseYardLocCode(last.to) : null
           if (!target) { out.noHistory++; continue }
-          if (!want.has(target.block)) { out.otherBlock++; continue }
+          // บล็อกเป้าหมายต้องอยู่ในรายการ และ (เมื่อ offMap) ต้องมีบนผังจริง — คืนลงบล็อกที่ผังไม่วาดก็ยัง "ไม่มีตำแหน่ง"
+          if (!want.has(target.block) || (opts?.offMap && !drawn.has(target.block))) { out.otherBlock++; continue }
           plan.push({ vin: r.vin, target, lastAt: last.at })
         }
         if (!plan.length) return out
-        // unit ที่เครื่องนี้ไม่มี (ถูกตั้ง DEPARTED แล้วการดึงรถในยาร์ดกรองทิ้ง · หรือเป็นของยาร์ดอื่นที่
-        // เครื่องนี้ไม่ได้โหลด) → ดึงตัวจริงจากคลาวด์มาต่อ ไม่สร้างใหม่จากความว่างเปล่า (รุ่น/สี/defect
-        // ต้องเป็นของเดิม) และตัวจากคลาวด์ก็ต้องผ่านด่าน "ถูกวางที่อื่นหลังยิง" เหมือนตัวในเครื่อง
-        const missing = plan.filter((p) => !units0[p.vin]).map((p) => p.vin)
+        // ทุกคันในแผน "ไม่มีช่องบนผังนี้ตามสำเนาเครื่อง" — แต่เครื่องแอดมินโหลดเฉพาะรถของยาร์ดนี้ และสำเนา
+        // รถยาร์ดอื่นที่ค้างอยู่อาจเก่า จึงถามคลาวด์ทุกคัน (ตัวจริงที่เครื่องอื่นเขียน) ใช้เป็นฐาน: รุ่น/สี/defect
+        // เป็นของเดิม ไม่สร้างใหม่จากความว่างเปล่า และด่าน "ถือช่องอื่นอยู่" ตัดสินจากตัวจริง
         const fromCloud = new Map<string, Unit>()
-        if (missing.length) for (const u of await db.fetchUnitsByVins(missing)) fromCloud.set(u.vin, u)
+        for (const u of await db.fetchUnitsByVins(plan.map((p) => p.vin))) fromCloud.set(u.vin, u)
         const now = Date.now()
         const liveUnits = useYard.getState().units // หลัง await — ใช้สำเนาล่าสุดของเครื่อง
         const changed: Unit[] = []
@@ -1419,15 +1425,22 @@ export const useTracking = create<TrackingState>()(
           const key = posKey(target)
           const occ = occupied.get(key)
           if (occ && occ !== vin) { out.collided.push({ vin, want: yardLocFull(target) }); continue }
-          const base = liveUnits[vin] ?? fromCloud.get(vin)
+          const base = fromCloud.get(vin) ?? liveUnits[vin]
           if (!base) { out.skipped++; continue } // ไม่มี unit ทั้งในเครื่องและคลาวด์ — ไม่เดา
           const baseHeld = base.status !== 'DEPARTED' && !!base.block && !!base.row && !!base.slot
-          // unit ยังถือช่องอยู่ (ยาร์ดอื่น / บล็อกนอกผัง / ในคลาวด์) และถูกวางช่องนั้น "หลัง" การยิง
-          // ครั้งนี้ → ช่องนั้นใหม่กว่า ไม่ทับ (เผื่อนาฬิกาต่างเครื่อง 60 วิ)
-          if (baseHeld && (base.parkedAt ?? 0) > lastAt + 60_000) { out.movedSince.push({ vin, at: yardLocFull(base) }); continue }
           if (baseHeld && base.site === currentSite && posKey(base) === key) continue // อยู่ช่องนั้นอยู่แล้ว — ไม่มีอะไรให้คืน
-          if (baseHeld && base.site === currentSite) occupied.delete(posKey(base)) // ช่องนอกผังเดิมว่างลง
-          changed.push({ ...base, site: currentSite, block: target.block, row: target.row, slot: target.slot, status: 'PARKED', parkedAt: now, importedAt: base.importedAt || now })
+          // GATE_IN ไม่มีช่อง แต่มีบรรทัดยิง = คนขับรับงานไปช่องนั้นแล้วกด "ยกเลิก" (resetParking ล้างช่องโดยไม่ลง
+          // ประวัติ) — บรรทัดชี้ไปช่องที่รถไม่เคยไปถึง ไม่คืน (รายงานแทน)
+          if (!baseHeld && base.status === 'GATE_IN') { out.unreached++; continue }
+          // unit ยังถือช่องอื่นอยู่ (ยาร์ดอื่น / บล็อกนอกผัง) → ทับได้ต่อเมื่อช่องนั้น "เก่ากว่าการยิงครั้งนี้ชัดเจน"
+          // (วางก่อนยิงเกิน 60 วิ — เผื่อนาฬิกาต่างเครื่อง) · วางทีหลัง = ของใหม่กว่า · วางพร้อมกัน/รหัสเดียวกัน =
+          // การยิงครั้งเดียวกันจากเครื่องที่เลือกยาร์ดไม่ตรงป้ายแถว (ยาร์ดไหนถูกให้คนตัดสิน) · ไม่มีเวลาวาง = ไม่รู้
+          // → ทั้งสามอย่างไม่ทับ (movedSince)
+          if (baseHeld && !(base.parkedAt != null && base.parkedAt < lastAt - 60_000)) { out.movedSince.push({ vin, at: yardLocFull(base) }); continue }
+          if (baseHeld && base.site === currentSite && occupied.get(posKey(base)) === vin) occupied.delete(posKey(base)) // ช่องนอกผังเดิมว่างลง (เฉพาะที่เป็นของคันนี้จริง)
+          // parkedAt = เวลาที่คนยิงจริง ไม่ใช่เวลาคืน — การวางของคนที่เกิดหลังจากนั้น (แม้เครื่องนี้ยังไม่เห็น)
+          // จึงชนะเสมอใน keepNewerPlacement ของทุกเครื่อง ตัวคืนไม่มีทางทับการยิงสด
+          changed.push({ ...base, site: currentSite, block: target.block, row: target.row, slot: target.slot, status: 'PARKED', parkedAt: lastAt, importedAt: base.importedAt || now })
           occupied.set(key, vin)
           lines.push({ vin, from: baseHeld ? yardLocFull(base) : '', to: yardLocFull(target) })
         }
