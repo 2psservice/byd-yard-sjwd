@@ -2,6 +2,7 @@ import {
   LayoutDashboard, Upload, FileSpreadsheet, ScanLine, Car, Map, List, SlidersHorizontal,
   Search, Menu, Zap, Globe, Plug, X, Bell, Smartphone, Radar, MapPin, ChevronDown, Settings, ClipboardList, ClipboardCheck, User, ShieldAlert, LogOut, Layers, CalendarClock, History,
 } from 'lucide-react'
+import { BuildStamp } from './BuildStamp'
 import { createPortal } from 'react-dom'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useYard } from '../store/useYard'
@@ -272,7 +273,11 @@ export function Layout({ children }: { children: ReactNode }) {
             <MapPin size={11} /> {siteName ?? 'ยังไม่เลือก Site'}
           </span>
           <span className="hidden sm:flex items-center gap-1"><User size={11} /> {currentUser}</span>
-          <span className="ml-auto tabular">{today}</span>
+          {/* เลข build ของเวอร์ชันที่เครื่องนี้รัน — เช็กรายเครื่อง/ถ่ายหน้าจอส่งมาได้ (เดิมเห็นแค่ในหน้า Import) */}
+          <span className="ml-auto flex items-center gap-3">
+            <BuildStamp className="whitespace-nowrap" />
+            <span className="tabular">{today}</span>
+          </span>
         </footer>
       </div>
 
