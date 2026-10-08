@@ -62,6 +62,15 @@ export function shouldAutoUpdateOnResume(i: ResumeInput): boolean {
   return true
 }
 
+/**
+ * อยู่หน้า login (ยังไม่ล็อกอิน = ไม่มีฟอร์ม/งานค้างให้หาย) → อัปเดตได้เลยไม่ต้องรอ 90 วิ · ยังมี cooldown กันรีโหลดวน
+ */
+export function shouldAutoUpdateOnLogin(i: { now: number; lastAutoAt: number | null }): boolean {
+  if (i.lastAutoAt == null) return true
+  const since = i.now - i.lastAutoAt
+  return !(since < 0 || since < AUTO_UPDATE_COOLDOWN_MS)
+}
+
 /** เริ่มฟังการแตะ/พิมพ์ — คืนฟังก์ชันถามว่า "มีการแตะแล้วหรือยัง" (ฟังแบบ capture ไม่ขวางเหตุการณ์) · `.reset()` เริ่มนับใหม่ */
 export function trackInteraction(target: EventTarget = window): (() => boolean) & { reset: () => void } {
   let touched = false

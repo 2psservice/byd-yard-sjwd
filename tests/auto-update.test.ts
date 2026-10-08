@@ -97,3 +97,19 @@ describe('trackInteraction.reset', () => {
     expect(got()).toBe(true)
   })
 })
+
+import { shouldAutoUpdateOnLogin } from '../src/lib/autoUpdate'
+describe('shouldAutoUpdateOnLogin (หน้า login ไม่มีงานค้าง)', () => {
+  it('ไม่เคยอัปเดตเอง → อัปเดตได้', () => {
+    expect(shouldAutoUpdateOnLogin({ now: 1e9, lastAutoAt: null })).toBe(true)
+  })
+  it('เพิ่งอัปเดตเองไม่ถึง 10 นาที → ไม่ (กันรีโหลดวน)', () => {
+    expect(shouldAutoUpdateOnLogin({ now: 1e9, lastAutoAt: 1e9 - 60_000 })).toBe(false)
+  })
+  it('เกิน cooldown → ได้', () => {
+    expect(shouldAutoUpdateOnLogin({ now: 1e9, lastAutoAt: 1e9 - 11 * 60_000 })).toBe(true)
+  })
+  it('เวลาเครื่องย้อน → ไม่', () => {
+    expect(shouldAutoUpdateOnLogin({ now: 1e9, lastAutoAt: 1e9 + 5 })).toBe(false)
+  })
+})
