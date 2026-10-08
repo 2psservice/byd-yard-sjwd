@@ -66,6 +66,9 @@ export function SiteLoadGate({ mode }: { mode: 'overlay' | 'banner' }) {
   const shownTotal = total != null ? Math.max(total, have) : null
   const rowsPct = !rowsLoading ? 100 : shownTotal ? Math.min(100, Math.floor((have / shownTotal) * 100)) : 0
   const pct = unitsLoading ? Math.min(rowsPct, 99) : rowsPct
+  // นับแถวในคลาวด์ไม่ได้แต่กำลังดึงอยู่: ไม่รู้เป้าหมาย → ไม่แสดงเปอร์เซ็นต์ (เดิมค้าง "0%") โชว์จำนวนแถวที่ได้แล้วแทน
+  const unknownTotal = rowsLoading && shownTotal == null
+  const loadingLabel = unknownTotal ? `Loading… ${have.toLocaleString('en-US')} แถว` : `Loading ${pct}%`
   void unitsHere
 
   if (mode === 'overlay' && stillWaiting) {
@@ -73,10 +76,10 @@ export function SiteLoadGate({ mode }: { mode: 'overlay' | 'banner' }) {
       <div className="logo-loader-overlay" data-testid="site-load-gate">
         <LogoLoader width={230} />
         <div style={{ width: 260 }}>
-          <div className="track"><div className="fill" style={{ width: `${pct}%` }} /></div>
+          <div className="track"><div className={`fill${unknownTotal ? ' animate-pulse' : ''}`} style={{ width: unknownTotal ? '40%' : `${pct}%` }} /></div>
         </div>
         <div className="text-[13px] font-semibold tabular" style={{ color: '#6b7a99', letterSpacing: 0.4 }}>
-          Loading {pct}%
+          {loadingLabel}
         </div>
       </div>
     )
@@ -86,8 +89,8 @@ export function SiteLoadGate({ mode }: { mode: 'overlay' | 'banner' }) {
   const offlineFresh = status === 'offline' && elapsed < OFFLINE_BANNER_MS
   if (!pending && !offlineFresh) return null
   const text = status === 'offline'
-    ? `ใช้ข้อมูลในเครื่องไปก่อน · ยังติดต่อคลาวด์ไม่ได้ (${siteName})`
-    : `Loading ${pct}%`
+    ? `ใช้ข้อมูลในเครื่องไปก่อน · ยังตรวจข้อมูลล่าสุดจากคลาวด์ไม่สำเร็จ (${siteName})`
+    : loadingLabel
   return (
     <div data-testid="site-load-banner"
       className="fixed left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full text-[12px] font-semibold tabular shadow-md flex items-center gap-2"

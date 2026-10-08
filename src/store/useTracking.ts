@@ -666,8 +666,10 @@ export const useTracking = create<TrackingState>()(
         const total = await db.countTrackingRowsForSite(site)
         loadMark('site-count')
         if (!live()) return
-        if (total == null) { set({ siteLoad: { ...base, status: 'offline' } }); return }
-        if (base.have >= total) { loadMark('site-rows-cached'); set({ siteLoad: { ...base, total, status: 'done' } }); return }
+        // นับไม่ได้ ≠ ติดต่อคลาวด์ไม่ได้ (มักเป็นแค่คำขอนับหมดเวลาตอนฐานข้อมูลช้า): เครื่องที่ยังไม่มีแถวของยาร์ดเลยต้องดึงต่อ (ไม่มีเป้าหมาย
+        // ก็แสดงจำนวนที่ได้แล้ว) เดิมหยุดตรงนี้ → ไม่ดึงแถวของยาร์ดเลย รอซิงก์ทั้งบริษัท · ถ้ามีแถวในเครื่องอยู่แล้ว ใช้ไปก่อนไม่ดึงซ้ำทั้งก้อนโดยไม่รู้จำนวน
+        if (total == null && base.have > 0) { set({ siteLoad: { ...base, status: 'offline' } }); return }
+        if (total != null && base.have >= total) { loadMark('site-rows-cached'); set({ siteLoad: { ...base, total, status: 'done' } }); return }
         set({ siteLoad: { ...base, total } })
         try {
           await db.fetchTrackingRowsForSite(site, (batch) => {
@@ -693,7 +695,7 @@ export const useTracking = create<TrackingState>()(
             if (pull.length) idbBulkPut(pull).catch((e) => console.error('[idb] loadSiteRows put', e))
             const t = Date.now()
             set((s) => s.siteLoad && s.siteLoad.siteId === siteId
-              ? { siteLoad: { ...s.siteLoad, have: countHere(), total: Math.max(total, countHere()), progressAt: t } }
+              ? { siteLoad: { ...s.siteLoad, have: countHere(), total: total == null ? null : Math.max(total, countHere()), progressAt: t } }
               : s)
           })
           loadMark('site-rows-done')
