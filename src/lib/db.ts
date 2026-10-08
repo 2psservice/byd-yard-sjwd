@@ -1068,25 +1068,71 @@ export async function fetchTrackingRows(sinceMs?: number): Promise<TrackRow[]> {
     return out
   }
 
-  // full pull → count, then fetch all pages concurrently. If the count query
-  // fails (timeout on yard cellular), DON'T assume 1 page — that silently
-  // loaded 1,000 of 11k rows and the incremental syncs never backfilled the
-  // rest. Fall back to sequential pages until a short page.
+  // ── full pull: "ต่อจาก VIN สุดท้าย" (keyset) ไม่ใช่ OFFSET ──
+  // OFFSET ยิ่งลึกยิ่งช้า (ต้องข้ามแถวนำหน้าทั้งหมด) ฐานข้อมูลตัดคำขอที่เกิน ~3 วินาที (57014 statement timeout):
+  // วัดจริง 8 ต.ค. offset 15,000 = 1.1 s · 22,000 = 1.7 s · 30,000 และ 61,000 = ล้ม 3.2 s แต่ keyset ที่ตำแหน่งเดียวกัน
+  // 0.9–1.4 s ทุกความลึก หน้าลึกล้ม → การซิงก์ทั้งรอบถูกทิ้ง ไม่ stamp lastSync → ลองใหม่ทุกนาทีทุกเครื่อง = error เป็นพันต่อวัน
+  // แบ่งตารางเป็น STREAMS ช่วงด้วย "VIN ที่ตำแหน่ง k/STREAMS" (ถามเฉพาะคอลัมน์ vin เร็ว) แล้วแต่ละช่วงเดินต่อจาก VIN ท้ายหน้า
+  // เรียงตามช่วง = เรียงตาม VIN เหมือนเดิม; แถวที่เพิ่มระหว่างดึงไม่ซ้ำไม่ขาด (เทียบ VIN ไม่ใช่ตำแหน่ง)
+  const keysetPage = (lo: string | null, inclusive: boolean, hi: string | null): Promise<TrackRowRow[]> =>
+    withRetry(async () => {
+      const run = (cols: string) => {
+        let q: any = supabase.from('tracking_rows').select(cols).order('vin').limit(PAGE)
+        if (lo != null) q = inclusive ? q.gte('vin', lo) : q.gt('vin', lo)
+        if (hi != null) q = q.lt('vin', hi)
+        return q
+      }
+      let res: any = await run('vin, cells, updated_at, site, history, deleted_at')
+      if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at, site, history')
+      if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at, site')
+      if (res.error && isMissingColumn(res.error)) res = await run('vin, cells, updated_at')
+      // THROW เหมือน page(): หน้าที่หายเงียบ ๆ ทำให้เครื่องเข้าใจว่าซิงก์ครบ
+      if (res.error) console.error('[db] fetchTrackingRows keyset', res.error)
+      return res
+    }).then((res: any) => (res.data ?? []) as TrackRowRow[])
+
+  const pullRange = async (lo: string | null, hi: string | null): Promise<TrackRowRow[]> => {
+    const out: TrackRowRow[] = []
+    let cursor = lo
+    let inclusive = true
+    for (;;) {
+      const batch = await keysetPage(cursor, inclusive, hi)
+      for (const r of batch) out.push(r)
+      if (batch.length < PAGE) return out
+      cursor = batch[batch.length - 1].vin
+      inclusive = false
+      await new Promise<void>((r) => setTimeout(r, 0)) // ปล่อยเมนเธรด (parse/วาดหน้าจอ) ก่อนหน้าถัดไป
+    }
+  }
+
+  // จุดแบ่งช่วง: count ผิดพลาด/ตารางเล็ก/ถามจุดแบ่งไม่ได้ → ช่วงเดียวต่อเนื่อง (ช้ากว่าแต่ถูกต้อง ไม่เดาว่าครบ)
+  let bounds: string[] = []
   const { count, error: cntErr } = await supabase.from('tracking_rows').select('vin', { count: 'exact', head: true })
   if (cntErr || count == null) {
     if (cntErr) console.error('[db] fetchTrackingRows count', cntErr)
-    const out: TrackRow[] = []
-    for (let from = 0; ; from += PAGE) {
-      const batch = await page(from)
-      for (const r of batch) out.push(toTrackRow(r))
-      if (batch.length < PAGE) break
-    }
-    return out
+  } else if (count > PAGE * 2) {
+    try {
+      const got = await Promise.all(Array.from({ length: FULL_PULL_CONCURRENCY - 1 }, (_, i) => {
+        const off = Math.floor(((i + 1) * count) / FULL_PULL_CONCURRENCY)
+        return withRetry(async () => {
+          const res: any = await supabase.from('tracking_rows').select('vin').order('vin').range(off, off)
+          if (res.error) console.error('[db] fetchTrackingRows boundary', res.error)
+          return res
+        }).then((res: any) => (res.data?.[0]?.vin ?? null) as string | null)
+      }))
+      // เรียงและตัดซ้ำ: ตารางหดระหว่างทางทำให้จุดแบ่งหายหรือซ้ำได้ → ใช้เท่าที่ได้ ช่วงที่เหลือครอบคลุมเอง
+      bounds = [...new Set(got.filter((v): v is string => !!v))].sort()
+    } catch { bounds = [] }
   }
-  const pages = Math.max(1, Math.ceil(count / PAGE))
-  const all = await Promise.all(Array.from({ length: pages }, (_, i) => page(i * PAGE)))
-  return all.flat().map(toTrackRow)
+  const cuts: (string | null)[] = [null, ...bounds, null]
+  const ranges = Array.from({ length: cuts.length - 1 }, (_, i) => ({ lo: cuts[i], hi: cuts[i + 1] }))
+  const parts = await Promise.all(ranges.map((r) => pullRange(r.lo, r.hi)))
+  return parts.flat().map(toTrackRow)
 }
+
+/** full pull แบ่งตารางเป็นกี่ช่วงดึงพร้อมกัน — เดิมยิง "ทุกหน้า" พร้อมกัน (62k แถว = 63 หน้า) แล้วหน้าลึก ๆ ล้มด้วย statement timeout
+ *  ตอนนี้ดึงแบบ keyset (ต่อจาก VIN) กี่ช่วงขนานกัน (ดูคอมเมนต์ใน fetchTrackingRows) */
+export const FULL_PULL_CONCURRENCY = 4
 
 /**
  * How many LIVE tracking rows the cloud holds (tombstones excluded) — one HEAD
