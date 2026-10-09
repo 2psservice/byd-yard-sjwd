@@ -66,11 +66,12 @@ function hasAnyUnit(units: Record<string, unknown>): boolean {
  *  เมื่อเครื่องแอดมินเลือกยาร์ดนั้นอยู่ ธงใน localStorage กันทำซ้ำ
  *  - 6 ต.ค. 60 RAI บล็อก F/L/N: ตัวกวาด "ป้ายยาร์ดไม่ตรง → ย้ายยาร์ด/ล้างช่องเอง" (ถอดแล้ว)
  *    ล้างช่องของรถที่เพิ่งยิง Relocation ทั้งสามบล็อกโดยไม่ลงประวัติ
- *  - 8 ต.ค. 3D LCB: In Yard 434 แต่ "ยังไม่มีตำแหน่ง" 260 คัน — คืนทุกบล็อกบนผัง รวมคันที่
- *    unit ค้างช่องของยาร์ดอื่น/บล็อกนอกผัง (offMap) คันที่ไม่มีบรรทัดยิงในรอบนี้ไม่เดา (รายงานแทน) */
+ *  - 8–9 ต.ค. 3D LCB บล็อก B/C/D: In Yard 434 แต่ "ยังไม่มีตำแหน่ง" 260 คัน (C ว่างทั้งบล็อก) — คืนเฉพาะ
+ *    B/C/D ตามที่สั่ง รวมคันที่ unit ค้างช่องของยาร์ดอื่น/บล็อกนอกผัง (offMap) · คันที่ยิงล่าสุดเป็นบล็อกอื่น
+ *    (A/WCL) ไม่แตะ แค่รายงานจำนวน · คันที่ไม่มีบรรทัดยิงในรอบนี้ไม่เดา (รายงานแทน) */
 const ONE_SHOT_RESTORES: { key: string; yard: string; blocks: string[]; offMap?: boolean; label: string }[] = [
   { key: 'sjwd-restore-fln-60rai-20261006', yard: '60 RAI', blocks: ['F', 'L', 'N'], label: 'บล็อก F/L/N ของ 60 RAI' },
-  { key: 'sjwd-restore-abcd-3dlcb-20261008', yard: '3D LCB', blocks: ['A', 'B', 'C', 'D', 'WCL'], offMap: true, label: 'ของ 3D LCB' },
+  { key: 'sjwd-restore-bcd-3dlcb-20261009', yard: '3D LCB', blocks: ['B', 'C', 'D'], offMap: true, label: 'บล็อก B/C/D ของ 3D LCB' },
 ]
 
 export default function App() {
