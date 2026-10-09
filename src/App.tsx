@@ -62,6 +62,18 @@ function hasAnyUnit(units: Record<string, unknown>): boolean {
   return v
 }
 
+/** งานคืนตำแหน่งครั้งเดียวต่อเครื่อง (ดู effect "คืนตำแหน่งครั้งเดียว" ด้านล่าง) — ทำเฉพาะ
+ *  เมื่อเครื่องแอดมินเลือกยาร์ดนั้นอยู่ ธงใน localStorage กันทำซ้ำ
+ *  - 6 ต.ค. 60 RAI บล็อก F/L/N: ตัวกวาด "ป้ายยาร์ดไม่ตรง → ย้ายยาร์ด/ล้างช่องเอง" (ถอดแล้ว)
+ *    ล้างช่องของรถที่เพิ่งยิง Relocation ทั้งสามบล็อกโดยไม่ลงประวัติ
+ *  - 8–9 ต.ค. 3D LCB บล็อก B/C/D: In Yard 434 แต่ "ยังไม่มีตำแหน่ง" 260 คัน (C ว่างทั้งบล็อก) — คืนเฉพาะ
+ *    B/C/D ตามที่สั่ง รวมคันที่ unit ค้างช่องของยาร์ดอื่น/บล็อกนอกผัง (offMap) · คันที่ยิงล่าสุดเป็นบล็อกอื่น
+ *    (A/WCL) ไม่แตะ แค่รายงานจำนวน · คันที่ไม่มีบรรทัดยิงในรอบนี้ไม่เดา (รายงานแทน) */
+const ONE_SHOT_RESTORES: { key: string; yard: string; blocks: string[]; offMap?: boolean; label: string }[] = [
+  { key: 'sjwd-restore-fln-60rai-20261006', yard: '60 RAI', blocks: ['F', 'L', 'N'], label: 'บล็อก F/L/N ของ 60 RAI' },
+  { key: 'sjwd-restore-bcd-3dlcb-20261009', yard: '3D LCB', blocks: ['B', 'C', 'D'], offMap: true, label: 'บล็อก B/C/D ของ 3D LCB' },
+]
+
 export default function App() {
   const loggedInUserId = useYard((s) => s.loggedInUserId)
   const me = useMe()
@@ -321,29 +333,42 @@ export default function App() {
     return () => { clearTimeout(t); clearInterval(iv) }
   }, [loggedInUserId])
 
-  // ── คืนตำแหน่งครั้งเดียว (6 ต.ค.): บล็อก F / L / N ของ 60 RAI ──────────────
-  // ตัวกวาด "ป้ายยาร์ดไม่ตรง → ย้ายยาร์ด/ล้างช่องเอง" (ถอดออกด้านบนแล้ว) ล้างช่อง
-  // จอดของรถที่เพิ่งยิง Relocation ทั้งสามบล็อกทิ้งโดยไม่ลงประวัติ — ประวัติ Location
-  // ยังอยู่ครบ จึงคืนจากบรรทัดล่าสุดที่คนบันทึก (restorePositionsInBlocks) ทำครั้งเดียว
-  // ต่อเครื่อง เฉพาะเครื่องแอดมินที่เลือก 60 RAI อยู่ หลังรถและแถวชีตโหลดครบ ไม่ทับ
-  // ช่องที่มีรถอื่นจอด ไม่แตะรถที่มีช่องแล้ว ทำซ้ำบนเครื่องอื่นก็ไม่มีอะไรให้แก้เพิ่ม
+  // ── คืนตำแหน่งครั้งเดียวต่อเครื่อง (ONE_SHOT_RESTORES — รายการต่อยาร์ด) ──────
+  // ประวัติ Location ของรอบนี้ยังอยู่ครบ จึงคืนจากบรรทัดล่าสุดที่คนบันทึก
+  // (restorePositionsInBlocks) ทำครั้งเดียวต่อเครื่อง เฉพาะเครื่องแอดมินที่เลือกยาร์ด
+  // นั้นอยู่ หลังรถและแถวชีตโหลดครบ ไม่ทับช่องที่มีรถอื่นจอด ไม่แตะรถที่มีช่องบนผัง
+  // แล้ว ไม่เดาตำแหน่งให้รถที่ไม่มีบรรทัดยิง ทำซ้ำบนเครื่องอื่นก็ไม่มีอะไรให้แก้เพิ่ม
   useEffect(() => {
     if (!loggedInUserId || opsOnly || !trackingLoaded || !unitsCloudDone || !currentSite) return
-    const KEY = 'sjwd-restore-fln-60rai-20261006'
-    try { if (localStorage.getItem(KEY)) return } catch { return }
-    if (siteIdForLocation({ 'Location yard': '60 RAI' }, sites) !== currentSite) return
+    const job = ONE_SHOT_RESTORES.find((j) => siteIdForLocation({ 'Location yard': j.yard }, sites) === currentSite)
+    if (!job) return
+    try { if (localStorage.getItem(job.key)) return } catch { return }
     let cancelled = false
-    const t = setTimeout(async () => {
+    let t: ReturnType<typeof setTimeout>
+    const run = async () => {
+      if (cancelled) return
+      // แถวชีต/ประวัติในเครื่องมาจาก IDB ก่อนซิงก์ — ห้ามตัดสินจากสำเนาเก่า (กติกาเดียวกับตัวกวาดด้านบน)
+      // ยังซิงก์ไม่เสร็จ → รอแล้วลองใหม่ทุก 10 วิ จนกว่าจะเสร็จ (ปิดแท็บ/เปลี่ยนยาร์ด = หยุด)
+      if (isConfigured() && !cloudSyncedThisSession()) { t = setTimeout(run, 10_000); return }
       try {
-        const res = await useTracking.getState().restorePositionsInBlocks(['F', 'L', 'N'])
-        if (cancelled) return
-        try { localStorage.setItem(KEY, String(Date.now())) } catch { /* เครื่องไม่ให้เก็บ — รอบหน้าก็ไม่มีอะไรให้แก้แล้ว */ }
-        if (res.fixed || res.collided.length) {
-          useYard.getState().toast(res.collided.length ? 'info' : 'ok',
-            `คืนตำแหน่งรถบล็อก F/L/N ของ 60 RAI ${res.fixed} คัน${res.collided.length ? ` · ช่องถูกจอดทับ ${res.collided.length} คัน: ${res.collided.map((c) => `${c.vin.slice(-6)}→${c.want}`).join(', ')}` : ''}`)
+        const res = await useTracking.getState().restorePositionsInBlocks(job.blocks, { offMap: job.offMap })
+        // งานเสร็จแล้วจริง (คลาวด์รับแล้ว) — ตั้งธง/แจ้งผลเสมอ แม้ effect ถูกเริ่มใหม่ระหว่างรอ (unitsCloudDone
+        // กระพริบตอน catch-up / sites เปลี่ยน) ไม่งั้นรอบถัดไปจะวิ่งซ้ำแล้วแจ้ง "คืน 0 คัน" ทั้งที่คืนไปแล้ว
+        try { localStorage.setItem(job.key, String(Date.now())) } catch { /* เครื่องไม่ให้เก็บ — รอบหน้าก็ไม่มีอะไรให้แก้แล้ว */ }
+        console.info('[restore]', job.label, res)
+        if (res.fixed || res.collided.length || res.movedSince.length || res.noHistory) {
+          const parts = [`คืนตำแหน่งรถ${job.label} ${res.fixed} คัน`]
+          if (res.collided.length) parts.push(`ช่องถูกจอดทับ ${res.collided.length} คัน: ${res.collided.slice(0, 8).map((c) => `${c.vin.slice(-6)}→${c.want}`).join(', ')}${res.collided.length > 8 ? ' …' : ''}`)
+          if (res.movedSince.length) parts.push(`ถือช่องอื่นอยู่ไม่เก่ากว่าการยิง ${res.movedSince.length} คัน (ไม่ทับ ให้คนตัดสิน)`)
+          if (res.noHistory) parts.push(`ไม่มีประวัติยิงในรอบนี้ ${res.noHistory} คัน (ต้องยิงใหม่)`)
+          if (res.otherBlock) parts.push(`ยิงล่าสุดเป็นบล็อกนอกรายการ ${res.otherBlock} คัน`)
+          if (res.unreached) parts.push(`ยกเลิกขับก่อนถึงช่อง ${res.unreached} คัน (ไม่คืน)`)
+          if (res.skipped) parts.push(`ไม่มีข้อมูลรถ ${res.skipped} คัน`)
+          useYard.getState().toast(res.collided.length || res.movedSince.length || res.noHistory ? 'info' : 'ok', parts.join(' · '), 20_000)
         }
-      } catch (e) { console.error('[restore] F/L/N 60 RAI', e) } // ไม่ตั้งธง — เปิดครั้งหน้าลองใหม่
-    }, 12_000)
+      } catch (e) { console.error('[restore]', job.label, e) } // ไม่ตั้งธง — เปิดครั้งหน้าลองใหม่
+    }
+    t = setTimeout(run, 12_000)
     return () => { cancelled = true; clearTimeout(t) }
   }, [loggedInUserId, opsOnly, trackingLoaded, unitsCloudDone, currentSite, sites])
 

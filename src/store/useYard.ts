@@ -194,7 +194,8 @@ interface YardState {
   logout: () => void
   setGroupModels: (b: boolean) => void
   setLaneDepth: (n: number) => void
-  toast: (kind: Toast['kind'], msg: string) => void
+  /** ms: อยู่บนจอนานกว่าปกติ (3.2 วิ) สำหรับข้อความสรุปที่ต้องอ่านหลายตัวเลข */
+  toast: (kind: Toast['kind'], msg: string, ms?: number) => void
   dismissToast: (id: number) => void
   setFocus: (vin: string | null) => void
 
@@ -749,10 +750,10 @@ export const useYard = create<YardState>()(
       openSiteModal: () => set({ siteModalOpen: true }),
       closeSiteModal: () => set({ siteModalOpen: false }),
 
-      toast: (kind, msg) => {
+      toast: (kind, msg, ms = 3200) => {
         const id = ++tid
         set((s) => ({ toasts: [...s.toasts, { id, kind, msg }] }))
-        setTimeout(() => get().dismissToast(id), 3200)
+        setTimeout(() => get().dismissToast(id), ms)
       },
       dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
 
