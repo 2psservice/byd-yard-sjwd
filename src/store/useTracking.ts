@@ -1374,7 +1374,7 @@ export const useTracking = create<TrackingState>()(
 
       restorePositionsInBlocks: async (blocksIn, opts) => {
         const want = new Set(blocksIn.map((b) => b.trim().toUpperCase()).filter(Boolean))
-        const { currentSite, blocksBySite } = useYard.getState()
+        const { currentSite, blocksBySite, sites } = useYard.getState()
         const out: RestorePositionsResult = { fixed: 0, collided: [], skipped: 0, noHistory: 0, otherBlock: 0, unreached: 0, movedSince: [] }
         if (!currentSite || !want.size) return out
         // ห้ามตัดสินจากสำเนาเก่า: แถว/ประวัติในเครื่องมาจาก IDB ก่อนซิงก์ และการคืนเขียนทั้งแถวขึ้นคลาวด์
@@ -1398,7 +1398,8 @@ export const useTracking = create<TrackingState>()(
         // ของรอบนี้ (ที่คนบันทึก) ชี้ไปบล็อกที่ระบุ — ไม่มีบรรทัดยิง = ไม่เดา (noHistory)
         const plan: { vin: string; target: { block: string; row: number; slot: number }; lastAt: number }[] = []
         for (const r of Object.values(rows)) {
-          if (r.deletedAt || r.site !== currentSite) continue
+          // เหมือนที่ Yard Plan นับ: แถวติดป้ายยาร์ดนี้ หรือแถวเก่าที่ไม่มีป้ายแต่ Location yard ระบุยาร์ดนี้
+          if (r.deletedAt || !rowInSite(r, currentSite, sites)) continue
           if (!IN_YARD_STATUSES.has(deriveCarStatus(r.cells))) continue // กฎเดียวกับ Yard Plan นับ "In Yard" (Preload/Gate-out/Pre Gate-in ไม่ใช่)
           const u = units0[r.vin]
           const held = !!(u && u.status !== 'DEPARTED' && u.block && u.row && u.slot)
@@ -1450,7 +1451,10 @@ export const useTracking = create<TrackingState>()(
           await db.upsertUnitsStrict(changed)
           // ทับเฉพาะคันที่คืน บนสำเนาล่าสุด — ไม่เอาทั้งแผนที่เก่าไปทับการเปลี่ยนแปลงที่เข้ามาระหว่างรอ
           useYard.setState((s) => { const units = { ...s.units }; for (const f of changed) units[f.vin] = f; return { units } })
-          for (const l of lines) get().appendHistory(l.vin, { at: now, by: 'ระบบ (คืนตำแหน่งที่ถูกล้าง)', field: 'Location', from: l.from, to: l.to })
+          // ผู้เขียนห้ามขึ้นต้น "ระบบ" — stripSystemHistory ลบบรรทัดแบบนั้นทิ้งทุกเครื่องภายในนาที (หลักฐานการคืน
+          // และช่องเดิม from หายหมด) · มี "·" = ไม่ใช่การยิง (isScanLocationEntry) บรรทัดนี้จึงไม่ถูกอ่านเป็นตำแหน่งที่คนยิง
+          const by = `${useYard.getState().currentUser || 'admin'} · คืนตำแหน่งที่ถูกล้าง`
+          for (const l of lines) get().appendHistory(l.vin, { at: now, by, field: 'Location', from: l.from, to: l.to })
           out.fixed = changed.length
         }
         return out
