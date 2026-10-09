@@ -68,10 +68,13 @@ function hasAnyUnit(units: Record<string, unknown>): boolean {
  *    ล้างช่องของรถที่เพิ่งยิง Relocation ทั้งสามบล็อกโดยไม่ลงประวัติ
  *  - 8–9 ต.ค. 3D LCB บล็อก B/C/D: In Yard 434 แต่ "ยังไม่มีตำแหน่ง" 260 คัน (C ว่างทั้งบล็อก) — คืนเฉพาะ
  *    B/C/D ตามที่สั่ง รวมคันที่ unit ค้างช่องของยาร์ดอื่น/บล็อกนอกผัง (offMap) · คันที่ยิงล่าสุดเป็นบล็อกอื่น
- *    (A/WCL) ไม่แตะ แค่รายงานจำนวน · คันที่ไม่มีบรรทัดยิงในรอบนี้ไม่เดา (รายงานแทน) */
+ *    (A/WCL) ไม่แตะ แค่รายงานจำนวน · คันที่ไม่มีบรรทัดยิงในรอบนี้ไม่เดา (รายงานแทน)
+ *  - 9 ต.ค. 60 RAI บล็อก L/D/C: ตำแหน่งหายอีกรอบ — คืนด้วยวิธีเดียวกับ 3D LCB (offMap) ·
+ *    ยาร์ดเดียวมีได้หลายงาน: ทำตามลำดับในรายการ ธงใครธงมัน */
 const ONE_SHOT_RESTORES: { key: string; yard: string; blocks: string[]; offMap?: boolean; label: string }[] = [
   { key: 'sjwd-restore-fln-60rai-20261006', yard: '60 RAI', blocks: ['F', 'L', 'N'], label: 'บล็อก F/L/N ของ 60 RAI' },
   { key: 'sjwd-restore-bcd-3dlcb-20261009', yard: '3D LCB', blocks: ['B', 'C', 'D'], offMap: true, label: 'บล็อก B/C/D ของ 3D LCB' },
+  { key: 'sjwd-restore-ldc-60rai-20261009', yard: '60 RAI', blocks: ['L', 'D', 'C'], offMap: true, label: 'บล็อก L/D/C ของ 60 RAI' },
 ]
 
 export default function App() {
@@ -340,9 +343,12 @@ export default function App() {
   // แล้ว ไม่เดาตำแหน่งให้รถที่ไม่มีบรรทัดยิง ทำซ้ำบนเครื่องอื่นก็ไม่มีอะไรให้แก้เพิ่ม
   useEffect(() => {
     if (!loggedInUserId || opsOnly || !trackingLoaded || !unitsCloudDone || !currentSite) return
-    const job = ONE_SHOT_RESTORES.find((j) => siteIdForLocation({ 'Location yard': j.yard }, sites) === currentSite)
-    if (!job) return
-    try { if (localStorage.getItem(job.key)) return } catch { return }
+    // งานของยาร์ดที่เลือกอยู่ที่ยังไม่มีธง (เครื่องไม่ให้เก็บธง = ไม่ทำ ไม่งั้นวนทุกครั้งที่เปิด)
+    let pending: typeof ONE_SHOT_RESTORES
+    try {
+      pending = ONE_SHOT_RESTORES.filter((j) => siteIdForLocation({ 'Location yard': j.yard }, sites) === currentSite && !localStorage.getItem(j.key))
+    } catch { return }
+    if (!pending.length) return
     let cancelled = false
     let t: ReturnType<typeof setTimeout>
     const run = async () => {
@@ -350,6 +356,12 @@ export default function App() {
       // แถวชีต/ประวัติในเครื่องมาจาก IDB ก่อนซิงก์ — ห้ามตัดสินจากสำเนาเก่า (กติกาเดียวกับตัวกวาดด้านบน)
       // ยังซิงก์ไม่เสร็จ → รอแล้วลองใหม่ทุก 10 วิ จนกว่าจะเสร็จ (ปิดแท็บ/เปลี่ยนยาร์ด = หยุด)
       if (isConfigured() && !cloudSyncedThisSession()) { t = setTimeout(run, 10_000); return }
+      for (const job of pending) {
+        if (cancelled) return
+        await runJob(job)
+      }
+    }
+    const runJob = async (job: (typeof ONE_SHOT_RESTORES)[number]) => {
       try {
         const res = await useTracking.getState().restorePositionsInBlocks(job.blocks, { offMap: job.offMap })
         // งานเสร็จแล้วจริง (คลาวด์รับแล้ว) — ตั้งธง/แจ้งผลเสมอ แม้ effect ถูกเริ่มใหม่ระหว่างรอ (unitsCloudDone
