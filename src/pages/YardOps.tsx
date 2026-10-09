@@ -2,7 +2,8 @@
  * Yard Ops — Mobile role-based operations portal
  * Roles: Walk (Gate In) · Driver (Park) · PDI/PM/FC (Inspect) · Mechanic (Repair)
  */
-import { useEffect, useRef, useState, useMemo, memo } from 'react'
+import { useEffect, useRef, useState, useMemo, useCallback, memo } from 'react'
+import { BuildStamp } from '../components/BuildStamp'
 import { useShallow } from 'zustand/react/shallow'
 import { createPortal } from 'react-dom'
 import {
@@ -117,23 +118,26 @@ function useSiteUnits(): Unit[] {
   return useMemo(() => (currentSite ? all.filter((u) => !u.site || u.site === currentSite) : all), [all, currentSite])
 }
 /** Explains a failed scan: if the VIN exists but belongs to another yard,
- *  name that yard instead of the misleading "ไม่พบ VIN". */
+ *  name that yard instead of the misleading "ไม่พบ VIN".
+ *  อ่านจาก store ตอนเรียก (ตอนสแกนไม่เจอเท่านั้น) — ไม่ subscribe และไม่สร้าง overlay 57k แถวทุกครั้งที่
+ *  rows/units เปลี่ยน: เดิมสถานีละหลายชุดทำงานซ้ำทุกครั้งที่ข้อมูลไหลเข้า (ตอน login/โหลดยาร์ด) แย่ง CPU
+ *  จนมือถือเก่ากล้องดำ/ค้าง ทั้งที่ผลลัพธ์ใช้แค่ vin กับ site ของแถว (overlay แค่แก้สถานะตรวจ) */
 function useWrongSiteHint(): (v: string) => string | null {
-  const allRows = useTrackingRows()
-  const sites = useYard((s) => s.sites)
-  const currentSite = useYard((s) => s.currentSite)
-  return (v: string) => {
+  return useCallback((v: string) => {
+    const { currentSite, sites } = useYard.getState()
     if (!currentSite) return null
-    let r = allRows.find((x) => x.vin === v)
+    const rows = useTracking.getState().rows
+    let r: TrackRow | undefined = rows[v]
     if (!r && v.length <= 8) {
-      const hits = allRows.filter((x) => x.vin.endsWith(v))
-      if (hits.length === 1) r = hits[0]
+      let hit: TrackRow | undefined, n = 0
+      for (const k in rows) if (k.endsWith(v) && ++n === 1) hit = rows[k]
+      if (n === 1) r = hit
     }
     if (!r || rowInSite(r, currentSite, sites)) return null
     const owner = sites.find((s) => s.id === r!.site)?.name ?? (r.cells['Location yard'] || 'site อื่น')
     const cur = sites.find((s) => s.id === currentSite)?.name ?? ''
     return `VIN …${r.vin.slice(-8)} อยู่ site "${owner}" — ไม่ตรงกับ site งานปัจจุบัน (${cur})`
-  }
+  }, [])
 }
 
 /** Tracking-sheet header for the DN / delivery grouping number (two spaces). */
@@ -1927,7 +1931,6 @@ function WalkView() {
   const allUnits = useUnits() // global (all sites) — for pulling a car's Defect list even if its unit lives in another site
   const { gateIn, importUnits, addDamage, updateDamage, markTrailerArrived, toast, currentUser } = useYardPick('gateIn', 'importUnits', 'addDamage', 'updateDamage', 'markTrailerArrived', 'toast', 'currentUser')
   const allTrackingRows = useTrackingRows()
-  const wrongSite = useWrongSiteHint()
   const { loadFromIdb, updateCell, updateCells, claimPreGateInCandidate, transferToYard } = useTracking()
   const { toggleDone } = useOps()
   const { blockWith, modal: gateModal } = useNotGatedIn()
@@ -2950,7 +2953,6 @@ function DriverView() {
   const units = useSiteUnits()
   const trips = useTrips()
   const trackingRows = useSiteRows()
-  const wrongSite = useWrongSiteHint()
   const queues = useSiteQueues()
   const { loadFromIdb, updateCell } = useTracking()
   const { assign, confirmParked, resetParking, toast, currentUser, policies, groupModelsInRow, laneDepth, planMode, startTrip, endTrip, sites, currentSite, loadFromSupabase } =
@@ -3669,7 +3671,6 @@ function FinalCheckPanel({ unit, row, activeProc, canRecord, onSaved, stationTit
 function PdiView({ types, accent, title }: { types: QueueType[]; accent: string; title: string }) {
   const units = useSiteUnits()
   const trackingRows = useSiteRows()
-  const wrongSite = useWrongSiteHint()
   const allQueues = useSiteQueues()
   const sites = useYard(s => s.sites)
   const currentSite = useYard(s => s.currentSite)
@@ -4121,7 +4122,6 @@ function MechanicView({ types, accent, stationLabel, emptyLabel, okNgMode = fals
 }) {
   const units = useSiteUnits()
   const trackingRows = useSiteRows()
-  const wrongSite = useWrongSiteHint()
   const allQueues = useSiteQueues()
   const { loadFromIdb } = useTracking()
   const { addDamage, removeDamage, updateRepairStatus, setInspected, toast, loadFromSupabase, currentUser } = useYardPick('addDamage', 'removeDamage', 'updateRepairStatus', 'setInspected', 'toast', 'loadFromSupabase', 'currentUser')
@@ -4305,9 +4305,8 @@ function MechanicView({ types, accent, stationLabel, emptyLabel, okNgMode = fals
 function GateOutView() {
   const trackingRows = useSiteRows()
   const units = useSiteUnits()
-  const wrongSite = useWrongSiteHint()
   const queues = useSiteQueues()
-  const { loadFromIdb, updateCell, startNewTrip } = useTracking()
+  const { loadFromIdb, updateCell, startNewTrip, transferToYard } = useTracking()
   const { toast, currentUser, sites, currentSite, markDeparted } = useYardPick('toast', 'currentUser', 'sites', 'currentSite', 'markDeparted')
   const { confirmSeqGateOut, createGateInQueue } = useOps()
   const { block: blockGate, blockWith, modal: gateModal } = useNotGatedIn()
@@ -4476,37 +4475,51 @@ function GateOutView() {
     if (!row) return
     const now = new Date()
     const ts = stamp(now)
-    updateCell(row.vin, 'Car Status', isYardTransfer ? 'Gate-out' : 'Pre Gate-out')
-    updateCell(row.vin, 'Gate Out time stamp', ts)
-    updateCell(row.vin, 'Gate Out Time', String(now.getTime())) // epoch → 09:30 flush calc
     // snapshot the slot this car is leaving BEFORE markDeparted clears it — a
     // reprinted Grouping / find-car sheet still needs to say where it stood
     const lastLoc = yardLocCode(parked)
-    if (lastLoc) updateCell(row.vin, LAST_LOCATION_KEY, lastLoc)
-    markDeparted(row.vin) // release the parking slot — the car left it for the preload lane
-    // close the delivery-sequence item too, if this car belongs to one
-    if (seqHit) confirmSeqGateOut(seqHit.queue.id, row.vin, currentUser)
-    // yard-to-yard: file this visit away and open the next one at the
-    // destination right now — the gate operator's tap is what the other
-    // yard's Pre Gate-in board is waiting on, not the next 60-วิ sweep tick
-    // (see App.tsx, which still catches any case that slips through here —
-    // e.g. this same transfer happening via a re-imported sheet instead)
+    // ข้ามยาร์ด: เขียนแถวครั้งเดียว (Gate-out + ปิดรอบ + ย้ายป้ายไซต์ + ป้ายต้นทาง) ผ่าน transferToYard
+    // เดิมเป็น updateCell หลายครั้ง + startNewTrip ต่อกัน แต่ละครั้งส่งขึ้นคลาวด์แยก — แถวกลางทางที่ป้ายยังเป็นยาร์ดนี้
+    // ถึงปลายทางทีหลังแถวสุดท้ายได้ ยาร์ดนี้เลยเห็นรถเป็น Pre Gate-in ของตัวเองอีกรอบ
+    // ป้ายต้นทาง (GATE_OUT_ORIGIN_*) transferRow จดให้เอง จึงไม่ต้องเขียนที่นี่
+    // ปล่อยช่องจอดก่อนย้ายป้ายเสมอ (เหมือนลำดับเดิม): moveUnitsToSite ตั้ง unit เป็น EXPECTED ของยาร์ดปลายทาง
+    // ถ้า markDeparted มาทีหลังจะเขียน DEPARTED ทับ unit ของปลายทาง
     if (isYardTransfer) {
-      // startNewTrip ด้านล่างจะเปลี่ยน Car Status กลับเป็น Pre Gate-in ทันที
-      // (คนละ tick เดียวกับบรรทัด Gate-out ด้านบน) — ต้นทางจึงไม่มีทางเห็น
-      // สถานะ Gate-out ค้างให้อ่านได้อีกเลย การ์ด "Gate-out" ของยาร์ดนี้เลย
-      // ค้าง 0 ตลอดไม่ว่าจะสแกนออกกี่คัน ต้องจดไว้เองว่า "ออกจากยาร์ดนี้ไปแล้ว
-      // เมื่อไหร่" แยกจากสถานะสด (ดู departedFromSite ใน carStatus.ts)
-      updateCell(row.vin, GATE_OUT_ORIGIN_SITE_KEY, currentSite ?? '')
-      updateCell(row.vin, GATE_OUT_ORIGIN_AT_KEY, String(now.getTime()))
-      startNewTrip(row.vin, { yard: transferDest!.name, keepQueueProgress: true })
+      markDeparted(row.vin)
+      if (seqHit) confirmSeqGateOut(seqHit.queue.id, row.vin, currentUser)
+    }
+    let transferred = false
+    if (isYardTransfer) {
+      transferred = transferToYard(row.vin, transferDest!.id, {
+        at: now.getTime(), queue: false,
+        gateOut: { stampText: ts, at: now.getTime(), lastLocation: lastLoc || undefined },
+      })
+    }
+    if (!transferred) {
+      updateCell(row.vin, 'Car Status', isYardTransfer ? 'Gate-out' : 'Pre Gate-out')
+      updateCell(row.vin, 'Gate Out time stamp', ts)
+      updateCell(row.vin, 'Gate Out Time', String(now.getTime())) // epoch → 09:30 flush calc
+      if (lastLoc) updateCell(row.vin, LAST_LOCATION_KEY, lastLoc)
+    }
+    if (!isYardTransfer) {
+      markDeparted(row.vin) // release the parking slot — the car left it for the preload lane
+      // close the delivery-sequence item too, if this car belongs to one
+      if (seqHit) confirmSeqGateOut(seqHit.queue.id, row.vin, currentUser)
+    }
+    // yard-to-yard: the gate operator's tap is what the other yard's Pre Gate-in
+    // board is waiting on, not the next 60-วิ sweep tick (App.tsx still catches
+    // any case that slips through here)
+    if (isYardTransfer) {
+      if (!transferred) {
+        // ทางถอย: ย้ายแบบก้อนเดียวไม่สำเร็จ (เช่นไม่รู้จักยาร์ดปลายทาง) → ลำดับเดิม
+        updateCell(row.vin, GATE_OUT_ORIGIN_SITE_KEY, currentSite ?? '')
+        updateCell(row.vin, GATE_OUT_ORIGIN_AT_KEY, String(now.getTime()))
+        startNewTrip(row.vin, { yard: transferDest!.name, keepQueueProgress: true })
+      }
       // แปะเข้าคิวงาน Gate-in ที่ปลายทางด้วย ไม่งั้นการ์ด "Pre Gate-in" ที่นั่น
       // จะเห็นแค่ "(รอ Gate-in · ยังไม่มีคิวงาน)" เหมือนรถลอยไม่มีที่มา —
       // createGateInQueue หาคิวชื่อเดียวกันที่ยังเปิดอยู่แล้วแปะเพิ่ม ไม่สร้างซ้ำ
-      // ทุกครั้งที่มีรถย้ายมาอีกคัน (เหมือนคิวงาน Pre Gate-in ปกติจากการ import)
       // ชื่อคิวขึ้นต้นด้วยยาร์ด "เจ้าของคิว" เสมอ — คิวนี้เป็นของปลายทาง
-      // (ดูเหตุผลเต็มที่ App.tsx จุดเดียวกัน) ชื่อเดิมอ่านแล้วเหมือนเป็นงาน
-      // ของยาร์ดต้นทาง ทำให้บันทึกเหตุการณ์ดูเหมือนต้นทางถูก gate-in ตามไปด้วย
       const originName = sites.find(s => s.id === currentSite)?.name ?? currentSite ?? ''
       createGateInQueue(`(${transferDest!.name} · shuttle · จาก ${originName})`, [row.vin], currentUser, transferDest!.id)
     }
@@ -4784,7 +4797,6 @@ function RelocationView() {
   const trackingRows = useSiteRows()
   const siteUnits = useSiteUnits()
   const blocks = useBlocks()
-  const wrongSite = useWrongSiteHint()
   const { loadFromIdb, appendHistory } = useTracking()
   const { toast, sites, currentSite, currentUser, updateLocations } = useYardPick('toast', 'sites', 'currentSite', 'currentUser', 'updateLocations')
   const { block: blockGate, blockWith: blockGate2, modal: gateModal } = useNotGatedIn()
@@ -5508,7 +5520,6 @@ function UpdateDamageView({ accent = '#dc2626', stationName = 'Update Damage', s
   { accent?: string; stationName?: string; source?: DamageSource; recentKey?: string; richCard?: boolean; showStockCheck?: boolean } = {}) {
   const units = useSiteUnits()
   const trackingRows = useSiteRows()
-  const wrongSite = useWrongSiteHint()
   const { loadFromIdb } = useTracking()
   const { addDamage, updateRepairStatus, toast, importUnits } = useYardPick('addDamage', 'updateRepairStatus', 'toast', 'importUnits')
   const { block: blockGate, blockWith, modal: gateModal } = useNotGatedIn()
@@ -5807,7 +5818,6 @@ function CheckHistLine({ icon, label, who, time, color }: { icon: React.ReactNod
 function CheckView() {
   const trackingRows = useSiteRows()
   const units = useSiteUnits()
-  const wrongSite = useWrongSiteHint()
   const allTrips = useTrips()
   const queues = useSiteQueues()
   const { loadFromIdb } = useTracking()
@@ -6377,12 +6387,13 @@ export function YardOps() {
           </div>
 
           {/* status strip */}
-          <div className="panel p-4 mt-2 flex items-center gap-3">
+          <div className="panel p-4 mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
             <div className="flex items-center gap-1.5 text-[12px] font-medium"
               style={{ color: 'var(--st-yard)' }}>
               <span className="live">●</span> Live
             </div>
             <div className="text-[12px]" style={{ color: 'var(--muted)' }}>SJWD Yard Control · {currentUser}</div>
+            <BuildStamp className="w-full" />
           </div>
         </div>
       )}

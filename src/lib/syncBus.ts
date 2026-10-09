@@ -38,7 +38,12 @@ export interface MovesPayload { siteId: string | null; moves: MoveMsg[] }
  * out because it is the bulky part and the row-level stream / reconcile carry
  * it. `at` is the sender's updatedAt, so newer-wins works on the far side.
  */
-export interface RowMsg { vin: string; cells: Record<string, string>; at: number }
+export interface RowMsg {
+  vin: string; cells: Record<string, string>; at: number
+  /** ป้ายยาร์ดเจ้าของแถว (null = ไม่มีป้าย) — ต้องไปพร้อม cells เสมอ ไม่งั้นรถที่ย้ายยาร์ดจะมีสถานะใหม่แต่ป้ายเก่า
+   *  (เครื่องยาร์ดเดิมเห็นเป็น Pre Gate-in ของตัวเอง แล้วเขียนทับ) · ข้อความรุ่นเก่าไม่มีช่องนี้ = คงป้ายเดิมของผู้รับ */
+  site?: string | null
+}
 export interface RowsPayload { rows: RowMsg[] }
 type Handler = (payload: any) => void
 

@@ -20,15 +20,46 @@ import '@fontsource/jetbrains-mono/700.css'
 import App from './App'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { escapeInAppBrowser } from './lib/inAppBrowser'
+import { markAutoUpdate, readLastAutoUpdate, shouldAutoUpdate, shouldAutoUpdateOnLogin, shouldAutoUpdateOnResume, trackInteraction } from './lib/autoUpdate'
+import { isLiteFx } from './lib/device'
 import './index.css'
 
 // เปิดจากลิงก์ใน LINE/โซเชียล → เด้งไป Chrome ก่อนเริ่มทำงาน (เบราว์เซอร์ฝังตัวบล็อกกล้อง)
 escapeInAppBrowser()
+if (isLiteFx) document.documentElement.classList.add('lite-fx')
 
 // PWA update flow: poll for a new deploy every 60s, but NEVER force-reload an
 // open session (the old auto-reload wiped in-progress checklists/forms within
 // a minute of every push). Instead show a small banner; the operator applies
 // the update when they're between tasks.
+// ข้อยกเว้นเดียว: ตอน "เพิ่งเปิดแอป และผู้ใช้ยังไม่แตะอะไรเลย" ยังไม่มีงานค้างให้หาย → อัปเดตเอง (ดู lib/autoUpdate)
+// เครื่องที่ไม่กดแถบจะไม่ค้างเวอร์ชันเก่าเป็นวัน
+const pageLoadedAt = Date.now()
+const userTouched = trackInteraction()
+// กลับมาเปิดแอปหลังทิ้งเบื้องหลังนาน (หน้าค้างในหน่วยความจำข้ามวัน): จดว่าซ่อนเมื่อไหร่/กลับมาเมื่อไหร่ และมีเวอร์ชันใหม่รออยู่หรือยัง
+let hiddenAt: number | null = null
+let resumedAt: number | null = null
+let updateWaiting = false
+const autoOnResume = (now: number) => resumedAt != null && shouldAutoUpdateOnResume({
+  now, hiddenAt, resumedAt, interactedSinceResume: userTouched(), lastAutoAt: readLastAutoUpdate(),
+})
+document.addEventListener('visibilitychange', () => {
+  const now = Date.now()
+  if (document.visibilityState === 'hidden') { hiddenAt = now; return }
+  resumedAt = now
+  userTouched.reset() // นับการแตะตั้งแต่กลับมา ไม่ใช่การแตะก่อนทิ้งแอปไว้
+  if (updateWaiting && autoOnResume(now)) { markAutoUpdate(now); showUpdateBanner(true) }
+})
+// หน้า login (LoginScreen ยิงอีเวนต์ตอนแสดง): ยังไม่ล็อกอิน = ไม่มีงานค้าง → ถ้ามีเวอร์ชันใหม่รออยู่ อัปเดตเลย
+const autoOnLoginScreen = () => {
+  const now = Date.now()
+  if (!updateWaiting || !shouldAutoUpdateOnLogin({ now, lastAutoAt: readLastAutoUpdate() })) return
+  markAutoUpdate(now)
+  const bar = document.getElementById('sw-update-banner')
+  if (bar) bar.querySelector('button')?.click() // แถบรออยู่แล้ว → กดปุ่มอัปเดตแทน
+  else showUpdateBanner(true)
+}
+window.addEventListener('sjwd-login-shown', autoOnLoginScreen)
 const updateSW = registerSW({
   immediate: true,
   onRegisteredSW(_url, registration) {
@@ -40,7 +71,15 @@ const updateSW = registerSW({
       if (document.visibilityState === 'visible') registration.update().catch(() => {})
     })
   },
-  onNeedRefresh() { showUpdateBanner() },
+  onNeedRefresh() {
+    const now = Date.now()
+    updateWaiting = true
+    const auto = shouldAutoUpdate({ now, loadedAt: pageLoadedAt, interacted: userTouched(), lastAutoAt: readLastAutoUpdate() })
+      || autoOnResume(now)
+      || (!!document.querySelector('[data-login-screen]') && shouldAutoUpdateOnLogin({ now, lastAutoAt: readLastAutoUpdate() }))
+    if (auto) markAutoUpdate(now)
+    showUpdateBanner(auto)
+  },
 })
 
 // กด "อัปเดตเลย" แล้วต้องได้ของใหม่จริง ไม่ใช่ค้าง "กำลังอัปเดต…" ตลอดไป —
@@ -73,7 +112,7 @@ async function applyUpdate(btn: HTMLButtonElement) {
   }, 5000)
 }
 
-function showUpdateBanner() {
+function showUpdateBanner(auto = false) {
   if (document.getElementById('sw-update-banner')) return
   const bar = document.createElement('div')
   bar.id = 'sw-update-banner'
@@ -90,6 +129,13 @@ function showUpdateBanner() {
   later.onclick = () => bar.remove()
   bar.append(btn, later)
   document.body.appendChild(bar)
+  if (auto) {
+    // อัปเดตอัตโนมัติ (เพิ่งเปิดแอป ยังไม่แตะอะไร): ใช้ทางเดียวกับการกดปุ่ม รวมทางถอยล้างแคชถ้ารีโหลดไม่ทัน
+    const label = bar.querySelector('span')
+    if (label) label.firstChild!.textContent = '🚀 กำลังอัปเดตเป็นเวอร์ชันใหม่…'
+    later.remove()
+    void applyUpdate(btn)
+  }
 }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(

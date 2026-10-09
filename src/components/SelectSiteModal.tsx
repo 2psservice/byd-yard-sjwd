@@ -11,7 +11,10 @@ export function SelectSiteModal() {
   const open = useYard((s) => s.siteModalOpen)
   const sites = useYard((s) => s.sites)
   const currentSite = useYard((s) => s.currentSite)
-  const { setCurrentSite, closeSiteModal } = useYard()
+  // selectors, not `useYard()`: the whole-store form re-rendered this modal on EVERY store change — each page of
+  // cars streaming in during the load that runs behind it
+  const setCurrentSite = useYard((s) => s.setCurrentSite)
+  const closeSiteModal = useYard((s) => s.closeSiteModal)
 
   const [picked, setPicked] = useState<string | null>(currentSite)
 

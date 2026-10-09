@@ -1,4 +1,9 @@
 /**
+ * สำเนา "ก่อนแก้" ของ src/store/useOps.ts (ตัดจาก commit 12424f3) ใช้เป็นตัวเทียบ (oracle) ใน tests/reconcile.test.ts เท่านั้น
+ * — ปรับแค่ import path และ export reconcileGateOuts + ชื่อคีย์ persist ไม่ให้ชนกับตัวจริง ห้ามแก้ตรรกะในไฟล์นี้
+ * ลบทิ้งได้เมื่อ reconcileGateOuts ฉบับใหม่ขึ้นใช้งานจริงและยืนยันแล้ว (พร้อมกับ test ที่อ้างถึง)
+ */
+/**
  * useOps — admin "Operation" work queues (PM / Wash for sale / PDI / FINAL CHECK
  * or any custom name). Each queue holds a list of VINs; operators mark each VIN
  * done, and the queue shows a live countdown of remaining vehicles.
@@ -6,15 +11,15 @@
 import { useMemo } from 'react'
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import * as db from '../lib/db'
-import { onSync, sendSync } from '../lib/syncBus'
-import { useYard } from './useYard'
-import { useTracking } from './useTracking' // one-way: tracking never imports ops
-import { hasLeftGate, deriveCarStatus, isGateOutStamp, gateOutScanMs, GATE_OUT_ORIGIN_SITE_KEY } from '../lib/carStatus'
-import { departedFromSite } from '../lib/siteScope'
-import { PM_KEYS } from '../lib/trackingColumns'
-import type { TrackRow } from '../lib/excelTracking'
-import { quotaSafeStorage } from '../lib/persistStorage'
+import * as db from '../../src/lib/db'
+import { onSync, sendSync } from '../../src/lib/syncBus'
+import { useYard } from '../../src/store/useYard'
+import { useTracking } from '../../src/store/useTracking' // one-way: tracking never imports ops
+import { hasLeftGate, deriveCarStatus, isGateOutStamp, gateOutScanMs, GATE_OUT_ORIGIN_SITE_KEY } from '../../src/lib/carStatus'
+import { departedFromSite } from '../../src/lib/siteScope'
+import { PM_KEYS } from '../../src/lib/trackingColumns'
+import type { TrackRow } from '../../src/lib/excelTracking'
+import { quotaSafeStorage } from '../../src/lib/persistStorage'
 
 /** Process stage of one vehicle within a station queue (PDI / PM / Wash …).
  *  queued → (driver delivers) at-station → (staff records) checked → (driver returns) done. */
@@ -1121,55 +1126,24 @@ function isStaleLadderClosure(q: WorkQueue, i: QueueItem): boolean {
   return (i.doneAt ?? 0) < ladderJoinDay(q, i)
 }
 
-/**
- * การจัดประเภทแถวชีตเพื่อ reconcile — คำนวณครั้งเดียวต่อ "ออบเจ็กต์แถว" (store สร้างออบเจ็กต์ใหม่ทุกครั้งที่แถวเปลี่ยน
- * แถวที่ไม่เปลี่ยนยังเป็นออบเจ็กต์เดิม) แล้วจำไว้ — reconcile ทำงานหลังทุกครั้งที่ store tracking/ops เปลี่ยน และเดิมวน
- * คำนวณใหม่ทุกแถว (62k แถว) ซ้ำอีก "ต่อคิวส่งรถทุกคิว": วัดจริง 79 ms (ไม่มีคิวส่งรถ) → 901 ms (20 คิว) บนเครื่องเดสก์ท็อป
- * บนมือถือ CPU ช้าเป็นงานค้าง 20 วินาที (กล้องขอไม่ผ่าน/จอดำ)
- * เวลาเป็นปัจจัยเดียวที่ทำให้ผลต่อแถวเปลี่ยนได้โดยออบเจ็กต์แถวไม่เปลี่ยน: deriveCarStatus อ่านเวลาปัจจุบันตอนตัดสิน
- * Pre Gate-out → Gate-out ที่ flush 09:30 (pastGateOutFlush) วันนี้ hasLeftGate นับทั้งสองสถานะเป็น "ออกแล้ว" เหมือนกัน
- * ผลจึงไม่ต่างข้าม flush แต่ผูกแคชกับ "รอบ flush" ไว้ (เปลี่ยนค่าทุก 09:30 ตามเวลาท้องถิ่น) เผื่อวันหนึ่งกติกานั้นเปลี่ยน
- * จะได้ไม่มีผลค้างข้ามรอบ
- */
-type RowState = 'gone' | 'gatedIn' | 'waiting'
-interface RowClass { state: RowState; group: string; epoch: number }
-const rowClassCache = new WeakMap<TrackRow, RowClass>()
-const flushEpoch = (now: number): number =>
-  Math.floor((now - new Date(now).getTimezoneOffset() * 60_000 - (9 * 60 + 30) * 60_000) / 86_400_000)
-function rowClassOf(r: TrackRow, epoch: number): RowClass {
-  const hit = rowClassCache.get(r)
-  if (hit && hit.epoch === epoch) return hit
-  const cs = (r.cells['Car Status'] || '').trim()
-  const state: RowState = hasLeftGate(r.cells) ? 'gone' : (cs && cs.toLowerCase() !== 'pre gate-in') ? 'gatedIn' : 'waiting'
-  const c: RowClass = { state, group: groupOf(r.cells), epoch }
-  rowClassCache.set(r, c)
-  return c
-}
-
 let reconcileTimer: ReturnType<typeof setTimeout> | null = null
 export function reconcileGateOuts() {
   const rows = useTracking.getState().rows
-  const epoch = flushEpoch(Date.now())
-  const classOfVin = (vin: string): RowClass | undefined => { const r = rows[vin]; return r ? rowClassOf(r, epoch) : undefined }
-  // gone = ออกจากลานแล้ว · gatedIn = ไม่ใช่ Pre Gate-in แล้ว (เข้าลานแล้ว) · waiting = แถวยังเป็น Pre Gate-in (สถานะว่างนับด้วย)
-  // — ครึ่งหลังของการซิงก์ gate-in: รายการคิวที่ติ๊กไว้จากรอบก่อน (เช่น ล้างข้อมูลยาร์ดแล้วนำเข้า VIN เดิมกลับมาเป็น
-  // Pre Gate-in สำหรับรอบมาใหม่) ต้องถูกถอดติ๊ก ไม่งั้นบอร์ดอ่านว่า "309/309 เสร็จ" ทั้งที่ยังไม่ได้เข้าจริงรอบนี้
-  const isGone = (vin: string) => classOfVin(vin)?.state === 'gone'
-  const isGatedIn = (vin: string) => classOfVin(vin)?.state === 'gatedIn'
-  const isWaiting = (vin: string) => classOfVin(vin)?.state === 'waiting'
-  const groupOfVin = (vin: string) => classOfVin(vin)?.group // undefined = ไม่มีแถว · '' = ไม่มีกลุ่ม
-  // ดัชนี รหัสกลุ่ม → [vin, ลำดับในชีต] สร้างเมื่อมีคิวส่งรถอย่างน้อยหนึ่งคิวเท่านั้น (ครั้งเดียวต่อรอบ)
-  let groupIdx: Map<string, Array<[string, number]>> | null = null
-  const groupIndex = () => {
-    if (groupIdx) return groupIdx
-    groupIdx = new Map()
-    let pos = 0
-    for (const vin in rows) {
-      const g = rowClassOf(rows[vin], epoch).group
-      if (g) { const l = groupIdx.get(g); if (l) l.push([vin, pos]); else groupIdx.set(g, [[vin, pos]]) }
-      pos++
-    }
-    return groupIdx
+  const gone = new Set<string>()
+  const gatedIn = new Set<string>() // no longer Pre Gate-in → has entered the yard
+  // VINs whose CURRENT row is still Pre Gate-in (blank status counts too) — the
+  // other half of the gate-in sync. A queue item marked done from a PRIOR cycle
+  // (e.g. the yard's data was cleared and the same VINs re-imported, landing
+  // back at Pre Gate-in for a fresh arrival) must un-tick, or the board reads
+  // "309/309 เสร็จ" while most of the batch hasn't actually gated in this time.
+  const stillWaiting = new Set<string>()
+  const group = new Map<string, string>() // vin → delivery group ('' = none)
+  for (const vin in rows) {
+    const cs = (rows[vin].cells['Car Status'] || '').trim()
+    if (hasLeftGate(rows[vin].cells)) gone.add(vin)
+    else if (cs && cs.toLowerCase() !== 'pre gate-in') gatedIn.add(vin)
+    else stillWaiting.add(vin)
+    group.set(vin, groupOf(rows[vin].cells))
   }
   const queues = useOps.getState().queues
   // The grouping codes each run covers: what the import recorded on its items,
@@ -1182,7 +1156,7 @@ export function reconcileGateOuts() {
     if (!isSequenceQueue(q)) continue
     const gs = new Set<string>()
     for (const i of q.items) {
-      const g = i.group || groupOfVin(i.vin)
+      const g = i.group || group.get(i.vin)
       if (!g) continue
       gs.add(g)
       if (!runOfGroup.has(g)) runOfGroup.set(g, q.id)
@@ -1206,7 +1180,7 @@ export function reconcileGateOuts() {
     // สถานีถามว่า "งานที่สั่งไว้รอบนี้ยังต้องทำอยู่ไหม" การออกจากลานเมื่อรอบ
     // ก่อน (รถเคยไป แล้วกลับมาใหม่ แล้วถูกสั่งงานใหม่) ต้องไม่มาปิดงานรอบนี้
     const leftYard = (vin: string, since = 0): boolean => {
-      if (isGone(vin)) return true
+      if (gone.has(vin)) return true
       if (!q.site) return false
       const cells = rows[vin]?.cells
       return !!cells && departedFromSite(cells, q.site, sites, since)
@@ -1239,7 +1213,7 @@ export function reconcileGateOuts() {
         changed = true
         return { ...i, gatedOut: true, done: true, doneAt: i.doneAt ?? Date.now() }
       }
-      if (isPreGateIn && isGatedIn(i.vin) && !i.done) {
+      if (isPreGateIn && gatedIn.has(i.vin) && !i.done) {
         changed = true
         return { ...i, done: true, doneAt: i.doneAt ?? Date.now() }
       }
@@ -1254,7 +1228,7 @@ export function reconcileGateOuts() {
       // edit genuinely postdates the done mark — i.e. it was re-imported
       // AFTER, not merely a stale copy racing behind — or the count flaps
       // between two devices each reverting the other's correct write.
-      if (isPreGateIn && isWaiting(i.vin) && i.done && !i.gatedOut && (rows[i.vin]?.updatedAt ?? 0) > (i.doneAt ?? 0)) {
+      if (isPreGateIn && stillWaiting.has(i.vin) && i.done && !i.gatedOut && (rows[i.vin]?.updatedAt ?? 0) > (i.doneAt ?? 0)) {
         changed = true
         return { ...i, done: false, doneAt: undefined, doneBy: undefined, stamped: undefined }
       }
@@ -1329,7 +1303,7 @@ export function reconcileGateOuts() {
         if (i.gatedOut || i.done) return true
         const r = rows[i.vin]
         if (!r) return true
-        const g = groupOfVin(i.vin)
+        const g = group.get(i.vin)
         if (g && runGroups.has(g)) return true // still carries one of this run's codes
         if (g && (r.updatedAt ?? 0) > (i.addedAt ?? 0)) return false // moved to another run
         return !clearedInHistory(r, i.addedAt ?? 0)
@@ -1344,19 +1318,14 @@ export function reconcileGateOuts() {
       // yard are not pulled back in.
       const held = new Set(items.map((i) => i.vin))
       const added: QueueItem[] = []
-      // เดิมวนทุกแถวของชีต (62k) ต่อคิวส่งรถทุกคิว — ตอนนี้ดึงเฉพาะรถที่ถือรหัสกลุ่มของรันนี้จากดัชนีกลุ่ม
-      // (สร้างครั้งเดียวต่อรอบ) แล้วเรียงตามลำดับในชีตเหมือนเดิม ผลลัพธ์เหมือนวนทุกแถว
-      const cands: Array<[string, number]> = []
-      for (const g of runGroups) if (runOfGroup.get(g) === q.id) for (const e of groupIndex().get(g) ?? []) cands.push(e)
-      cands.sort((a, b) => a[1] - b[1])
-      for (const [vin] of cands) {
-        const g = groupOfVin(vin)
+      for (const vin in rows) {
+        const g = group.get(vin)
         // รถที่ออกจากลานนี้ไปแล้ว ห้ามถูกดูดกลับเข้าคิวงานอีก — รวมถึงรถที่
         // ส่งข้ามยาร์ดไปแล้ว ซึ่งไม่เหลือสถานะ "Gate-out" ให้ gone จับได้
         if (!g || held.has(vin) || leftYard(vin)) continue
         if (runOfGroup.get(g) !== q.id) continue
         if (q.site && rows[vin].site && rows[vin].site !== q.site) continue
-        const mate = q.items.find((i) => (i.group || groupOfVin(i.vin)) === g)
+        const mate = q.items.find((i) => (i.group || group.get(i.vin)) === g)
         added.push({ vin, addedAt: Date.now(), done: false, group: g, laneLoad: mate?.laneLoad, dest: mate?.dest })
       }
       if (added.length) { changed = true; items = [...items, ...added] }
@@ -1372,7 +1341,7 @@ export function reconcileGateOuts() {
   // แบบเดียวกับที่ทำให้คิวงานเพี้ยนมาแล้ว
   const dis = useOps.getState().dismissed
   if (useTracking.getState().loaded) {
-    const stale = Object.keys(dis).filter((v) => !isWaiting(v))
+    const stale = Object.keys(dis).filter((v) => !stillWaiting.has(v))
     if (stale.length) useOps.getState().undismissPreGateIn(stale)
   }
   if (!dirty.length) return
@@ -1570,19 +1539,8 @@ export const stageOf = (item: QueueItem): QueueStage => item.stage ?? 'queued'
  */
 export const isPreGateInQueue = (q: WorkQueue): boolean => !isSequenceQueue(q) && queueTypeOf(q) === 'GATEIN'
 
-// จำผลต่อ "อาร์เรย์ items" (store สร้างอาร์เรย์ใหม่ทุกครั้งที่รายการเปลี่ยน): คิวที่ไม่ได้ติดป้าย kind ต้องไล่ทุกรายการจนครบเพื่อตอบว่า
-// "ไม่ใช่คิวส่งรถ" และฟังก์ชันนี้ถูกเรียกต่อรายการในลูป (isPreGateInQueue / reconcile / selector) — โปรไฟล์หน้าแรกหลัง login:
-// self time ~430ms (9.7%) ตัวเดียว
-const sequenceQueueMemo = new WeakMap<QueueItem[], boolean>()
-export const isSequenceQueue = (q: WorkQueue): boolean => {
-  if (q.kind === 'sequence') return true
-  let hit = sequenceQueueMemo.get(q.items)
-  if (hit === undefined) {
-    hit = q.items.some((i) => i.laneLoad != null || i.dest != null)
-    sequenceQueueMemo.set(q.items, hit)
-  }
-  return hit
-}
+export const isSequenceQueue = (q: WorkQueue): boolean =>
+  q.kind === 'sequence' || q.items.some((i) => i.laneLoad != null || i.dest != null)
 
 /** Delivery-sequence stage for one car: queued → wash → lane → gated-out. */
 export function seqStageOf(i: QueueItem): 'queued' | 'wash' | 'lane' | 'gateout' {
@@ -1613,10 +1571,6 @@ export function hasArrived(cells: Record<string, string>): boolean {
  * falls back to the flag; there is nothing else to read.
  */
 export function gateInArrived(i: QueueItem): boolean {
-  // ล็อตจดไว้เองว่ารถ "มาแล้วและออกไปแล้ว" (reconcileGateOuts ตราไว้ตอนเห็นรถออกจากยาร์ดของล็อต) — แถวสดอาจเป็น
-  // Pre Gate-in รอบใหม่ของยาร์ดปลายทางที่รถย้ายไป ซึ่งไม่ใช่ "ยังไม่มาถึง" ของล็อตนี้ (หน้า Gate-in ซ่อนรายการแบบนี้อยู่แล้ว
-  // ส่วน Dashboard อ่านล็อตดิบ จึงเคยนับค้างเป็น "ยังไม่มาถึง" และล็อตไม่เคยจบ)
-  if (i.gatedOut) return true
   const cells = useTracking.getState().rows[i.vin]?.cells
   return cells ? hasArrived(cells) : i.done
 }
@@ -1639,7 +1593,6 @@ export function queueProgress(q: WorkQueue) {
   if (isPreGateInQueue(q)) {
     const rows = useTracking.getState().rows
     const done = q.items.reduce((n, i) => {
-      if (i.gatedOut) return n + 1 // ล็อตจดว่ามาแล้วออกไปแล้ว — ดู gateInArrived
       const cells = rows[i.vin]?.cells
       return n + (cells ? (hasArrived(cells) ? 1 : 0) : (i.done ? 1 : 0))
     }, 0)
