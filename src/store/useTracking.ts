@@ -1422,19 +1422,21 @@ export const useTracking = create<TrackingState>()(
       },
 
       restorePositionsInBlocks: async (blocksIn, opts) => {
-        const want = new Set(blocksIn.map((b) => b.trim().toUpperCase()).filter(Boolean))
         const { currentSite, blocksBySite, sites } = useYard.getState()
         const out: RestorePositionsResult = { fixed: 0, collided: [], skipped: 0, noHistory: 0, otherBlock: 0, unreached: 0, movedSince: [] }
-        if (!currentSite || !want.size) return out
+        if (!currentSite) return out
+        // ป้ายบล็อกที่ผังของยาร์ดนี้วาดอยู่ (คีย์เดียวกับที่ Yard Plan ใช้จัดรถลงช่อง) — ใช้เมื่อ
+        // opts.offMap: unit ที่มีช่องแต่บล็อกไม่อยู่บนผังนี้ = ไม่มีตำแหน่งบนผังเหมือนกัน
+        const drawn = new Set((blocksBySite[currentSite] ?? []).filter((b) => (b.kind ?? 'park') === 'park').map(blockTag)) // กฎเดียวกับ useBlocks — ไม่ถอยไป _global
+        // '*' = ทุกบล็อกที่ผังของยาร์ดนี้วาดอยู่ (สั่งคืนทั้งยาร์ดโดยไม่ระบุบล็อก)
+        const want = blocksIn.some((b) => b.trim() === '*') ? new Set(drawn) : new Set(blocksIn.map((b) => b.trim().toUpperCase()).filter(Boolean))
+        if (!want.size) return out
         // ห้ามตัดสินจากสำเนาเก่า: แถว/ประวัติในเครื่องมาจาก IDB ก่อนซิงก์ และการคืนเขียนทั้งแถวขึ้นคลาวด์
         // ด้วยเวลาใหม่ (appendHistory → pushRows) — ซิงก์ให้เสร็จก่อน ซิงก์ไม่ได้ = โยน ไม่คืน (รอบหน้าลองใหม่)
         await get().syncCloud()
         if (db.isConfigured() && !cloudSyncedThisSession()) throw new Error('ยังซิงก์แถวชีตกับคลาวด์ไม่สำเร็จ — ยังไม่คืนตำแหน่ง')
         const rows = get().rows
         const units0 = useYard.getState().units
-        // ป้ายบล็อกที่ผังของยาร์ดนี้วาดอยู่ (คีย์เดียวกับที่ Yard Plan ใช้จัดรถลงช่อง) — ใช้เมื่อ
-        // opts.offMap: unit ที่มีช่องแต่บล็อกไม่อยู่บนผังนี้ = ไม่มีตำแหน่งบนผังเหมือนกัน
-        const drawn = new Set((blocksBySite[currentSite] ?? []).filter((b) => (b.kind ?? 'park') === 'park').map(blockTag)) // กฎเดียวกับ useBlocks — ไม่ถอยไป _global
         // คีย์ช่องใช้ป้ายบล็อกแบบย่อ (A ↔ AA) เหมือนผัง — ไม่งั้นเช็คชนพลาดเมื่อ unit ติดป้ายคนละสะกด
         const posKey = (u: { block?: string; row?: number; slot?: number }) => `${blockKeyOfTag(u.block)}-${u.row}-${u.slot}`
         // ช่องที่ยาร์ดนี้ครองอยู่ตอนเริ่ม (ทุกบล็อก) — เช็คชนกับสภาพจริง ไม่ทับรถที่จอดอยู่
@@ -1497,13 +1499,31 @@ export const useTracking = create<TrackingState>()(
         if (changed.length) {
           // คลาวด์ก่อน: ไม่ถึงคลาวด์ = โยน error ออกไปทั้งก้อน เครื่องนี้ไม่ถูกแตะ ไม่ลงประวัติ (ผู้เรียก
           // ลองใหม่รอบหน้าได้ — ไม่งั้นเครื่องจะเห็นตำแหน่งที่คลาวด์ไม่มี และรอบหน้าข้ามเพราะ "มีช่องแล้ว")
-          await db.upsertUnitsStrict(changed)
+          // ทีละ 500 คัน (ยาร์ดใหญ่ เช่น NYB2 อาจมีเป็นพัน) — ชุดกลางทางล้ม = โยน เครื่องไม่ถูกแตะ ชุดก่อนหน้าที่ถึงคลาวด์แล้ว
+          // ไม่เป็นไร: รอบหน้าอ่านตัวจริงจากคลาวด์ก่อน คันที่อยู่ช่องนั้นอยู่แล้วถูกข้าม ที่เหลือคืนต่อ
+          for (let i = 0; i < changed.length; i += 500) await db.upsertUnitsStrict(changed.slice(i, i + 500))
           // ทับเฉพาะคันที่คืน บนสำเนาล่าสุด — ไม่เอาทั้งแผนที่เก่าไปทับการเปลี่ยนแปลงที่เข้ามาระหว่างรอ
           useYard.setState((s) => { const units = { ...s.units }; for (const f of changed) units[f.vin] = f; return { units } })
           // ผู้เขียนห้ามขึ้นต้น "ระบบ" — stripSystemHistory ลบบรรทัดแบบนั้นทิ้งทุกเครื่องภายในนาที (หลักฐานการคืน
           // และช่องเดิม from หายหมด) · มี "·" = ไม่ใช่การยิง (isScanLocationEntry) บรรทัดนี้จึงไม่ถูกอ่านเป็นตำแหน่งที่คนยิง
           const by = `${useYard.getState().currentUser || 'admin'} · คืนตำแหน่งที่ถูกล้าง`
-          for (const l of lines) get().appendHistory(l.vin, { at: now, by, field: 'Location', from: l.from, to: l.to })
+          // ลงประวัติเป็นชุดเดียว (set/IDB/ส่งคลาวด์ครั้งเดียวต่อ 500 แถว) — appendHistory ทีละคันคัดลอกแผนที่แถวทั้งยาร์ด
+          // (NYB2 ~20,000 แถว) และยิงคำขอเขียนแถวละหนึ่งครั้ง ถ้าคืนเป็นพันคันจะช้าและกินโควต้าคลาวด์
+          const cur = get().rows
+          const nextRows = { ...cur }
+          const touched: TrackRow[] = []
+          for (const l of lines) {
+            const r = nextRows[l.vin]
+            if (!r) continue
+            const next: TrackRow = { ...r, history: [...(r.history ?? []), { at: now, by, field: 'Location', from: l.from, to: l.to }].slice(-MAX_ROW_HISTORY), updatedAt: Date.now() }
+            nextRows[l.vin] = next
+            touched.push(next)
+          }
+          if (touched.length) {
+            set({ rows: nextRows })
+            idbBulkPut(touched).catch(() => {})
+            pushRows(touched)
+          }
           out.fixed = changed.length
         }
         return out

@@ -70,11 +70,14 @@ function hasAnyUnit(units: Record<string, unknown>): boolean {
  *    B/C/D ตามที่สั่ง รวมคันที่ unit ค้างช่องของยาร์ดอื่น/บล็อกนอกผัง (offMap) · คันที่ยิงล่าสุดเป็นบล็อกอื่น
  *    (A/WCL) ไม่แตะ แค่รายงานจำนวน · คันที่ไม่มีบรรทัดยิงในรอบนี้ไม่เดา (รายงานแทน)
  *  - 9 ต.ค. 60 RAI บล็อก L/D/C: ตำแหน่งหายอีกรอบ — คืนด้วยวิธีเดียวกับ 3D LCB (offMap) ·
- *    ยาร์ดเดียวมีได้หลายงาน: ทำตามลำดับในรายการ ธงใครธงมัน */
-const ONE_SHOT_RESTORES: { key: string; yard: string; blocks: string[]; offMap?: boolean; label: string }[] = [
-  { key: 'sjwd-restore-fln-60rai-20261006', yard: '60 RAI', blocks: ['F', 'L', 'N'], label: 'บล็อก F/L/N ของ 60 RAI' },
-  { key: 'sjwd-restore-bcd-3dlcb-20261009', yard: '3D LCB', blocks: ['B', 'C', 'D'], offMap: true, label: 'บล็อก B/C/D ของ 3D LCB' },
-  { key: 'sjwd-restore-ldc-60rai-20261009', yard: '60 RAI', blocks: ['L', 'D', 'C'], offMap: true, label: 'บล็อก L/D/C ของ 60 RAI' },
+ *    ยาร์ดเดียวมีได้หลายงาน: ทำตามลำดับในรายการ ธงใครธงมัน
+ *  - 10 ต.ค. NYB2 Phase 2: ตำแหน่งหาย ไม่ได้ระบุบล็อก — คืนทุกบล็อกที่ผังวาด (blocks: ['*']) ด้วยวิธีเดียวกัน */
+const ONE_SHOT_RESTORES: { key: string; yards: string[]; blocks: string[]; offMap?: boolean; label: string }[] = [
+  { key: 'sjwd-restore-fln-60rai-20261006', yards: ['60 RAI'], blocks: ['F', 'L', 'N'], label: 'บล็อก F/L/N ของ 60 RAI' },
+  { key: 'sjwd-restore-bcd-3dlcb-20261009', yards: ['3D LCB'], blocks: ['B', 'C', 'D'], offMap: true, label: 'บล็อก B/C/D ของ 3D LCB' },
+  { key: 'sjwd-restore-ldc-60rai-20261009', yards: ['60 RAI'], blocks: ['L', 'D', 'C'], offMap: true, label: 'บล็อก L/D/C ของ 60 RAI' },
+  // '*' = ทุกบล็อกที่ผังของยาร์ดนั้นวาด (ไม่ได้ระบุบล็อก) · ชื่อยาร์ดลองทั้งชื่อเต็มและรหัส
+  { key: 'sjwd-restore-all-nyb2-20261010', yards: ['NYB2 Phase 2', 'NYB2'], blocks: ['*'], offMap: true, label: 'ทุกบล็อกบนผังของ NYB2 Phase 2' },
 ]
 
 export default function App() {
@@ -346,7 +349,7 @@ export default function App() {
     // งานของยาร์ดที่เลือกอยู่ที่ยังไม่มีธง (เครื่องไม่ให้เก็บธง = ไม่ทำ ไม่งั้นวนทุกครั้งที่เปิด)
     let pending: typeof ONE_SHOT_RESTORES
     try {
-      pending = ONE_SHOT_RESTORES.filter((j) => siteIdForLocation({ 'Location yard': j.yard }, sites) === currentSite && !localStorage.getItem(j.key))
+      pending = ONE_SHOT_RESTORES.filter((j) => j.yards.some((y) => siteIdForLocation({ 'Location yard': y }, sites) === currentSite) && !localStorage.getItem(j.key))
     } catch { return }
     if (!pending.length) return
     let cancelled = false
