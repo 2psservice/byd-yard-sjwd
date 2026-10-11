@@ -9,6 +9,7 @@ import { SiteLoadGate } from './components/SiteLoadGate'
 import { useYard, useMe, isOpsOnlyRole } from './store/useYard'
 import { useTrackingRows, useTracking, cloudSyncedThisSession } from './store/useTracking'
 import { isConfigured } from './lib/supabase'
+import { NYB2_LOST_LOCATION_20261011 } from './lib/restoreSets'
 import { siteIdForLocation } from './lib/siteScope'
 import { useOps, repairMissingStationDates } from './store/useOps'
 import { useVisits } from './store/useVisits'
@@ -71,13 +72,14 @@ function hasAnyUnit(units: Record<string, unknown>): boolean {
  *    (A/WCL) ไม่แตะ แค่รายงานจำนวน · คันที่ไม่มีบรรทัดยิงในรอบนี้ไม่เดา (รายงานแทน)
  *  - 9 ต.ค. 60 RAI บล็อก L/D/C: ตำแหน่งหายอีกรอบ — คืนด้วยวิธีเดียวกับ 3D LCB (offMap) ·
  *    ยาร์ดเดียวมีได้หลายงาน: ทำตามลำดับในรายการ ธงใครธงมัน
- *  - 10 ต.ค. NYB2 Phase 2: ตำแหน่งหาย ไม่ได้ระบุบล็อก — คืนทุกบล็อกที่ผังวาด (blocks: ['*']) ด้วยวิธีเดียวกัน */
-const ONE_SHOT_RESTORES: { key: string; yards: string[]; blocks: string[]; offMap?: boolean; label: string }[] = [
+ *  - 11 ต.ค. NYB2 Phase 2: ช่อง Location ว่างตั้งแต่ 8 ต.ค. 09:53 — คืนเฉพาะชุด VIN ที่แอดมินระบุ ทุกบล็อกที่ผังวาด
+ *    (blocks: ['*']) รายงานทุกคันในชุด: คืน/ชน/ไม่มีประวัติ/สถานะไม่ใช่ In Yard (เช่น Gate-out)/ไม่พบแถว/มีช่องแล้ว */
+const ONE_SHOT_RESTORES: { key: string; yards: string[]; blocks: string[]; offMap?: boolean; vins?: string[]; label: string }[] = [
   { key: 'sjwd-restore-fln-60rai-20261006', yards: ['60 RAI'], blocks: ['F', 'L', 'N'], label: 'บล็อก F/L/N ของ 60 RAI' },
   { key: 'sjwd-restore-bcd-3dlcb-20261009', yards: ['3D LCB'], blocks: ['B', 'C', 'D'], offMap: true, label: 'บล็อก B/C/D ของ 3D LCB' },
   { key: 'sjwd-restore-ldc-60rai-20261009', yards: ['60 RAI'], blocks: ['L', 'D', 'C'], offMap: true, label: 'บล็อก L/D/C ของ 60 RAI' },
-  // '*' = ทุกบล็อกที่ผังของยาร์ดนั้นวาด (ไม่ได้ระบุบล็อก) · ชื่อยาร์ดลองทั้งชื่อเต็มและรหัส
-  { key: 'sjwd-restore-all-nyb2-20261010', yards: ['NYB2 Phase 2', 'NYB2'], blocks: ['*'], offMap: true, label: 'ทุกบล็อกบนผังของ NYB2 Phase 2' },
+  // '*' = ทุกบล็อกที่ผังของยาร์ดนั้นวาด · vins = คืนเฉพาะชุดที่แอดมินระบุ · ชื่อยาร์ดลองทั้งชื่อเต็มและรหัส
+  { key: 'sjwd-restore-set-nyb2-20261011', yards: ['NYB2 Phase 2', 'NYB2'], blocks: ['*'], offMap: true, vins: NYB2_LOST_LOCATION_20261011, label: `ชุดที่ระบุ ${NYB2_LOST_LOCATION_20261011.length} คันของ NYB2 Phase 2` },
 ]
 
 export default function App() {
@@ -366,12 +368,13 @@ export default function App() {
     }
     const runJob = async (job: (typeof ONE_SHOT_RESTORES)[number]) => {
       try {
-        const res = await useTracking.getState().restorePositionsInBlocks(job.blocks, { offMap: job.offMap })
+        const res = await useTracking.getState().restorePositionsInBlocks(job.blocks, { offMap: job.offMap, onlyVins: job.vins })
         // งานเสร็จแล้วจริง (คลาวด์รับแล้ว) — ตั้งธง/แจ้งผลเสมอ แม้ effect ถูกเริ่มใหม่ระหว่างรอ (unitsCloudDone
         // กระพริบตอน catch-up / sites เปลี่ยน) ไม่งั้นรอบถัดไปจะวิ่งซ้ำแล้วแจ้ง "คืน 0 คัน" ทั้งที่คืนไปแล้ว
         try { localStorage.setItem(job.key, String(Date.now())) } catch { /* เครื่องไม่ให้เก็บ — รอบหน้าก็ไม่มีอะไรให้แก้แล้ว */ }
         console.info('[restore]', job.label, res)
-        if (res.fixed || res.collided.length || res.movedSince.length || res.noHistory) {
+        const notInYardN = Object.values(res.notInYard).reduce((a, b) => a + b, 0)
+        if (res.fixed || res.collided.length || res.movedSince.length || res.noHistory || notInYardN || res.notFound) {
           const parts = [`คืนตำแหน่งรถ${job.label} ${res.fixed} คัน`]
           if (res.collided.length) parts.push(`ช่องถูกจอดทับ ${res.collided.length} คัน: ${res.collided.slice(0, 8).map((c) => `${c.vin.slice(-6)}→${c.want}`).join(', ')}${res.collided.length > 8 ? ' …' : ''}`)
           if (res.movedSince.length) parts.push(`ถือช่องอื่นอยู่ไม่เก่ากว่าการยิง ${res.movedSince.length} คัน (ไม่ทับ ให้คนตัดสิน)`)
@@ -379,7 +382,12 @@ export default function App() {
           if (res.otherBlock) parts.push(`ยิงล่าสุดเป็นบล็อกนอกรายการ ${res.otherBlock} คัน`)
           if (res.unreached) parts.push(`ยกเลิกขับก่อนถึงช่อง ${res.unreached} คัน (ไม่คืน)`)
           if (res.skipped) parts.push(`ไม่มีข้อมูลรถ ${res.skipped} คัน`)
-          useYard.getState().toast(res.collided.length || res.movedSince.length || res.noHistory ? 'info' : 'ok', parts.join(' · '), 20_000)
+          if (job.vins) {
+            if (res.alreadyPlaced) parts.push(`มีช่องบนผังแล้ว ${res.alreadyPlaced} คัน (มีคนยิงใหม่แล้ว)`)
+            if (notInYardN) parts.push(`ชีตไม่ใช่ In Yard ${notInYardN} คัน (${Object.entries(res.notInYard).map(([k, n]) => `${k} ${n}`).join(', ')}) ไม่คืน ต้องแก้สถานะก่อน`)
+            if (res.notFound) parts.push(`ไม่พบแถวในยาร์ดนี้ ${res.notFound} คัน`)
+          }
+          useYard.getState().toast(res.collided.length || res.movedSince.length || res.noHistory || notInYardN || res.notFound ? 'info' : 'ok', parts.join(' · '), 30_000)
         }
       } catch (e) { console.error('[restore]', job.label, e) } // ไม่ตั้งธง — เปิดครั้งหน้าลองใหม่
     }
