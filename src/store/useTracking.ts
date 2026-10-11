@@ -25,6 +25,13 @@ export interface RestorePositionsResult {
   /** unit ยังถือช่องอื่นอยู่ (ยาร์ดอื่น/บล็อกนอกผัง) ที่ไม่ได้เก่ากว่าการยิงครั้งนั้นชัดเจน — วางทีหลัง /
    *  วางพร้อมกัน (ยิงครั้งเดียวกันจากเครื่องที่เลือกยาร์ดไม่ตรงป้าย) / ไม่มีเวลาวาง — ไม่ทับ ให้คนตัดสิน */
   movedSince: { vin: string; at: string }[]
+  /** เฉพาะเมื่อสั่งด้วยรายการ VIN (onlyVins) — ให้ยอดรวมทุกคันในรายการอธิบายได้ครบ: */
+  /** แถวอ่านสถานะที่ไม่ใช่ In Yard (เช่น Gate-out) — ไม่คืน: ช่องที่คืนจะถูกตัวปล่อยช่อง Gate-out ล้างทิ้งใน 60 วิ · สถานะ → จำนวน */
+  notInYard: Record<string, number>
+  /** VIN ในรายการที่ไม่มีแถวชีตของยาร์ดนี้บนเครื่องนี้ (ไม่พบ/ป้ายยาร์ดอื่น/ถูกลบ) */
+  notFound: number
+  /** คันในรายการที่มีช่องบนผังแล้ว (มีคนยิงใหม่ไปแล้ว) — ไม่แตะ */
+  alreadyPlaced: number
 }
 import { idbBulkPut, idbClear, idbDelete, idbGetAllRows, idbPut } from '../lib/idb'
 import * as db from '../lib/db'
@@ -322,8 +329,10 @@ interface TrackingState {
    *  จอดอยู่ไม่ทับ · รถที่ชีตอ่านเป็น Gate-out ไม่แตะ · เขียนประวัติทุกคันที่คืน · กดซ้ำได้ปลอดภัย
    *  opts.offMap: unit ที่มีช่องแต่บล็อกไม่ได้วาดบนผังของยาร์ดนี้ (Yard Plan นับเป็น "ยังไม่มี
    *  ตำแหน่ง" เหมือนกัน) ถือว่าไม่มีช่อง คืนให้ด้วย — เฉพาะเมื่อการยิงครั้งนั้นใหม่กว่าการวาง
-   *  ช่องปัจจุบันของ unit (ถูกวางที่อื่นทีหลัง = ของใหม่กว่า ไม่ทับ → movedSince) */
-  restorePositionsInBlocks: (blocks: string[], opts?: { offMap?: boolean }) => Promise<RestorePositionsResult>
+   *  ช่องปัจจุบันของ unit (ถูกวางที่อื่นทีหลัง = ของใหม่กว่า ไม่ทับ → movedSince)
+   *  opts.onlyVins: คืนเฉพาะ VIN ในรายการ (แอดมินระบุชุดที่ต้องการ) — คันนอกรายการไม่แตะ · ผลรายงานครบทุกคันในรายการ
+   *  (คืน/ชน/ไม่มีประวัติ/สถานะไม่ใช่ In Yard/ไม่พบแถว/มีช่องแล้ว) */
+  restorePositionsInBlocks: (blocks: string[], opts?: { offMap?: boolean; onlyVins?: string[] }) => Promise<RestorePositionsResult>
   commitCoInspection: (res: ParseResult) => { updated: number; added: number; skipped: number; gateOut: number; moved: number; otherYard: number; heldInYard: number }
   /** Set a cell and log it. `src: 'scan'` marks the write as a FIELD STATION
    *  action (ops-scan), which is what lets a report tell a real recording apart
@@ -1422,19 +1431,22 @@ export const useTracking = create<TrackingState>()(
       },
 
       restorePositionsInBlocks: async (blocksIn, opts) => {
-        const want = new Set(blocksIn.map((b) => b.trim().toUpperCase()).filter(Boolean))
+        const only = opts?.onlyVins ? new Set(opts.onlyVins.map((v) => v.trim().toUpperCase()).filter(Boolean)) : null
         const { currentSite, blocksBySite, sites } = useYard.getState()
-        const out: RestorePositionsResult = { fixed: 0, collided: [], skipped: 0, noHistory: 0, otherBlock: 0, unreached: 0, movedSince: [] }
-        if (!currentSite || !want.size) return out
+        const out: RestorePositionsResult = { fixed: 0, collided: [], skipped: 0, noHistory: 0, otherBlock: 0, unreached: 0, movedSince: [], notInYard: {}, notFound: 0, alreadyPlaced: 0 }
+        if (!currentSite) return out
+        // ป้ายบล็อกที่ผังของยาร์ดนี้วาดอยู่ (คีย์เดียวกับที่ Yard Plan ใช้จัดรถลงช่อง) — ใช้เมื่อ
+        // opts.offMap: unit ที่มีช่องแต่บล็อกไม่อยู่บนผังนี้ = ไม่มีตำแหน่งบนผังเหมือนกัน
+        const drawn = new Set((blocksBySite[currentSite] ?? []).filter((b) => (b.kind ?? 'park') === 'park').map(blockTag)) // กฎเดียวกับ useBlocks — ไม่ถอยไป _global
+        // '*' = ทุกบล็อกที่ผังของยาร์ดนี้วาดอยู่ (สั่งคืนทั้งยาร์ดโดยไม่ระบุบล็อก)
+        const want = blocksIn.some((b) => b.trim() === '*') ? new Set(drawn) : new Set(blocksIn.map((b) => b.trim().toUpperCase()).filter(Boolean))
+        if (!want.size) return out
         // ห้ามตัดสินจากสำเนาเก่า: แถว/ประวัติในเครื่องมาจาก IDB ก่อนซิงก์ และการคืนเขียนทั้งแถวขึ้นคลาวด์
         // ด้วยเวลาใหม่ (appendHistory → pushRows) — ซิงก์ให้เสร็จก่อน ซิงก์ไม่ได้ = โยน ไม่คืน (รอบหน้าลองใหม่)
         await get().syncCloud()
         if (db.isConfigured() && !cloudSyncedThisSession()) throw new Error('ยังซิงก์แถวชีตกับคลาวด์ไม่สำเร็จ — ยังไม่คืนตำแหน่ง')
         const rows = get().rows
         const units0 = useYard.getState().units
-        // ป้ายบล็อกที่ผังของยาร์ดนี้วาดอยู่ (คีย์เดียวกับที่ Yard Plan ใช้จัดรถลงช่อง) — ใช้เมื่อ
-        // opts.offMap: unit ที่มีช่องแต่บล็อกไม่อยู่บนผังนี้ = ไม่มีตำแหน่งบนผังเหมือนกัน
-        const drawn = new Set((blocksBySite[currentSite] ?? []).filter((b) => (b.kind ?? 'park') === 'park').map(blockTag)) // กฎเดียวกับ useBlocks — ไม่ถอยไป _global
         // คีย์ช่องใช้ป้ายบล็อกแบบย่อ (A ↔ AA) เหมือนผัง — ไม่งั้นเช็คชนพลาดเมื่อ unit ติดป้ายคนละสะกด
         const posKey = (u: { block?: string; row?: number; slot?: number }) => `${blockKeyOfTag(u.block)}-${u.row}-${u.slot}`
         // ช่องที่ยาร์ดนี้ครองอยู่ตอนเริ่ม (ทุกบล็อก) — เช็คชนกับสภาพจริง ไม่ทับรถที่จอดอยู่
@@ -1446,13 +1458,20 @@ export const useTracking = create<TrackingState>()(
         // (ถูกล้างไป / ค้างช่องของยาร์ดอื่น / บล็อกนอกผังเมื่อ offMap) · บรรทัด Location ล่าสุด
         // ของรอบนี้ (ที่คนบันทึก) ชี้ไปบล็อกที่ระบุ — ไม่มีบรรทัดยิง = ไม่เดา (noHistory)
         const plan: { vin: string; target: { block: string; row: number; slot: number }; lastAt: number }[] = []
+        const seenInSet = new Set<string>()
         for (const r of Object.values(rows)) {
+          if (only && !only.has(r.vin)) continue // สั่งเฉพาะชุด — นอกรายการไม่แตะ ไม่นับ
           // เหมือนที่ Yard Plan นับ: แถวติดป้ายยาร์ดนี้ หรือแถวเก่าที่ไม่มีป้ายแต่ Location yard ระบุยาร์ดนี้
           if (r.deletedAt || !rowInSite(r, currentSite, sites)) continue
-          if (!IN_YARD_STATUSES.has(deriveCarStatus(r.cells))) continue // กฎเดียวกับ Yard Plan นับ "In Yard" (Preload/Gate-out/Pre Gate-in ไม่ใช่)
+          if (only) seenInSet.add(r.vin)
+          const st = deriveCarStatus(r.cells)
+          if (!IN_YARD_STATUSES.has(st)) { // กฎเดียวกับ Yard Plan นับ "In Yard" (Preload/Gate-out/Pre Gate-in ไม่ใช่)
+            if (only) out.notInYard[st] = (out.notInYard[st] ?? 0) + 1
+            continue
+          }
           const u = units0[r.vin]
           const held = !!(u && u.status !== 'DEPARTED' && u.block && u.row && u.slot)
-          if (held && u.site === currentSite && (!opts?.offMap || drawn.has(blockKeyOfTag(u.block)))) continue // มีช่องบนผังนี้อยู่แล้ว — ไม่แตะ
+          if (held && u.site === currentSite && (!opts?.offMap || drawn.has(blockKeyOfTag(u.block)))) { if (only) out.alreadyPlaced++; continue } // มีช่องบนผังนี้อยู่แล้ว — ไม่แตะ
           const moves = roundHistory(r).filter((e) => (e.field === 'Location' || e.field === LOCATION_KEY) && isScanLocationEntry(e))
           const last = moves[moves.length - 1]
           const target = last ? parseYardLocCode(last.to) : null
@@ -1461,6 +1480,7 @@ export const useTracking = create<TrackingState>()(
           if (!want.has(target.block) || (opts?.offMap && !drawn.has(target.block))) { out.otherBlock++; continue }
           plan.push({ vin: r.vin, target, lastAt: last.at })
         }
+        if (only) out.notFound = [...only].filter((v) => !seenInSet.has(v)).length
         if (!plan.length) return out
         // ทุกคันในแผน "ไม่มีช่องบนผังนี้ตามสำเนาเครื่อง" — แต่เครื่องแอดมินโหลดเฉพาะรถของยาร์ดนี้ และสำเนา
         // รถยาร์ดอื่นที่ค้างอยู่อาจเก่า จึงถามคลาวด์ทุกคัน (ตัวจริงที่เครื่องอื่นเขียน) ใช้เป็นฐาน: รุ่น/สี/defect
@@ -1497,13 +1517,31 @@ export const useTracking = create<TrackingState>()(
         if (changed.length) {
           // คลาวด์ก่อน: ไม่ถึงคลาวด์ = โยน error ออกไปทั้งก้อน เครื่องนี้ไม่ถูกแตะ ไม่ลงประวัติ (ผู้เรียก
           // ลองใหม่รอบหน้าได้ — ไม่งั้นเครื่องจะเห็นตำแหน่งที่คลาวด์ไม่มี และรอบหน้าข้ามเพราะ "มีช่องแล้ว")
-          await db.upsertUnitsStrict(changed)
+          // ทีละ 500 คัน (ยาร์ดใหญ่ เช่น NYB2 อาจมีเป็นพัน) — ชุดกลางทางล้ม = โยน เครื่องไม่ถูกแตะ ชุดก่อนหน้าที่ถึงคลาวด์แล้ว
+          // ไม่เป็นไร: รอบหน้าอ่านตัวจริงจากคลาวด์ก่อน คันที่อยู่ช่องนั้นอยู่แล้วถูกข้าม ที่เหลือคืนต่อ
+          for (let i = 0; i < changed.length; i += 500) await db.upsertUnitsStrict(changed.slice(i, i + 500))
           // ทับเฉพาะคันที่คืน บนสำเนาล่าสุด — ไม่เอาทั้งแผนที่เก่าไปทับการเปลี่ยนแปลงที่เข้ามาระหว่างรอ
           useYard.setState((s) => { const units = { ...s.units }; for (const f of changed) units[f.vin] = f; return { units } })
           // ผู้เขียนห้ามขึ้นต้น "ระบบ" — stripSystemHistory ลบบรรทัดแบบนั้นทิ้งทุกเครื่องภายในนาที (หลักฐานการคืน
           // และช่องเดิม from หายหมด) · มี "·" = ไม่ใช่การยิง (isScanLocationEntry) บรรทัดนี้จึงไม่ถูกอ่านเป็นตำแหน่งที่คนยิง
           const by = `${useYard.getState().currentUser || 'admin'} · คืนตำแหน่งที่ถูกล้าง`
-          for (const l of lines) get().appendHistory(l.vin, { at: now, by, field: 'Location', from: l.from, to: l.to })
+          // ลงประวัติเป็นชุดเดียว (set/IDB/ส่งคลาวด์ครั้งเดียวต่อ 500 แถว) — appendHistory ทีละคันคัดลอกแผนที่แถวทั้งยาร์ด
+          // (NYB2 ~20,000 แถว) และยิงคำขอเขียนแถวละหนึ่งครั้ง ถ้าคืนเป็นพันคันจะช้าและกินโควต้าคลาวด์
+          const cur = get().rows
+          const nextRows = { ...cur }
+          const touched: TrackRow[] = []
+          for (const l of lines) {
+            const r = nextRows[l.vin]
+            if (!r) continue
+            const next: TrackRow = { ...r, history: [...(r.history ?? []), { at: now, by, field: 'Location', from: l.from, to: l.to }].slice(-MAX_ROW_HISTORY), updatedAt: Date.now() }
+            nextRows[l.vin] = next
+            touched.push(next)
+          }
+          if (touched.length) {
+            set({ rows: nextRows })
+            idbBulkPut(touched).catch(() => {})
+            pushRows(touched)
+          }
           out.fixed = changed.length
         }
         return out
