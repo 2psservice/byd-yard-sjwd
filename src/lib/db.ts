@@ -577,6 +577,26 @@ export async function upsertUnitsKeepPlacement(units: Unit[], onProgress?: Chunk
   await bulkUpsert(unitsTable(), rows, 200, yard ? 'site_id,vin' : 'vin', 5, undefined, onProgress)
 }
 
+/** คอลัมน์ "ข้อมูลรถจากไฟล์" (รุ่น/สี/ล็อต/เทรลเลอร์) — สิ่งที่การนำเข้าไฟล์และตัวซ่อมรุ่น/สี เป็นเจ้าของจริง */
+const CATALOG_COLS = ['vin', 'model', 'model_name', 'variant', 'color', 'color_hex', 'trailer', 'lot'] as const
+
+/**
+ * อัปเดตเฉพาะข้อมูลรถจากไฟล์ของรถที่มีอยู่แล้ว — ไม่ส่งสถานะ/ยาร์ด/เวลา Gate-in/ตำแหน่ง
+ *
+ * เดิม importUnits ส่งทั้งแถว (ยกเว้นตำแหน่ง) จากสำเนาในเครื่อง ตัวซ่อมรุ่น/สีใน App.tsx เรียกทุก 60 วิบนทุกเครื่อง
+ * สำเนาที่ค้างจึงเขียนสถานะเก่าทับคลาวด์ได้ — 10 ต.ค. 12:42 รถ NYB2 1,066 คันถูกเขียนในวินาทีเดียว: รถที่ออกไปแล้ว
+ * กลับเป็น EXPECTED, รถที่ตำแหน่งหายกลายเป็น PARKED ไม่มีช่อง. คอลัมน์ทุกแถวต้องชุดเดียวกัน (PostgREST เติม null
+ * ให้คีย์ที่บางแถวไม่มี)
+ */
+export async function upsertUnitsCatalog(units: Unit[]): Promise<void> {
+  if (!isConfigured() || !units.length) return
+  const rows = units.map((u) => {
+    const r = unitToRow(u) as Record<string, unknown>
+    return Object.fromEntries(CATALOG_COLS.map((c) => [c, r[c]]))
+  })
+  await bulkUpsert('units', rows, 200, 'vin', 5)
+}
+
 /** Where a car stood when a move was decided, and where it should go. */
 export interface PlacementGuard {
   vin: string

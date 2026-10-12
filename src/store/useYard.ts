@@ -807,6 +807,8 @@ export const useYard = create<YardState>()(
         let added = 0
         let updated = 0
         const changedUnits: Unit[] = []
+        // รถที่มีอยู่แล้ว (และมียาร์ดแล้ว) → ส่งแค่ข้อมูลรถจากไฟล์ ห้ามส่งสถานะจากสำเนาในเครื่องทับคลาวด์
+        const catalogOnly: Unit[] = []
         const newTrailers: Trailer[] = []
         for (const r of rows) {
           if (!r.vin) continue
@@ -821,9 +823,11 @@ export const useYard = create<YardState>()(
           if (r.variant) u.variant = r.variant
           if (r.lot) u.lot = r.lot
           if (r.trailer) u.trailer = r.trailer
+          const siteWasSet = !!u.site
           if (siteId && !u.site) u.site = siteId
           units[r.vin] = u
-          changedUnits.push(u)
+          if (existed && siteWasSet) catalogOnly.push(u)
+          else changedUnits.push(u)
           existed ? updated++ : added++
           if (r.trailer && !trailerNos.has(r.trailer)) {
             trailerNos.add(r.trailer)
@@ -840,7 +844,9 @@ export const useYard = create<YardState>()(
         // phone re-locates a car, so writing block/row/slot here pushed the OLD
         // position back over the new one — the "ops ตั้ง R7 แล้วรถไปโผล่ R9"
         // report. Model/colour/lot are what this call owns; position is not.
+        // สถานะก็เช่นกัน: สำเนาในเครื่องที่ค้างเคยเขียนรถที่ออกไปแล้วกลับเป็น EXPECTED — รถที่มีอยู่แล้วส่งแค่รุ่น/สี/ล็อต/เทรลเลอร์
         db.upsertUnitsKeepPlacement(changedUnits).catch((e) => console.error('[db] importUnits', e))
+        db.upsertUnitsCatalog(catalogOnly).catch((e) => console.error('[db] importUnits catalog', e))
         if (siteId && newTrailers.length) {
           Promise.all(newTrailers.map((t) => db.upsertTrailer(siteId, t)))
             .then(() => sendSync('trailers', { siteId }))

@@ -72,6 +72,18 @@ export class World {
       upsertUnitsStrict: async (units: Unit[]) => world.write(units),
       upsertUnits: async (units: Unit[]) => world.write(units),
       upsertUnit: async (u: Unit) => world.write([u]),
+      // ส่งทั้งแถวยกเว้นตำแหน่ง — ตำแหน่งในคลาวด์คงเดิม (เหมือน db.upsertUnitsKeepPlacement)
+      upsertUnitsKeepPlacement: async (units: Unit[]) => world.write(units.map((u) => {
+        const cur = world.cloud.get(u.vin)
+        const { block: _b, row: _r, slot: _s, planMode: _p, assignedAt: _a, driver: _d, drivingStartedAt: _ds, parkedAt: _pa, ...rest } = u
+        return { ...rest, block: cur?.block, row: cur?.row, slot: cur?.slot, planMode: cur?.planMode, assignedAt: cur?.assignedAt, driver: cur?.driver, drivingStartedAt: cur?.drivingStartedAt, parkedAt: cur?.parkedAt } as Unit
+      })),
+      // ส่งแค่ข้อมูลรถจากไฟล์ — สถานะ/ยาร์ด/ตำแหน่งในคลาวด์คงเดิม (เหมือน db.upsertUnitsCatalog)
+      upsertUnitsCatalog: async (units: Unit[]) => world.write(units.map((u) => {
+        const cur = world.cloud.get(u.vin)
+        const cat = { vin: u.vin, model: u.model, modelName: u.modelName, variant: u.variant, color: u.color, colorHex: u.colorHex, trailer: u.trailer, lot: u.lot }
+        return (cur ? { ...cur, ...cat } : cat) as Unit
+      })),
       fetchUnitPlacements: async () => [...world.cloud.values()].map((u) => ({ ...u })),
       fetchUnitsByVins: async (vins: string[]) => vins.map((v) => world.cloud.get(v)).filter((u): u is Unit => !!u).map((u) => ({ ...u })),
       updatePlacementIfUnchanged: async (guard: { vin: string; from: { block?: string; row?: number; slot?: number } }, next: Unit) => {
