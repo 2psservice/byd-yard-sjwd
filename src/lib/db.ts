@@ -577,24 +577,50 @@ export async function upsertUnitsKeepPlacement(units: Unit[], onProgress?: Chunk
   await bulkUpsert(unitsTable(), rows, 200, yard ? 'site_id,vin' : 'vin', 5, undefined, onProgress)
 }
 
-/** คอลัมน์ "ข้อมูลรถจากไฟล์" (รุ่น/สี/ล็อต/เทรลเลอร์) — สิ่งที่การนำเข้าไฟล์และตัวซ่อมรุ่น/สี เป็นเจ้าของจริง */
-const CATALOG_COLS = ['vin', 'model', 'model_name', 'variant', 'color', 'color_hex', 'trailer', 'lot'] as const
+/** ข้อมูลรถจากไฟล์ที่การนำเข้า/ตัวซ่อมรุ่น-สี เป็นเจ้าของ — ไม่มีสถานะ/ยาร์ด/ตำแหน่ง/เวลา Gate-in */
+export interface CatalogPatch {
+  vin: string
+  /** ยาร์ดของแถว (โหมด yard_units ใช้เลือกแถว) */
+  site?: string
+  fields: Partial<Record<'model' | 'model_name' | 'variant' | 'color' | 'color_hex' | 'trailer' | 'lot', string | number | null>>
+}
 
 /**
- * อัปเดตเฉพาะข้อมูลรถจากไฟล์ของรถที่มีอยู่แล้ว — ไม่ส่งสถานะ/ยาร์ด/เวลา Gate-in/ตำแหน่ง
+ * แก้เฉพาะข้อมูลรถจากไฟล์ของรถที่มีอยู่แล้ว (UPDATE ไม่ใช่ upsert — ไม่สร้างแถวใหม่)
  *
- * เดิม importUnits ส่งทั้งแถว (ยกเว้นตำแหน่ง) จากสำเนาในเครื่อง ตัวซ่อมรุ่น/สีใน App.tsx เรียกทุก 60 วิบนทุกเครื่อง
- * สำเนาที่ค้างจึงเขียนสถานะเก่าทับคลาวด์ได้ — 10 ต.ค. 12:42 รถ NYB2 1,066 คันถูกเขียนในวินาทีเดียว: รถที่ออกไปแล้ว
- * กลับเป็น EXPECTED, รถที่ตำแหน่งหายกลายเป็น PARKED ไม่มีช่อง. คอลัมน์ทุกแถวต้องชุดเดียวกัน (PostgREST เติม null
- * ให้คีย์ที่บางแถวไม่มี)
+ * เดิม importUnits ส่งทั้งแถว (ยกเว้นตำแหน่ง) จากสำเนาในเครื่อง และตัวซ่อมรุ่น/สีใน App.tsx เรียกทุก 60 วิบนทุกเครื่อง
+ * สำเนาที่ค้างจึงเขียนสถานะเก่าทับคลาวด์ — 10 ต.ค. 12:42 รถ NYB2 1,066 คันถูกเขียนในวินาทีเดียว: รถที่ออกไปแล้วกลับเป็น
+ * EXPECTED, รถที่ตำแหน่งหายกลายเป็น PARKED ไม่มีช่อง. รวมคันที่ค่าเหมือนกันเป็นคำสั่งเดียว (ตัวซ่อมรุ่น/สีมักแก้ค่าเดียวกันทั้งล็อต)
+ * เขียนลงตารางของโหมดปัจจุบัน (units / yard_units) — หลังสลับโหมด units ถูกปิดการแก้
  */
-export async function upsertUnitsCatalog(units: Unit[]): Promise<void> {
-  if (!isConfigured() || !units.length) return
-  const rows = units.map((u) => {
-    const r = unitToRow(u) as Record<string, unknown>
-    return Object.fromEntries(CATALOG_COLS.map((c) => [c, r[c]]))
-  })
-  await bulkUpsert('units', rows, 200, 'vin', 5)
+export async function patchUnitsCatalog(patches: CatalogPatch[]): Promise<void> {
+  if (!isConfigured() || !patches.length) return
+  const yard = yardMode()
+  const groups = new Map<string, { site: string | null; fields: CatalogPatch['fields']; vins: string[] }>()
+  for (const p of patches) {
+    const site = yard ? (p.site ?? unitsSite) : null
+    if (yard && !site) { console.error('[db] patchUnitsCatalog skip — unit has no yard', p.vin); continue }
+    const key = JSON.stringify([site, Object.entries(p.fields).sort()])
+    const g = groups.get(key) ?? { site, fields: p.fields, vins: [] }
+    g.vins.push(p.vin)
+    groups.set(key, g)
+  }
+  const jobs: (() => Promise<void>)[] = []
+  for (const g of groups.values()) {
+    for (let i = 0; i < g.vins.length; i += 200) {
+      const vins = g.vins.slice(i, i + 200)
+      jobs.push(async () => {
+        try {
+          await withRetry(() => {
+            let q: any = supabase.from(unitsTable()).update(g.fields).in('vin', vins)
+            if (g.site) q = q.eq('site_id', g.site)
+            return q
+          })
+        } catch (e) { console.error('[db] patchUnitsCatalog', e) }
+      })
+    }
+  }
+  for (let i = 0; i < jobs.length; i += 5) await Promise.all(jobs.slice(i, i + 5).map((j) => j()))
 }
 
 /** Where a car stood when a move was decided, and where it should go. */

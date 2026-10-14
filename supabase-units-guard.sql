@@ -17,6 +17,10 @@
 -- ลำดับ trigger: ชื่อ units_guard_* ทำงานก่อน units_touch_updated_at (เรียงตามชื่อ) → updated_at ยังขยับ
 --   ทำให้ realtime ส่ง "ค่าที่ถูก" กลับไปแก้สำเนาของเครื่องที่เขียนผิด
 --
+-- ใช้เมื่อไหร่ (14 ต.ค.): หลัง cutover ขั้น 2 (supabase-yard-units-flip.sql) ตาราง units ถูกปิดการแก้ทั้งหมดด้วย
+--   units_frozen_guard อยู่แล้ว — ไฟล์นี้ "ไม่จำเป็น" · รันเฉพาะเมื่อยังไม่สลับ / เลื่อนวันสลับ / หรือย้อนกลับ
+--   (supabase-yard-units-rollback.sql) แล้วกลับมาใช้ units — อยู่ร่วมกับ units_frozen_guard ได้ (frozen ทำงานก่อนตามชื่อ)
+--
 -- วิธีใช้: Supabase Dashboard → SQL Editor — รันทีละขั้น
 --   ขั้นที่ 1 ตรวจ (อ่านอย่างเดียว) · ขั้นที่ 2 ติดตั้ง (รันซ้ำได้) · ขั้นที่ 3 ทดสอบใน transaction แล้ว rollback
 --   ขั้นที่ 4 ดู log · ถอนกลับอยู่ท้ายไฟล์

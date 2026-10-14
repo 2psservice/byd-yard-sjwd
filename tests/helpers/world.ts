@@ -78,12 +78,19 @@ export class World {
         const { block: _b, row: _r, slot: _s, planMode: _p, assignedAt: _a, driver: _d, drivingStartedAt: _ds, parkedAt: _pa, ...rest } = u
         return { ...rest, block: cur?.block, row: cur?.row, slot: cur?.slot, planMode: cur?.planMode, assignedAt: cur?.assignedAt, driver: cur?.driver, drivingStartedAt: cur?.drivingStartedAt, parkedAt: cur?.parkedAt } as Unit
       })),
-      // ส่งแค่ข้อมูลรถจากไฟล์ — สถานะ/ยาร์ด/ตำแหน่งในคลาวด์คงเดิม (เหมือน db.upsertUnitsCatalog)
-      upsertUnitsCatalog: async (units: Unit[]) => world.write(units.map((u) => {
-        const cur = world.cloud.get(u.vin)
-        const cat = { vin: u.vin, model: u.model, modelName: u.modelName, variant: u.variant, color: u.color, colorHex: u.colorHex, trailer: u.trailer, lot: u.lot }
-        return (cur ? { ...cur, ...cat } : cat) as Unit
-      })),
+      // แก้เฉพาะข้อมูลรถจากไฟล์ของแถวที่มีอยู่ — สถานะ/ยาร์ด/ตำแหน่งในคลาวด์คงเดิม (เหมือน db.patchUnitsCatalog)
+      patchUnitsCatalog: async (patches: { vin: string; fields: Record<string, unknown> }[]) => {
+        const map: Record<string, string> = { model: 'model', model_name: 'modelName', variant: 'variant', color: 'color', color_hex: 'colorHex', trailer: 'trailer', lot: 'lot' }
+        const next: Unit[] = []
+        for (const p of patches) {
+          const cur = world.cloud.get(p.vin)
+          if (!cur) continue // UPDATE ไม่สร้างแถวใหม่
+          const u = { ...cur } as Record<string, unknown>
+          for (const [k, v] of Object.entries(p.fields)) u[map[k]] = v ?? undefined
+          next.push(u as unknown as Unit)
+        }
+        await world.write(next)
+      },
       fetchUnitPlacements: async () => [...world.cloud.values()].map((u) => ({ ...u })),
       fetchUnitsByVins: async (vins: string[]) => vins.map((v) => world.cloud.get(v)).filter((u): u is Unit => !!u).map((u) => ({ ...u })),
       updatePlacementIfUnchanged: async (guard: { vin: string; from: { block?: string; row?: number; slot?: number } }, next: Unit) => {

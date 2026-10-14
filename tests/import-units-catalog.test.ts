@@ -52,3 +52,52 @@ describe('importUnits ส่งแค่ข้อมูลรถจากไฟ�
     expect(world.cloud.get('V4')!.site).toBe('S1')
   })
 })
+
+/** db.patchUnitsCatalog: UPDATE (ไม่ upsert) ลงตารางของโหมดปัจจุบัน — หลังสลับโหมด units ถูกปิดการแก้ */
+describe('patchUnitsCatalog', () => {
+  async function load(mode: 'units' | 'yard_units') {
+    const calls: { table: string; op: string; fields?: unknown; vins?: string[]; site?: string }[] = []
+    vi.resetModules()
+    vi.doUnmock('../src/lib/db') // ชุดก่อนหน้า (World) จำลอง db ไว้ — ต้องใช้ตัวจริง
+    vi.doMock('../src/lib/supabase', () => ({
+      isConfigured: () => true,
+      supabase: {
+        from: (table: string) => ({
+          update: (fields: unknown) => {
+            const c: (typeof calls)[number] = { table, op: 'update', fields }
+            calls.push(c)
+            const b: any = {
+              in: (_k: string, v: string[]) => { c.vins = v; return b },
+              eq: (k: string, v: string) => { if (k === 'site_id') c.site = v; return b },
+              then: (res: (v: unknown) => unknown) => Promise.resolve({ error: null }).then(res),
+            }
+            return b
+          },
+          upsert: () => { calls.push({ table, op: 'upsert' }); return Promise.resolve({ error: null }) },
+        }),
+      },
+    }))
+    const db = await import('../src/lib/db')
+    db.setUnitsMode(mode)
+    db.setUnitsSite('S1')
+    return { db, calls }
+  }
+
+  it('โหมดเดิม: update ตาราง units · คันที่ค่าเหมือนกันรวมเป็นคำสั่งเดียว · ไม่มี upsert', async () => {
+    const { db, calls } = await load('units')
+    await db.patchUnitsCatalog([
+      { vin: 'A', site: 'S1', fields: { model: 'ATTO1', model_name: 'ATTO 1', color: 'Blue' } },
+      { vin: 'B', site: 'S1', fields: { model: 'ATTO1', model_name: 'ATTO 1', color: 'Blue' } },
+      { vin: 'C', site: 'S1', fields: { model: 'ATTO1', model_name: 'ATTO 1', color: 'Red' } },
+    ])
+    expect(calls.every((c) => c.op === 'update' && c.table === 'units')).toBe(true)
+    expect(calls.map((c) => c.vins)).toEqual([['A', 'B'], ['C']])
+    expect(calls[0].site).toBeUndefined()
+  })
+
+  it('โหมด yard_units: update yard_units เฉพาะแถวของยาร์ดนั้น', async () => {
+    const { db, calls } = await load('yard_units')
+    await db.patchUnitsCatalog([{ vin: 'A', site: 'S2', fields: { model: 'X', model_name: 'X' } }])
+    expect(calls).toEqual([{ table: 'yard_units', op: 'update', fields: { model: 'X', model_name: 'X' }, vins: ['A'], site: 'S2' }])
+  })
+})
