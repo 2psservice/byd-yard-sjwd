@@ -182,6 +182,41 @@ function releaseArrivalLots(vins: string[]): void {
 }
 
 /**
+ * รถที่ประตูปล่อยไปแล้ว (Pre Gate-out / Gate-out) ถูกแอดมินดึงกลับเป็นสถานะในลาน (In Yard …)
+ * — "ยกเลิก Gate-out" หรือแก้ Car Status กลับ: ตอนปล่อย ช่องจอดบนผังถูกล้าง (ตั้งใจ รถที่ออกจริงต้องคืนช่อง)
+ * แต่ตอนดึงกลับ เดิมไม่มีใครคืนช่อง → แถวชีตเป็น In Yard แต่รถบนผังไม่มีตำแหน่ง (เหตุ "Location หาย" ชุด
+ * NYB2 / 3D LCB / 60 RAI) ทำให้คืนตำแหน่งให้เองจากบรรทัดยิง Location ล่าสุดของรอบนี้ — การกระทำของคน
+ * (กดยกเลิก/แก้สถานะ) เป็นตัวสั่ง ใช้ตัวคืนเดียวกับงานคืนครั้งเดียว: ซิงก์ก่อน · ไม่ทับช่องที่มีรถอื่น/วางใหม่กว่า ·
+ * ไม่เดาคันที่ไม่มีประวัติยิง · Preload ไม่นับ (รถจอดอยู่ลานพรีโหลด ไม่ใช่ช่องเดิม)
+ */
+const cameBackFromRelease = (before: TrackRow, after: TrackRow): boolean =>
+  RELEASED_STATUSES.has(deriveCarStatus(before.cells)) && IN_YARD_STATUSES.has(deriveCarStatus(after.cells))
+
+let reseatQueue = new Set<string>()
+let reseatTimer: ReturnType<typeof setTimeout> | null = null
+/** รวมหลายคัน/หลายการแก้ (แก้สถานะทีละช่อง · ยกเลิกทั้งรายการ) เป็นรอบเดียว */
+function queueReseat(vins: string[]): void {
+  if (!vins.length || !useYard.getState().currentSite) return
+  for (const v of vins) reseatQueue.add(v)
+  if (reseatTimer) clearTimeout(reseatTimer)
+  reseatTimer = setTimeout(async () => {
+    reseatTimer = null
+    const batch = [...reseatQueue]
+    reseatQueue = new Set()
+    const toast = useYard.getState().toast
+    try {
+      const res = await useTracking.getState().restorePositionsInBlocks(['*'], { offMap: true, onlyVins: batch })
+      if (res.fixed) toast('ok', `คืนตำแหน่งรถที่ดึงกลับจาก Gate-out ${res.fixed} คัน`, 8000)
+      const blocked = res.collided.length + res.movedSince.length
+      if (blocked) toast('info', `คืนตำแหน่งไม่ได้ ${blocked} คัน (ช่องเดิมมีรถอื่นหรือถูกวางใหม่แล้ว) ให้ยิง Relocation`, 10000)
+    } catch (e) {
+      console.error('[reseat]', e)
+      toast('info', 'ยังคืนตำแหน่งให้รถที่ดึงกลับจาก Gate-out ไม่สำเร็จ (ซิงก์/คลาวด์ไม่พร้อม) ให้ยิง Relocation หรือแจ้งผู้ดูแล', 10000)
+    }
+  }, 800)
+}
+
+/**
  * Clear queue items left behind by a car deleted BEFORE this ran.
  *
  * Catching the delete as it happens only helps from now on; a car removed last
@@ -1233,12 +1268,14 @@ export const useTracking = create<TrackingState>()(
         const rows = { ...get().rows }
         const changed: TrackRow[] = []
         const elsewhere: string[] = []
+        const reseat: string[] = []
         const now = Date.now()
         for (const vin of vins) {
           const r = rows[vin]
           if (!r) continue
           if (!siteWorksWith(r, siteId, sites)) { elsewhere.push(`${vin} (${rowYardName(r, sites) || 'ยาร์ดอื่น'})`); continue }
           const was = deriveCarStatus(r.cells)
+          if (RELEASED_STATUSES.has(was)) reseat.push(vin)
           const cells = { ...r.cells }
           if (cells[GATE_OUT_ORIGIN_SITE_KEY] === siteId) { delete cells[GATE_OUT_ORIGIN_SITE_KEY]; delete cells[GATE_OUT_ORIGIN_AT_KEY] }
           delete cells['Gate Out Time']
@@ -1258,6 +1295,7 @@ export const useTracking = create<TrackingState>()(
           idbBulkPut(changed).catch(() => {})
           pushRows(changed)
         }
+        if (siteId === useYard.getState().currentSite) queueReseat(reseat) // ยกเลิก Gate-out = รถยังอยู่ → คืนช่องที่ถูกปล่อยตอนยิงออก
         return { restored: changed.length, elsewhere }
       },
 
@@ -1814,6 +1852,7 @@ export const useTracking = create<TrackingState>()(
         // applyYardMove) releases the old yard's lot too, not just an explicit
         // Car Status edit
         if (reannouncedArrival(r, next)) releaseArrivalLots([vin])
+        if (cameBackFromRelease(r, next) && rowInSite(next, useYard.getState().currentSite, useYard.getState().sites)) queueReseat([vin])
       },
 
       updateCells: (vin, patch, src) => {
@@ -1830,6 +1869,7 @@ export const useTracking = create<TrackingState>()(
         idbPut(next).catch(() => {})
         pushRows([next])
         if (reannouncedArrival(r, next)) releaseArrivalLots([vin])
+        if (cameBackFromRelease(r, next) && rowInSite(next, useYard.getState().currentSite, useYard.getState().sites)) queueReseat([vin])
       },
 
       setCellNoHistory: (vin, key, value) => {
@@ -1902,6 +1942,8 @@ export const useTracking = create<TrackingState>()(
         const now = Date.now()
         const changed: TrackRow[] = []
         const reannounced: string[] = []
+        const reseat: string[] = []
+        const { currentSite: curSite, sites: allSites } = useYard.getState()
         for (const vin of vins) {
           const r = rows[vin]
           if (!r) continue
@@ -1909,11 +1951,13 @@ export const useTracking = create<TrackingState>()(
           rows[vin] = next
           changed.push(next)
           if (reannouncedArrival(r, next)) reannounced.push(vin)
+          if (cameBackFromRelease(r, next) && rowInSite(next, curSite, allSites)) reseat.push(vin)
         }
         set({ rows })
         idbBulkPut(changed).catch(() => {})
         pushRows(changed)
         releaseArrivalLots(reannounced)
+        queueReseat(reseat)
       },
 
       addRow: (vin, cells = {}) => {
