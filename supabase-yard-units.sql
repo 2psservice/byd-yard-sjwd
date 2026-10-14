@@ -63,31 +63,28 @@ begin
   end if;
 end $$;
 
--- ── 5) backfill: 1 แถวใน units → 1 แถวที่ยาร์ดของรถ ─────────────────────────────────────────
--- ยาร์ด = units.site_id ถ้ามี · รถเก่าที่ units ไม่มีป้ายยาร์ด ใช้ป้ายจากแถวชีต (tracking_rows.site) แทน
--- (ไม่งั้นรถกลุ่มนี้หายจากผังหลัง cutover) · ไม่มียาร์ดทั้งสองที่ = ข้าม (ไม่มีผังให้ขึ้น)
+-- ── 5) backfill: 1 แถวใน units → 1 แถวที่ site_id เดิม ───────────────────────────────────────
+-- ย้ายเฉพาะรถที่ units มีป้ายยาร์ด (site_id) — รถเก่าที่ไม่มีป้ายยาร์ด "ไม่ย้าย" (ตัดสินใจแล้ว: เป็นข้อมูลที่ไม่ได้ใช้
+-- รถทุกคันมียาร์ดของตัวเอง) ไม่ลบอะไรออกจาก units — แค่ไม่คัดลอกไปตารางใหม่
 -- สร้างคำสั่งจากรายชื่อคอลัมน์จริงของ yard_units (ตามชนิดจริงของฐาน)
 -- on conflict do nothing: ถ้าแอปเขียนแถวใหม่กว่าลงตารางไปแล้ว ไม่ทับ
 do $$
-declare cols text; sel text;
+declare cols text;
 begin
-  select string_agg(quote_ident(column_name), ', ' order by ordinal_position),
-         string_agg(case when column_name = 'site_id' then 'coalesce(u.site_id, t.site)' else 'u.' || quote_ident(column_name) end, ', ' order by ordinal_position)
-    into cols, sel
+  select string_agg(quote_ident(column_name), ', ' order by ordinal_position) into cols
   from information_schema.columns where table_schema = 'public' and table_name = 'yard_units' and is_generated = 'NEVER';
   execute format(
-    'insert into public.yard_units (%s) select %s from public.units u '
-    'left join public.tracking_rows t on t.vin = u.vin and t.deleted_at is null '
-    'where coalesce(u.site_id, t.site) is not null '
-    'on conflict (site_id, vin) do nothing', cols, sel);
+    'insert into public.yard_units (%1$s) select %1$s from public.units where site_id is not null '
+    'on conflict (site_id, vin) do nothing', cols);
 end $$;
 
 -- ── 6) ตรวจยอด (อ่านอย่างเดียว) — ต้องเท่ากันทุกยาร์ดก่อนเปิดใช้ build ใหม่ ──────────────────────
 select coalesce(u.site_id, y.site_id) as site_id, u.n as units, y.n as yard_units, u.parked as units_parked, y.parked as yard_parked
-from (select coalesce(un.site_id, t.site) as site_id, count(*) n, count(*) filter (where un.block is not null) parked
-      from public.units un left join public.tracking_rows t on t.vin = un.vin and t.deleted_at is null
-      where coalesce(un.site_id, t.site) is not null group by 1) u
+from (select site_id, count(*) n, count(*) filter (where block is not null) parked from public.units where site_id is not null group by 1) u
 full join (select site_id, count(*) n, count(*) filter (where block is not null) parked from public.yard_units group by 1) y using (site_id)
 order by 1;
+
+-- รถที่ "ไม่ถูกย้าย" (units ไม่มีป้ายยาร์ด) — ดูไว้เฉยๆ: total = จำนวนทั้งหมด · parked = ที่ยังมีช่องจอดค้างอยู่ (จะไม่ขึ้นผังหลังสลับ)
+select count(*) as untagged_total, count(*) filter (where block is not null) as untagged_with_slot from public.units where site_id is null;
 
 notify pgrst, 'reload schema';
