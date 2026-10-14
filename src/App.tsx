@@ -6,7 +6,7 @@ import { Toaster } from './components/ui'
 import { SelectSiteModal } from './components/SelectSiteModal'
 import { OpsShell } from './components/OpsShell'
 import { SiteLoadGate } from './components/SiteLoadGate'
-import { useYard, useMe, isOpsOnlyRole } from './store/useYard'
+import { useYard, useMe, isOpsOnlyRole, checkUnitsMode, reloadForUnitsMode } from './store/useYard'
 import { useTrackingRows, useTracking, cloudSyncedThisSession } from './store/useTracking'
 import { isConfigured } from './lib/supabase'
 import { NYB2_LOST_LOCATION_20261011 } from './lib/restoreSets'
@@ -395,6 +395,22 @@ export default function App() {
     return () => { cancelled = true; clearTimeout(t) }
   }, [loggedInUserId, opsOnly, trackingLoaded, unitsCloudDone, currentSite, sites])
 
+  // ── สวิตช์โหมดตารางรถ (แยกข้อมูลรายยาร์ด ขั้นที่ 2): cutover แล้วเครื่องที่เปิดค้างอยู่ต้องรีเฟรช ────────
+  // เทียบกับ app_config 'units_mode' ทุก 30 วิ และตอนกลับมาเห็นหน้าแอป — เปลี่ยนแล้ว (checkUnitsMode จำโหมดใหม่ +
+  // ล้างแคชรถให้) ขึ้นป้ายให้รีเฟรช: เขียนต่อด้วยโหมดเก่าไม่ได้ (units ถูกปิดแก้) และจะไม่ไปถึงเครื่องอื่น
+  const unitsModeChanged = useYard((s) => s.unitsModeChanged)
+  useEffect(() => {
+    if (!loggedInUserId) return
+    const check = async () => {
+      if (useYard.getState().unitsModeChanged) return
+      if ((await checkUnitsMode()) === 'changed') useYard.setState({ unitsModeChanged: true })
+    }
+    const iv = setInterval(() => { void check() }, 30_000)
+    const onVis = () => { if (document.visibilityState === 'visible') void check() }
+    document.addEventListener('visibilitychange', onVis)
+    return () => { clearInterval(iv); document.removeEventListener('visibilitychange', onVis) }
+  }, [loggedInUserId])
+
   // ── realtime catch-up: a tab that slept or lost network missed events ──
   // Realtime keeps the yard plan live, but a phone in a pocket or a laptop
   // lid-closed misses everything while suspended. On waking after ≥60s (or
@@ -532,6 +548,7 @@ export default function App() {
         </OpsShell>
         <SiteLoadGate mode="banner" />
         <SelectSiteModal />
+        {unitsModeChanged && <UnitsModeNotice />}
         <Toaster />
       </>
     )
@@ -544,7 +561,29 @@ export default function App() {
       {/* หน้า loading ของยาร์ดที่เลือก — รอแถวชีต + รถในผังของยาร์ดครบก่อนเปิดตัวเลข */}
       <SiteLoadGate mode="overlay" />
       <SelectSiteModal />
+      {unitsModeChanged && <UnitsModeNotice />}
       <Toaster />
     </>
+  )
+}
+
+/** ป้ายเต็มจอเมื่อโหมดตารางรถบนคลาวด์เปลี่ยน (cutover) — นับถอยหลังแล้วรีเฟรชเอง · กดรีเฟรชเลยได้ */
+function UnitsModeNotice() {
+  const [left, setLeft] = useState(15)
+  useEffect(() => {
+    if (left <= 0) { if (!reloadForUnitsMode()) window.location.reload(); return }
+    const t = setTimeout(() => setLeft((n) => n - 1), 1000)
+    return () => clearTimeout(t)
+  }, [left])
+  return (
+    <div data-testid="units-mode-notice" className="fixed inset-0 z-[300] flex items-center justify-center p-6" style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(3px)' }}>
+      <div className="panel p-6 w-full max-w-sm text-center space-y-3">
+        <div className="text-[17px] font-bold">ระบบปรับโครงสร้างข้อมูลรถแล้ว</div>
+        <div className="text-[14px]" style={{ color: 'var(--muted)' }}>
+          ต้องรีเฟรชแอปก่อนทำงานต่อ — จะรีเฟรชเองใน {Math.max(left, 0)} วินาที (หยุดสแกน/บันทึกจนกว่าจะรีเฟรชเสร็จ)
+        </div>
+        <button className="btn btn-primary w-full" onClick={() => { if (!reloadForUnitsMode()) window.location.reload() }}>รีเฟรชเลย</button>
+      </div>
+    </div>
   )
 }

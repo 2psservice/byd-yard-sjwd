@@ -156,6 +156,18 @@ export async function idbDeleteUnits(vins: string[]): Promise<void> {
   })
 }
 
+/** ล้างแคชรถทั้งหมด — ตอนสลับโหมดตารางรถ (units ↔ yard_units) รูปแบบ/ความหมายของแถวต่างกัน */
+export async function idbClearUnits(): Promise<void> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(UNITS, 'readwrite')
+    t.objectStore(UNITS).clear()
+    t.oncomplete = () => resolve()
+    t.onerror = () => reject(t.error)
+    t.onabort = () => reject(t.error ?? new Error('idb transaction aborted'))
+  })
+}
+
 // ── visits store (แถวรอบที่ปิดแล้ว — ดู lib/visits) ────────────────────────────
 
 export async function idbGetAllVisits(): Promise<Visit[]> {
