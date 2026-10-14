@@ -13,7 +13,7 @@ import type { RawRow } from '../lib/excel'
 import type { DefectRow, TrackRow } from '../lib/excelTracking'
 import * as db from '../lib/db'
 import { useUnitsView } from './useUnitsView'
-import { idbGetAllUnits, idbPutUnits, idbDeleteUnits } from '../lib/idb'
+import { idbGetAllUnits, idbPutUnits, idbDeleteUnits, idbClearUnits } from '../lib/idb'
 import { onSync, sendSync, type MoveMsg, type MovesPayload } from '../lib/syncBus'
 import { hashPassword, verifyPassword, isHashed } from '../lib/password'
 import { resolvePart, resolveDefect } from '../lib/masterDefect'
@@ -39,6 +39,39 @@ function logMoveEvent(vin: string, by: string, from: string, to: string): void {
   import('./useTracking')
     .then((m) => m.useTracking.getState().appendHistory(vin, { at: Date.now(), by, field: 'Location', from, to }))
     .catch(() => {})
+}
+
+// ── แยกข้อมูลรายยาร์ด ขั้นที่ 2: โหมดตารางรถบนผัง (สวิตช์ app_config 'units_mode') ───────────────
+// 'units' (เดิม) หรือ 'yard_units' (1 แถวต่อ ยาร์ด+VIN) — ตั้งจากค่าที่จำไว้ในเครื่องตั้งแต่โหลดโมดูล (ก่อนอ่าน/เขียนรถใด ๆ)
+// แล้วเทียบกับคลาวด์ตอนเริ่มและทุก ~30 วิ: ต่างกัน = จำโหมดใหม่ + ล้างแคชรถ + รีโหลดแอป (ไม่สลับสดกลางทาง)
+const UNITS_MODE_KEY = 'sjwd-units-mode'
+function persistedUnitsMode(): db.UnitsMode {
+  try { return localStorage.getItem(UNITS_MODE_KEY) === 'yard_units' ? 'yard_units' : 'units' } catch { return 'units' }
+}
+db.setUnitsMode(persistedUnitsMode())
+let unitsModeChecked = false
+/**
+ * เทียบโหมดกับสวิตช์บนคลาวด์ — 'same' ตรงกัน · 'changed' ต่างกัน (จำโหมดใหม่ + ล้างแคชรถแล้ว รอรีโหลด) ·
+ * 'unknown' อ่านไม่ได้ (ออฟไลน์/ล้ม — ใช้โหมดที่จำไว้ต่อ ไม่เดา)
+ */
+export async function checkUnitsMode(): Promise<'same' | 'changed' | 'unknown'> {
+  const flag = await db.fetchUnitsModeFlag()
+  if (flag === undefined) return 'unknown'
+  unitsModeChecked = true
+  const cloud: db.UnitsMode = flag ?? 'units'
+  if (cloud === db.getUnitsMode()) return 'same'
+  try { localStorage.setItem(UNITS_MODE_KEY, cloud) } catch { /* เก็บไม่ได้ — ตัวกันรีโหลดวนอยู่ใน reloadForUnitsMode */ }
+  await idbClearUnits().catch(() => {})
+  return 'changed'
+}
+/** รีโหลดแอปเพื่อใช้โหมดใหม่ — ครั้งเดียวต่อเซสชัน (ถ้าเครื่องจำโหมดไม่ได้ จะไม่รีโหลดวน) คืน false = รีโหลดไม่ได้ (ให้แสดงป้ายแทน) */
+export function reloadForUnitsMode(): boolean {
+  try {
+    if (sessionStorage.getItem('sjwd-units-mode-reload')) return false
+    sessionStorage.setItem('sjwd-units-mode-reload', '1')
+  } catch { return false }
+  if (typeof window !== 'undefined') window.location.reload()
+  return true
 }
 
 /** Append a damage audit line to the car's tracking-row history so it shows in
@@ -318,6 +351,8 @@ interface YardState {
    *  while its yard-plan positions quietly drifted out of sync with other
    *  devices. */
   unitsRealtimeConnected: boolean
+  /** สวิตช์ units_mode บนคลาวด์เปลี่ยนแล้ว (ตอน cutover) — ต้องรีเฟรชแอป ห้ามสแกนต่อด้วยโหมดเก่า */
+  unitsModeChanged: boolean
   subscribeRealtime: () => void
   unsubscribeRealtime: () => void
   // --- co-inspection defects ---
@@ -737,6 +772,11 @@ export const useYard = create<YardState>()(
         db.deleteSite(id).catch((e) => console.error('[db] removeSite', e))
       },
       setCurrentSite: (id) => {
+        // โหมด yard_units: รถ VIN เดียวกันอยู่ได้หลายยาร์ด (คนละแถว) แต่ในเครื่องคีย์ด้วย VIN อย่างเดียว — ทิ้งรถของยาร์ดอื่นก่อนโหลดยาร์ดใหม่
+        // ไม่งั้นตำแหน่งสดของยาร์ดเก่าอาจถูกเก็บไว้ทับรถคันเดียวกันของยาร์ดใหม่ (keepNewerPlacement)
+        if (db.getUnitsMode() === 'yard_units' && get().currentSite !== id) {
+          set((s) => ({ units: Object.fromEntries(Object.entries(s.units).filter(([, u]) => !u.site || u.site === id)) }))
+        }
         set({ currentSite: id, siteModalOpen: false })
         // units/trailers are loaded per-site → fetch the newly selected yard
         get().loadFromSupabase().catch((e) => console.error('[db] setCurrentSite load', e))
@@ -1350,6 +1390,10 @@ export const useYard = create<YardState>()(
         const before = get().units
         const units = { ...before }
         const changed: Unit[] = []
+        // โหมด yard_units: ไม่เปลี่ยนป้ายแถวเดิม — ปิดแถวของยาร์ดต้นทาง (DEPARTED ล้างช่อง ครั้งเดียวแล้วไม่มีใครเขียนอีก)
+        // แล้วเปิดแถวใหม่ที่ยาร์ดปลายทาง (EXPECTED) เป็นสองแถวของ (ยาร์ด, VIN) คนละแถว ไม่เขียนทับกัน
+        const yardRows = db.getUnitsMode() === 'yard_units'
+        const closed: Unit[] = []
         for (const vin of vins) {
           const u = before[vin]
           if (!u || u.site === siteId) continue
@@ -1361,7 +1405,14 @@ export const useYard = create<YardState>()(
           void block; void row; void slot; void assignedAt; void drivingStartedAt; void parkedAt; void driver
           void gateInAt; void gateInBy; void inspected; void planMode; void lot; void lastPos
           const next: Unit = { ...rest, site: siteId, status: 'EXPECTED', trailer: 0 }
-          units[vin] = next
+          if (yardRows) {
+            const left: Unit = { ...u, status: 'DEPARTED', block: undefined, row: undefined, slot: undefined, assignedAt: undefined, drivingStartedAt: undefined, driver: undefined }
+            if (u.site) closed.push(left)
+            // สำเนาในเครื่องตามยาร์ดที่เครื่องนี้ดูอยู่: ดูต้นทางอยู่ = รถออกแล้ว · นอกนั้น = รถของปลายทางที่รอรับ
+            units[vin] = u.site && get().currentSite === u.site ? left : next
+          } else {
+            units[vin] = next
+          }
           changed.push(next)
         }
         if (!changed.length) return
@@ -1373,7 +1424,7 @@ export const useYard = create<YardState>()(
           for (const c of changed) if (pendingPlacements[c.vin]) { delete pendingPlacements[c.vin]; dropped = true }
           return dropped ? { units, pendingPlacements } : { units }
         })
-        db.upsertUnits(changed).catch((e) => console.error('[db] moveUnitsToSite', e))
+        db.upsertUnits(yardRows ? [...closed, ...changed] : changed).catch((e) => console.error('[db] moveUnitsToSite', e))
       },
 
       resetParking: (vin) => {
@@ -1873,6 +1924,7 @@ export const useYard = create<YardState>()(
 
       unitsCloudDone: false,
       unitsRealtimeConnected: false,
+      unitsModeChanged: false,
 
       // ── boot cache: the yard plan's cars, straight from IndexedDB ─────────
       // Fills only VINs the store doesn't hold yet (an in-memory copy — a
@@ -1898,6 +1950,11 @@ export const useYard = create<YardState>()(
       // ── Supabase ───────────────────────────────────────────────────────────
       loadFromSupabase: async () => {
         if (!db.isConfigured()) return
+        // ครั้งแรกของเซสชัน: เทียบสวิตช์ units_mode ก่อนโหลดรถ — ต่างจากที่เครื่องจำไว้ (เพิ่งผ่าน cutover) = รีโหลดให้ใช้โหมดใหม่
+        if (!unitsModeChecked && (await checkUnitsMode()) === 'changed') {
+          if (!reloadForUnitsMode()) set({ unitsModeChanged: true })
+          return
+        }
         // 1) sites: the cloud is the source of truth so add / edit / delete on one
         //    device propagates to the others. Seed local defaults only on first run.
         const cloudSites = await db.fetchSites()
@@ -2053,11 +2110,15 @@ export const useYard = create<YardState>()(
           .channel('units_changes')
           .on(
             'postgres_changes',
-            { event: '*', schema: 'public', table: 'units' },
+            { event: '*', schema: 'public', table: db.unitsTable() },
             (payload) => {
+              const yardRows = db.getUnitsMode() === 'yard_units'
               if (payload.eventType === 'DELETE') {
                 const vin = (payload.old as { vin?: string })?.vin
                 if (!vin) return
+                // โหมด yard_units: การลบแถวของยาร์ดอื่น ไม่ใช่ของเรา (รถ VIN เดียวกันที่ยาร์ดนี้เป็นอีกแถว)
+                const oldSite = (payload.old as { site_id?: string })?.site_id
+                if (yardRows && oldSite && get().currentSite && oldSite !== get().currentSite) return
                 unitTs.delete(vin)
                 set((s) => { if (!s.units[vin]) return s; const units = { ...s.units }; delete units[vin]; return { units } })
                 return
@@ -2068,6 +2129,8 @@ export const useYard = create<YardState>()(
               // channel received every yard's events — injecting other sites' units
               // (each with damages:[]) bloated localStorage toward its quota
               const sid = get().currentSite
+              // โหมด yard_units: แถวของยาร์ดอื่นไม่ใช่รถของยาร์ดนี้เสมอ — แม้ VIN เดียวกันจะอยู่ในเครื่อง (ห้ามเขียนทับ)
+              if (yardRows && sid && r.site_id !== sid) return
               if (sid && r.site_id && r.site_id !== sid && !get().units[r.vin]) return
               const ts = r.updated_at ? new Date(r.updated_at).getTime() : Date.now()
               if ((unitTs.get(r.vin) ?? 0) >= ts) return // stale / self-echo
@@ -2435,6 +2498,8 @@ let unitsIdbLastRef: Record<string, Unit> | null = null
 let unitsIdbLastKeys: Set<string> | null = null
 function flushUnitsIdb() {
   if (unitsIdbTimer) { clearTimeout(unitsIdbTimer); unitsIdbTimer = null }
+  // สวิตช์โหมดตารางรถเปลี่ยนแล้ว (รอรีเฟรช): สำเนารถในเครื่องเป็นของโหมดเก่า ห้ามเขียนกลับลงแคชหลังล้างไปแล้ว
+  if (useYard.getState().unitsModeChanged) return
   const units = useYard.getState().units
   // in-yard only: DEPARTED cars are excluded from the cache — and by leaving
   // them out of `keys`, any departed car still sitting in the IDB store from
@@ -2451,6 +2516,9 @@ function flushUnitsIdb() {
   }
   unitsIdbLastKeys = keys
 }
+// ยาร์ดที่เลือกอยู่ → db (โหมด yard_units ใช้กรอง/เขียนแถวของยาร์ดนี้เมื่อผู้เรียกไม่ได้ระบุ)
+db.setUnitsSite(useYard.getState().currentSite)
+useYard.subscribe((s, prev) => { if (s.currentSite !== prev.currentSite) db.setUnitsSite(s.currentSite) })
 useYard.subscribe((s) => {
   if (s.units === unitsIdbLastRef) return
   unitsIdbLastRef = s.units

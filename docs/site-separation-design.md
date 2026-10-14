@@ -136,7 +136,12 @@ Relocation เขียนเฉพาะ `yard_units` ของยาร์ด�
 → merge build ใหม่ (เวอร์ชันข้อมูลขั้นต่ำ เครื่องเก่าถูกบังคับรีเฟรช) → ทุกเครื่องล้าง IDB แล้วโหลดเฉพาะยาร์ดที่เลือก → ตรวจยอด In Yard/ผัง/คิวงานต่อยาร์ดให้เท่าก่อน cutover
 ย้อนกลับ: deploy build เก่า (อ่าน `units` เดิมที่ไม่ถูกแตะ) — ข้อมูลที่เขียนลง `yard_units` หลัง cutover ไม่ตามไป
 
-ไฟล์ร่าง: `supabase-yard-units.sql` (ตารางคัดชนิดจาก `units` จริง · PK · FK · index · trigger updated_at · RLS · realtime · backfill · ตรวจยอด)
+ไฟล์ (ทดสอบบน Postgres 16 จำลองแล้ว: รันซ้ำได้ · ตรวจยอด · ตัวปิดแก้ units · FK · cascade · ย้อนกลับ): `supabase-yard-units.sql` (เตรียม: ตารางคัดชนิดจาก `units` จริง ·
+PK · FK · index · trigger updated_at · RLS · realtime · backfill · ตรวจยอด) · `supabase-yard-units-cutover.sql` (คัดลอกล่าสุด + ตรวจยอด) ·
+`supabase-yard-units-flip.sql` (ปิดแก้ `units` + เปิดสวิตช์) · `supabase-yard-units-rollback.sql` · คู่มือรันจริง: `docs/cutover-step2.md`
+
+**สวิตช์โหมด (ทำจริงแล้วในโค้ด):** `app_config` id `units_mode` = `{"mode":"yard_units"}` — ไม่มีแถว/`units` = โหมดเดิมทุกบรรทัด · แอปจำโหมดไว้ในเครื่อง
+(`localStorage sjwd-units-mode`) เทียบกับคลาวด์ตอนเริ่มและทุก 30 วิ: ต่างกัน = จำโหมดใหม่ + ล้างแคชรถ + รีโหลด (ไม่สลับสดกลางทาง) · ทำให้ deploy แอปก่อนได้โดยไม่เปลี่ยนพฤติกรรม แล้ว cutover = รัน SQL
 
 ## 6. ต้องตัดสินใจก่อนเริ่มขั้น 1
 

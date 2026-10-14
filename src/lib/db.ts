@@ -66,12 +66,80 @@ async function bulkUpsert(table: string, rows: any[], chunkSize: number, onConfl
   }
 }
 
+// ── แยกข้อมูลรายยาร์ด ขั้นที่ 2: โหมดตารางรถบนผัง ─────────────────────────────────────────
+// 'units'      = เดิม: 1 แถวต่อ VIN (ย้ายยาร์ด = เปลี่ยนป้าย site_id)
+// 'yard_units' = ใหม่: 1 แถวต่อ (ยาร์ด, VIN) — รถที่ผ่านหลายยาร์ดมีหลายแถว ไม่เขียนทับกัน
+// สลับด้วยสวิตช์ app_config 'units_mode' ตอน cutover (supabase-yard-units-cutover.sql) ก่อนสลับ
+// ทุกอย่างทำงานเหมือนเดิมทุกบรรทัด · ดู docs/site-separation-design.md §5.1 และ docs/cutover-step2.md
+export type UnitsMode = 'units' | 'yard_units'
+let unitsMode: UnitsMode = 'units'
+/** ยาร์ดที่เลือกอยู่ (store ตั้งให้) — โหมด yard_units ใช้เมื่อผู้เรียกไม่ได้ระบุยาร์ด */
+let unitsSite: string | null = null
+/** VIN ที่รู้ว่ามีแถวทะเบียนรถ (units) แล้ว — แถว yard_units ทุกแถวที่อ่านเจอบอกเป็นนัยว่ามี (FK) */
+const masterKnown = new Set<string>()
+export const getUnitsMode = (): UnitsMode => unitsMode
+export function setUnitsMode(m: UnitsMode): void { unitsMode = m }
+export function setUnitsSite(siteId: string | null): void { unitsSite = siteId }
+const yardMode = () => unitsMode === 'yard_units'
+/** ตารางที่เก็บรถบนผัง ณ โหมดปัจจุบัน */
+export const unitsTable = () => (yardMode() ? 'yard_units' : 'units')
+/**
+ * ยาร์ดที่ใช้กรองการอ่าน/เขียน — โหมดเดิมกรองเฉพาะเมื่อผู้เรียกระบุ (เหมือนเดิม) · โหมด yard_units ต้องมียาร์ดเสมอ
+ * (ผู้เรียกระบุ > ยาร์ดที่เลือกอยู่) ถ้าไม่มี = ไม่อ่าน/ไม่เขียนอะไร ไม่ดึง "ทุกยาร์ด" มาปนกัน
+ */
+function unitsScope(siteId?: string | null): { site: string | null; none: boolean } {
+  if (!yardMode()) return { site: siteId ?? null, none: false }
+  const site = siteId ?? unitsSite
+  return { site, none: !site }
+}
+
+/** สวิตช์จากคลาวด์: 'units' | 'yard_units' · null = ยังไม่ได้ตั้ง (ใช้ 'units') · undefined = อ่านไม่ได้ (ออฟไลน์/ล้ม) */
+export async function fetchUnitsModeFlag(): Promise<UnitsMode | null | undefined> {
+  if (!isConfigured()) return undefined
+  const { data, error } = await supabase.from('app_config').select('value').eq('id', 'units_mode').maybeSingle()
+  if (error) { if (error.code !== '42P01') console.error('[db] fetchUnitsModeFlag', error); return error.code === '42P01' ? null : undefined }
+  const m = (data?.value as { mode?: string } | null | undefined)?.mode
+  return m === 'yard_units' ? 'yard_units' : m === 'units' ? 'units' : null
+}
+
+/**
+ * โหมด yard_units: ทะเบียนรถ (units) ต้องมีแถวของ VIN ก่อนเขียน yard_units (FK) — เพิ่มเฉพาะคันที่ยังไม่มี
+ * (ignore-duplicates = ON CONFLICT DO NOTHING ไม่แก้ของเดิม ไม่ชน trigger ปิดแก้ units ไม่ปล่อย realtime)
+ * คันที่อ่านเจอจาก yard_units อยู่ใน masterKnown แล้ว จึงแทบไม่มีคำขอเพิ่ม
+ */
+async function ensureMasters(units: Unit[]): Promise<void> {
+  const seen = new Set<string>()
+  const rows: Record<string, unknown>[] = []
+  for (const u of units) {
+    if (masterKnown.has(u.vin) || seen.has(u.vin)) continue
+    seen.add(u.vin)
+    const r = unitToRow(u) as Record<string, unknown>
+    for (const c of PLACEMENT_COLS) delete r[c] // ทะเบียนรถไม่เก็บตำแหน่ง (ของยาร์ดล้วน ๆ)
+    rows.push(r)
+  }
+  if (!rows.length) return
+  for (let i = 0; i < rows.length; i += 200) {
+    await withRetry(() => supabase.from('units').upsert(rows.slice(i, i + 200), { onConflict: 'vin', ignoreDuplicates: true }))
+  }
+  for (const v of seen) masterKnown.add(v)
+}
+/** เขียน yard_units ได้เฉพาะแถวที่มียาร์ด (site_id NOT NULL) */
+function yardRows(units: Unit[]): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = []
+  for (const u of units) {
+    const r = unitToRow(u) as Record<string, unknown>
+    if (!r.site_id) { console.error('[db] yard_units skip — unit has no yard', u.vin); continue }
+    out.push(r)
+  }
+  return out
+}
+
 // ── domain → row ─────────────────────────────────────────────────────────
 
 function unitToRow(u: Unit): Omit<DbUnit, 'updated_at'> {
   return {
     vin:               u.vin,
-    site_id:           u.site ?? null,
+    site_id:           u.site ?? (yardMode() ? unitsSite : null),
     model:             u.model,
     model_name:        u.modelName,
     variant:           u.variant ?? null,
@@ -161,6 +229,7 @@ export function rowToDamage(r: DbDamage): Damage {
 /** Convert a units row to the domain type. Damages are passed in separately so
  *  realtime payloads (which carry no joined damages) can reuse this. */
 export function parseUnitRow(r: DbUnit, damages: Damage[] = []): Unit {
+  if (unitsMode === 'yard_units') masterKnown.add(r.vin) // แถวยาร์ดมีได้เพราะมีทะเบียนรถ (FK)
   return {
     vin:              r.vin,
     site:             r.site_id           ?? undefined,
@@ -193,7 +262,9 @@ export function parseUnitRow(r: DbUnit, damages: Damage[] = []): Unit {
 }
 
 function rowToUnit(r: DbUnitWithDamages): Unit {
-  return parseUnitRow(r, (r.damages ?? []).map(rowToDamage))
+  // โหมด yard_units: damages ซ้อนอยู่ใต้ทะเบียนรถ (yard_units → units → damages) · มี units ซ้อน = มีทะเบียนแน่
+  const nested = (r as { units?: { damages?: DbDamage[] } | null }).units
+  return parseUnitRow(r, (r.damages ?? nested?.damages ?? []).map(rowToDamage))
 }
 
 // ── unit operations ───────────────────────────────────────────────────────
@@ -210,12 +281,13 @@ function rowToUnit(r: DbUnitWithDamages): Unit {
 const DAMAGE_LIGHT_COLS = 'id, vin, area, type, severity, note, remark, area_th, item_th, recorded_at, recorded_by, source, station, item, category_ng, category_repair, incharge, status_repair, repair_date, repaired_by, repair_history'
 const DAMAGE_LIGHT_COLS_BASIC = 'id, vin, area, type, severity, note, recorded_at, recorded_by, source, station, item, category_ng, category_repair, incharge, status_repair, repair_date, repaired_by, repair_history'
 export const UNITS_WITH_LIGHT_DAMAGES = `*, damages(${DAMAGE_LIGHT_COLS})`
-const UNITS_WITH_LIGHT_DAMAGES_BASIC = `*, damages(${DAMAGE_LIGHT_COLS_BASIC})`
+/** select ของรถ + defect แบบเบา: โหมดเดิม embed damages จาก units ตรง ๆ · โหมด yard_units ผ่านทะเบียนรถ (FK vin) */
+const unitsWithDamages = (damageCols: string) => (yardMode() ? `*, units(damages(${damageCols}))` : `*, damages(${damageCols})`)
 /** run a units query with light damages, falling back to the basic column set
  *  ONLY on a missing-column error (an older database) */
 async function selectUnitsLight(build: (cols: string) => any): Promise<{ data: any; error: any }> {
-  let res = await build(UNITS_WITH_LIGHT_DAMAGES)
-  if (res.error && isMissingColumn(res.error)) res = await build(UNITS_WITH_LIGHT_DAMAGES_BASIC)
+  let res = await build(unitsWithDamages(DAMAGE_LIGHT_COLS))
+  if (res.error && isMissingColumn(res.error)) res = await build(unitsWithDamages(DAMAGE_LIGHT_COLS_BASIC))
   return res
 }
 
@@ -224,12 +296,19 @@ async function selectUnitsLight(build: (cols: string) => any): Promise<{ data: a
  *  a query error so the caller can tell "offline" apart from "not found".
  *  Damages come WITHOUT photos (see DAMAGE_LIGHT_COLS); a screen that shows a
  *  car's photos asks for them separately (fetchDamagePhotosByVins). */
-export async function fetchUnitsByVins(vins: string[]): Promise<Unit[]> {
+export async function fetchUnitsByVins(vins: string[], siteId?: string | null): Promise<Unit[]> {
   if (!isConfigured() || !vins.length) return []
+  // โหมด yard_units: เฉพาะแถวของยาร์ดที่ระบุ/ที่เลือกอยู่ (รถ VIN เดียวกันที่ยาร์ดอื่นเป็นอีกแถว ไม่ปน)
+  const scope = yardMode() ? unitsScope(siteId) : null
+  if (scope?.none) return []
   const out: Unit[] = []
   for (let i = 0; i < vins.length; i += 200) {
     const slice = vins.slice(i, i + 200)
-    const { data, error } = await selectUnitsLight((cols) => supabase.from('units').select(cols).in('vin', slice))
+    const { data, error } = await selectUnitsLight((cols) => {
+      let q = supabase.from(unitsTable()).select(cols).in('vin', slice)
+      if (scope?.site) q = (q as any).eq('site_id', scope.site)
+      return q
+    })
     if (error) { console.error('[db] fetchUnitsByVins', error); throw error }
     for (const r of (data ?? []) as DbUnitWithDamages[]) out.push(rowToUnit(r))
   }
@@ -267,9 +346,11 @@ export async function fetchDamagePhotosByVins(vins: string[]): Promise<Map<strin
  */
 export async function fetchUnitsInLane(siteId: string | null, slot: number): Promise<Unit[]> {
   if (!isConfigured() || !slot) return []
+  const scope = unitsScope(siteId)
+  if (scope.none) return []
   const { data, error } = await selectUnitsLight((cols) => {
-    let q = supabase.from('units').select(cols).eq('slot', slot)
-    if (siteId) q = q.eq('site_id', siteId)
+    let q = supabase.from(unitsTable()).select(cols).eq('slot', slot)
+    if (scope.site) q = q.eq('site_id', scope.site)
     return q
   })
   if (error) { console.error('[db] fetchUnitsInLane', error); throw error }
@@ -302,6 +383,9 @@ const PLACEMENT_SELECT = 'vin, site_id, model, model_name, color, color_hex, sta
  */
 export async function fetchUnitPlacements(siteId?: string | null, onPage?: (units: Unit[]) => void): Promise<Unit[]> {
   if (!isConfigured()) return []
+  const scope = unitsScope(siteId)
+  if (scope.none) return []
+  siteId = scope.site
   const PAGE = 1000
   const out: Unit[] = []
   // KEYSET pagination (vin > last seen), not OFFSET. This sweep runs every few
@@ -312,7 +396,7 @@ export async function fetchUnitPlacements(siteId?: string | null, onPage?: (unit
   // The loop is sequential either way, so this costs the station nothing.
   let after = ''
   for (;;) {
-    let q = supabase.from('units').select(PLACEMENT_SELECT).neq('status', 'DEPARTED')
+    let q = supabase.from(unitsTable()).select(PLACEMENT_SELECT).neq('status', 'DEPARTED')
     if (siteId) q = (q as any).eq('site_id', siteId)
     if (after) q = (q as any).gt('vin', after)
     const { data, error } = await (q as any).order('vin').limit(PAGE)
@@ -348,6 +432,9 @@ export async function fetchAllUnits(
   onPlacements?: (units: Unit[]) => void,
 ): Promise<Unit[]> {
   if (!isConfigured()) return []
+  const scope = unitsScope(siteId)
+  if (scope.none) return []
+  siteId = scope.site
   const PAGE = 500
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
   // in-yard only: the units table keeps every car that EVER passed through
@@ -357,7 +444,7 @@ export async function fetchAllUnits(
   // them (fetchUnitsByVins has no status filter).
   let total = 0
   for (let attempt = 0; ; attempt++) {
-    let head = supabase.from('units').select('vin', { count: 'exact', head: true }).neq('status', 'DEPARTED')
+    let head = supabase.from(unitsTable()).select('vin', { count: 'exact', head: true }).neq('status', 'DEPARTED')
     if (siteId) head = (head as any).eq('site_id', siteId)
     const { count, error: cErr } = await head
     if (!cErr) { total = count ?? 0; break }
@@ -368,7 +455,7 @@ export async function fetchAllUnits(
   const fetchPage = async (p: number, attempt = 0): Promise<Unit[]> => {
     // light damages (no photos) — see DAMAGE_LIGHT_COLS
     const { data, error } = await selectUnitsLight((cols) => {
-      let q = supabase.from('units').select(cols).neq('status', 'DEPARTED')
+      let q = supabase.from(unitsTable()).select(cols).neq('status', 'DEPARTED')
       if (siteId) q = (q as any).eq('site_id', siteId)
       return (q as any).order('vin').range(p * PAGE, p * PAGE + PAGE - 1)
     })
@@ -402,6 +489,13 @@ export async function fetchAllUnits(
 export async function upsertUnit(u: Unit): Promise<void> {
   if (!isConfigured()) return
   try {
+    if (yardMode()) {
+      const [row] = yardRows([u])
+      if (!row) return
+      await ensureMasters([u])
+      await withRetry(() => supabase.from('yard_units').upsert(row, { onConflict: 'site_id,vin' }))
+      return
+    }
     await withRetry(() => supabase.from('units').upsert(unitToRow(u), { onConflict: 'vin' }))
   } catch (error) {
     console.error('[db] upsertUnit', u.vin, error)
@@ -412,6 +506,12 @@ export async function upsertUnit(u: Unit): Promise<void> {
 /** บันทึกหรืออัปเดตรถหลายคันพร้อมกัน (batch) */
 export async function upsertUnits(units: Unit[], onProgress?: ChunkProgress): Promise<void> {
   if (!isConfigured() || !units.length) return
+  if (yardMode()) {
+    // เหมือนโหมดเดิม: ไม่ throw (บาร์นำเข้าต้องไปถึง 100%) — ทะเบียนรถล้ม = แถวยาร์ดจะล้มตาม FK และถูก log
+    await ensureMasters(units).catch((e) => console.error('[db] upsertUnits masters', e))
+    await bulkUpsert('yard_units', yardRows(units), 200, 'site_id,vin', 5, undefined, onProgress)
+    return
+  }
   await bulkUpsert('units', units.map(unitToRow), 200, 'vin', 5, undefined, onProgress)
 }
 
@@ -429,6 +529,13 @@ export async function upsertUnits(units: Unit[], onProgress?: ChunkProgress): Pr
 export async function upsertUnitsStrict(units: Unit[]): Promise<void> {
   if (!isConfigured() || !units.length) return
   try {
+    if (yardMode()) {
+      const rows = yardRows(units)
+      if (!rows.length) return
+      await ensureMasters(units)
+      await withRetry(() => supabase.from('yard_units').upsert(rows, { onConflict: 'site_id,vin' }))
+      return
+    }
     await withRetry(() => supabase.from('units').upsert(units.map(unitToRow), { onConflict: 'vin' }))
   } catch (error) {
     console.error('[db] upsertUnitsStrict', units.map((u) => u.vin), error)
@@ -461,12 +568,13 @@ export async function upsertUnitKeepPlacement(u: Unit): Promise<void> {
 
 export async function upsertUnitsKeepPlacement(units: Unit[], onProgress?: ChunkProgress): Promise<void> {
   if (!isConfigured() || !units.length) return
-  const rows = units.map((u) => {
-    const r = unitToRow(u) as Record<string, unknown>
+  const yard = yardMode()
+  if (yard) await ensureMasters(units).catch((e) => console.error('[db] upsertUnitsKeepPlacement masters', e))
+  const rows = (yard ? yardRows(units) : units.map((u) => unitToRow(u) as Record<string, unknown>)).map((r) => {
     for (const c of PLACEMENT_COLS) delete r[c]
     return r
   })
-  await bulkUpsert('units', rows, 200, 'vin', 5, undefined, onProgress)
+  await bulkUpsert(unitsTable(), rows, 200, yard ? 'site_id,vin' : 'vin', 5, undefined, onProgress)
 }
 
 /** Where a car stood when a move was decided, and where it should go. */
@@ -501,11 +609,15 @@ export async function updatePlacementIfUnchanged(
   guard: PlacementGuard, next: Unit,
 ): Promise<{ applied: true; transportError?: true } | { applied: false; current: { block?: string; row?: number; slot?: number } }> {
   if (!isConfigured()) return { applied: true }
+  const yard = yardMode()
+  const site = yard ? (next.site ?? unitsSite) : null
+  if (yard && !site) { console.error('[db] updatePlacementIfUnchanged — no yard', guard.vin); return { applied: true, transportError: true } }
   const row = unitToRow(next) as Record<string, unknown>
   // an absent spot is NULL in Postgres and `= NULL` never matches, so the two
   // cases need different operators — otherwise an unparked car could never be
   // placed at all, every write reading as a conflict
-  let q = supabase.from('units').update(row).eq('vin', guard.vin)
+  let q = supabase.from(unitsTable()).update(row).eq('vin', guard.vin)
+  if (site) q = q.eq('site_id', site)
   for (const [col, v] of [['block', guard.from.block], ['row', guard.from.row], ['slot', guard.from.slot]] as const) {
     q = (v === null || v === undefined || v === '' ? q.is(col, null) : q.eq(col, v as never))
   }
@@ -519,8 +631,9 @@ export async function updatePlacementIfUnchanged(
   // The car may simply have no units row yet (a placement whose first upload
   // never landed); an UPDATE can't create one, and calling that a conflict
   // would strand the car forever. Ask which it is.
-  const { data: cur, error: readErr } = await supabase
-    .from('units').select('vin, block, row, slot').eq('vin', guard.vin).maybeSingle()
+  let rq = supabase.from(unitsTable()).select('vin, block, row, slot').eq('vin', guard.vin)
+  if (site) rq = rq.eq('site_id', site)
+  const { data: cur, error: readErr } = await rq.maybeSingle()
   if (readErr) { console.error('[db] updatePlacementIfUnchanged read-back', guard.vin, readErr); return { applied: true, transportError: true } }
   if (!cur) { await upsertUnits([next]); return { applied: true } } // never existed → create it
   const c = cur as { block?: string | null; row?: number | null; slot?: number | null }
@@ -530,6 +643,12 @@ export async function updatePlacementIfUnchanged(
 /** ลบรถ (cascade → ลบ damages + trips อัตโนมัติ) */
 export async function deleteUnit(vin: string): Promise<void> {
   if (!isConfigured()) return
+  if (yardMode()) { // ลบเฉพาะแถวของยาร์ดที่เลือก — ทะเบียนรถ/defect ของรถคันนี้ยังอยู่
+    if (!unitsSite) return
+    const { error } = await supabase.from('yard_units').delete().eq('site_id', unitsSite).eq('vin', vin)
+    if (error) console.error('[db] deleteUnit', vin, error)
+    return
+  }
   const { error } = await supabase.from('units').delete().eq('vin', vin)
   if (error) console.error('[db] deleteUnit', vin, error)
 }
@@ -537,7 +656,7 @@ export async function deleteUnit(vin: string): Promise<void> {
 /** Delete ALL units (damages + trips cascade via FK). Used by "clear data". */
 export async function deleteAllUnits(): Promise<void> {
   if (!isConfigured()) return
-  const { error } = await supabase.from('units').delete().neq('vin', '')
+  const { error } = await supabase.from(unitsTable()).delete().neq('vin', '')
   if (error) console.error('[db] deleteAllUnits', error)
 }
 
@@ -546,7 +665,9 @@ export async function deleteAllUnits(): Promise<void> {
  *  deleteAllUnits wiped all five yards from one site's "clear data" button. */
 export async function deleteUnitsForSite(siteId: string): Promise<void> {
   if (!isConfigured()) return
-  const { error } = await supabase.from('units').delete().or(`site_id.eq.${siteId},site_id.is.null`)
+  const { error } = yardMode()
+    ? await supabase.from('yard_units').delete().eq('site_id', siteId)
+    : await supabase.from('units').delete().or(`site_id.eq.${siteId},site_id.is.null`)
   if (error) console.error('[db] deleteUnitsForSite', error)
 }
 

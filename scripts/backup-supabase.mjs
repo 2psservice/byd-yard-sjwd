@@ -43,6 +43,8 @@ const TABLES = [
   { name: 'visits', key: 'id' },
   { name: 'tracking_rows', key: 'vin' },
   { name: 'units', key: 'vin' },
+  // แยกข้อมูลรายยาร์ด ขั้นที่ 2 — ยังไม่มีตารางก่อนรัน supabase-yard-units.sql (ข้ามได้) · คีย์คู่ ไล่หน้าแบบ offset
+  { name: 'yard_units', key: 'vin', key2: 'site_id', optional: true },
   { name: 'damages', key: 'id', select: noPhotos ? '*' : '*', dropCols: noPhotos ? ['photo_url', 'photo_urls'] : [] },
 ]
 
@@ -94,6 +96,10 @@ async function dumpTable(t, dir) {
   for (const t of TABLES) {
     const expected = await count(t.name).catch((e) => { console.log(`  ${t.name}: นับไม่ได้ (${e.message})`); return null })
     let got = 0
+    // ตารางที่ยังไม่ถูกสร้าง (404) และเป็นตารางเสริม = ข้าม ไม่ถือว่าสำรองไม่ครบ
+    if (t.optional && expected === null) {
+      try { await fetch(`${url}/rest/v1/${t.name}?select=*&limit=1`, { headers: H }).then((r) => { if (r.status === 404) throw new Error('404') }) } catch (e) { if (String(e.message) === '404') { console.log(`  ${t.name}: ยังไม่มีตาราง — ข้าม`); summary.push({ table: t.name, expected: null, got: null, ok: true, skipped: true }); continue } }
+    }
     try { got = await dumpTable(t, dir) } catch (e) { console.log(`  ${t.name}: FAIL ${e.message}`); ok = false; summary.push({ table: t.name, expected, got: null, ok: false }); continue }
     const match = expected === null || expected === got
     if (!match) ok = false

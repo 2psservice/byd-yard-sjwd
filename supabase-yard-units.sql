@@ -63,16 +63,31 @@ begin
   end if;
 end $$;
 
--- ── 5) backfill: 1 แถวใน units → 1 แถวที่ site_id เดิม ───────────────────────────────────────
--- ข้ามแถวที่ไม่มี site_id (รถที่ไม่เคยถูกจัดให้ยาร์ดไหน — ไม่มีผังให้ขึ้น)
+-- ── 5) backfill: 1 แถวใน units → 1 แถวที่ยาร์ดของรถ ─────────────────────────────────────────
+-- ยาร์ด = units.site_id ถ้ามี · รถเก่าที่ units ไม่มีป้ายยาร์ด ใช้ป้ายจากแถวชีต (tracking_rows.site) แทน
+-- (ไม่งั้นรถกลุ่มนี้หายจากผังหลัง cutover) · ไม่มียาร์ดทั้งสองที่ = ข้าม (ไม่มีผังให้ขึ้น)
+-- สร้างคำสั่งจากรายชื่อคอลัมน์จริงของ yard_units (ตามชนิดจริงของฐาน)
 -- on conflict do nothing: ถ้าแอปเขียนแถวใหม่กว่าลงตารางไปแล้ว ไม่ทับ
-insert into public.yard_units
-select u.* from public.units u
-where u.site_id is not null
-on conflict (site_id, vin) do nothing;
+do $$
+declare cols text; sel text;
+begin
+  select string_agg(quote_ident(column_name), ', ' order by ordinal_position),
+         string_agg(case when column_name = 'site_id' then 'coalesce(u.site_id, t.site)' else 'u.' || quote_ident(column_name) end, ', ' order by ordinal_position)
+    into cols, sel
+  from information_schema.columns where table_schema = 'public' and table_name = 'yard_units' and is_generated = 'NEVER';
+  execute format(
+    'insert into public.yard_units (%s) select %s from public.units u '
+    'left join public.tracking_rows t on t.vin = u.vin and t.deleted_at is null '
+    'where coalesce(u.site_id, t.site) is not null '
+    'on conflict (site_id, vin) do nothing', cols, sel);
+end $$;
 
 -- ── 6) ตรวจยอด (อ่านอย่างเดียว) — ต้องเท่ากันทุกยาร์ดก่อนเปิดใช้ build ใหม่ ──────────────────────
--- select coalesce(u.site_id, y.site_id) as site_id, u.n as units, y.n as yard_units, u.parked as units_parked, y.parked as yard_parked
--- from (select site_id, count(*) n, count(*) filter (where block is not null) parked from public.units where site_id is not null group by 1) u
--- full join (select site_id, count(*) n, count(*) filter (where block is not null) parked from public.yard_units group by 1) y using (site_id)
--- order by 1;
+select coalesce(u.site_id, y.site_id) as site_id, u.n as units, y.n as yard_units, u.parked as units_parked, y.parked as yard_parked
+from (select coalesce(un.site_id, t.site) as site_id, count(*) n, count(*) filter (where un.block is not null) parked
+      from public.units un left join public.tracking_rows t on t.vin = un.vin and t.deleted_at is null
+      where coalesce(un.site_id, t.site) is not null group by 1) u
+full join (select site_id, count(*) n, count(*) filter (where block is not null) parked from public.yard_units group by 1) y using (site_id)
+order by 1;
+
+notify pgrst, 'reload schema';
