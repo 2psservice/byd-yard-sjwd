@@ -53,6 +53,46 @@ describe('importUnits ส่งแค่ข้อมูลรถจากไฟ�
   })
 })
 
+/**
+ * ปุ่ม Confirm Gate-in: importUnits (ลงทะเบียนรถ) แล้ว gateIn ต่อกันทันที — สองการเขียนแข่งกันถึงคลาวด์
+ * เคสจริง 15 ต.ค.: 97 คันค้าง EXPECTED + ช่อง WCL + เวลา Gate-in ว่าง (การลงทะเบียนถึงทีหลังแล้วทับ) → ไม่ขึ้น WCL
+ */
+describe('Gate-in: การลงทะเบียนรถถึงคลาวด์ทีหลังต้องไม่ทับ gateIn', () => {
+  let world: World
+  beforeEach(() => { vi.useFakeTimers(); world = new World() })
+  afterEach(() => { vi.useRealTimers() })
+
+  for (const [label, delay] of [['ลงทะเบียนถึงทีหลัง', 500], ['ลงทะเบียนถึงก่อน', 0]] as const) {
+    it(`รถใหม่ (${label}) → คลาวด์เป็นสถานะของ gateIn + มีเวลา/ผู้ Gate-in`, async () => {
+      world.registerDelayMs = delay
+      const d = await world.createDevice('gate')
+      d.yard.setState({ currentSite: 'S1', currentUser: 'บาส km', units: {} })
+      d.yard.getState().importUnits([{ vin: 'G1', model: 'SEALION 7', color: 'Grey' }])
+      d.yard.getState().gateIn('G1')
+      await world.advance(1000)
+      const c = world.cloud.get('G1')!
+      expect(c.status).not.toBe('EXPECTED')
+      expect(c.gateInAt).toBeTruthy()
+      expect(c.gateInBy).toBe('บาส km')
+      expect(c.site).toBe('S1')
+    })
+  }
+
+  it('รถที่เคยออกไปแล้ว (DEPARTED ในคลาวด์ ไม่มีในเครื่อง) กลับมา Gate-in → ไม่ค้าง EXPECTED', async () => {
+    world.registerDelayMs = 500
+    world.seedCloud(car('G2', 'B', 1, 1, { status: 'DEPARTED', block: undefined, row: undefined, slot: undefined }))
+    const d = await world.createDevice('gate')
+    d.yard.setState({ currentSite: 'S1', currentUser: 'บาส km', units: {} })
+    d.yard.getState().importUnits([{ vin: 'G2', model: 'ATTO 1', color: 'Blue' }])
+    d.yard.getState().gateIn('G2')
+    await world.advance(1000)
+    const c = world.cloud.get('G2')!
+    expect(c.status).not.toBe('EXPECTED')
+    expect(c.gateInBy).toBe('บาส km')
+    expect(c.color).toBe('Blue')
+  })
+})
+
 /** db.patchUnitsCatalog: UPDATE (ไม่ upsert) ลงตารางของโหมดปัจจุบัน — หลังสลับโหมด units ถูกปิดการแก้ */
 describe('patchUnitsCatalog', () => {
   async function load(mode: 'units' | 'yard_units') {

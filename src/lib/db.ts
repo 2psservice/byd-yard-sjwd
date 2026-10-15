@@ -582,7 +582,7 @@ export interface CatalogPatch {
   vin: string
   /** ยาร์ดของแถว (โหมด yard_units ใช้เลือกแถว) */
   site?: string
-  fields: Partial<Record<'model' | 'model_name' | 'variant' | 'color' | 'color_hex' | 'trailer' | 'lot', string | number | null>>
+  fields: Partial<Record<'model' | 'model_name' | 'variant' | 'color' | 'color_hex' | 'trailer' | 'lot' | 'site_id', string | number | null>>
 }
 
 /**
@@ -621,6 +621,27 @@ export async function patchUnitsCatalog(patches: CatalogPatch[]): Promise<void> 
     }
   }
   for (let i = 0; i < jobs.length; i += 5) await Promise.all(jobs.slice(i, i + 5).map((j) => j()))
+}
+
+/**
+ * ลงทะเบียนรถใหม่ "ถ้ายังไม่มี" (INSERT … ON CONFLICT DO NOTHING) — ห้ามทับแถวที่มีอยู่แล้ว
+ *
+ * ปุ่ม Confirm Gate-in เรียก importUnits แล้ว gateIn ต่อกันทันที สองการเขียนวิ่งพร้อมกัน: เดิม importUnits ส่ง
+ * status EXPECTED + gate_in ว่าง (ไม่แตะช่อง) ถ้าถึงคลาวด์หลัง gateIn (PARKED + WCL + เวลา) ก็ทับสถานะ/เวลาทิ้ง
+ * เหลือช่อง WCL กับ EXPECTED — รถไม่ขึ้น WCL บนจอ (15 ต.ค. 97 คัน, ราวครึ่งหนึ่งของ Gate-in วันนั้น)
+ * แบบ insert-only: ถึงก่อน = สร้างแถว แล้ว gateIn ทับตามปกติ · ถึงทีหลัง = ไม่ทำอะไร
+ */
+export async function insertUnitsIfAbsent(units: Unit[]): Promise<void> {
+  if (!isConfigured() || !units.length) return
+  const yard = yardMode()
+  if (yard) await ensureMasters(units).catch((e) => console.error('[db] insertUnitsIfAbsent masters', e))
+  const rows = yard ? yardRows(units) : units.map((u) => unitToRow(u) as Record<string, unknown>)
+  for (let i = 0; i < rows.length; i += 200) {
+    const chunk = rows.slice(i, i + 200)
+    try {
+      await withRetry(() => supabase.from(unitsTable()).upsert(chunk, { onConflict: yard ? 'site_id,vin' : 'vin', ignoreDuplicates: true }))
+    } catch (e) { console.error('[db] insertUnitsIfAbsent', e) }
+  }
 }
 
 /** Where a car stood when a move was decided, and where it should go. */
