@@ -12,4 +12,6 @@ drop trigger if exists units_frozen_guard on public.units;
 
 notify pgrst, 'reload schema';
 
--- ตรวจ: select id, value from public.app_config where id = 'units_mode';
+-- ผลตรวจ (คำสั่งสุดท้าย): ต้องได้ switch_mode = units และ units_locked = false
+select (select value ->> 'mode' from public.app_config where id = 'units_mode') as switch_mode,
+       exists (select 1 from pg_trigger where tgrelid = 'public.units'::regclass and tgname = 'units_frozen_guard' and not tgisinternal) as units_locked;
