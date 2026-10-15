@@ -21,6 +21,8 @@ export class World {
   /** ผลักการเขียนขึ้นคลาวด์ให้ช้า/ล้มเหลวได้ */
   writeLatencyMs = 0
   failWrites = false
+  /** ให้การเขียน "ลงทะเบียนรถ" (importUnits) ถึงคลาวด์ช้ากว่าการเขียนอื่น — จำลองการแข่งกันตอน Confirm Gate-in */
+  registerDelayMs = 0
   /** ความหน่วงของสาย broadcast */
   busDelayMs = 0
   private handlers = new Map<string, Map<string, Handler[]>>() // device → event → handlers
@@ -72,6 +74,31 @@ export class World {
       upsertUnitsStrict: async (units: Unit[]) => world.write(units),
       upsertUnits: async (units: Unit[]) => world.write(units),
       upsertUnit: async (u: Unit) => world.write([u]),
+      // สร้างแถวเฉพาะคันที่ยังไม่มีในคลาวด์ (เหมือน db.insertUnitsIfAbsent)
+      insertUnitsIfAbsent: async (units: Unit[]) => {
+        if (world.registerDelayMs) await new Promise<void>((r) => setTimeout(r, world.registerDelayMs))
+        await world.write(units.filter((u) => !world.cloud.has(u.vin)))
+      },
+      // ส่งทั้งแถวยกเว้นตำแหน่ง — ตำแหน่งในคลาวด์คงเดิม (เหมือน db.upsertUnitsKeepPlacement)
+      upsertUnitsKeepPlacement: async (units: Unit[]) => { if (world.registerDelayMs) await new Promise<void>((r) => setTimeout(r, world.registerDelayMs)); return world.write(units.map((u) => {
+        const cur = world.cloud.get(u.vin)
+        const { block: _b, row: _r, slot: _s, planMode: _p, assignedAt: _a, driver: _d, drivingStartedAt: _ds, parkedAt: _pa, ...rest } = u
+        return { ...rest, block: cur?.block, row: cur?.row, slot: cur?.slot, planMode: cur?.planMode, assignedAt: cur?.assignedAt, driver: cur?.driver, drivingStartedAt: cur?.drivingStartedAt, parkedAt: cur?.parkedAt } as Unit
+      })) },
+      // แก้เฉพาะข้อมูลรถจากไฟล์ของแถวที่มีอยู่ — สถานะ/ยาร์ด/ตำแหน่งในคลาวด์คงเดิม (เหมือน db.patchUnitsCatalog)
+      patchUnitsCatalog: async (patches: { vin: string; fields: Record<string, unknown> }[]) => {
+        if (world.registerDelayMs) await new Promise<void>((r) => setTimeout(r, world.registerDelayMs))
+        const map: Record<string, string> = { model: 'model', model_name: 'modelName', variant: 'variant', color: 'color', color_hex: 'colorHex', trailer: 'trailer', lot: 'lot', site_id: 'site' }
+        const next: Unit[] = []
+        for (const p of patches) {
+          const cur = world.cloud.get(p.vin)
+          if (!cur) continue // UPDATE ไม่สร้างแถวใหม่
+          const u = { ...cur } as Record<string, unknown>
+          for (const [k, v] of Object.entries(p.fields)) u[map[k]] = v ?? undefined
+          next.push(u as unknown as Unit)
+        }
+        await world.write(next)
+      },
       fetchUnitPlacements: async () => [...world.cloud.values()].map((u) => ({ ...u })),
       fetchUnitsByVins: async (vins: string[]) => vins.map((v) => world.cloud.get(v)).filter((u): u is Unit => !!u).map((u) => ({ ...u })),
       updatePlacementIfUnchanged: async (guard: { vin: string; from: { block?: string; row?: number; slot?: number } }, next: Unit) => {

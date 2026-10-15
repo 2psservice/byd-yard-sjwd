@@ -807,6 +807,8 @@ export const useYard = create<YardState>()(
         let added = 0
         let updated = 0
         const changedUnits: Unit[] = []
+        // รถที่มีอยู่แล้ว (และมียาร์ดแล้ว) → ส่งแค่ข้อมูลรถจากไฟล์ ห้ามส่งสถานะจากสำเนาในเครื่องทับคลาวด์
+        const catalogOnly: db.CatalogPatch[] = []
         const newTrailers: Trailer[] = []
         for (const r of rows) {
           if (!r.vin) continue
@@ -821,9 +823,19 @@ export const useYard = create<YardState>()(
           if (r.variant) u.variant = r.variant
           if (r.lot) u.lot = r.lot
           if (r.trailer) u.trailer = r.trailer
+          const siteWasSet = !!u.site
           if (siteId && !u.site) u.site = siteId
           units[r.vin] = u
-          changedUnits.push(u)
+          // ส่งเฉพาะช่องที่ไฟล์/ตัวซ่อมให้มาจริง — ล็อต/เทรลเลอร์ที่ไม่ได้ระบุไม่ถูกเขียนทับด้วยสำเนาในเครื่อง
+          const fields: db.CatalogPatch['fields'] = { model: u.model, model_name: u.modelName }
+          if (r.color) { fields.color = u.color; fields.color_hex = u.colorHex ?? null }
+          if (r.variant) fields.variant = u.variant ?? null
+          if (r.lot) fields.lot = u.lot ?? null
+          if (r.trailer) fields.trailer = u.trailer
+          if (!siteWasSet && u.site) fields.site_id = u.site
+          catalogOnly.push({ vin: u.vin, site: u.site, fields })
+          // รถใหม่ (หรือยังไม่มียาร์ด): สร้างแถว "ถ้ายังไม่มี" เท่านั้น — ไม่ทับ gateIn ที่ยิงตามมาติด ๆ (ดู db.insertUnitsIfAbsent)
+          if (!(existed && siteWasSet)) changedUnits.push(u)
           existed ? updated++ : added++
           if (r.trailer && !trailerNos.has(r.trailer)) {
             trailerNos.add(r.trailer)
@@ -840,7 +852,11 @@ export const useYard = create<YardState>()(
         // phone re-locates a car, so writing block/row/slot here pushed the OLD
         // position back over the new one — the "ops ตั้ง R7 แล้วรถไปโผล่ R9"
         // report. Model/colour/lot are what this call owns; position is not.
-        db.upsertUnitsKeepPlacement(changedUnits).catch((e) => console.error('[db] importUnits', e))
+        // สถานะก็เช่นกัน: สำเนาในเครื่องที่ค้างเคยเขียนรถที่ออกไปแล้วกลับเป็น EXPECTED — รถที่มีอยู่แล้วส่งแค่รุ่น/สี/ล็อต/เทรลเลอร์
+        // ลำดับ: สร้างแถวก่อน แล้วค่อยแก้รุ่น/สี (UPDATE ต้องมีแถวให้แก้) — ทั้งสองไม่ส่งสถานะ/เวลา Gate-in/ตำแหน่ง
+        db.insertUnitsIfAbsent(changedUnits)
+          .then(() => db.patchUnitsCatalog(catalogOnly))
+          .catch((e) => console.error('[db] importUnits', e))
         if (siteId && newTrailers.length) {
           Promise.all(newTrailers.map((t) => db.upsertTrailer(siteId, t)))
             .then(() => sendSync('trailers', { siteId }))

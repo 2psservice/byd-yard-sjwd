@@ -577,6 +577,73 @@ export async function upsertUnitsKeepPlacement(units: Unit[], onProgress?: Chunk
   await bulkUpsert(unitsTable(), rows, 200, yard ? 'site_id,vin' : 'vin', 5, undefined, onProgress)
 }
 
+/** ข้อมูลรถจากไฟล์ที่การนำเข้า/ตัวซ่อมรุ่น-สี เป็นเจ้าของ — ไม่มีสถานะ/ยาร์ด/ตำแหน่ง/เวลา Gate-in */
+export interface CatalogPatch {
+  vin: string
+  /** ยาร์ดของแถว (โหมด yard_units ใช้เลือกแถว) */
+  site?: string
+  fields: Partial<Record<'model' | 'model_name' | 'variant' | 'color' | 'color_hex' | 'trailer' | 'lot' | 'site_id', string | number | null>>
+}
+
+/**
+ * แก้เฉพาะข้อมูลรถจากไฟล์ของรถที่มีอยู่แล้ว (UPDATE ไม่ใช่ upsert — ไม่สร้างแถวใหม่)
+ *
+ * เดิม importUnits ส่งทั้งแถว (ยกเว้นตำแหน่ง) จากสำเนาในเครื่อง และตัวซ่อมรุ่น/สีใน App.tsx เรียกทุก 60 วิบนทุกเครื่อง
+ * สำเนาที่ค้างจึงเขียนสถานะเก่าทับคลาวด์ — 10 ต.ค. 12:42 รถ NYB2 1,066 คันถูกเขียนในวินาทีเดียว: รถที่ออกไปแล้วกลับเป็น
+ * EXPECTED, รถที่ตำแหน่งหายกลายเป็น PARKED ไม่มีช่อง. รวมคันที่ค่าเหมือนกันเป็นคำสั่งเดียว (ตัวซ่อมรุ่น/สีมักแก้ค่าเดียวกันทั้งล็อต)
+ * เขียนลงตารางของโหมดปัจจุบัน (units / yard_units) — หลังสลับโหมด units ถูกปิดการแก้
+ */
+export async function patchUnitsCatalog(patches: CatalogPatch[]): Promise<void> {
+  if (!isConfigured() || !patches.length) return
+  const yard = yardMode()
+  const groups = new Map<string, { site: string | null; fields: CatalogPatch['fields']; vins: string[] }>()
+  for (const p of patches) {
+    const site = yard ? (p.site ?? unitsSite) : null
+    if (yard && !site) { console.error('[db] patchUnitsCatalog skip — unit has no yard', p.vin); continue }
+    const key = JSON.stringify([site, Object.entries(p.fields).sort()])
+    const g = groups.get(key) ?? { site, fields: p.fields, vins: [] }
+    g.vins.push(p.vin)
+    groups.set(key, g)
+  }
+  const jobs: (() => Promise<void>)[] = []
+  for (const g of groups.values()) {
+    for (let i = 0; i < g.vins.length; i += 200) {
+      const vins = g.vins.slice(i, i + 200)
+      jobs.push(async () => {
+        try {
+          await withRetry(() => {
+            let q: any = supabase.from(unitsTable()).update(g.fields).in('vin', vins)
+            if (g.site) q = q.eq('site_id', g.site)
+            return q
+          })
+        } catch (e) { console.error('[db] patchUnitsCatalog', e) }
+      })
+    }
+  }
+  for (let i = 0; i < jobs.length; i += 5) await Promise.all(jobs.slice(i, i + 5).map((j) => j()))
+}
+
+/**
+ * ลงทะเบียนรถใหม่ "ถ้ายังไม่มี" (INSERT … ON CONFLICT DO NOTHING) — ห้ามทับแถวที่มีอยู่แล้ว
+ *
+ * ปุ่ม Confirm Gate-in เรียก importUnits แล้ว gateIn ต่อกันทันที สองการเขียนวิ่งพร้อมกัน: เดิม importUnits ส่ง
+ * status EXPECTED + gate_in ว่าง (ไม่แตะช่อง) ถ้าถึงคลาวด์หลัง gateIn (PARKED + WCL + เวลา) ก็ทับสถานะ/เวลาทิ้ง
+ * เหลือช่อง WCL กับ EXPECTED — รถไม่ขึ้น WCL บนจอ (15 ต.ค. 97 คัน, ราวครึ่งหนึ่งของ Gate-in วันนั้น)
+ * แบบ insert-only: ถึงก่อน = สร้างแถว แล้ว gateIn ทับตามปกติ · ถึงทีหลัง = ไม่ทำอะไร
+ */
+export async function insertUnitsIfAbsent(units: Unit[]): Promise<void> {
+  if (!isConfigured() || !units.length) return
+  const yard = yardMode()
+  if (yard) await ensureMasters(units).catch((e) => console.error('[db] insertUnitsIfAbsent masters', e))
+  const rows = yard ? yardRows(units) : units.map((u) => unitToRow(u) as Record<string, unknown>)
+  for (let i = 0; i < rows.length; i += 200) {
+    const chunk = rows.slice(i, i + 200)
+    try {
+      await withRetry(() => supabase.from(unitsTable()).upsert(chunk, { onConflict: yard ? 'site_id,vin' : 'vin', ignoreDuplicates: true }))
+    } catch (e) { console.error('[db] insertUnitsIfAbsent', e) }
+  }
+}
+
 /** Where a car stood when a move was decided, and where it should go. */
 export interface PlacementGuard {
   vin: string
