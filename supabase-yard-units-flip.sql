@@ -28,4 +28,6 @@ on conflict (id) do update set value = excluded.value, updated_at = now();
 
 notify pgrst, 'reload schema';
 
--- ตรวจสวิตช์: select id, value from public.app_config where id = 'units_mode';
+-- ผลตรวจ (คำสั่งสุดท้าย — Supabase SQL Editor แสดงผลเฉพาะคำสั่งสุดท้าย): ต้องได้ switch_mode = yard_units และ units_locked = true
+select (select value ->> 'mode' from public.app_config where id = 'units_mode') as switch_mode,
+       exists (select 1 from pg_trigger where tgrelid = 'public.units'::regclass and tgname = 'units_frozen_guard' and not tgisinternal) as units_locked;

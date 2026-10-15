@@ -24,12 +24,20 @@ begin
 end $$;
 
 -- ── B2) ตรวจยอด (อ่านอย่างเดียว) — ทุกแถวต้องได้ ok = true ───────────────────────────────────
-select coalesce(u.site_id, y.site_id) as site_id, u.n as units, y.n as yard_units, u.parked as units_parked, y.parked as yard_parked,
-       (u.n is not distinct from y.n and u.parked is not distinct from y.parked) as ok
-from (select site_id, count(*) n, count(*) filter (where block is not null) parked from public.units where site_id is not null group by 1) u
-full join (select site_id, count(*) n, count(*) filter (where block is not null) parked from public.yard_units group by 1) y using (site_id)
-order by 1;
+-- เป็นคำสั่งสุดท้ายของไฟล์ และรวมเป็นตารางเดียว (Supabase SQL Editor แสดงผลเฉพาะคำสั่งสุดท้าย)
+--   แถวยาร์ดทั้งหมด: units ต้องเท่ากับ yard_units (ทั้งจำนวนรถและจำนวนที่มีช่องจอด)
+--   แถวสุดท้าย "รถเก่าไม่มีป้ายยาร์ด": units = จำนวนทั้งหมดที่ไม่ถูกย้าย · units_parked = ที่ยังมีช่องจอดค้าง (จะไม่ขึ้นผังหลังสลับ)
+--   ok = true เมื่อไม่มีรถกลุ่มนี้ที่ค้างช่องจอด
 -- ถ้ามีแถวใดที่ ok = false ให้หยุด ห้ามรัน supabase-yard-units-flip.sql แล้วแจ้งผู้ดูแลระบบ
-
--- รถที่ "ไม่ถูกย้าย" (units ไม่มีป้ายยาร์ด) — ดูไว้เฉยๆ ไม่มีผลต่อ ok: untagged_with_slot = ที่ยังมีช่องจอดค้างอยู่ (จะไม่ขึ้นผังหลังสลับ)
-select count(*) as untagged_total, count(*) filter (where block is not null) as untagged_with_slot from public.units where site_id is null;
+select site_id, units, yard_units, units_parked, yard_parked, ok
+from (
+  select 1 as ord, coalesce(u.site_id, y.site_id) as site_id, u.n as units, y.n as yard_units, u.parked as units_parked, y.parked as yard_parked,
+         (u.n is not distinct from y.n and u.parked is not distinct from y.parked) as ok
+  from (select site_id, count(*) n, count(*) filter (where block is not null) parked from public.units where site_id is not null group by 1) u
+  full join (select site_id, count(*) n, count(*) filter (where block is not null) parked from public.yard_units group by 1) y using (site_id)
+  union all
+  select 2, '(รถเก่าไม่มีป้ายยาร์ด ไม่ย้าย)', count(*), 0, count(*) filter (where block is not null), 0,
+         count(*) filter (where block is not null) = 0
+  from public.units where site_id is null
+) t
+order by ord, site_id;
