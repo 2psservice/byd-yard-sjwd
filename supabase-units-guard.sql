@@ -14,7 +14,7 @@
 -- ไม่กระทบทางปกติ: Gate-out (→ DEPARTED) · ยกเลิกขับ / Gate-in (→ GATE_IN / PARKED) · ย้ายยาร์ดจริง (site_id เปลี่ยน)
 --   · นำเข้ารถรอบใหม่ที่ยาร์ดเดิม (imported_at ใหม่กว่า) · ลบรถ · เพิ่มรถใหม่ (INSERT ไม่ผ่าน trigger นี้)
 -- ทำไม "คงค่าเดิม" ไม่ใช่ error: แอปเขียนเป็นก้อนละ 200 คัน — error คันเดียวทำให้ทั้งก้อนล้ม (รวมคันที่ถูกต้อง)
--- ลำดับ trigger: ชื่อ units_guard_* ทำงานก่อน units_touch_updated_at (เรียงตามชื่อ) → updated_at ยังขยับ
+-- ลำดับ trigger: ชื่อ units_guard_* ทำงานก่อน units_updated_at / units_touch_updated_at (เรียงตามชื่อ) → updated_at ยังขยับ
 --   ทำให้ realtime ส่ง "ค่าที่ถูก" กลับไปแก้สำเนาของเครื่องที่เขียนผิด
 --
 -- ใช้เมื่อไหร่ (14 ต.ค.): หลัง cutover ขั้น 2 (supabase-yard-units-flip.sql) ตาราง units ถูกปิดการแก้ทั้งหมดด้วย
@@ -27,7 +27,7 @@
 --   ขั้นที่ 4 ดู log · ถอนกลับอยู่ท้ายไฟล์
 
 -- ── ขั้นที่ 1: ตรวจ ───────────────────────────────────────────────────────────────
--- 1a) trigger ที่มีบนตาราง units (ควรเห็น units_touch_updated_at; ถ้าไม่มี ให้รัน supabase-units-updated-at.sql ก่อน)
+-- 1a) trigger ที่มีบนตาราง units (ควรเห็น units_updated_at หรือ units_touch_updated_at; ถ้าไม่มี ให้รัน supabase-units-updated-at.sql ก่อน)
 select tgname, pg_get_triggerdef(oid) as definition
 from pg_trigger
 where tgrelid = 'public.units'::regclass and not tgisinternal;

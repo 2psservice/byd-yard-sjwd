@@ -16,7 +16,7 @@
 
 ### ☐ ขั้นที่ 1 — ตรวจ (อ่านอย่างเดียว)
 คัดลอกส่วน `ขั้นที่ 1` (คำสั่ง 1a) → Run
-- ✅ ต้องเห็นแถว `units_touch_updated_at`
+- ✅ ต้องเห็น trigger ที่ขยับ updated_at — ชื่อ `units_touch_updated_at` หรือ `units_updated_at` (ฐานข้อมูลจริงใช้ชื่อหลัง)
 - ❌ ถ้าไม่เห็น → **หยุด** แจ้งกลับ (ต้องรัน `supabase-units-updated-at.sql` ก่อน)
 - 📸 ถ่ายภาพผล
 
