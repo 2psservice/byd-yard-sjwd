@@ -7,11 +7,13 @@ insert into public.app_config (id, value, updated_at)
 values ('units_mode', '{"mode":"units"}'::jsonb, now())
 on conflict (id) do update set value = excluded.value, updated_at = now();
 
--- 2) เปิดให้แก้ units ได้อีก
+-- 2) เปิดให้แก้/ลบ units ได้อีก
 drop trigger if exists units_frozen_guard on public.units;
+drop trigger if exists units_frozen_guard_delete on public.units;
 
 notify pgrst, 'reload schema';
 
--- ผลตรวจ (คำสั่งสุดท้าย): ต้องได้ switch_mode = units และ units_locked = false
+-- ผลตรวจ (คำสั่งสุดท้าย): ต้องได้ switch_mode = units, units_locked = false และ units_delete_locked = false
 select (select value ->> 'mode' from public.app_config where id = 'units_mode') as switch_mode,
-       exists (select 1 from pg_trigger where tgrelid = 'public.units'::regclass and tgname = 'units_frozen_guard' and not tgisinternal) as units_locked;
+       exists (select 1 from pg_trigger where tgrelid = 'public.units'::regclass and tgname = 'units_frozen_guard' and not tgisinternal) as units_locked,
+       exists (select 1 from pg_trigger where tgrelid = 'public.units'::regclass and tgname = 'units_frozen_guard_delete' and not tgisinternal) as units_delete_locked;
