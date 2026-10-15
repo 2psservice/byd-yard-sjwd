@@ -21,8 +21,9 @@
 --   units_frozen_guard อยู่แล้ว — ไฟล์นี้ "ไม่จำเป็น" · รันเฉพาะเมื่อยังไม่สลับ / เลื่อนวันสลับ / หรือย้อนกลับ
 --   (supabase-yard-units-rollback.sql) แล้วกลับมาใช้ units — อยู่ร่วมกับ units_frozen_guard ได้ (frozen ทำงานก่อนตามชื่อ)
 --
--- วิธีใช้: Supabase Dashboard → SQL Editor — รันทีละขั้น
---   ขั้นที่ 1 ตรวจ (อ่านอย่างเดียว) · ขั้นที่ 2 ติดตั้ง (รันซ้ำได้) · ขั้นที่ 3 ทดสอบใน transaction แล้ว rollback
+-- วิธีใช้: Supabase Dashboard → SQL Editor — รันทีละขั้น (คู่มือ: docs/units-guard-runbook.md)
+--   ⚠ ห้ามรันทั้งไฟล์ในครั้งเดียว: ขั้นที่ 3 จบด้วย error โดยตั้งใจ อาจย้อนการติดตั้งของขั้นที่ 2 ไปด้วย
+--   ขั้นที่ 1 ตรวจ (อ่านอย่างเดียว) · ขั้นที่ 2 ติดตั้ง (รันซ้ำได้) · ขั้นที่ 3 ทดสอบ (ย้อนกลับเองทั้งหมด)
 --   ขั้นที่ 4 ดู log · ถอนกลับอยู่ท้ายไฟล์
 
 -- ── ขั้นที่ 1: ตรวจ ───────────────────────────────────────────────────────────────
@@ -101,30 +102,52 @@ create trigger units_guard_stale_write
   for each row
   execute function public.units_guard_stale_write();
 
--- ── ขั้นที่ 3: ทดสอบ (ไม่เปลี่ยนข้อมูลจริง — ทุกอย่าง rollback) ───────────────────────────
--- เปลี่ยน VIN ด้านล่างเป็นรถที่ "จอดอยู่ มีตำแหน่ง" หนึ่งคัน และรถที่ "DEPARTED" หนึ่งคัน ที่ยาร์ดเดียวกัน
-begin;
-  -- ก) จำลองตัวกวาดเก่า → ต้องคงตำแหน่งเดิม (คาด: status เดิม, block ไม่ว่าง)
-  update public.units set status = 'EXPECTED', block = null, "row" = null, slot = null
-  where vin = 'VIN_ที่จอดอยู่';
-  select vin, status, block, "row", slot from public.units where vin = 'VIN_ที่จอดอยู่';
+-- ── ขั้นที่ 3: ทดสอบ (ไม่เปลี่ยนข้อมูลจริง) ─────────────────────────────────────────────
+-- บล็อกเดียว: ลองเขียน 4 แบบ ตรวจผล แล้ว "จบด้วย error เสมอ" เพื่อให้ฐานข้อมูลย้อนทุกอย่างกลับเอง (รวม log ที่ทดสอบ)
+-- ผลอยู่ในข้อความ error: ต้องขึ้น "ผลทดสอบ: ผ่านครบ 5/5" — ถ้าขึ้น "ไม่ผ่าน" ให้ส่งภาพมา
+-- VIN ตัวอย่าง (NYB2, ตรวจ 15 ต.ค.): v_parked = จอดอยู่ S/2/22 · v_departed = ออกแล้ว (DEPARTED)
+-- เปลี่ยนเป็นคันอื่นได้: คันแรกต้องจอดอยู่ (มี block) · คันที่สองต้อง DEPARTED
+do $$
+declare
+  v_parked   text := 'LC0CH6CB8T0128132';
+  v_departed text := 'LC0CE4CB9T4321198';
+  r record;
+  n_log int;
+  ok int := 0;
+  msg text := '';
+begin
+  select status, block into r from public.units where vin = v_parked;
+  if r.block is null then raise exception 'ตั้งค่าไม่ถูก: % ไม่มีตำแหน่ง — เลือกคันที่จอดอยู่', v_parked; end if;
+  select status into r from public.units where vin = v_departed;
+  if r.status is distinct from 'DEPARTED' then raise exception 'ตั้งค่าไม่ถูก: % ไม่ใช่ DEPARTED', v_departed; end if;
 
-  -- ข) Gate-out ปกติ → ต้องผ่าน (คาด: DEPARTED, block ว่าง)
-  update public.units set status = 'DEPARTED', block = null, "row" = null, slot = null
-  where vin = 'VIN_ที่จอดอยู่';
-  select vin, status, block from public.units where vin = 'VIN_ที่จอดอยู่';
+  -- ก) ตัวกวาดเก่า: จอดอยู่ → EXPECTED ไม่มีตำแหน่ง ที่ยาร์ดเดิม → ต้องถูกกัน (ตำแหน่งคงเดิม)
+  update public.units set status = 'EXPECTED', block = null, "row" = null, slot = null where vin = v_parked;
+  select status, block into r from public.units where vin = v_parked;
+  if r.block is not null and r.status <> 'EXPECTED' then ok := ok + 1; msg := msg || ' ก=ผ่าน'; else msg := msg || ' ก=ไม่ผ่าน'; end if;
 
-  -- ค) สำเนาเก่าเขียนรถที่ออกแล้วกลับเป็น EXPECTED → ต้องคง DEPARTED
-  update public.units set status = 'EXPECTED' where vin = 'VIN_ที่ออกแล้ว';
-  select vin, status from public.units where vin = 'VIN_ที่ออกแล้ว';
+  -- ข) Gate-out ปกติ → ต้องผ่าน
+  update public.units set status = 'DEPARTED', block = null, "row" = null, slot = null where vin = v_parked;
+  select status, block into r from public.units where vin = v_parked;
+  if r.status = 'DEPARTED' and r.block is null then ok := ok + 1; msg := msg || ' ข=ผ่าน'; else msg := msg || ' ข=ไม่ผ่าน'; end if;
 
-  -- ง) นำเข้ารอบใหม่ที่ยาร์ดเดิม (imported_at ใหม่) → ต้องผ่าน (คาด: EXPECTED)
-  update public.units set status = 'EXPECTED', imported_at = now() where vin = 'VIN_ที่ออกแล้ว';
-  select vin, status from public.units where vin = 'VIN_ที่ออกแล้ว';
+  -- ค) สำเนาเก่า: DEPARTED → EXPECTED ยาร์ดเดิม → ต้องถูกกัน
+  update public.units set status = 'EXPECTED' where vin = v_departed;
+  select status into r from public.units where vin = v_departed;
+  if r.status = 'DEPARTED' then ok := ok + 1; msg := msg || ' ค=ผ่าน'; else msg := msg || ' ค=ไม่ผ่าน'; end if;
 
-  -- ควรมี 2 แถวใน log (ก และ ค)
-  select vin, rule from public.unit_guard_log order by id desc limit 5;
-rollback;
+  -- ง) นำเข้ารอบใหม่ที่ยาร์ดเดิม (imported_at ใหม่) → ต้องผ่าน
+  update public.units set status = 'EXPECTED', imported_at = now() where vin = v_departed;
+  select status into r from public.units where vin = v_departed;
+  if r.status = 'EXPECTED' then ok := ok + 1; msg := msg || ' ง=ผ่าน'; else msg := msg || ' ง=ไม่ผ่าน'; end if;
+
+  -- จ) log ต้องมี 2 แถวจากการทดสอบนี้ (ก และ ค)
+  select count(*) into n_log from public.unit_guard_log where vin in (v_parked, v_departed) and at >= now();
+  if n_log = 2 then ok := ok + 1; msg := msg || ' log=ผ่าน'; else msg := msg || ' log=ไม่ผ่าน(' || n_log || ')'; end if;
+
+  raise exception 'ผลทดสอบ: % % (ข้อความนี้เป็น error โดยตั้งใจ — ทุกอย่างถูกย้อนกลับแล้ว ข้อมูลจริงไม่เปลี่ยน)',
+    case when ok = 5 then 'ผ่านครบ 5/5' else 'ไม่ผ่าน ' || ok || '/5' end, msg;
+end $$;
 
 -- ── ขั้นที่ 4: ดูว่ากันอะไรไปบ้าง / มาจากเครื่องไหน ────────────────────────────────────
 select date_trunc('minute', at) as minute, rule, count(*) as n,
