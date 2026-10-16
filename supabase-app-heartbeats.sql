@@ -37,9 +37,17 @@ create policy "allow all app_heartbeats" on public.app_heartbeats
   for all to anon, authenticated using (true) with check (true);
 
 -- ── ขั้นที่ 2: ใครยังไม่อัปเดต (รันเมื่อไหร่ก็ได้) ─────────────────────────────────────────
--- build ล่าสุด = build ที่ "ปรากฏครั้งแรก" ใหม่ที่สุด (build ใหม่ย่อมเริ่มรายงานทีหลัง build เก่าเสมอ — ไม่หลงเพราะเครื่องเก่าเพิ่งรายงาน)
+-- build ล่าสุด = อ่านเวลาจากตัวเลข build เอง ("16 Oct, 11:37 · 8e35d58" → 16 ต.ค. 11:37 ปีปัจจุบัน) แล้วเอาที่ใหม่สุด
+--   (เดิมใช้ min(first_seen) ผิด: first_seen เป็นเวลาที่ "เครื่อง" รายงานครั้งแรก ไม่ใช่ของ build — เครื่องที่อัปเดตแล้ว
+--    ยังถือ first_seen เดิม ทำให้ build ใหม่ดูเก่ากว่า build ก่อนหน้า) · ข้ามปีใหม่ (ธ.ค. → ม.ค.) อาจเรียงผิดชั่วคราว
 -- เครื่องที่ใช้งานใน 3 วันล่าสุด เรียงเครื่องที่ยังไม่อัปเดตก่อน
-with latest as (select build from public.app_heartbeats group by build order by min(first_seen) desc limit 1)
+with builds as (
+  select distinct build,
+         to_timestamp(split_part(build, ' · ', 1) || ' ' || extract(year from now())::int, 'DD Mon, HH24:MI YYYY') as built_at
+  from public.app_heartbeats
+  where build ~ '^[0-9]{2} [A-Za-z]{3}, [0-9]{2}:[0-9]{2} · '
+),
+latest as (select build from builds order by built_at desc limit 1)
 select h.user_name, h.site_id, h.build,
        (h.build = (select build from latest)) as up_to_date,
        to_char(h.last_seen at time zone 'Asia/Bangkok', 'DD Mon HH24:MI') as last_seen_th,
