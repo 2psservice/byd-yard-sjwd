@@ -16,16 +16,19 @@
  * appears in the plan nor in the register (the register shows how many were
  * cut, so the missing rows are explained, not mysterious).
  *
- * PM cadence: first PM once the car has been in the yard one interval, then
- * every interval after — 30 days everywhere except Auto Tran 38 Rai (90).
+ * PM cadence: one interval after the day the cycle is counted from, then every
+ * interval after — 30 days everywhere except Auto Tran 38 Rai (90). The cycle is
+ * counted from the latest PM when the car has had one (= Aging PM), otherwise from
+ * its PDI date (no PDI date either → Gate In). See pmCountFrom().
  */
 import { useMemo, useRef, useState } from 'react'
 import { CalendarClock, Send, Table2, ClipboardList, Search, Download, Upload, Loader2, FileSpreadsheet, CheckCircle2, AlertTriangle } from 'lucide-react'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { useYard } from '../store/useYard'
 import { useOps } from '../store/useOps'
-import { parseCellDate, lastPmDate, PM_KEYS } from '../lib/trackingColumns'
+import { parseCellDate, pmCountFrom, PM_KEYS } from '../lib/trackingColumns'
 import { deriveCarStatus } from '../lib/carStatus'
+import { pmDueDays } from '../lib/pmPlan'
 import { siteIdForLocation } from '../lib/siteScope'
 import { PageHead, cx } from '../components/ui'
 import { DayPicker, dayKeyOf } from './Grouping'
@@ -34,7 +37,6 @@ import { exportStationReport, downloadWorkbook } from '../lib/opsReport'
 import { parsePmQueueWorkbook, pmQueueNameFromFile } from '../lib/pmQueueImport'
 import type { TrackRow } from '../lib/excelTracking'
 
-const DAY_MS = 86_400_000
 
 /** The page's six tabs: the station's daily tables, the plan + register, then upload. */
 type PmTab = StationTab | 'plan' | 'status' | 'upload'
@@ -160,17 +162,12 @@ export function PmPlan() {
     const keyOf = (c: Record<string, string>) => `${modelOf(c)}|${variantOf(c['Model name'] || '')}`
     for (const { row, interval } of triage.eligible) {
       const c = row.cells
-      const base = lastPmDate(c) ?? parseCellDate(c['Gate In (Rayong yard)']) ?? parseCellDate(c['Gate In Date'])
+      const base = pmCountFrom(c) // เคยทำ PM = นับจาก PM ล่าสุด (Aging PM) · ไม่เคยทำ = นับจากวัน PDI (ไม่มีวัน PDI = วัน Gate In)
       if (base == null) continue
       const k = keyOf(c)
       if (!grid.has(k)) grid.set(k, Array.from({ length: daysInMonth + 1 }, () => [] as string[]))
       const lane = grid.get(k)!
-      const step = interval * DAY_MS
-      let n = Math.max(1, Math.ceil((monthStart - base) / step))
-      for (let due = base + n * step; due <= monthEnd; due += step) {
-        if (due < monthStart) continue
-        lane[new Date(due).getDate()].push(row.vin)
-      }
+      for (const d of pmDueDays(base, interval, year, month)) lane[d].push(row.vin)
     }
     const modelRows = [...grid.entries()]
       .map(([k, dayVins]) => {
@@ -435,7 +432,7 @@ export function PmPlan() {
         <div className="flex-1 min-w-[240px]">
           <PageHead
             title={<span className="flex items-center gap-2"><CalendarClock size={20} style={{ color: 'var(--brand)' }} /> Update Plan &amp; Actual PM</span>}
-            sub={`${MONTH_EN[month - 1]} ${year} — PM ทุก 30 วัน (38 ไร่ ทุก 90 วัน) · รถที่มี Allocation Date ถูกตัดออก (เตรียมขายแล้ว ทำ PM ไม่ได้)`}
+            sub={`${MONTH_EN[month - 1]} ${year} — PM ทุก 30 วัน (38 ไร่ ทุก 90 วัน) นับจากวัน PDI ถ้าไม่เคยทำ PM · นับจาก PM ล่าสุดถ้าเคยทำแล้ว · รถที่มี Allocation Date ถูกตัดออก (เตรียมขายแล้ว ทำ PM ไม่ได้)`}
           />
         </div>
         {/* yard selector — own site or all */}

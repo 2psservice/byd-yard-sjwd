@@ -106,6 +106,31 @@ export function lastPmDate(cells: Record<string, string>): number | null {
   return latest
 }
 
+/** The date a car's PDI was done (ms): the first PDI ("PDI" column); when that cell is
+ *  blank or not a date, the earliest re-inspection date. null when the car has no PDI date. */
+export function firstPdiDate(cells: Record<string, string>): number | null {
+  const first = parseCellDate(cells[PDI_KEYS[0]])
+  if (first != null) return first
+  let earliest: number | null = null
+  for (const k of PDI_KEYS.slice(1)) {
+    const t = parseCellDate(cells[k])
+    if (t != null && (earliest == null || t < earliest)) earliest = t
+  }
+  return earliest
+}
+
+/** The day a car's PM cycle is counted from (ms) — the next PM falls one interval after it:
+ *   • already had a PM  → the latest PM date (same as counting from Aging PM)
+ *   • never had a PM    → the PDI date
+ *   • no PDI date either → the Gate In date (so the car still lands on the plan)
+ *  null when the car has none of these dates. */
+export function pmCountFrom(cells: Record<string, string>): number | null {
+  return lastPmDate(cells)
+    ?? firstPdiDate(cells)
+    ?? parseCellDate(cells['Gate In (Rayong yard)'])
+    ?? parseCellDate(cells['Gate In Date'])
+}
+
 /** Aging PM = whole days since the most recent PM (PM1…PM15). '' when the car
  *  has never had a PM recorded. Replaces the raw imported cell (which held an
  *  Excel serial like "46223" = the formula's =TODAY() with no PM date). */
