@@ -15,6 +15,8 @@
  * sale — PM can no longer be done on it, so BOTH tabs cut it: it neither
  * appears in the plan nor in the register (the register shows how many were
  * cut, so the missing rows are explained, not mysterious).
+ * A car the gate has released (Gate-out, or scanned out and waiting for the 09:30
+ * flush = Pre Gate-out) is cut from both tabs the same way — it is gone or going.
  *
  * PM cadence: one interval after the day the cycle is counted from, then every
  * interval after — 30 days everywhere except Auto Tran 38 Rai (90). The cycle is
@@ -27,7 +29,7 @@ import { useTracking, useTrackingRows } from '../store/useTracking'
 import { useYard } from '../store/useYard'
 import { useOps } from '../store/useOps'
 import { parseCellDate, pmCountFrom, PM_KEYS } from '../lib/trackingColumns'
-import { deriveCarStatus } from '../lib/carStatus'
+import { deriveCarStatus, RELEASED_STATUSES } from '../lib/carStatus'
 import { pmDueDays } from '../lib/pmPlan'
 import { siteIdForLocation } from '../lib/siteScope'
 import { PageHead, cx } from '../components/ui'
@@ -141,8 +143,9 @@ export function PmPlan() {
     for (const row of rows) {
       const c = row.cells
       const cs = deriveCarStatus(c)
-      // not yet in the yard, already gone, or written off → no PM
-      if (cs === 'Gate-out' || cs === 'Total loss' || cs === 'Pre Gate-in') continue
+      // not yet in the yard, already gone (Gate-out) or scanned out and waiting for the 09:30
+      // flush (Pre Gate-out), or written off → no PM
+      if (RELEASED_STATUSES.has(cs) || cs === 'Total loss' || cs === 'Pre Gate-in') continue
       const siteId = row.site ?? siteIdForLocation(c, sites) ?? null
       if (!inScope(siteId)) continue
       if (isAllocated(c)) { cutAllocated++; continue } // เตรียมขายแล้ว — ตัดออก
@@ -432,7 +435,7 @@ export function PmPlan() {
         <div className="flex-1 min-w-[240px]">
           <PageHead
             title={<span className="flex items-center gap-2"><CalendarClock size={20} style={{ color: 'var(--brand)' }} /> Update Plan &amp; Actual PM</span>}
-            sub={`${MONTH_EN[month - 1]} ${year} — PM ทุก 30 วัน (38 ไร่ ทุก 90 วัน) นับจากวัน PDI ถ้าไม่เคยทำ PM · นับจาก PM ล่าสุดถ้าเคยทำแล้ว · รถที่มี Allocation Date ถูกตัดออก (เตรียมขายแล้ว ทำ PM ไม่ได้)`}
+            sub={`${MONTH_EN[month - 1]} ${year} — PM ทุก 30 วัน (38 ไร่ ทุก 90 วัน) นับจากวัน PDI ถ้าไม่เคยทำ PM · นับจาก PM ล่าสุดถ้าเคยทำแล้ว · รถที่มี Allocation Date และรถ Gate-out ถูกตัดออก (เตรียมขาย/ออกจากยาร์ดแล้ว ทำ PM ไม่ได้)`}
           />
         </div>
         {/* yard selector — own site or all */}
@@ -730,7 +733,7 @@ export function PmPlan() {
                 })}
                 {shownStatus.length === 0 && (
                   <tr><td colSpan={8 + pmCols.length * (1 + MEAS.length)} className="px-4 py-8 text-center" style={{ color: 'var(--faint)' }}>
-                    ไม่พบรถที่เข้าเงื่อนไข PM {q ? `ที่ตรงกับ "${q}"` : ''} — รถที่มี Allocation Date ถูกตัดออกจากตารางนี้
+                    ไม่พบรถที่เข้าเงื่อนไข PM {q ? `ที่ตรงกับ "${q}"` : ''} — รถที่มี Allocation Date และรถ Gate-out ถูกตัดออกจากตารางนี้
                   </td></tr>
                 )}
               </tbody>
