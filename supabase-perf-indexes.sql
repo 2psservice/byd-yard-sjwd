@@ -53,13 +53,27 @@ create index concurrently if not exists units_active_site_vin_idx
 create index concurrently if not exists damages_vin_idx
   on public.damages (vin);
 
+-- ── 5b) tracking_rows: นับจำนวนแถวรายยาร์ด (เพิ่ม 16 ต.ค. — รันบนฐานจริงแล้ว) ──
+-- แอปนับ "แถวของยาร์ดนี้" ตอนเลือกยาร์ด (countTrackingRowsForSite → แถบ "กำลังโหลด x / y"):
+--   select count(*) from tracking_rows where deleted_at is null and site = $1
+-- tracking_rows_live_idx (ข้อ 2) มีแค่ vin จึงต้องอ่านแถวจริงทีละแถวเพื่อกรอง site — NYB2 (~21,800 แถว) ใช้ ~2.8 วิ
+-- ตอนข้อมูลยังไม่อยู่ในหน่วยความจำ ชนเพดาน timeout 3 วิ = error 57014 ส่วนใหญ่ที่เหลือ (ช่วงเช้าที่ทุกเครื่องเปิดแอป)
+-- หลังสร้าง: Index Only Scan ~8 ms
+create index concurrently if not exists tracking_rows_live_site_idx
+  on public.tracking_rows (site)
+  where deleted_at is null;
+
 -- ── 6) อัปเดตสถิติให้ตัววางแผนคำสั่ง เลือกใช้ดัชนีใหม่ทันที ────────────────
 analyze public.tracking_rows;
 analyze public.units;
 analyze public.damages;
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- ตรวจผลหลังรัน (ควรเห็น "Index Scan" ไม่ใช่ "Seq Scan" และเวลาเป็นหลักมิลลิวินาที)
+-- ตรวจผลหลังรัน
+--   explain (analyze, buffers)
+--   select count(*) from public.tracking_rows where deleted_at is null and site = 'site-7-nyb';
+--   → ต้องเห็น "Index Only Scan using tracking_rows_live_site_idx"
+-- (ควรเห็น "Index Scan" ไม่ใช่ "Seq Scan" และเวลาเป็นหลักมิลลิวินาที)
 --
 --   explain analyze
 --   select vin from public.tracking_rows
