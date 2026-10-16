@@ -19,7 +19,7 @@ import { hashPassword, verifyPassword, isHashed } from '../lib/password'
 import { resolvePart, resolveDefect } from '../lib/masterDefect'
 import { supabase } from '../lib/supabase'
 import { blockKeyOfTag, pos as posCode } from '../lib/format'
-import { laneFromCloud } from '../lib/laneCloud'
+import { clearPlacementInFlight, laneFromCloud, markPlacementInFlight } from '../lib/laneCloud'
 import type { DbDamage, DbUnit } from '../lib/database.types'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 
@@ -1499,6 +1499,8 @@ export const useYard = create<YardState>()(
         // ใหม่กว่าเข้าคิวมาแล้ว ชุดนี้ไม่ต้องเขียนคันนั้น — ชุดใหม่พาตำแหน่งล่าสุดไปเอง
         const seq = ++placementSeq
         for (const v of intentional) placementIntent.set(v, seq)
+        // จนกว่าการเขียนจะถึงคลาวด์ ตำแหน่งใหม่ในเครื่องต้องชนะค่าคลาวด์ตอนแจกคันที่ในเลน (ดู laneCloud inFlight)
+        markPlacementInFlight(intentional, seq)
         const superseded = (v: string) => placementIntent.get(v) !== seq
         if (plain.length) {
           // upsertUnits/bulkUpsert is built for the import progress bar and never
@@ -1514,6 +1516,7 @@ export const useYard = create<YardState>()(
             if (!live.length) { settle(); return }
             try {
               await db.upsertUnitsStrict(live.map((v) => units[v]))
+              clearPlacementInFlight(live, seq)
               // landed — drop any STALE pendingPlacements an earlier failed move
               // for one of these vins left queued, or flushPendingPlacements'
               // later retry would overwrite this fresh position with that old
@@ -1566,6 +1569,7 @@ export const useYard = create<YardState>()(
                 if (res.transportError) { failed.push(it.vin); results.push({ vin: it.vin, status: 'queued' }) }
                 else {
                   results.push({ vin: it.vin, status: 'ok' })
+                  clearPlacementInFlight([it.vin], seq)
                   // genuinely confirmed — drop any stale pendingPlacements an
                   // earlier failed move left queued (see assign() for the scenario)
                   if (get().pendingPlacements[it.vin]) {
@@ -1574,6 +1578,7 @@ export const useYard = create<YardState>()(
                 }
                 continue
               }
+              clearPlacementInFlight([it.vin], seq) // ไม่ได้ย้าย — ค่าคลาวด์คือความจริง
               lost.push({ vin: it.vin, at: posCode(res.current) || '—' })
               results.push({ vin: it.vin, status: 'lost', current: res.current })
               // adopt what the cloud says rather than keeping our rejected guess

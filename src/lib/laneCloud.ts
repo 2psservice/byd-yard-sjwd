@@ -34,6 +34,32 @@ import { blockKeyOfTag } from './format'
  * device claims for the lane are looked up by VIN as well, and wherever the
  * cloud says they are is what counts.
  */
+/**
+ * ตำแหน่งที่เครื่องนี้ "เพิ่งยิงแต่ยังเขียนขึ้นคลาวด์ไม่เสร็จ" — คลาวด์ยังเห็นช่องเก่าของรถคันนั้น
+ *
+ * 16 ต.ค. 10:48: ยิง Re-location คันแรกเข้า F15 ได้คันที่ 4 · 7 วินาทีต่อมายิงคันที่สองเข้า F15 — ตอนถามคลาวด์ คันแรกยังเขียนไม่ถึง
+ * (ถึงช้า 9 วินาที) คลาวด์ตอบว่าคันแรกยังอยู่ช่องเดิม และค่าคลาวด์ทับตำแหน่งใหม่ในเครื่อง → คันที่สองได้คันที่ 4 ซ้ำ = รถซ้อนช่อง
+ * ระหว่างที่การเขียนของรถคันไหนยังไม่เสร็จ ให้ตำแหน่งในเครื่องของคันนั้นเป็นฝ่ายชนะ (หมดอายุเองกันค้าง)
+ */
+export const PLACEMENT_IN_FLIGHT_TTL_MS = 10 * 60_000
+const inFlight = new Map<string, { token: number; at: number }>()
+/** เริ่มเขียนตำแหน่งของรถเหล่านี้ (token = รหัสคำสั่งวาง ใช้กันคำสั่งเก่าลบเครื่องหมายของคำสั่งใหม่กว่า) */
+export function markPlacementInFlight(vins: Iterable<string>, token: number, now = Date.now()): void {
+  for (const v of vins) inFlight.set(v, { token, at: now })
+}
+/** เขียนเสร็จแล้ว — ลบเฉพาะเครื่องหมายที่ยังเป็นของคำสั่งนี้ */
+export function clearPlacementInFlight(vins: Iterable<string>, token: number): void {
+  for (const v of vins) if (inFlight.get(v)?.token === token) inFlight.delete(v)
+}
+export function isPlacementInFlight(vin: string, now = Date.now()): boolean {
+  const e = inFlight.get(vin)
+  if (!e) return false
+  if (now - e.at > PLACEMENT_IN_FLIGHT_TTL_MS || now < e.at) { inFlight.delete(vin); return false }
+  return true
+}
+/** สำหรับเทสต์ */
+export function _resetPlacementInFlight(): void { inFlight.clear() }
+
 export async function laneFromCloud(local: Unit[], siteId: string | null, blockId: string, slot: number): Promise<Unit[]> {
   if (!isConfigured() || !blockId || !slot) return local
   const deadline = <T,>(p: Promise<T>) => Promise.race([
@@ -43,13 +69,15 @@ export async function laneFromCloud(local: Unit[], siteId: string | null, blockI
     const cloud = await deadline(fetchUnitsInLane(siteId, slot))
     const byVin = new Map(local.map(u => [u.vin, u] as const))
     const confirmed = new Set<string>()
-    for (const u of cloud) { byVin.set(u.vin, u); confirmed.add(u.vin) } // the cloud is the authority
+    // the cloud is the authority — except for a car THIS device just placed whose write has not landed yet:
+    // the cloud still shows its old spot, and letting that win hands the new spot out twice (see inFlight)
+    for (const u of cloud) { confirmed.add(u.vin); if (!isPlacementInFlight(u.vin)) byVin.set(u.vin, u) }
     // local-only claims on this lane: the cloud was asked about this exact lane
     // and did not name them. That is what a car that has moved away looks like
     // — but also what an unsynced local placement looks like, so ask outright
     // rather than assuming, and only move what the cloud actually answers for.
     const ghosts = [...byVin.values()]
-      .filter(u => !confirmed.has(u.vin) && u.slot === slot && u.block && blockKeyOfTag(u.block) === blockId)
+      .filter(u => !confirmed.has(u.vin) && !isPlacementInFlight(u.vin) && u.slot === slot && u.block && blockKeyOfTag(u.block) === blockId)
       .map(u => u.vin)
     if (ghosts.length) {
       const real = await deadline(fetchUnitsByVins(ghosts))
