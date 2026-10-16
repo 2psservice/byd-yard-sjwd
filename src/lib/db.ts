@@ -1008,6 +1008,14 @@ export async function deleteAppUser(id: string): Promise<void> {
 
 // ── shared app config (key/value jsonb) — e.g. the default Unit-List view ────
 /** Read a shared config blob by id. null when unset, table missing, or offline. */
+/** เครื่องนี้รันแอปเวอร์ชันไหน (ดู lib/heartbeat) — ไม่ throw: ยังไม่มีตาราง / ออฟไลน์ = เงียบ */
+export async function reportHeartbeat(row: import('./heartbeat').HeartbeatRow): Promise<boolean> {
+  if (!isConfigured()) return false
+  const { error } = await supabase.from('app_heartbeats').upsert({ ...row, last_seen: new Date().toISOString() }, { onConflict: 'device_id' })
+  if (error) { if (error.code !== '42P01' && error.code !== 'PGRST205') console.warn('[db] reportHeartbeat', error.message); return false }
+  return true
+}
+
 export async function fetchAppConfig<T = unknown>(id: string): Promise<T | null> {
   if (!isConfigured()) return null
   const { data, error } = await supabase.from('app_config').select('value').eq('id', id).maybeSingle()
