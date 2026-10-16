@@ -9,7 +9,7 @@ import { SiteLoadGate } from './components/SiteLoadGate'
 import { useYard, useMe, isOpsOnlyRole, checkUnitsMode, reloadForUnitsMode } from './store/useYard'
 import { useTrackingRows, useTracking, cloudSyncedThisSession } from './store/useTracking'
 import { isConfigured } from './lib/supabase'
-import { NYB2_LOST_LOCATION_20261011 } from './lib/restoreSets'
+import { NYB2_LOST_LOCATION_20261011, NYB2_LOST_LOCATION_20261016 } from './lib/restoreSets'
 import { siteIdForLocation } from './lib/siteScope'
 import { useOps, repairMissingStationDates } from './store/useOps'
 import { useVisits } from './store/useVisits'
@@ -73,13 +73,15 @@ function hasAnyUnit(units: Record<string, unknown>): boolean {
  *  - 9 ต.ค. 60 RAI บล็อก L/D/C: ตำแหน่งหายอีกรอบ — คืนด้วยวิธีเดียวกับ 3D LCB (offMap) ·
  *    ยาร์ดเดียวมีได้หลายงาน: ทำตามลำดับในรายการ ธงใครธงมัน
  *  - 11 ต.ค. NYB2 Phase 2: ช่อง Location ว่างตั้งแต่ 8 ต.ค. 09:53 — คืนเฉพาะชุด VIN ที่แอดมินระบุ ทุกบล็อกที่ผังวาด
- *    (blocks: ['*']) รายงานทุกคันในชุด: คืน/ชน/ไม่มีประวัติ/สถานะไม่ใช่ In Yard (เช่น Gate-out)/ไม่พบแถว/มีช่องแล้ว */
+ *    (blocks: ['*']) รายงานทุกคันในชุด: คืน/ชน/ไม่มีประวัติ/สถานะไม่ใช่ In Yard (เช่น Gate-out)/ไม่พบแถว/มีช่องแล้ว
+ *  - 16 ต.ค. NYB2: ชุดที่ 2 อีก 270 คัน (ช่อง Location ว่างอีกรอบ) — วิธีเดียวกับชุด 11 ต.ค. ธงแยกต่างหาก */
 const ONE_SHOT_RESTORES: { key: string; yards: string[]; blocks: string[]; offMap?: boolean; vins?: string[]; label: string }[] = [
   { key: 'sjwd-restore-fln-60rai-20261006', yards: ['60 RAI'], blocks: ['F', 'L', 'N'], label: 'บล็อก F/L/N ของ 60 RAI' },
   { key: 'sjwd-restore-bcd-3dlcb-20261009', yards: ['3D LCB'], blocks: ['B', 'C', 'D'], offMap: true, label: 'บล็อก B/C/D ของ 3D LCB' },
   { key: 'sjwd-restore-ldc-60rai-20261009', yards: ['60 RAI'], blocks: ['L', 'D', 'C'], offMap: true, label: 'บล็อก L/D/C ของ 60 RAI' },
   // '*' = ทุกบล็อกที่ผังของยาร์ดนั้นวาด · vins = คืนเฉพาะชุดที่แอดมินระบุ · ชื่อยาร์ดลองทั้งชื่อเต็มและรหัส
   { key: 'sjwd-restore-set-nyb2-20261011', yards: ['NYB2 Phase 2', 'NYB2'], blocks: ['*'], offMap: true, vins: NYB2_LOST_LOCATION_20261011, label: `ชุดที่ระบุ ${NYB2_LOST_LOCATION_20261011.length} คันของ NYB2 Phase 2` },
+  { key: 'sjwd-restore-set-nyb2-20261016', yards: ['NYB2 Phase 2', 'NYB2'], blocks: ['*'], offMap: true, vins: NYB2_LOST_LOCATION_20261016, label: `ชุดที่ระบุ ${NYB2_LOST_LOCATION_20261016.length} คันของ NYB2` },
 ]
 
 export default function App() {
