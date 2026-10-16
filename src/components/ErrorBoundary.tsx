@@ -1,4 +1,5 @@
 import { Component, type ReactNode } from 'react'
+import { isChunkLoadError, isChunkReloadPending, reloadForChunkError } from '../lib/chunkReload'
 
 /**
  * Global error boundary — without it, any render error unmounted the whole
@@ -6,8 +7,8 @@ import { Component, type ReactNode } from 'react'
  * reopened straight into the same broken page: a permanent white screen with
  * no in-app recovery. This catches the error and offers a safe reset.
  */
-export class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
-  state = { error: null as Error | null }
+export class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null; reloading: boolean }> {
+  state = { error: null as Error | null, reloading: false }
 
   static getDerivedStateFromError(error: Error) {
     return { error }
@@ -15,6 +16,8 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, { error: E
 
   componentDidCatch(error: Error) {
     console.error('[ErrorBoundary]', error)
+    // โหลดไฟล์หน้าไม่ได้ (deploy ใหม่ / สัญญาณสะดุด) → รีโหลดเองครั้งเดียวแทนการค้างหน้านี้ (ดู lib/chunkReload)
+    if (isChunkLoadError(error) && (isChunkReloadPending() || reloadForChunkError())) this.setState({ reloading: true })
   }
 
   private reset = () => {
@@ -32,6 +35,13 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, { error: E
 
   render() {
     if (!this.state.error) return this.props.children
+    if (this.state.reloading) {
+      return (
+        <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, background: '#f1f5f9', fontFamily: 'inherit', color: '#475569', fontSize: 15, fontWeight: 600 }}>
+          กำลังโหลดเวอร์ชันล่าสุด…
+        </div>
+      )
+    }
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, background: '#f1f5f9', fontFamily: 'inherit' }}>
         <div style={{ maxWidth: 420, width: '100%', background: '#fff', borderRadius: 20, padding: 28, textAlign: 'center', boxShadow: '0 8px 32px -8px rgba(0,0,0,0.15)' }}>

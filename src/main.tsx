@@ -20,12 +20,16 @@ import '@fontsource/jetbrains-mono/700.css'
 import App from './App'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { escapeInAppBrowser } from './lib/inAppBrowser'
+import { reloadForChunkError } from './lib/chunkReload'
 import { markAutoUpdate, readLastAutoUpdate, shouldAutoUpdate, shouldAutoUpdateOnLogin, shouldAutoUpdateOnResume, trackInteraction } from './lib/autoUpdate'
 import { isLiteFx } from './lib/device'
 import './index.css'
 
 // เปิดจากลิงก์ใน LINE/โซเชียล → เด้งไป Chrome ก่อนเริ่มทำงาน (เบราว์เซอร์ฝังตัวบล็อกกล้อง)
 escapeInAppBrowser()
+// โหลดไฟล์หน้าไม่ได้ (deploy ใหม่กลางกะ / สัญญาณสะดุด) → รีโหลดเองครั้งเดียว ได้ไฟล์ชุดล่าสุด (ดู lib/chunkReload)
+// ไม่ preventDefault: ถ้ารีโหลดไม่ได้ (เพิ่งรีโหลดไป) ข้อผิดพลาดไปถึง ErrorBoundary ตามเดิม
+window.addEventListener('vite:preloadError', (e) => { reloadForChunkError(); void e })
 if (isLiteFx) document.documentElement.classList.add('lite-fx')
 
 // PWA update flow: poll for a new deploy every 60s, but NEVER force-reload an
