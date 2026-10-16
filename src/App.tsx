@@ -19,6 +19,8 @@ import { deriveCarStatus } from './lib/carStatus'
 import { yardLocCode, LAST_LOCATION_KEY } from './lib/groupingImport'
 import { matchModel } from './lib/sampleData'
 import { isPhone } from './lib/device'
+import { buildHeartbeat, deviceId, shouldSendHeartbeat } from './lib/heartbeat'
+import { reportHeartbeat } from './lib/db'
 import { useMasterDefect } from './store/useMasterDefect'
 import type { View } from './types'
 
@@ -84,6 +86,9 @@ const ONE_SHOT_RESTORES: { key: string; yards: string[]; blocks: string[]; offMa
   { key: 'sjwd-restore-set-nyb2-20261016', yards: ['NYB2 Phase 2', 'NYB2'], blocks: ['*'], offMap: true, vins: NYB2_LOST_LOCATION_20261016, label: `ชุดที่ระบุ ${NYB2_LOST_LOCATION_20261016.length} คันของ NYB2` },
 ]
 
+/** ครั้งล่าสุดที่รายงานเวอร์ชันแอป (ทั้งแอปใช้ร่วม ไม่ผูกกับรอบ render) */
+let heartbeatLast: { at: number; key: string } | null = null
+
 export default function App() {
   const loggedInUserId = useYard((s) => s.loggedInUserId)
   const me = useMe()
@@ -103,6 +108,29 @@ export default function App() {
   // จำคำตอบไว้ต่อ "ก้อน units" (เปลี่ยนก้อนเฉพาะตอน units เปลี่ยนจริง) จึงนับแค่ครั้งละก้อน
   const hasUnits = useYard((s) => hasAnyUnit(s.units))
   const currentSite = useYard((s) => s.currentSite)
+  const currentUserName = useYard((s) => s.currentUser)
+
+  // ── รายงานเวอร์ชันแอปของเครื่องนี้ (ตาราง app_heartbeats — ดู lib/heartbeat) ──
+  // ตอนล็อกอิน / เปลี่ยนยาร์ด / ทุก 15 นาทีที่หน้าเปิดอยู่ / ตอนกลับมาเห็นแอป — ใช้ตามหาเครื่องที่ยังไม่อัปเดต
+  useEffect(() => {
+    if (!loggedInUserId) return
+    const key = `${loggedInUserId}|${currentSite ?? ''}`
+    const send = () => {
+      if (document.visibilityState === 'hidden') return
+      const now = Date.now()
+      if (!shouldSendHeartbeat(now, heartbeatLast, key)) return
+      heartbeatLast = { at: now, key }
+      const standalone = window.matchMedia?.('(display-mode: standalone)').matches ?? false
+      void reportHeartbeat(buildHeartbeat({
+        deviceId: deviceId(), userId: loggedInUserId, userName: currentUserName || null, siteId: currentSite ?? null,
+        build: __BUILD__, userAgent: navigator.userAgent, standalone,
+      })).then((ok) => { if (!ok) heartbeatLast = null }) // ล้ม → ลองใหม่รอบถัดไป
+    }
+    send()
+    const iv = setInterval(send, 60_000)
+    document.addEventListener('visibilitychange', send)
+    return () => { clearInterval(iv); document.removeEventListener('visibilitychange', send) }
+  }, [loggedInUserId, currentUserName, currentSite])
   const unitsCloudDone = useYard((s) => s.unitsCloudDone)
   const openSiteModal = useYard((s) => s.openSiteModal)
   const trackingLoaded = useTracking((s) => s.loaded)
