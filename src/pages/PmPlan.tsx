@@ -18,10 +18,11 @@
  * A car the gate has released (Gate-out, or scanned out and waiting for the 09:30
  * flush = Pre Gate-out) is cut from both tabs the same way — it is gone or going.
  *
- * PM cadence: one interval after the day the cycle is counted from, then every
- * interval after — 30 days everywhere except Auto Tran 38 Rai (90). The cycle is
- * counted from the latest PM when the car has had one (= Aging PM), otherwise from
- * its PDI date (no PDI date either → Gate In). See pmCountFrom().
+ * PM cadence: one interval after the day the cycle is counted from — 30 days
+ * everywhere except Auto Tran 38 Rai (90). The cycle is counted from the latest PM
+ * when the car has had one (= Aging PM), otherwise from its PDI date (no PDI date
+ * either → Gate In). See pmCountFrom(). Each car is planned once per month, on its
+ * first due day (see pmDueDay()), so the plan's total is the number of cars.
  */
 import { useMemo, useRef, useState } from 'react'
 import { CalendarClock, Send, Table2, ClipboardList, Search, Download, Upload, Loader2, FileSpreadsheet, CheckCircle2, AlertTriangle } from 'lucide-react'
@@ -30,7 +31,7 @@ import { useYard } from '../store/useYard'
 import { useOps } from '../store/useOps'
 import { parseCellDate, pmCountFrom, PM_KEYS } from '../lib/trackingColumns'
 import { deriveCarStatus, RELEASED_STATUSES } from '../lib/carStatus'
-import { pmDueDays } from '../lib/pmPlan'
+import { pmDueDay } from '../lib/pmPlan'
 import { siteIdForLocation } from '../lib/siteScope'
 import { PageHead, cx } from '../components/ui'
 import { DayPicker, dayKeyOf } from './Grouping'
@@ -170,7 +171,8 @@ export function PmPlan() {
       const k = keyOf(c)
       if (!grid.has(k)) grid.set(k, Array.from({ length: daysInMonth + 1 }, () => [] as string[]))
       const lane = grid.get(k)!
-      for (const d of pmDueDays(base, interval, year, month)) lane[d].push(row.vin)
+      const d = pmDueDay(base, interval, year, month) // คันละครั้งต่อเดือน — รอบที่สองของเดือนที่มี 31 วันไม่ขึ้นแผน
+      if (d != null) lane[d].push(row.vin)
     }
     const modelRows = [...grid.entries()]
       .map(([k, dayVins]) => {
@@ -216,8 +218,8 @@ export function PmPlan() {
   const actualSum = plan.actual.reduce((a: number, b: number) => a + b, 0)
 
   // month-wide VIN sets for the footer's rightmost "Total" cell of each row —
-  // deduped, since a 30-day cadence can land a car on two different days
-  // within one month while the day cells (and the numbers above) count both
+  // deduped, since a car can have two PMs recorded in one month (Actual) while
+  // the day cells (and the numbers above) count both — the plan itself lists each car once
   const dedupe = (lists: string[][]) => { const s = new Set<string>(); for (const l of lists) for (const v of l) s.add(v); return [...s] }
   const grandVins = useMemo(() => dedupe(totalDayVins), [totalDayVins])
   const actualMonthVins = useMemo(() => dedupe(plan.actualVins), [plan.actualVins])
