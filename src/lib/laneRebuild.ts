@@ -30,15 +30,26 @@ export interface PlanLaneInput {
   locOf: (u: Unit | undefined) => string
 }
 
+/** รถอยู่ตรงตำแหน่งนี้ในเลนอยู่แล้ว (ไม่ต้องเขียน) */
+export function isAtLanePos(u: Unit | undefined, blockId: string, slot: number, row: number): boolean {
+  return !!u && u.block === blockId && u.slot === slot && u.row === row
+}
+
+/**
+ * ลำดับ updates = คันที่ถูกเลื่อนก่อน (จากคันท้ายสุดของเลนขึ้นมา) แล้วจึงคันที่ยิง — updateLocations เขียนตามลำดับนี้ทีละคำขอ
+ * ช่องปลายทางของแต่ละคันจึงว่างแล้วตอนเขียน และถ้าขาดตอนกลางทาง จะไม่มี 2 คันค้างอยู่ช่องเดียว
+ * (เดิมเขียนคันที่ยิงก่อน แล้วคำขอเลื่อนคันเดิมไม่ถึง → ช่องซ้อน D2202 16 ต.ค.)
+ */
 export function planLaneUpdates(p: PlanLaneInput): { updates: LaneUpdate[]; drafts: LaneDraft[] } {
-  const updates: LaneUpdate[] = []
+  const scanned: LaneUpdate[] = []
+  const shifted: LaneUpdate[] = []
   const drafts: LaneDraft[] = []
   p.seq.forEach((vin, i) => {
     const cu = p.unitOf(vin)
     const row = i + 1
-    if (cu && cu.block === p.blockId && cu.slot === p.slot && cu.row === row) return // already right — ไม่ต้องเขียน ไม่มีการย้าย
+    if (isAtLanePos(cu, p.blockId, p.slot, row)) return // already right — ไม่ต้องเขียน ไม่มีการย้าย
     const tr = p.rowOf(vin)
-    updates.push({
+    scanned.push({
       vin, block: p.blockId, row, slot: p.slot,
       modelName: cu?.modelName || tr?.cells['Model name'] || tr?.cells['Model'] || undefined,
       color: cu?.color || tr?.cells['Color'] || undefined,
@@ -47,15 +58,16 @@ export function planLaneUpdates(p: PlanLaneInput): { updates: LaneUpdate[]; draf
   })
   p.inc.forEach((cu, i) => {
     const row = p.seq.length + 1 + i
-    if (cu.block === p.blockId && cu.slot === p.slot && cu.row === row) return
-    updates.push({
+    if (isAtLanePos(cu, p.blockId, p.slot, row)) return
+    shifted.push({
       vin: cu.vin, block: p.blockId, row, slot: p.slot, modelName: cu.modelName, color: cu.color,
       from: { block: cu.block, row: cu.row, slot: cu.slot },
     })
     // ประวัติของรถที่ถูกเลื่อนใช้ "ตำแหน่งตามเครื่องนี้" เป็นต้นทาง (เหมือนเดิม) ไม่ใช่ตำแหน่งจากคลาวด์
     drafts.push({ vin: cu.vin, from: p.locOf(p.unitOf(cu.vin)), to: p.codeOf(p.blockId, p.slot, row) })
   })
-  return { updates, drafts }
+  shifted.sort((a, b) => b.row - a.row)
+  return { updates: [...shifted, ...scanned], drafts }
 }
 
 /** ประวัติที่ควรเขียน หลังคลาวด์ตอบแล้ว: ย้ายสำเร็จ (ok) หรือบันทึกในเครื่อง/รอส่ง (queued) — ตัดคันที่ถูกเครื่องอื่นย้ายไปก่อน (lost) และคันที่ไม่มีผล */
