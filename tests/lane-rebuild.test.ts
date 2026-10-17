@@ -31,8 +31,8 @@ describe('planLaneUpdates', () => {
     const inc1 = car('I1', 'Q', 37, 1)  // ถูกเลื่อน 1 → 2
     const inc2 = car('I2', 'Q', 37, 3)  // 3 → 3 (ไม่ขยับ: seq=1 คัน, inc index 1 → row 3)
     const { updates, drafts } = plan(['A'], [inc1, inc2], [car('A', 'Q', 35, 1), inc1, inc2])
-    expect(updates.map((u) => [u.vin, u.row])).toEqual([['A', 1], ['I1', 2]])
-    expect(updates[1].from).toEqual({ block: 'Q', row: 1, slot: 37 })
+    expect(updates.map((u) => [u.vin, u.row])).toEqual([['I1', 2], ['A', 1]])
+    expect(updates[0].from).toEqual({ block: 'Q', row: 1, slot: 37 })
     expect(drafts).toEqual([{ vin: 'A', from: 'Q3501', to: 'Q3701' }, { vin: 'I1', from: 'Q3701', to: 'Q3702' }])
   })
 
@@ -40,6 +40,20 @@ describe('planLaneUpdates', () => {
     const { updates, drafts } = plan(['A', 'B'], [], [car('A', 'Q', 37, 1), { ...car('B', 'Q', 1, 1), block: undefined, slot: undefined, row: undefined }])
     expect(updates.map((u) => [u.vin, u.row])).toEqual([['B', 2]])
     expect(drafts).toEqual([{ vin: 'B', from: '', to: 'Q3702' }])
+  })
+})
+
+describe('planLaneUpdates — ลำดับการเขียน (กันช่องซ้อนเมื่อขาดตอนกลางทาง)', () => {
+  it('คันที่ถูกเลื่อนมาก่อน เรียงจากคันท้ายสุดขึ้นมา แล้วจึงคันที่ยิง', () => {
+    const inc = [car('I1', 'Q', 37, 1), car('I2', 'Q', 37, 2), car('I3', 'Q', 37, 3)]
+    const { updates } = plan(['A', 'B'], inc, [car('A', 'Q', 35, 1), car('B', 'Q', 35, 2), ...inc])
+    expect(updates.map((u) => [u.vin, u.row])).toEqual([['I3', 5], ['I2', 4], ['I1', 3], ['A', 1], ['B', 2]])
+    // แต่ละคันที่ถูกเลื่อน: ช่องปลายทางว่างแล้วตอนเขียน (ไม่มีคันอื่นที่ยังไม่ถูกเขียนยืนอยู่)
+    const at = new Map(inc.map((u) => [u.vin, u.row]))
+    for (const u of updates.filter((x) => x.from)) {
+      expect([...at.entries()].some(([v, r]) => v !== u.vin && r === u.row)).toBe(false)
+      at.set(u.vin, u.row)
+    }
   })
 })
 

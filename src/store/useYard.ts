@@ -1502,51 +1502,9 @@ export const useYard = create<YardState>()(
         // จนกว่าการเขียนจะถึงคลาวด์ ตำแหน่งใหม่ในเครื่องต้องชนะค่าคลาวด์ตอนแจกคันที่ในเลน (ดู laneCloud inFlight)
         markPlacementInFlight(intentional, seq)
         const superseded = (v: string) => placementIntent.get(v) !== seq
-        if (plain.length) {
-          // upsertUnits/bulkUpsert is built for the import progress bar and never
-          // rejects — a chunk that exhausts its retries still "finishes" so the
-          // bar reaches 100%. That made the .catch() below (and its pendingPlacements
-          // retry-queue) unreachable for a position write that genuinely, permanently
-          // failed: the write was silently treated as a success while the car's
-          // Location-history line (a separate table, written separately) kept the
-          // real new spot. upsertUnitsStrict reports failure honestly instead.
-          enqueuePlacementWrite(async () => {
-            const live = plain.filter((v) => !superseded(v))
-            for (const v of plain) if (superseded(v)) results.push({ vin: v, status: 'ok' })
-            if (!live.length) { settle(); return }
-            try {
-              await db.upsertUnitsStrict(live.map((v) => units[v]))
-              clearPlacementInFlight(live, seq)
-              // landed — drop any STALE pendingPlacements an earlier failed move
-              // for one of these vins left queued, or flushPendingPlacements'
-              // later retry would overwrite this fresh position with that old
-              // one (see assign() for the full scenario this guards against).
-              set((s2) => {
-                const next = { ...s2.pendingPlacements }
-                let changed = false
-                for (const v of live) if (next[v]) { delete next[v]; changed = true }
-                return changed ? { pendingPlacements: next } : s2
-              })
-              for (const v of live) results.push({ vin: v, status: 'ok' })
-            } catch (e) {
-              console.error('[db] updateLocations', e)
-              // the optimistic move above already shows on screen, and the caller
-              // (e.g. RelocationView) already wrote a Location-history line
-              // claiming it succeeded — if this write never lands, a later full
-              // units re-pull silently reverts the car back to its OLD slot while
-              // the history line stays, permanently contradicting it. Queue it so
-              // flushPendingPlacements keeps retrying instead of losing the move.
-              set((s2) => {
-                const next = { ...s2.pendingPlacements }
-                for (const v of live) { const u = units[v]; next[v] = { vin: v, block: u.block, row: u.row, slot: u.slot } }
-                return { pendingPlacements: next }
-              })
-              scheduleFlushPendingPlacements(get)
-              for (const v of live) results.push({ vin: v, status: 'queued' })
-            }
-            settle()
-          })
-        }
+        // คันที่ถูกเลื่อน (guarded) เขียนก่อนคันที่ยิง (plain) — คิวเขียนวิ่งตามลำดับ ถ้าขาดตอนกลางทาง (สัญญาณหลุด/ปิดแอป)
+        // จะเหลือ "คันเดิมเลื่อนลงแล้ว คันที่ยิงยังไม่ลง" (ยิงใหม่ได้) แทน "คันที่ยิงลงแล้ว คันเดิมยังอยู่ช่องเดิม" = 2 คันช่องเดียว (D2202 16 ต.ค.)
+        // ลำดับคันใน guarded = ลำดับใน items (ยิงตามแถวส่งคันท้ายสุดก่อน ดู planLaneUpdates)
         if (guarded.length) {
           // compare-and-set: a car somebody else moved between our read and this
           // write is left exactly where THEY put it, and the operator is told —
@@ -1604,6 +1562,51 @@ export const useYard = create<YardState>()(
               get().toast('err', lost.length === 1
                 ? `รถ ${lost[0].vin.slice(-6)} เพิ่งถูกย้ายไป ${lost[0].at} โดยเครื่องอื่น — ตำแหน่งนี้ไม่ถูกบันทึก กรุณาสแกนใหม่`
                 : `${lost.length} คันเพิ่งถูกย้ายโดยเครื่องอื่น — ไม่ได้บันทึกทับ กรุณาสแกนใหม่`)
+            }
+            settle()
+          })
+        }
+        if (plain.length) {
+          // upsertUnits/bulkUpsert is built for the import progress bar and never
+          // rejects — a chunk that exhausts its retries still "finishes" so the
+          // bar reaches 100%. That made the .catch() below (and its pendingPlacements
+          // retry-queue) unreachable for a position write that genuinely, permanently
+          // failed: the write was silently treated as a success while the car's
+          // Location-history line (a separate table, written separately) kept the
+          // real new spot. upsertUnitsStrict reports failure honestly instead.
+          enqueuePlacementWrite(async () => {
+            const live = plain.filter((v) => !superseded(v))
+            for (const v of plain) if (superseded(v)) results.push({ vin: v, status: 'ok' })
+            if (!live.length) { settle(); return }
+            try {
+              await db.upsertUnitsStrict(live.map((v) => units[v]))
+              clearPlacementInFlight(live, seq)
+              // landed — drop any STALE pendingPlacements an earlier failed move
+              // for one of these vins left queued, or flushPendingPlacements'
+              // later retry would overwrite this fresh position with that old
+              // one (see assign() for the full scenario this guards against).
+              set((s2) => {
+                const next = { ...s2.pendingPlacements }
+                let changed = false
+                for (const v of live) if (next[v]) { delete next[v]; changed = true }
+                return changed ? { pendingPlacements: next } : s2
+              })
+              for (const v of live) results.push({ vin: v, status: 'ok' })
+            } catch (e) {
+              console.error('[db] updateLocations', e)
+              // the optimistic move above already shows on screen, and the caller
+              // (e.g. RelocationView) already wrote a Location-history line
+              // claiming it succeeded — if this write never lands, a later full
+              // units re-pull silently reverts the car back to its OLD slot while
+              // the history line stays, permanently contradicting it. Queue it so
+              // flushPendingPlacements keeps retrying instead of losing the move.
+              set((s2) => {
+                const next = { ...s2.pendingPlacements }
+                for (const v of live) { const u = units[v]; next[v] = { vin: v, block: u.block, row: u.row, slot: u.slot } }
+                return { pendingPlacements: next }
+              })
+              scheduleFlushPendingPlacements(get)
+              for (const v of live) results.push({ vin: v, status: 'queued' })
             }
             settle()
           })
