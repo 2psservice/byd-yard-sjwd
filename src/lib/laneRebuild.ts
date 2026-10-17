@@ -30,6 +30,11 @@ export interface PlanLaneInput {
   locOf: (u: Unit | undefined) => string
 }
 
+/** รถอยู่ตรงตำแหน่งนี้ในเลนอยู่แล้ว (ไม่ต้องเขียน) */
+export function isAtLanePos(u: Unit | undefined, blockId: string, slot: number, row: number): boolean {
+  return !!u && u.block === blockId && u.slot === slot && u.row === row
+}
+
 /**
  * ลำดับ updates = คันที่ถูกเลื่อนก่อน (จากคันท้ายสุดของเลนขึ้นมา) แล้วจึงคันที่ยิง — updateLocations เขียนตามลำดับนี้ทีละคำขอ
  * ช่องปลายทางของแต่ละคันจึงว่างแล้วตอนเขียน และถ้าขาดตอนกลางทาง จะไม่มี 2 คันค้างอยู่ช่องเดียว
@@ -42,7 +47,7 @@ export function planLaneUpdates(p: PlanLaneInput): { updates: LaneUpdate[]; draf
   p.seq.forEach((vin, i) => {
     const cu = p.unitOf(vin)
     const row = i + 1
-    if (cu && cu.block === p.blockId && cu.slot === p.slot && cu.row === row) return // already right — ไม่ต้องเขียน ไม่มีการย้าย
+    if (isAtLanePos(cu, p.blockId, p.slot, row)) return // already right — ไม่ต้องเขียน ไม่มีการย้าย
     const tr = p.rowOf(vin)
     scanned.push({
       vin, block: p.blockId, row, slot: p.slot,
@@ -53,7 +58,7 @@ export function planLaneUpdates(p: PlanLaneInput): { updates: LaneUpdate[]; draf
   })
   p.inc.forEach((cu, i) => {
     const row = p.seq.length + 1 + i
-    if (cu.block === p.blockId && cu.slot === p.slot && cu.row === row) return
+    if (isAtLanePos(cu, p.blockId, p.slot, row)) return
     shifted.push({
       vin: cu.vin, block: p.blockId, row, slot: p.slot, modelName: cu.modelName, color: cu.color,
       from: { block: cu.block, row: cu.row, slot: cu.slot },

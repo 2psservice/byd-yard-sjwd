@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { planLaneUpdates, recordableDrafts, type LaneDraft } from '../src/lib/laneRebuild'
+import { isAtLanePos, planLaneUpdates, recordableDrafts, type LaneDraft } from '../src/lib/laneRebuild'
 import { car } from './helpers/world'
 
 const codeOf = (b: string, slot: number, row: number) => `${b}${String(slot).padStart(2, '0')}${String(row).padStart(2, '0')}`
@@ -54,6 +54,16 @@ describe('planLaneUpdates — ลำดับการเขียน (กัน
       expect([...at.entries()].some(([v, r]) => v !== u.vin && r === u.row)).toBe(false)
       at.set(u.vin, u.row)
     }
+  })
+})
+
+describe('isAtLanePos (ยิงแล้วอยู่ที่เดิม → ลงประวัติยืนยันตำแหน่ง)', () => {
+  it('ตรงบล็อก/ช่อง/คันที่ → true; ต่างอย่างใดอย่างหนึ่งหรือไม่มีรถ → false', () => {
+    expect(isAtLanePos(car('A', 'R', 5, 1), 'R', 5, 1)).toBe(true)
+    expect(isAtLanePos(car('A', 'R', 5, 2), 'R', 5, 1)).toBe(false)
+    expect(isAtLanePos(car('A', 'R', 6, 1), 'R', 5, 1)).toBe(false)
+    expect(isAtLanePos(car('A', 'Q', 5, 1), 'R', 5, 1)).toBe(false)
+    expect(isAtLanePos(undefined, 'R', 5, 1)).toBe(false)
   })
 })
 

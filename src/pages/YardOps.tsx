@@ -14,7 +14,7 @@ import {
   LogOut, MapPin, ClipboardList, ListChecks, Copy, Check, Images, Sparkles, Download,
 } from 'lucide-react'
 import { useYard, useUnits, useTrips, useBlocks, attachPendingDamages, type PlacementResult } from '../store/useYard'
-import { planLaneUpdates, recordableDrafts } from '../lib/laneRebuild'
+import { isAtLanePos, planLaneUpdates, recordableDrafts } from '../lib/laneRebuild'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { overlayInspection } from '../lib/inspectionStatus'
 import { isDamaged, deriveCarStatus, hasLeftGate, IN_YARD_STATUSES, CAR_STATUS_META, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY } from '../lib/carStatus'
@@ -5084,6 +5084,12 @@ function RelocationView() {
     // pass, so the LATEST scan is always คันที่ 1 and earlier scans slide down
     const seq = dir === 'tail' ? [...ord].reverse() : ord
     const pos = seq.indexOf(r.vin) + 1
+    // ยิงแล้วรถอยู่ตรงตำแหน่งนี้อยู่แล้ว → ไม่ต้องเขียนตำแหน่ง แต่ลงประวัติ "ยืนยันตำแหน่ง" (X → X) ชื่อคนยิงรอบนี้
+    // เดิมไม่ลงอะไร รายการเลนจึงยังขึ้นชื่อ/เวลาของคนที่ย้ายเข้าช่องครั้งก่อน ทั้งที่คนนี้เพิ่งยิงยืนยัน (R5 17 ต.ค.)
+    if (isAtLanePos(siteUnits.find(x => x.vin === r!.vin), L.blockId, L.slot, pos)) {
+      const here = codeOf(L.blockId, L.slot, pos)
+      appendHistory(r.vin, { at: Date.now(), by: currentUser, field: 'Location', src: 'scan', from: here, to: here })
+    }
     // rebuild the whole lane: scanned cars at 1..k in direction order, then
     // the not-yet-scanned cars after them
     // The whole lane is rebuilt in ONE updateLocations batch (splitting it
