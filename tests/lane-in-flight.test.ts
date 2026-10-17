@@ -90,3 +90,49 @@ describe('updateLocations ใส่และล้างเครื่องห
     expect(world.cloud.get('A')!.row).toBe(4)
   })
 })
+
+describe('laneFromCloudStrict (ยิงตามแถว: อ่านเลนไม่ได้ = ไม่เดา)', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers(); vi.doUnmock('../src/lib/db') })
+
+  async function loadWith(fetchLane: () => Promise<Unit[]>) {
+    vi.resetModules()
+    vi.doUnmock('../src/lib/db')
+    vi.doMock('../src/lib/db', () => ({
+      isConfigured: () => true,
+      fetchUnitsInLane: fetchLane,
+      fetchUnitsByVins: async () => [],
+    }))
+    return import('../src/lib/laneCloud')
+  }
+
+  it('คลาวด์ตอบ → ได้เลนจากคลาวด์ (รวมรถที่เครื่องนี้ไม่มี)', async () => {
+    const lane = await loadWith(async () => [car('I1', 1), car('I2', 2)])
+    lane._resetPlacementInFlight()
+    const got = await lane.laneFromCloudStrict([], 'S1', 'F', 15)
+    expect(depths(got)).toEqual([1, 2])
+  })
+
+  it('ครั้งแรกหมดเวลา ครั้งที่สองตอบ → ได้เลน (ลองซ้ำหนึ่งครั้ง)', async () => {
+    let n = 0
+    const lane = await loadWith(() => (++n === 1 ? new Promise<Unit[]>(() => {}) : Promise.resolve([car('I1', 1)])))
+    lane._resetPlacementInFlight()
+    const p = lane.laneFromCloudStrict([], 'S1', 'F', 15)
+    await vi.advanceTimersByTimeAsync(lane.STRICT_LANE_TIMEOUTS_MS[0] + 10)
+    expect(depths(await p)).toEqual([1])
+    expect(n).toBe(2)
+  })
+
+  it('หมดเวลาทั้งสองครั้ง → โยน error ไม่คืนข้อมูลในเครื่อง (laneFromCloud เดิมคืนข้อมูลในเครื่อง)', async () => {
+    const lane = await loadWith(() => new Promise<Unit[]>(() => {}))
+    lane._resetPlacementInFlight()
+    const p = lane.laneFromCloudStrict([car('X', 9)], 'S1', 'F', 15)
+    const settled = p.then(() => 'ok', () => 'threw')
+    await vi.advanceTimersByTimeAsync(lane.STRICT_LANE_TIMEOUTS_MS.reduce((a, b) => a + b, 0) + 10)
+    expect(await settled).toBe('threw')
+    // ตัวเดิมยังทำแบบเดิม (ใช้กับ Re-location ทีละคัน/ผัง)
+    const loose = lane.laneFromCloud([car('X', 9)], 'S1', 'F', 15)
+    await vi.advanceTimersByTimeAsync(3000)
+    expect((await loose).map((u) => u.vin)).toEqual(['X'])
+  })
+})

@@ -60,31 +60,52 @@ export function isPlacementInFlight(vin: string, now = Date.now()): boolean {
 /** สำหรับเทสต์ */
 export function _resetPlacementInFlight(): void { inFlight.clear() }
 
+async function readLane(local: Unit[], siteId: string | null, blockId: string, slot: number, timeoutMs: number): Promise<Unit[]> {
+  const deadline = <T,>(p: Promise<T>) => Promise.race([
+    p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), timeoutMs)),
+  ])
+  const cloud = await deadline(fetchUnitsInLane(siteId, slot))
+  const byVin = new Map(local.map(u => [u.vin, u] as const))
+  const confirmed = new Set<string>()
+  // the cloud is the authority — except for a car THIS device just placed whose write has not landed yet:
+  // the cloud still shows its old spot, and letting that win hands the new spot out twice (see inFlight)
+  for (const u of cloud) { confirmed.add(u.vin); if (!isPlacementInFlight(u.vin)) byVin.set(u.vin, u) }
+  // local-only claims on this lane: the cloud was asked about this exact lane
+  // and did not name them. That is what a car that has moved away looks like
+  // — but also what an unsynced local placement looks like, so ask outright
+  // rather than assuming, and only move what the cloud actually answers for.
+  const ghosts = [...byVin.values()]
+    .filter(u => !confirmed.has(u.vin) && !isPlacementInFlight(u.vin) && u.slot === slot && u.block && blockKeyOfTag(u.block) === blockId)
+    .map(u => u.vin)
+  if (ghosts.length) {
+    const real = await deadline(fetchUnitsByVins(ghosts))
+    for (const u of real) byVin.set(u.vin, u)
+  }
+  return [...byVin.values()]
+}
+
 export async function laneFromCloud(local: Unit[], siteId: string | null, blockId: string, slot: number): Promise<Unit[]> {
   if (!isConfigured() || !blockId || !slot) return local
-  const deadline = <T,>(p: Promise<T>) => Promise.race([
-    p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 2500)),
-  ])
   try {
-    const cloud = await deadline(fetchUnitsInLane(siteId, slot))
-    const byVin = new Map(local.map(u => [u.vin, u] as const))
-    const confirmed = new Set<string>()
-    // the cloud is the authority — except for a car THIS device just placed whose write has not landed yet:
-    // the cloud still shows its old spot, and letting that win hands the new spot out twice (see inFlight)
-    for (const u of cloud) { confirmed.add(u.vin); if (!isPlacementInFlight(u.vin)) byVin.set(u.vin, u) }
-    // local-only claims on this lane: the cloud was asked about this exact lane
-    // and did not name them. That is what a car that has moved away looks like
-    // — but also what an unsynced local placement looks like, so ask outright
-    // rather than assuming, and only move what the cloud actually answers for.
-    const ghosts = [...byVin.values()]
-      .filter(u => !confirmed.has(u.vin) && !isPlacementInFlight(u.vin) && u.slot === slot && u.block && blockKeyOfTag(u.block) === blockId)
-      .map(u => u.vin)
-    if (ghosts.length) {
-      const real = await deadline(fetchUnitsByVins(ghosts))
-      for (const u of real) byVin.set(u.vin, u)
-    }
-    return [...byVin.values()]
+    return await readLane(local, siteId, blockId, slot, 2500)
   } catch {
     return local // offline / slow yard wifi — behave as before
   }
+}
+
+/** ความยาวรอคำตอบเลนจากคลาวด์ของ laneFromCloudStrict: ครั้งแรก แล้วลองซ้ำอีกครั้งที่รอนานขึ้น */
+export const STRICT_LANE_TIMEOUTS_MS = [4000, 8000]
+
+/**
+ * เหมือน laneFromCloud แต่ "ไม่เดา": อ่านเลนจากคลาวด์ไม่ได้ (หมดเวลา/ไม่มีเน็ต) → ลองซ้ำหนึ่งครั้งที่รอนานขึ้น แล้วโยน error
+ * ใช้กับยิงตามแถว — เดิมหมดเวลา 2.5 วิแล้วใช้ข้อมูลในเครื่อง ซึ่งบนมือถือที่โหลดรถยังไม่ครบไม่มีรถเดิมของเลน
+ * → วางคันที่ยิงทับรถเดิม (P05 NYB2 17 ต.ค. 11:21: 3 คันแรกไม่เห็นรถเดิม 5 คัน ช่องซ้อน)
+ */
+export async function laneFromCloudStrict(local: Unit[], siteId: string | null, blockId: string, slot: number): Promise<Unit[]> {
+  if (!isConfigured() || !blockId || !slot) return local
+  let last: unknown
+  for (const ms of STRICT_LANE_TIMEOUTS_MS) {
+    try { return await readLane(local, siteId, blockId, slot, ms) } catch (e) { last = e }
+  }
+  throw last instanceof Error ? last : new Error('lane read failed')
 }
