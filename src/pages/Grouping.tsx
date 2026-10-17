@@ -177,6 +177,7 @@ export function Grouping() {
       setMeta(m)
       // queue name = the sheet title, else a constructed one
       setSeqName(res.title.trim() || `${m.siteLabel} - Grouping to Dealer ( ${m.totalUnits} Units / ${m.groupCount} Group) Date ${m.date}`)
+      setViewQueueId(null) // a fresh import shows the imported sheet, not a run picked earlier
       setRows(printRows)
       setStats({ found, notFound, placed, assigned, cleared: clearVins.length })
       // the sheet's own title states how many units it carries — if fewer rows
@@ -223,6 +224,17 @@ export function Grouping() {
   const [selDay, setSelDay] = useState<string | 'all' | null>(null) // null = auto (latest day)
   const latestDay = useMemo(() => [...dayCounts.keys()].sort().pop() ?? null, [dayCounts])
   const dayFilter: string | 'all' = selDay ?? latestDay ?? 'all'
+  // picking a day on the calendar opens THAT day's grouping sheet right away (the newest run of the day
+  // when it has several — the cards below switch between them). Picking "all days" or a day with no run
+  // leaves the sheet as it is.
+  const pickDay = (d: string | 'all') => {
+    setSelDay(d)
+    if (d === 'all') return
+    const run = seqQueuesAll
+      .filter((q) => q.items.length > 0 && queueDay(q) === d)
+      .sort((a, b) => b.createdAt - a.createdAt)[0]
+    if (run) setViewQueueId(run.id)
+  }
 
   // Rebuild the sheet from a delivery run (clicked, or the newest when nothing
   // was uploaded this session) — the page shows the sheet (and its editable
@@ -233,7 +245,10 @@ export function Grouping() {
       x.kind === 'sequence' && x.items.length > 0 && (!currentSite || !x.site || x.site === currentSite))
     const picked = viewQueueId ? list.find((x) => x.id === viewQueueId) : null
     if (!picked && rows) return null
-    const q = picked ?? [...list].sort((a, b) => b.createdAt - a.createdAt)[0]
+    // no queue clicked → the sheet follows the day the calendar shows (newest run of that day);
+    // a day with no run keeps the old fallback (newest run overall)
+    const dayList = dayFilter === 'all' ? list : list.filter((x) => queueDay(x) === dayFilter)
+    const q = picked ?? [...(dayList.length ? dayList : list)].sort((a, b) => b.createdAt - a.createdAt)[0]
     if (!q) return null
     const count = new Map<string, number>()
     for (const i of q.items) count.set(i.group ?? '', (count.get(i.group ?? '') ?? 0) + 1)
@@ -260,7 +275,7 @@ export function Grouping() {
       groupCount: count.size, locPrefix: siteGroupingConfig(siteName).prefix,
     }
     return { id: q.id, name: q.name, rows: sheetRows, meta: m }
-  }, [rows, queues, currentSite, rowByVin, unitByVin, siteName, viewQueueId])
+  }, [rows, queues, currentSite, rowByVin, unitByVin, siteName, viewQueueId, dayFilter])
 
   // admin's Lane load edits (grouping code → lane), shown live in the sheet and
   // carried into prints/Create even before บันทึก writes them to the queues
@@ -437,7 +452,7 @@ export function Grouping() {
               style={editingVins ? { background: '#dc2626', color: '#fff', borderColor: 'transparent' } : undefined}>
               {editingVins ? <><X size={15} /> เสร็จสิ้น</> : <><Pencil size={15} /> แก้ไขรายชื่อรถ</>}
             </button>
-            <DayPicker days={dayCounts} value={dayFilter} onChange={setSelDay} />
+            <DayPicker days={dayCounts} value={dayFilter} onChange={pickDay} />
           </div>
         }
       />
