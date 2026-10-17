@@ -502,7 +502,8 @@ export function keepNewerPlacement(local: Unit | undefined, incoming: Unit): Uni
  */
 let placementChain: Promise<void> = Promise.resolve()
 let placementSeq = 0
-const placementIntent = new Map<string, number>() // vin → seq ของคำสั่งวางล่าสุด
+/** vin → คำสั่งวางล่าสุด (seq) และเป็นแบบ compare-and-set ไหม (guarded = ขึ้นกับว่าคำสั่งก่อนหน้าถึงคลาวด์แล้ว) */
+const placementIntent = new Map<string, { seq: number; guarded: boolean }>()
 function enqueuePlacementWrite(job: () => Promise<void>): void {
   placementChain = placementChain.then(job).catch((e) => console.error('[yard] placement write', e))
 }
@@ -1497,11 +1498,15 @@ export const useYard = create<YardState>()(
         const settle = () => { if (--open === 0) onSettled?.(results) }
         // ลำดับที่คนยิงคือลำดับที่เขียน (ดู enqueuePlacementWrite): คันไหนมีคำสั่งวาง
         // ใหม่กว่าเข้าคิวมาแล้ว ชุดนี้ไม่ต้องเขียนคันนั้น — ชุดใหม่พาตำแหน่งล่าสุดไปเอง
+        // ยกเว้นคำสั่งใหม่เป็น compare-and-set: `from` ของมันคือตำแหน่งที่เครื่องนี้คาดว่าชุดนี้จะเขียน (laneFromCloud
+        // ใช้ค่าในเครื่องของคันที่ยัง in-flight) — ถ้าชุดนี้ข้าม คลาวด์ยังเป็นตำแหน่งเดิม ชุดใหม่ถูกปฏิเสธ คันเดิมไม่ขยับ
+        // แต่ประวัติบอกว่าเลื่อนแล้ว = ช่องซ้อน (ยิงตามแถวรัว ๆ P05 NYB2 17 ต.ค. 11:22) → ต้องเขียนชุดนี้ให้ถึงก่อน
         const seq = ++placementSeq
-        for (const v of intentional) placementIntent.set(v, seq)
+        const guardedVins = new Set(guarded.map((g) => g.vin))
+        for (const v of intentional) placementIntent.set(v, { seq, guarded: guardedVins.has(v) })
         // จนกว่าการเขียนจะถึงคลาวด์ ตำแหน่งใหม่ในเครื่องต้องชนะค่าคลาวด์ตอนแจกคันที่ในเลน (ดู laneCloud inFlight)
         markPlacementInFlight(intentional, seq)
-        const superseded = (v: string) => placementIntent.get(v) !== seq
+        const superseded = (v: string) => { const i = placementIntent.get(v); return !!i && i.seq !== seq && !i.guarded }
         // คันที่ถูกเลื่อน (guarded) เขียนก่อนคันที่ยิง (plain) — คิวเขียนวิ่งตามลำดับ ถ้าขาดตอนกลางทาง (สัญญาณหลุด/ปิดแอป)
         // จะเหลือ "คันเดิมเลื่อนลงแล้ว คันที่ยิงยังไม่ลง" (ยิงใหม่ได้) แทน "คันที่ยิงลงแล้ว คันเดิมยังอยู่ช่องเดิม" = 2 คันช่องเดียว (D2202 16 ต.ค.)
         // ลำดับคันใน guarded = ลำดับใน items (ยิงตามแถวส่งคันท้ายสุดก่อน ดู planLaneUpdates)
