@@ -100,6 +100,9 @@ export class World {
         await world.write(next)
       },
       fetchUnitPlacements: async () => [...world.cloud.values()].map((u) => ({ ...u })),
+      // รถทุกคันในช่อง (slot) ของยาร์ด — เหมือน db.fetchUnitsInLane (laneFromCloud ใช้ตอนยิงตามแถว)
+      fetchUnitsInLane: async (siteId: string | null, slot: number) =>
+        [...world.cloud.values()].filter((u) => u.slot === slot && u.status !== 'DEPARTED' && (!siteId || u.site === siteId)).map((u) => ({ ...u })),
       fetchUnitsByVins: async (vins: string[]) => vins.map((v) => world.cloud.get(v)).filter((u): u is Unit => !!u).map((u) => ({ ...u })),
       updatePlacementIfUnchanged: async (guard: { vin: string; from: { block?: string; row?: number; slot?: number } }, next: Unit) => {
         const cur = world.cloud.get(guard.vin)
