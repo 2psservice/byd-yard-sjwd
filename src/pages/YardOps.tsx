@@ -44,7 +44,7 @@ import { LOCATION_KEY, VIN_PHOTO_CELL } from '../lib/trackingColumns'
 import { blockTag, blockKeyOfTag, resolveBlockByName } from '../lib/format'
 import { fetchUnitsByVins, fetchUnitsInLane, fetchTrackingRowsByVin, isConfigured } from '../lib/db'
 import { refreshUnitFocus } from '../lib/unitFocus'
-import { laneFromCloud } from '../lib/laneCloud'
+import { laneFromCloud, laneFromCloudStrict } from '../lib/laneCloud'
 import { createScanDecoder, decodeImageFile, type ScanDecoder, IS_IOS } from '../lib/scanDecoder'
 import { IN_APP_BROWSER, IS_LINE_BROWSER, IS_ANDROID, openExternal, openChromeIntent, copyLink } from '../lib/inAppBrowser'
 import { useRecentOps } from '../store/useRecentOps'
@@ -4825,6 +4825,8 @@ function RelocationView() {
   // รถที่ยิงแล้วแต่ยังไม่ได้ลง "ยิงล่าสุด" (reloc:save) — ลงหลังคลาวด์ตอบ โดยชุดเขียนใดก็ตามที่ครอบรถคันนั้น (รอบที่ถูกรอบใหม่แทนที่
   // ไม่เคยเขียน แต่รอบใหม่ครอบทั้ง seq จึงลงให้) vin → ตัวช่วยเรียกตอนเสร็จ
   const lanePendingRecentRef = useRef<Set<string>>(new Set())
+  // รถในรอบนี้ที่ถูกส่งเขียนแล้ว (หรืออยู่ตำแหน่งนั้นอยู่แล้ว) — อ่านเลนจากคลาวด์ไม่ได้ จะถอนเฉพาะคันที่ยังไม่ถูกเขียนออกจากลำดับ
+  const laneSavedRef = useRef<Set<string>>(new Set())
   // walking direction: 'head' = 1st scan is คันที่ 1 · 'tail' = the worker
   // walks tail→head in ONE pass, so each NEW scan becomes คันที่ 1 and the
   // earlier scans slide down — the FIRST scan ends up last
@@ -4836,6 +4838,7 @@ function RelocationView() {
     setLaneDir(d)
     laneOrderRef.current = []
     lanePendingRecentRef.current.clear()
+    laneSavedRef.current.clear()
     laneGenRef.current++
     setLaneAdded([])
     toast('info', d === 'tail' ? 'ยิงจากท้ายแถว — คันที่ยิงล่าสุดจะเป็นคันที่ 1' : 'ยิงจากหัวแถว — คันแรกที่ยิงเป็นคันที่ 1')
@@ -5128,6 +5131,7 @@ function RelocationView() {
         rowOf: (vin) => (vin === r!.vin ? r : trackingRows.find(x => x.vin === vin)),
         codeOf, locOf: yardLocFull,
       })
+      for (const v of seq) laneSavedRef.current.add(v) // ชุดนี้ครอบทั้ง seq (เขียน หรืออยู่ตำแหน่งนั้นแล้ว)
       if (!updates.length) { settleRecent([]); return } // ทุกคันอยู่ตำแหน่งที่ยิงอยู่แล้ว — ไม่มีอะไรต้องเขียน/ลงประวัติ
       // ตรวจทานหลังคลาวด์รับชุดนี้แล้ว — เฉพาะชุดล่าสุด (gen) ของการยิงรัวชุดนี้
       updateLocations(updates, (results) => {
@@ -5144,10 +5148,26 @@ function RelocationView() {
     // it back would teleport it — the T5004→W0101 bug), and a car it has never
     // loaded is invisible, so the rebuild stacks a scanned car on top of it and
     // two cars end up claiming one square. Ask the cloud for the whole lane and
-    // rebuild from that. Offline / slow wifi keeps the old trust-local behaviour.
+    // rebuild from that. No cloud answer (offline / slow wifi) = no write, see onLaneReadFail.
+    // อ่านเลนจากคลาวด์ไม่ได้ (สัญญาณไม่ดี) → ไม่เดาจากข้อมูลในเครื่อง (อาจไม่มีรถเดิมของเลน → วางทับ, P05 17 ต.ค.)
+    // ถอนคันที่ยังไม่ถูกเขียนออกจากลำดับ แล้วให้ยิงใหม่ — ยกเว้นมีการยิงใหม่กว่าแล้ว (รอบนั้นครอบคันนี้ไปเอง)
+    const onLaneReadFail = () => {
+      if (gen !== laneGenRef.current) return
+      const unsaved = ord.filter(v => !laneSavedRef.current.has(v))
+      if (!unsaved.length) return
+      laneOrderRef.current.splice(0, laneOrderRef.current.length, ...ord.filter(v => laneSavedRef.current.has(v)))
+      for (const v of unsaved) lanePendingRecentRef.current.delete(v)
+      lastLaneHit.current = { v: '', at: 0 } // ยิงคันเดิมซ้ำได้ทันที
+      const kept = laneDirRef.current === 'tail' ? [...laneOrderRef.current].reverse() : laneOrderRef.current
+      setLaneAdded(kept.map((vin, i) => ({ vin, code: codeOf(L.blockId, L.slot, i + 1) })))
+      toast('err', `สัญญาณไม่ดี — ตรวจแถว ${L.blockId}${L.slot} จากระบบไม่ได้ ยังไม่บันทึก ${unsaved.map(v => '…' + v.slice(-6)).join(', ')} — ยิงใหม่`)
+    }
     if (!isConfigured()) buildAndApply(incumbents)
-    else laneFromCloud(siteUnits, currentSite, L.blockId, L.slot)
-      .then((lane) => buildAndApply(laneOccupants(lane, L.blockId, L.slot).filter(u => !ord.includes(u.vin) && u.vin !== r!.vin)))
+    else laneFromCloudStrict(siteUnits, currentSite, L.blockId, L.slot)
+      .then((lane) => buildAndApply(laneOccupants(lane, L.blockId, L.slot).filter(u => !ord.includes(u.vin) && u.vin !== r!.vin)), (e) => {
+        console.error('[lane] cloud lane read failed', e)
+        onLaneReadFail()
+      })
       .catch((e) => {
         // เดิมไม่มี .catch — buildAndApply โยน error แล้วการยิงหายเงียบ ๆ (ประวัติ/แจ้งสำเร็จไปแล้วแต่ไม่มีอะไรถูกเขียน)
         console.error('[lane] rebuild failed', e)
@@ -5284,7 +5304,7 @@ function RelocationView() {
                 setLaneStr(v)
                 // reset the scan round only on a real lane edit — a handheld
                 // burst appending a VIN here is NOT a lane change
-                if (v === '' || parseLane(v)) { setLaneAdded([]); laneOrderRef.current = []; lanePendingRecentRef.current.clear(); laneGenRef.current++ }
+                if (v === '' || parseLane(v)) { setLaneAdded([]); laneOrderRef.current = []; lanePendingRecentRef.current.clear(); laneSavedRef.current.clear(); laneGenRef.current++ }
               }}
             />
             {laneReady ? (
