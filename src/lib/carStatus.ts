@@ -174,6 +174,20 @@ export function pastGateOutFlush(c: Record<string, string>, now: number = Date.n
 }
 
 /**
+ * รถที่ยิง Gate-out / Pre Gate-out ไปแล้ว แต่กำลังถูกยิง Gate-in อีกครั้ง — คืนเวลา/คนที่ยิงออก (null = ไม่ใช่รถที่ออกไปแล้ว)
+ * การ์ดรับรถใช้เตือนให้ยืนยันว่ารถกลับเข้าลานจริง: ส่วนใหญ่เป็นรถตีกลับ (Heavy NG) แต่ 17 ต.ค. มีการยิงผิดคัน
+ * (…194405 ออกไปแล้ว 14 ต.ค. แถวกลับเป็น In Yard) · รถย้ายยาร์ดมาถึงเป็น Pre Gate-in ไม่เข้าเงื่อนไขนี้
+ */
+export function returningGateOut(
+  c: Record<string, string>,
+  history: { at: number; by?: string; field: string; to?: string }[] = [],
+): { at: number; by: string } | null {
+  if (!RELEASED_STATUSES.has((c[CAR_STATUS_KEY] || '').trim())) return null
+  const ev = [...history].reverse().find(e => e.field === CAR_STATUS_KEY && RELEASED_STATUSES.has(String(e.to ?? '').trim()))
+  return { at: gateOutScanMs(c) || ev?.at || 0, by: ev?.by || '' }
+}
+
+/**
  * Legacy station strings the field app used to write into Car Status —
  * "PARKING PM · PM20" (driver delivered) and "PM · PM20 OK" / "… NG" (station
  * recorded). They are work records, not lifecycle statuses, and being unknown

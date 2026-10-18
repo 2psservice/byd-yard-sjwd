@@ -17,7 +17,7 @@ import { useYard, useUnits, useTrips, useBlocks, attachPendingDamages, type Plac
 import { isAtLanePos, planLaneUpdates, recordableDrafts } from '../lib/laneRebuild'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { overlayInspection } from '../lib/inspectionStatus'
-import { isDamaged, deriveCarStatus, hasLeftGate, IN_YARD_STATUSES, CAR_STATUS_META, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY } from '../lib/carStatus'
+import { isDamaged, deriveCarStatus, hasLeftGate, IN_YARD_STATUSES, CAR_STATUS_META, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY, returningGateOut, fmtGateOutStamp } from '../lib/carStatus'
 import { useOps, useActiveQueues, useSiteQueues, activeProcess, stageOf, isSequenceQueue, isPreGateInQueue, seqStageOf, isQueueComplete, isEmptyQueue, isStationWorkComplete, queueTypeOf, stampStationDate, stationProgress, drivingNow, gateInArrived, gateInPendingItems } from '../store/useOps'
 import type { WorkQueue, QueueItem, QueueType, QueueStage } from '../store/useOps'
 import { CarTopView } from '../components/CarTopView'
@@ -1968,7 +1968,9 @@ function WalkView() {
 
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
   // reset every check per scanned car
-  useEffect(() => { setModelOk(null); setColorOk(null) }, [trackingVin])
+  // รถที่ Gate-out ไปแล้วถูกยิงเข้าอีกครั้ง: ต้องติ๊กยืนยันว่ารถกลับเข้าลานจริง (ดู returningGateOut)
+  const [returnOk, setReturnOk] = useState(false)
+  useEffect(() => { setModelOk(null); setColorOk(null); setReturnOk(false) }, [trackingVin])
 
   // safety net: a Pre Gate-in car this station doesn't cover with any queue —
   // same fix as the admin Gate In/Out board's virtual card (PR #263). A device
@@ -2461,6 +2463,8 @@ function WalkView() {
         )
         const mismatch = [modelOk === 'NG' && 'รุ่นรถ', colorOk === 'NG' && 'สีรถ'].filter(Boolean) as string[]
         const verified = modelOk === 'OK' && colorOk === 'OK'
+        const returning = isPre ? returningGateOut(trackRow.cells, trackRow.history) : null
+        const canConfirm = verified && (!returning || returnOk)
         // ── which arrival lot did this car come on? ──
         // The gate scans a VIN and gets a car, but the work is organised by lot
         // ("BIG MOTOR SALE 23 U") — the operator has to know which group the car
@@ -2600,16 +2604,33 @@ function WalkView() {
                       damage step was taken out at the yard's request — defects
                       are recorded at the อัพเดท Defect station instead, so the
                       gate is not also a inspection queue. */}
+                  {returning && (
+                    <label className="flex items-start gap-2.5 rounded-2xl p-3 text-[12.5px] leading-relaxed cursor-pointer"
+                      style={{ background: 'rgba(245,158,11,0.12)', color: '#92400e', border: '1px solid rgba(245,158,11,0.35)' }}>
+                      <input type="checkbox" checked={returnOk} onChange={(e) => setReturnOk(e.target.checked)}
+                        className="mt-0.5 shrink-0" style={{ width: 18, height: 18 }} />
+                      <span>
+                        <span className="flex items-center gap-1.5 font-bold text-[13px]">
+                          <AlertTriangle size={15} /> รถคันนี้ Gate-out ไปแล้ว
+                        </span>
+                        <span className="block">
+                          {returning.at ? `เมื่อ ${fmtGateOutStamp(returning.at)}` : ''}{returning.by ? ` โดย ${returning.by}` : ''} — ตรวจว่ารถอยู่ตรงหน้าจริง (VIN ตรงคัน)
+                        </span>
+                        <span className="block font-semibold">ติ๊กเพื่อยืนยันว่ารถกลับเข้าลาน</span>
+                      </span>
+                    </label>
+                  )}
                   <button
                     onClick={() => doTrackingGateIn()}
-                    disabled={!verified}
+                    disabled={!canConfirm}
                     className="w-full h-14 rounded-2xl text-[16px] font-bold flex items-center justify-center gap-2 active:scale-95 transition-all"
-                    style={verified
+                    style={canConfirm
                       ? { background: '#16a34a', color: '#fff', boxShadow: '0 8px 24px -6px #16a34a80' }
                       : { background: 'var(--chip)', color: 'var(--faint)', cursor: 'not-allowed' }}>
                     <CheckCircle2 size={20} /> {
                       mismatch.length ? 'Gate-in ไม่ได้ — ข้อมูลไม่ตรง'
                         : !verified ? 'ยืนยันรุ่นและสีก่อน'
+                        : !canConfirm ? 'ติ๊กยืนยันว่ารถกลับเข้าลานก่อน'
                         : 'Confirm Gate in'
                     }
                   </button>
