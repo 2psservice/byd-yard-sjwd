@@ -44,7 +44,7 @@ import { LOCATION_KEY, VIN_PHOTO_CELL } from '../lib/trackingColumns'
 import { blockTag, blockKeyOfTag, resolveBlockByName } from '../lib/format'
 import { fetchUnitsByVins, fetchUnitsInLane, fetchTrackingRowsByVin, isConfigured } from '../lib/db'
 import { refreshUnitFocus } from '../lib/unitFocus'
-import { laneFromCloud, laneFromCloudStrict } from '../lib/laneCloud'
+import { laneFromCloudStrict } from '../lib/laneCloud'
 import { createScanDecoder, decodeImageFile, type ScanDecoder, IS_IOS } from '../lib/scanDecoder'
 import { IN_APP_BROWSER, IS_LINE_BROWSER, IS_ANDROID, openExternal, openChromeIntent, copyLink } from '../lib/inAppBrowser'
 import { useRecentOps } from '../store/useRecentOps'
@@ -5227,9 +5227,22 @@ function RelocationView() {
     // already standing in the lane — confirm the depth against the cloud so two
     // phones can never hand out the same คันที่ and stack two cars on one square
     const depthMax = blk?.rows ?? 8
-    const lane = await laneFromCloud(siteUnits, currentSite, blockId, slotNo)
+    // อ่านเลนจากคลาวด์ไม่ได้ (สัญญาณไม่ดี) → ไม่เดาคันที่จากข้อมูลในเครื่อง: มือถือที่โหลดรถไม่ครบจะแจกคันที่ที่มีรถอยู่ = ช่องซ้อน
+    // (ต้นเหตุเดียวกับยิงตามแถว P05 17 ต.ค.) · ระหว่างรอ (สูงสุด ~12 วิ) ปุ่มขึ้นกำลังบันทึก กดซ้ำไม่ได้
+    setSaving(true)
+    let lane: Unit[]
+    try {
+      lane = await laneFromCloudStrict(siteUnits, currentSite, blockId, slotNo)
+    } catch (e) {
+      console.error('[reloc] cloud lane read failed', e)
+      setSaving(false)
+      lastSaveGuard.current = 0
+      toast('err', `สัญญาณไม่ดี — ตรวจแถว ${blockId}${slotNo} จากระบบไม่ได้ ยังไม่บันทึก กดบันทึกใหม่`)
+      return
+    }
     const depth = firstFreeDepth(lane, blockId, slotNo, depthMax, row.vin)
     if (depth === null) {
+      setSaving(false)
       lastSaveGuard.current = 0
       toast('err', `แถว ${blockId}${slotNo} เต็มแล้ว (${depthMax} คัน)`)
       return
@@ -5248,7 +5261,6 @@ function RelocationView() {
     // away and the car snapped to the cloud's spot — while the history line and
     // the green toast had already announced "ย้ายไป Q3701". The guard stays only
     // on cars nobody scanned (lane-mode bystanders, see buildAndApply).
-    setSaving(true)
     const n = updateLocations([{
       vin: row.vin, block: blockId, row: depth, slot: slotNo,
       modelName: row.cells['Model name'] || row.cells['Model'] || undefined,
