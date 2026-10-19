@@ -508,6 +508,28 @@ function enqueuePlacementWrite(job: () => Promise<void>): void {
   placementChain = placementChain.then(job).catch((e) => console.error('[yard] placement write', e))
 }
 
+/**
+ * รถที่เครื่องนี้ยังไม่มีในเครื่อง (เพิ่งเปิดแอป ข้อมูลรถยังโหลดไม่ครบ) → ดึงจากคลาวด์ (ยาร์ดที่เลือกอยู่) ใส่ store แล้วคืน VIN ที่ได้
+ * markDeparted / moveUnitsToSite เดิมข้ามรถที่ไม่อยู่ในเครื่องไปเงียบ ๆ — Gate-out ข้ามยาร์ดจึงไม่ปิดแถวยาร์ดต้นทาง
+ * รถที่ออกไปแล้วค้างบนผังเป็นรถผี (NYB2 → 3D THUNGKRAT 9 คัน 19 ต.ค. 13:32–13:40 เครื่องที่เพิ่งเปิดหลังพักเที่ยง)
+ */
+async function loadMissingUnits(
+  get: () => { units: Record<string, Unit> },
+  set: (fn: (s: { units: Record<string, Unit> }) => { units: Record<string, Unit> }) => void,
+  vins: string[],
+): Promise<string[]> {
+  const missing = vins.filter((v) => !get().units[v])
+  if (!missing.length || !db.isConfigured()) return []
+  const got = await db.fetchUnitsByVins(missing).catch((e) => { console.error('[yard] loadMissingUnits', e); return [] as Unit[] })
+  if (!got.length) return []
+  set((s) => {
+    const units = { ...s.units }
+    for (const u of got) if (!units[u.vin]) units[u.vin] = u
+    return { units }
+  })
+  return got.map((u) => u.vin)
+}
+
 /** เขียน "รถออกแล้ว" ขึ้นคลาวด์ไม่สำเร็จ → ลองใหม่ (หน่วงเพิ่มขึ้น สูงสุด 5 ครั้ง) — เดิม markDeparted ใช้ upsertUnits ที่ไม่เคย reject
  *  เขียนพลาดเงียบ ๆ: คลาวด์ยังถือช่องจอดของรถที่ออกไปแล้ว (รถผีกินช่อง) และตัวกวางานรอบถัดไปก็ไม่เห็นเพราะสำเนาในเครื่องถูกล้างไปแล้ว
  *  ลองใหม่เฉพาะรถที่ยังเป็น DEPARTED ไม่มีช่องในเครื่อง (ถ้าเพิ่งถูกวางใหม่ ไม่ทับ) */
@@ -907,7 +929,11 @@ export const useYard = create<YardState>()(
         // after enough gate-outs the auto-plan reported a full yard.
         const before = get().units
         const u = before[vin]
-        if (!u) return // sheet-only car (no yard unit) — nothing to release
+        if (!u) {
+          // ไม่มีในเครื่อง: อาจเป็นรถที่ไม่มีแถวตำแหน่งจริง หรือเครื่องยังโหลดไม่ถึง → ถามคลาวด์ก่อน เจอแล้วทำต่อ (ดู loadMissingUnits)
+          void loadMissingUnits(get, set, [vin]).then((found) => { if (found.includes(vin)) get().markDeparted(vin) })
+          return
+        }
         const units = { ...before }
         units[vin] = { ...u, status: 'DEPARTED', block: undefined, row: undefined, slot: undefined }
         // the car that leaves frees ONLY its own place — every other car in the
@@ -924,6 +950,8 @@ export const useYard = create<YardState>()(
 
       markDepartedMany: (vins) => {
         const before = get().units
+        const absent = vins.filter((v) => !before[v])
+        if (absent.length) void loadMissingUnits(get, set, absent).then((found) => { if (found.length) get().markDepartedMany(found) })
         const units = { ...before }
         const cleared: Unit[] = []
         for (const vin of vins) {
@@ -1405,6 +1433,9 @@ export const useYard = create<YardState>()(
        *  and goes back to EXPECTED, waiting for the new yard's gate. */
       moveUnitsToSite: (vins, siteId) => {
         const before = get().units
+        // รถที่ยังไม่อยู่ในเครื่อง: ดึงจากคลาวด์แล้วย้ายต่อ (ไม่งั้นแถวยาร์ดต้นทางไม่ถูกปิด — ดู loadMissingUnits)
+        const absent = vins.filter((v) => !before[v])
+        if (absent.length) void loadMissingUnits(get, set, absent).then((found) => { if (found.length) get().moveUnitsToSite(found, siteId) })
         const units = { ...before }
         const changed: Unit[] = []
         // โหมด yard_units: ไม่เปลี่ยนป้ายแถวเดิม — ปิดแถวของยาร์ดต้นทาง (DEPARTED ล้างช่อง ครั้งเดียวแล้วไม่มีใครเขียนอีก)
