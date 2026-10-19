@@ -139,6 +139,9 @@ describe('Gate-out ข้ามยาร์ดต้องเป็นการ�
     return { useTracking, pushed }
   }
 
+  // การส่งแถวขึ้นคลาวด์ผ่านคิวเรียงตาม VIN (keyedQueue) — ออกไปหลัง microtask ไม่ใช่ทันทีที่สั่ง
+  const flushPushes = async () => { for (let i = 0; i < 20; i++) await Promise.resolve() }
+
   it('transferToYard พร้อม gateOut: เขียนแถวครั้งเดียว site=ปลายทาง · มีป้ายต้นทาง · รอบเก่าถูกปิดพร้อมเวลาออกและช่องจอดสุดท้าย · ประวัติบอกว่า Gate-out', async () => {
     const { useTracking, pushed } = await setupPush()
     const at = Date.now()
@@ -147,6 +150,7 @@ describe('Gate-out ข้ามยาร์ดต้องเป็นการ�
       gateOut: { stampText: '06/10/2026 15:00', at, lastLocation: 'L7306' },
     })
     expect(ok).toBe(true)
+    await flushPushes()
     expect(pushed.length, 'ส่งขึ้นฐานข้อมูลครั้งเดียว').toBe(1)
     const row = pushed[0][0]
     expect(row.site).toBe('S2')
@@ -169,6 +173,7 @@ describe('Gate-out ข้ามยาร์ดต้องเป็นการ�
     g.updateCell('V1', 'Gate Out time stamp', '06/10/2026 15:00')
     g.updateCell('V1', 'Gate Out Time', String(Date.now()))
     g.startNewTrip('V1', { yard: S2.name, keepQueueProgress: true })
+    await flushPushes()
     expect(pushed.length).toBeGreaterThan(1)
     expect(pushed.slice(0, -1).some((p) => p[0].site === 'S1')).toBe(true)
   })

@@ -37,6 +37,7 @@ export interface RestorePositionsResult {
 }
 import { idbBulkPut, idbClear, idbDelete, idbGetAllRows, idbPut } from '../lib/idb'
 import * as db from '../lib/db'
+import { createKeyedQueue } from '../lib/keyedQueue'
 import { supabase } from '../lib/supabase'
 import { loadMark } from '../lib/loadMarks'
 import { onSync, sendSync, type RowMsg, type RowsPayload } from '../lib/syncBus'
@@ -120,10 +121,13 @@ function scheduleTruncatedSync(run: () => void) {
 // 6-hour full sync — the operator saw "saved", every other device saw the old
 // value for half a day.
 const failedPush = new Set<string>()
+// แถวของรถคันเดียวกันส่งตามลำดับที่สั่ง — การส่งเป็น upsert ทั้งแถว ส่งพร้อมกันบนสัญญาณช้าแล้วครั้งเก่าถึงทีหลังจะทับครั้งใหม่
+// (ประวัติการเลื่อนตามแถวหาย: F18 NYB2 19 ต.ค. — ดู keyedQueue)
+const pushQueue = createKeyedQueue()
 /** Fire-and-forget row push that REMEMBERS failures for syncCloud to retry. */
 function pushRows(rows: TrackRow[]): void {
   if (!rows.length) return
-  db.upsertTrackingRows(rows)
+  pushQueue(rows.map((r) => r.vin), () => db.upsertTrackingRows(rows))
     .then(() => { for (const r of rows) failedPush.delete(r.vin) })
     .catch(() => { for (const r of rows) failedPush.add(r.vin) })
   pushSharedCells(rows)
