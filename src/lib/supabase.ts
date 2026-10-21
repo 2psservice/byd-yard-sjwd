@@ -12,10 +12,19 @@ export const isConfigured = () =>
   !SUPABASE_ANON_KEY.includes('your-anon-key-here') &&
   !SUPABASE_ANON_KEY.includes('your-anon-public-key')
 
+/**
+ * หัวคำขอบอกเวอร์ชันแอป (เวลา build, ms) — ทุกคำขอขึ้นฐานข้อมูลแนบไปด้วย
+ * ฐานข้อมูลใช้แยก "แอปเวอร์ชันเก่าที่ค้างในเครื่อง" (ไม่มีหัวนี้ หรือเลขต่ำกว่าที่กำหนด) — จดไว้ และเมื่อเปิดล็อกแล้วไม่ให้เขียน
+ * (supabase-client-build-guard.sql) · 20 ต.ค. โน้ตบุ๊กที่เปิดแอปเวอร์ชันก่อน 3 ต.ค. ย้ายแถวรถ 144 คันข้ามยาร์ดเองในชื่อคนที่ล็อกอินค้าง
+ */
+export const BUILD_HEADER = 'x-sjwd-build'
+export const buildHeaders = (): Record<string, string> => ({ [BUILD_HEADER]: String(__BUILD_AT__) })
+
 export const supabase = createClient(
   SUPABASE_URL ?? 'https://placeholder.supabase.co',
   SUPABASE_ANON_KEY ?? 'placeholder-key',
   {
+    global: { headers: buildHeaders() },
     auth: { persistSession: false },
     realtime: { params: { eventsPerSecond: 20 } },
   },

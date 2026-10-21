@@ -9,6 +9,9 @@ export default defineConfig({
   // is useless for "which build is this phone on") + short commit SHA when CI
   // provides one, so a screenshot maps straight to a PR.
   define: {
+    // เวลา build (ms) — แนบไปกับทุกคำขอขึ้นฐานข้อมูล (หัว x-sjwd-build ดู src/lib/supabase.ts) ให้ฐานข้อมูลแยก
+    // แอปเวอร์ชันเก่าที่ค้างในเครื่องออกได้ (supabase-client-build-guard.sql)
+    __BUILD_AT__: JSON.stringify(Date.now()),
     __BUILD__: JSON.stringify((() => {
       const t = new Date().toLocaleString('en-GB', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
       const sha = (process.env.GITHUB_SHA ?? '').slice(0, 7)
