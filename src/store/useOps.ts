@@ -845,7 +845,9 @@ export const useOps = create<OpsState>()(
           const was = new Map(existing.items.map((i) => [i.vin, i]))
           const merged = rows.map((it) => {
             const p = was.get(it.vin)
-            return p ? { ...it, done: p.done, gatedOut: p.gatedOut, doneAt: p.doneAt, doneBy: p.doneBy, stage: p.stage,
+            // addedAt เดิมด้วย — การออกจากลานนับเฉพาะหลังรถเข้าคิว (ดู itemLeftYard)
+            // อัปโหลดซ้ำแล้วเวลาเข้าคิวเลื่อนมาเป็นตอนนี้ = รถที่ออกไปก่อนหน้าค้างเป็น "รอ"
+            return p ? { ...it, addedAt: p.addedAt ?? it.addedAt, done: p.done, gatedOut: p.gatedOut, doneAt: p.doneAt, doneBy: p.doneBy, stage: p.stage,
               atWashAt: p.atWashAt, atLaneAt: p.atLaneAt, deliveredBy: p.deliveredBy, returnedBy: p.returnedBy, returnedAt: p.returnedAt } : it
           })
           // Clear any leftover `type` too — a name collision with an old
@@ -1147,6 +1149,9 @@ function rowClassOf(r: TrackRow, epoch: number): RowClass {
 }
 
 let reconcileTimer: ReturnType<typeof setTimeout> | null = null
+/** คิวส่งรถ: รอยออกจากลานที่เก่ากว่าเวลารถเข้าคิวเกินเท่านี้ ไม่นับเป็นการออกของรันนั้น (เผื่อนาฬิกาเครื่องคลาดกัน) */
+export const SEQUENCE_DEPARTURE_SLACK_MS = 30 * 60_000
+
 export function reconcileGateOuts() {
   const rows = useTracking.getState().rows
   const epoch = flushEpoch(Date.now())
@@ -1212,8 +1217,12 @@ export function reconcileGateOuts() {
       return !!cells && departedFromSite(cells, q.site, sites, since)
     }
     // "รถคันนี้ออกจากลานของคิวนี้ไปแล้ว" — คิวของยาร์ดนี้จึงหมดหน้าที่กับมัน
+    // คิวส่งรถก็นับเฉพาะการออก "หลังรถเข้าคิว" (เผื่อนาฬิกาเครื่องต่างกัน) — รอย
+    // ออกจากลานที่เก่ากว่าคิว ไม่ใช่การออกของรันนี้: 21 ต.ค. เครื่องที่ยังถือแถว
+    // ก่อนแก้ (ย้ายยาร์ดผิด 20 ต.ค. 20:21 ที่ย้อนไปแล้ว) ตราคิวที่สร้าง 13:08 ว่า
+    // 2 คันออกแล้วถาวร ทั้งที่รถยังจอดอยู่ หน้างานยิงออกไม่ได้ ("ไม่มีคิวงาน")
     const itemLeftYard = (i: QueueItem) =>
-      isSequenceQueue(q) ? leftYard(i.vin) : leftYard(i.vin, i.addedAt ?? 0)
+      isSequenceQueue(q) ? leftYard(i.vin, (i.addedAt ?? 0) - SEQUENCE_DEPARTURE_SLACK_MS) : leftYard(i.vin, i.addedAt ?? 0)
     // Pre Gate-in must be resolved the SAME way every other screen resolves it
     // (queue type first, name only as the legacy fallback). Testing the name
     // alone broke the moment an admin renamed an arrival lot to something
