@@ -3,3 +3,4 @@
 
 /** Build timestamp injected by vite.config `define` — shown in the UI to spot stale service-worker builds. */
 declare const __BUILD__: string
+declare const __BUILD_AT__: number
