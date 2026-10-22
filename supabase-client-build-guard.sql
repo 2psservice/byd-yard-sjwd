@@ -27,6 +27,8 @@ create table if not exists public.client_build_log (
   ua    text,
   ip    text
 );
+-- รหัสเครื่อง (แอปตั้งแต่ PR "x-sjwd-device" แนบหัวนี้ = app_heartbeats.device_id) — ติดตั้งแล้วรันขั้นที่ 1 ซ้ำได้
+alter table public.client_build_log add column if not exists device text;
 alter table public.client_build_log enable row level security;
 drop policy if exists "client_build_log insert" on public.client_build_log;
 create policy "client_build_log insert" on public.client_build_log for insert to anon, authenticated with check (true);
@@ -72,8 +74,8 @@ begin
       using errcode = 'P0001';
   end if;
 
-  insert into public.client_build_log (tbl, op, build, ua, ip)
-  values (tg_table_name, tg_op, b, h->>'user-agent', coalesce(h->>'cf-connecting-ip', h->>'x-real-ip', h->>'x-forwarded-for'));
+  insert into public.client_build_log (tbl, op, build, ua, ip, device)
+  values (tg_table_name, tg_op, b, h->>'user-agent', coalesce(h->>'cf-connecting-ip', h->>'x-real-ip', h->>'x-forwarded-for'), h->>'x-sjwd-device');
   return null;
 end;
 $$;
@@ -138,10 +140,12 @@ where id = 'client_build_guard'
 returning value;
 
 -- ── ขั้นที่ 4: ดูเครื่องเวอร์ชันเก่าที่ยังเขียนข้อมูล (อ่านอย่างเดียว — Claude อ่านเองได้ทาง API) ──────────────
-select date_trunc('hour', at) as hour, tbl, coalesce(build, 'ไม่มีหัว') as build, ua, ip, count(*)
-from public.client_build_log
-where at > now() - interval '3 days'
-group by 1, 2, 3, 4, 5
+select date_trunc('hour', l.at) as hour, l.tbl, coalesce(l.build, 'ไม่มีหัว') as build,
+       coalesce(hb.user_name, l.device) as device, l.ua, l.ip, count(*)
+from public.client_build_log l
+left join public.app_heartbeats hb on hb.device_id = l.device
+where l.at > now() - interval '3 days'
+group by 1, 2, 3, 4, 5, 6
 order by 1 desc;
 
 -- ── ขั้นที่ 5: เปิดล็อก (หลังไม่มีรายการใหม่ใน client_build_log) ───────────────────────────────────

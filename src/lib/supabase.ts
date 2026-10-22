@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { deviceId } from './heartbeat'
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string | undefined
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
@@ -18,7 +19,11 @@ export const isConfigured = () =>
  * (supabase-client-build-guard.sql) · 20 ต.ค. โน้ตบุ๊กที่เปิดแอปเวอร์ชันก่อน 3 ต.ค. ย้ายแถวรถ 144 คันข้ามยาร์ดเองในชื่อคนที่ล็อกอินค้าง
  */
 export const BUILD_HEADER = 'x-sjwd-build'
-export const buildHeaders = (): Record<string, string> => ({ [BUILD_HEADER]: String(__BUILD_AT__) })
+/** รหัสเครื่อง (ตัวเดียวกับ app_heartbeats.device_id) — log ของตัวกันจึงบอกได้ว่าเป็นเครื่องของใคร
+ *  (22 ต.ค. ชนิดเครื่อง/เบราว์เซอร์อย่างเดียวแยกมือถือรุ่นเดียวกันไม่ออก) */
+export const DEVICE_HEADER = 'x-sjwd-device'
+export const buildHeaders = (device: string = deviceId()): Record<string, string> =>
+  ({ [BUILD_HEADER]: String(__BUILD_AT__), [DEVICE_HEADER]: device })
 
 export const supabase = createClient(
   SUPABASE_URL ?? 'https://placeholder.supabase.co',
