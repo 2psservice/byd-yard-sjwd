@@ -437,6 +437,8 @@ export function keepLocalPhotos(local: Unit | undefined, incoming: Unit): Unit {
  *  ออกจากหน่วยความจำ (ยกเว้น Defect ที่ยังรอส่งขึ้นคลาวด์ — รูปมีแค่ในเครื่อง) */
 const PHOTO_LRU_MAX = 50
 const photoLru: string[] = []
+/** vin → id ของ Defect ที่มีอยู่ตอนดึงรูปรอบล่าสุด (รูปของ Defect ที่ใหม่กว่านี้ยังไม่ได้ดึง) */
+const photoIdsLoaded = new Map<string, Set<string>>()
 
 let pendingDamagesFlushing = false
 function scheduleFlushPendingDamages(get: () => { flushPendingDamages: () => Promise<void>; pendingDamages: Record<string, unknown> }, delay = 15_000) {
@@ -1072,7 +1074,11 @@ export const useYard = create<YardState>()(
       loadPhotosFor: async (vin, opts) => {
         if (!db.isConfigured() || !vin) return
         const cur = get().photoLoad[vin]
-        if (!opts?.force && (cur === 'loading' || cur === 'ok')) {
+        const ids = (get().units[vin]?.damages ?? []).map((d) => d.id)
+        // 'ok' ครอบเฉพาะ Defect ที่มีอยู่ตอนดึง — Defect ใหม่จากเครื่องอื่น (ถ่ายรูปมา) ที่มา
+        // ทางซิงก์แบบไม่มีรูป ต้องดึงอีกรอบ ไม่งั้นรูปไม่ขึ้นจนกว่าจะปิดแอป (22 ต.ค. ไฟท้าย 11:35)
+        const covered = cur === 'ok' && ids.every((id) => photoIdsLoaded.get(vin)?.has(id))
+        if (!opts?.force && (cur === 'loading' || covered)) {
           // ใช้งานล่าสุด → ไปท้ายคิว (ไม่ถูกปล่อยก่อน)
           const i = photoLru.indexOf(vin); if (i >= 0) { photoLru.splice(i, 1); photoLru.push(vin) }
           return
@@ -1080,6 +1086,7 @@ export const useYard = create<YardState>()(
         set((s) => ({ photoLoad: { ...s.photoLoad, [vin]: 'loading' } }))
         try {
           const photos = await db.fetchDamagePhotosByVins([vin])
+          photoIdsLoaded.set(vin, new Set(ids))
           set((s) => {
             const u = s.units[vin]
             const units = u
@@ -1092,6 +1099,7 @@ export const useYard = create<YardState>()(
           // ปล่อยรูปของคันที่เก่าสุดเกินโควตา — เฉพาะรูปที่คลาวด์มีอยู่แล้ว (ดึงใหม่ได้)
           while (photoLru.length > PHOTO_LRU_MAX) {
             const old = photoLru.shift()!
+            photoIdsLoaded.delete(old)
             set((s) => {
               const u = s.units[old]
               const pendingIds = new Set(Object.values(s.pendingDamages).filter((p) => p.vin === old).map((p) => p.dmg.id))
@@ -1101,6 +1109,8 @@ export const useYard = create<YardState>()(
               return { units: { ...s.units, [old]: { ...u, damages } }, photoLoad }
             })
           }
+          // Defect ที่มาถึงระหว่างดึง (ไม่อยู่ในชุดที่ดึง) → ดึงต่ออีกรอบ
+          if ((get().units[vin]?.damages ?? []).some((d) => !photoIdsLoaded.get(vin)?.has(d.id))) get().loadPhotosFor(vin).catch(() => {})
         } catch (e) {
           console.error('[db] loadPhotosFor', vin, e)
           set((s) => ({ photoLoad: { ...s.photoLoad, [vin]: 'err' } }))
