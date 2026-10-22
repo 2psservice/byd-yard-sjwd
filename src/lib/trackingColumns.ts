@@ -32,11 +32,18 @@ export const GROUP_LABEL: Record<ColGroup, { th: string; en: string }> = {
 // "Gate-in" retired as a distinct stage — see carStatus.ts's deriveCarStatus
 export const CAR_STATUS_VALUES = ['Pre Gate-in', 'In Yard', 'Moving', 'PDI', 'Ready', 'Preload', 'Pre Gate-out', 'Gate-out', 'Total loss'] as const
 
+/** The readings the PDI / PM stations record on a car: %SOC · mileage · 12V battery · tire
+ *  pressure (the combined "FL / FR / RL / RR" cell). Label = key on purpose — the edit log
+ *  files each change under the column LABEL, and every reader of those lines looks for these names. */
+export const MEASUREMENT_KEYS = ['% SOC', 'Mileage', 'Voltage of 12V', 'Tire Pressure'] as const
+
 // columns shown by default (a focused TOS-style working set)
 const DEFAULT_VISIBLE = new Set([
   'No', 'Lot transfer', 'moving date', 'Vin', 'Car Status', 'Model', 'Color', 'company', 'Status', 'Final Status',
   '__location', 'Location yard', 'storage Yard', 'Grouping  Number', 'Gate In (Rayong yard)',
   'Status Tax', 'PIC (PDI)', 'หมายเหตุ',
+  // ค่าที่วัดตอน PDI / PM (สถานีลงค่าไว้ที่ช่องเหล่านี้อยู่แล้ว — แค่เปิดให้เห็นในตาราง)
+  ...MEASUREMENT_KEYS,
 ])
 
 /** Synthetic column key for the computed yard-location code (prefix-block+ช่อง+ลำดับ,
@@ -230,6 +237,10 @@ const SPECS: Spec[] = [
   { key: 'RE PDI  Date #8', label: 'RE PDI #8', group: 'status', width: 100 },
   { key: 'OK date', group: 'status', width: 100 },
   { key: 'PIC (PDI)', group: 'status', width: 100 },
+  { key: '% SOC', group: 'status', width: 80 },
+  { key: 'Mileage', group: 'status', width: 90 },
+  { key: 'Voltage of 12V', group: 'status', width: 120 },
+  { key: 'Tire Pressure', group: 'status', width: 190 }, // "FL / FR / RL / RR"
   { key: 'Vin Of Status', group: 'status', width: 140 },
   { key: 'Gate In (Rayong yard)', label: 'Gate In', group: 'location', width: 110 },
   { key: 'Final check date', group: 'status', width: 110 },
