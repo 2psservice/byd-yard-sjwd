@@ -17,7 +17,7 @@ import { useYard, useUnits, useTrips, useBlocks, attachPendingDamages, type Plac
 import { isAtLanePos, planLaneUpdates, recordableDrafts } from '../lib/laneRebuild'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { overlayInspection } from '../lib/inspectionStatus'
-import { isDamaged, deriveCarStatus, hasLeftGate, IN_YARD_STATUSES, CAR_STATUS_META, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY, returningGateOut, fmtGateOutStamp } from '../lib/carStatus'
+import { isDamaged, deriveCarStatus, hasLeftGate, IN_YARD_STATUSES, CAR_STATUS_META, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY, returningGateOut, fmtGateOutStamp, gateScannedThisRound } from '../lib/carStatus'
 import { useOps, useActiveQueues, useSiteQueues, activeProcess, stageOf, isSequenceQueue, isPreGateInQueue, seqStageOf, isQueueComplete, isEmptyQueue, isStationWorkComplete, queueTypeOf, stampStationDate, stationProgress, drivingNow, gateInArrived, gateInPendingItems } from '../store/useOps'
 import type { WorkQueue, QueueItem, QueueType, QueueStage } from '../store/useOps'
 import { CarTopView } from '../components/CarTopView'
@@ -320,21 +320,15 @@ const isGatedInStatus = (s?: string) => {
 const hasGoneOut = (c?: Record<string, string>) => !!c && deriveCarStatus(c) === 'Gate-out'
 
 /** รอยยิงที่หน้าประตูของรอบนี้: ช่อง 'Gate In Time' เขียนโดยการยิงที่ประตูเท่านั้น
- *  (ไฟล์นำเข้าไม่เขียน) และผูกกับรอบนี้ — พอรถออก ช่องนี้ถูกเก็บเข้าประวัติรอบไปด้วย
+ *  (ไฟล์นำเข้าไม่เขียน) และผูกกับรอบนี้ — พอรถออก ช่องนี้ถูกเก็บเข้าประวัติรอบไป
  *  จึงไม่ค้างจากรอบก่อน · เป็นหลักฐานเดียวกับที่สถานี Gate-in ใช้ปฏิเสธการยิงซ้ำ
  *  ทุกสถานีจึงต้องยอมรับด้วย ไม่งั้นรถติดกลางทาง: Walk Around บอก "ยังไม่ Gate-in"
  *  (เชื่อสำเนา unit บนเครื่องซึ่งล้าสมัย/ยังไม่ซิงก์) ขณะที่ Gate-in บอก "Gate-in แล้ว"
  *
- *  รถบางคัน Gate-in จริงมาแล้ว (มี Walk Around / งานสถานีในรอบนี้จริง) แต่รอบถูก
- *  ปิด/เปิดใหม่กลางทางจนช่อง 'Gate In Time' หลุดหายไป ขณะที่คอลัมน์ "Gate In"
- *  (Gate In (Rayong yard) — เห็นได้ในหน้า Unit List) ยังมีวันที่อยู่ จึงยอมรับ
- *  คอลัมน์นี้เป็นหลักฐานสำรองด้วย ตามที่หน้างานยืนยันให้ใช้ */
-const scannedInThisRound = (c?: Record<string, string>): boolean => {
-  const at = parseInt((c?.['Gate In Time'] || '').trim(), 10)
-  const hasScanTime = Number.isFinite(at) && at > 0
-  const hasGateInCol = !!(c?.['Gate In (Rayong yard)'] || '').trim()
-  return (hasScanTime || hasGateInCol) && !hasGoneOut(c)
-}
+ *  รถบางคัน Gate-in จริงมาแล้ว แต่ช่อง 'Gate In Time' หลุดหายไป ขณะที่คอลัมน์
+ *  "Gate In" ยังมีวันที่อยู่ จึงยอมรับคอลัมน์นี้เป็นหลักฐานสำรองด้วย ตามที่หน้างานยืนยันให้ใช้
+ *  ยกเว้นชีตบอกว่ารถยัง "Pre Gate-in" — ชีตชนะเสมอ (ดู gateScannedThisRound) */
+const scannedInThisRound = gateScannedThisRound
 
 // A scanned VIN the tracking sheet says is gated in, but whose `units` row
 // hasn't landed on this device yet, used to "hurry" the WHOLE site's units —
