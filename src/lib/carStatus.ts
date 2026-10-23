@@ -277,6 +277,32 @@ export function deriveCarStatus(c: Record<string, string>): string {
   return status
 }
 
+/** Car Status values that mean the car is still WAITING at the gate (not gated in yet). */
+const WAITING_AT_GATE = new Set(['pre gate-in', 'pre gatein', 'pre gate in', 'expected'])
+
+/**
+ * Was this car scanned in at the gate THIS round (and is still here)?
+ *
+ * Evidence: the gate scan stamp 'Gate In Time' (only the gate writes it), or — as a fallback for
+ * cars whose stamp got lost mid-round — the 'Gate In' date column.
+ *
+ * The sheet saying "Pre Gate-in" outranks both. That column is also written by file imports (a
+ * transfer list / the company file carry the date the car first came into ANY yard) and can be left
+ * over from the car's previous yard, so a car announced to THIS yard and still waiting at its gate
+ * often carries a date. Treating that as "already scanned in" deadlocked the car: the Gate-in station
+ * showed "รถเข้าลานแล้ว" with no Confirm button, so the yard never registered it, while Walk Around /
+ * Re-location let it through with no car record at this yard — no car card, no ตรวจของประจำรถ checklist
+ * (3D THUNGKRAT, 22–23 ต.ค.). A car the sheet says is waiting goes through the gate's arrival card.
+ */
+export function gateScannedThisRound(c?: Record<string, string>): boolean {
+  if (!c) return false
+  if (WAITING_AT_GATE.has((c[CAR_STATUS_KEY] || '').trim().toLowerCase())) return false
+  const at = parseInt((c['Gate In Time'] || '').trim(), 10)
+  const hasScanTime = Number.isFinite(at) && at > 0
+  const hasGateInCol = !!(c['Gate In (Rayong yard)'] || '').trim()
+  return (hasScanTime || hasGateInCol) && deriveCarStatus(c) !== 'Gate-out'
+}
+
 /**
  * Has the gate released this car? (see RELEASED_STATUSES)
  *
