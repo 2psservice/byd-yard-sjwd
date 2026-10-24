@@ -205,10 +205,13 @@ export function EvStationHome({ onPick }: { onPick: (vin: string) => void }) {
           <div className="space-y-2.5">
             {doneToday.map((c) => (
               <div key={c.id} className="space-y-1" data-ev-done={c.vin}>
-                <div className="flex items-center gap-2 text-[12px]">
-                  <CheckCircle2 size={14} style={{ color: EV_ACCENT }} />
-                  <span className="mono font-semibold">{c.vin.slice(-8)}</span>
-                  <span className="ml-auto tabular font-semibold">{fmtDuration(chargeMs(c))}</span>
+                <div className="flex items-start gap-2">
+                  <CheckCircle2 size={14} className="shrink-0 mt-[3px]" style={{ color: EV_ACCENT }} />
+                  <div className="min-w-0 flex-1">
+                    <div className="mono text-[13px] font-bold truncate">{c.vin}</div>
+                    <div className="text-[11.5px]" style={{ color: 'var(--muted)' }}>{c.model || '—'} · เสร็จ {fmtEvTime(c.afterAt)}</div>
+                  </div>
+                  <span className="tabular text-[12px] font-semibold shrink-0">{fmtDuration(chargeMs(c))}</span>
                 </div>
                 <div style={{ paddingLeft: 22 }}>
                   <BatteryPack pct={c.afterPct} height={20} label={`${fmtPct(c.beforePct)} → ${fmtPct(c.afterPct)}`} />
