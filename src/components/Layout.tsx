@@ -16,17 +16,18 @@ import { LogoMark } from './Logo'
 import { isTouch } from '../lib/device'
 import { InAppBrowserBanner } from './InAppBrowserBanner'
 
-const NAV: { view: View; icon: ReactNode }[] = [
+/** color = icon + highlight tint · text = label color when the icon color is too light to read as text */
+const NAV: { view: View; icon: ReactNode; color?: string; text?: string }[] = [
   { view: 'dashboard', icon: <LayoutDashboard size={18} /> },
-  { view: 'units', icon: <List size={18} /> },
+  { view: 'units', icon: <List size={18} />, color: '#2563eb' },
   { view: 'yard', icon: <Map size={18} /> },
   { view: 'tracking', icon: <Radar size={18} /> },
   { view: 'operation', icon: <ClipboardList size={18} /> },
   { view: 'pm', icon: <CalendarClock size={18} /> },
-  { view: 'ev', icon: <BatteryCharging size={18} /> },
+  { view: 'ev', icon: <BatteryCharging size={18} />, color: '#16a34a' },
   { view: 'pdi', icon: <ClipboardCheck size={18} /> },
   { view: 'damages',   icon: <ShieldAlert size={18} /> },
-  { view: 'grouping',  icon: <Layers size={18} /> },
+  { view: 'grouping',  icon: <Layers size={18} />, color: '#eab308', text: '#a16207' },
   { view: 'report', icon: <FileSpreadsheet size={18} /> },
   { view: 'report2ps', icon: <History size={18} /> },
   { view: 'gatein', icon: <ScanLine size={18} /> },
@@ -164,9 +165,13 @@ export function Layout({ children }: { children: ReactNode }) {
       </div>
       {NAV.map((n) => (
         <div key={n.view} className={cx('nav-item', view === n.view && 'active', !expanded && 'justify-center')}
-          onClick={() => go(n.view)} title={!expanded ? t(n.view) : undefined}
-          style={!expanded ? { paddingLeft: 0, paddingRight: 0 } : undefined}>
-          <span className="shrink-0 flex">{n.icon}</span>
+          onClick={() => go(n.view)} title={!expanded ? t(n.view) : undefined} data-nav={n.view}
+          style={{
+            ...(!expanded ? { paddingLeft: 0, paddingRight: 0 } : {}),
+            // a colored menu keeps its own color in every state, and its active tint follows it
+            ...(n.color ? { color: n.text ?? n.color, ...(view === n.view ? { background: `${n.color}24` } : {}) } : {}),
+          }}>
+          <span className="shrink-0 flex" style={n.color ? { color: n.color } : undefined}>{n.icon}</span>
           {expanded && <span className="whitespace-nowrap">{t(n.view)}</span>}
         </div>
       ))}
