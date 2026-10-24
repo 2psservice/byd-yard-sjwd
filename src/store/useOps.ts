@@ -295,8 +295,10 @@ interface OpsState {
    *  reads the raw lot, finds the VIN, and refuses the move as a duplicate.
    *  This clears the old record's station/gate state and re-dates it to now, so
    *  the lot lists the car once, waiting, for the trip it is on today.
-   *  Returns false only when the lot itself is gone. */
-  reviveVin: (id: string, vin: string) => boolean
+   *  Returns false only when the lot itself is gone.
+   *  `plan` fills what an old record doesn't carry (a car with no record in the
+   *  lot yet joins under this grouping / lane / dealer). */
+  reviveVin: (id: string, vin: string, plan?: Pick<QueueItem, 'group' | 'laneLoad' | 'dest'>) => boolean
   /** Move one VIN from one Gate-in lot to another, carrying its record (when it
    *  was gated in, by whom) with it. Returns false if the move can't be made. */
   moveVin: (fromId: string, toId: string, vin: string) => boolean
@@ -566,7 +568,7 @@ export const useOps = create<OpsState>()(
         return { added, dup }
       },
 
-      reviveVin: (id, vin) => {
+      reviveVin: (id, vin, plan) => {
         const v = vin.trim().toUpperCase()
         if (!v || !get().queues.some((q) => q.id === id)) return false
         set((s) => ({
@@ -576,9 +578,10 @@ export const useOps = create<OpsState>()(
             // keep only what belongs to the LOT (its plan), never the old trip's
             // ticks, times or people — those are what made the car look done
             const fresh: QueueItem = { vin: v, addedAt: Date.now(), done: false }
-            if (old?.laneLoad) fresh.laneLoad = old.laneLoad
-            if (old?.dest) fresh.dest = old.dest
-            if (old?.group) fresh.group = old.group
+            const laneLoad = old?.laneLoad || plan?.laneLoad, dest = old?.dest || plan?.dest, group = old?.group || plan?.group
+            if (laneLoad) fresh.laneLoad = laneLoad
+            if (dest) fresh.dest = dest
+            if (group) fresh.group = group
             if (old?.remark) fresh.remark = old.remark
             return { ...q, items: old ? q.items.map((i) => (i.vin === v ? fresh : i)) : [...q.items, fresh] }
           }),

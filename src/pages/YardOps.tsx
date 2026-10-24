@@ -4347,6 +4347,19 @@ function GateOutView() {
   const seqHit = useMemo(() => findSeqItem(vin, queues), [vin, queues])
   // for bulk DN matching below — see buildSeqGroupIndex
   const seqGroupIndex = useMemo(() => buildSeqGroupIndex(queues), [queues])
+  // grouping code → the open delivery run that carries it in this yard (first wins, same as the
+  // queue reconciler's runOfGroup). A car whose sheet row puts it on that DN but that has no open
+  // item there — the item was stamped "gone" by an earlier gate-out that was later undone (those
+  // stamps are permanent), or the car once left this yard and came back so the reconciler never
+  // re-adds it — is put back on that run when it is scanned at the gate (see restoreToRun)
+  const runOfGroup = useMemo(() => {
+    const m = new Map<string, WorkQueue>()
+    for (const q of queues) {
+      if (!isSequenceQueue(q) || seqClosed[q.id]) continue
+      for (const i of q.items) { const g = normGroup(i.group); if (g && !m.has(g)) m.set(g, q) }
+    }
+    return m
+  }, [queues, seqClosed])
   // where the car actually stands, so the gate can go fetch it — the yard name
   // alone ("NYB2 Phase 2") never told anyone which lane to walk to
   const parked = vin ? units.find(u => u.vin === vin) : undefined
@@ -4365,7 +4378,9 @@ function GateOutView() {
         const u = units.find(x => x.vin === r.vin)
         const status = (r.cells['Car Status'] ?? '').trim()
         const gone = hasLeftGate(r.cells) // shared rule — also catches import-only gate-outs
-        const inSeq = seqGroupIndex.has(r.vin)
+        // a car with no open item still counts as planned when its DN has an open run here —
+        // scanning it puts it back on that run (restoreToRun)
+        const inSeq = seqGroupIndex.has(r.vin) || runOfGroup.has(dn)
         // same rule as the single-VIN scan: only a car planned in an open
         // Grouping-to-Dealer queue, and actually gated in, may leave
         const reason = gone ? '' : !inSeq ? 'ไม่มีคิวงาน' : !isGatedInStatus(status) ? 'ยังไม่ Gate-in' : ''
@@ -4381,7 +4396,7 @@ function GateOutView() {
         }
       })
       .sort((a, b) => byYardLocation(a.location, b.location))
-  }, [dn, trackingRows, units, seqGroupIndex])
+  }, [dn, trackingRows, units, seqGroupIndex, runOfGroup])
 
   // dnCars can only .filter() rows that already exist HERE — a car whose queue
   // item carries this DN's group but whose tracking row never synced to this
@@ -4414,6 +4429,16 @@ function GateOutView() {
     const n = trackingRows.filter(r => rowGroupFast(r, seqGroupIndex) === g).length
     if (!n) { toast('err', `ไม่พบ DN / เลข Grouping: ${raw}`); return }
     setVin(null); setDn(g); setSessionOut([])
+  }
+
+  /** Put a car the open DN plans back on that DN's run (fresh waiting item, the run's lane / dealer). */
+  const restoreToRun = (vinToRestore: string): boolean => {
+    const run = dn ? runOfGroup.get(dn) : undefined
+    if (!run) return false
+    const mate = run.items.find(i => normGroup(i.group) === dn)
+    const ok = useOps.getState().reviveVin(run.id, vinToRestore, { group: mate?.group || dn || undefined, laneLoad: mate?.laneLoad, dest: mate?.dest })
+    if (ok) toast('ok', `ใส่ ${vinToRestore.slice(-6)} กลับเข้าคิวงาน ${run.name} แล้ว`)
+    return ok
   }
 
   const onScanRef = useRef<(v: string) => void>(() => {})
@@ -4458,12 +4483,13 @@ function GateOutView() {
     }
     // Gate-out follows the delivery run: only a car listed in an open
     // Grouping-to-Dealer queue may leave, so nothing walks out of the yard
-    // without being planned.
-    const inSeq = !!findSeqItem(r.vin, queues)
+    // without being planned. A car this DN plans (its sheet row carries the
+    // number, checked above) whose own item went missing is put back on the run.
+    const inSeq = !!findSeqItem(r.vin, queues) || restoreToRun(r.vin)
     if (!inSeq) {
       blockWith(r.vin, model, 'ไม่มีคิวงาน Gate-out',
-        <>รถคันนี้ไม่อยู่ในคิวงานส่งมอบ (<b style={{ color: 'var(--brand)' }}>Grouping to Dealer</b>)<br />
-          ต้องเพิ่มรถเข้าคิวงานที่หน้า Operation ก่อน จึงจะ Gate-out ได้</>)
+        <>Grouping <b style={{ color: 'var(--brand)' }}>{dn}</b> ยังไม่มีคิวงานส่งมอบ (<b style={{ color: 'var(--brand)' }}>Grouping to Dealer</b>) ที่เปิดอยู่ในยาร์ดนี้<br />
+          ให้แอดมินนำเข้าไฟล์ Grouping แล้วสร้างคิวงานในหน้า Grouping ก่อน จึงจะ Gate-out ได้</>)
       return
     }
     // cars in a delivery sequence may sit at Wash/lane statuses that aren't in
