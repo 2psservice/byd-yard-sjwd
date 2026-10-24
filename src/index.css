@@ -226,36 +226,33 @@ input, textarea, select, [contenteditable='true'] {
 @keyframes arrowUp { 0%,100% { transform: translateY(2px); opacity: 0.6; } 50% { transform: translateY(-3px); opacity: 1; } }
 .arrow-up { animation: arrowUp 1.1s ease-in-out infinite; }
 
-/* EV Charging — battery bar: fill = recorded %, charging = stripes flowing + light sweep + the next cell blinking */
-.ev-batt { display: flex; align-items: center; gap: 2px; }
-.ev-batt-body {
-  position: relative; flex: 1; height: 100%; padding: 2px;
-  border: 2px solid var(--line-strong); border-radius: 8px; background: var(--panel); overflow: hidden;
+/* EV Charging — battery pack like the BYD app: 20 slab cells (5% each) seen from slightly above,
+   charged cells green · while charging a green comet of light sweeps left → right, pauses, repeats (3 s) */
+.ev-pack { position: relative; }
+.ev-pack-top, .ev-pack-front { position: absolute; left: 0; right: 7px; display: flex; gap: 1px; background: #34393f; overflow: hidden; }
+.ev-pack-top { top: 0; height: 40%; transform: skewX(-30deg); transform-origin: 0 100%; border-radius: 2px 3px 0 0; }
+.ev-pack-front { bottom: 0; height: 60%; border-radius: 0 0 3px 3px; }
+.ev-pack .ev-cell { flex: 1; min-width: 0; }
+.ev-pack-top .ev-cell { background: linear-gradient(180deg, #a0a5ac, #878c93); }
+.ev-pack-top .ev-cell.on { background: linear-gradient(180deg, #62ea91, #3bd36e); }
+.ev-pack-front .ev-cell { background: linear-gradient(180deg, #c0c4c9 0 10%, #6e737a 10% 32%, #565a60 100%); }
+.ev-pack-front .ev-cell.on { background: linear-gradient(180deg, #9af7bd 0 10%, #23c45b 10% 32%, #149848 100%); }
+.ev-pack::after {
+  content: ''; position: absolute; left: 3%; right: 6%; bottom: -5px; height: 6px; pointer-events: none;
+  background: radial-gradient(ellipse at center, rgba(0,0,0,0.22), transparent 70%);
 }
-.ev-batt-cap { width: 4px; height: 44%; border-radius: 0 3px 3px 0; background: var(--line-strong); }
-.ev-batt-fill { position: relative; height: 100%; border-radius: 5px; overflow: hidden; transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1); }
-.ev-batt-fill.is-charging::before {
-  content: ''; position: absolute; inset: 0;
-  background-image: linear-gradient(-45deg, rgba(255,255,255,0.32) 25%, transparent 25%, transparent 50%, rgba(255,255,255,0.32) 50%, rgba(255,255,255,0.32) 75%, transparent 75%);
-  background-size: 16px 16px; animation: evStripes 0.6s linear infinite;
-}
-.ev-batt-fill.is-charging::after {
-  content: ''; position: absolute; top: 0; bottom: 0; left: -45%; width: 45%;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.7), transparent); animation: evSweep 1.8s ease-in-out infinite;
-}
-.ev-batt-next { position: absolute; top: 2px; bottom: 2px; border-radius: 5px; animation: evNext 1.2s ease-in-out infinite; }
-.ev-batt-label {
-  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  font-size: 12px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--text);
-  text-shadow: 0 0 3px var(--panel), 0 0 6px var(--panel);
+.ev-pack-clip { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.ev-pack-sweep {
+  position: absolute; top: 0; bottom: 0; left: 0; width: 15%; pointer-events: none; mix-blend-mode: screen;
+  background: linear-gradient(90deg, rgba(74,222,128,0) 0%, rgba(74,222,128,0.22) 40%, rgba(134,239,172,0.62) 84%, rgba(240,255,245,0.98) 92%, rgba(240,255,245,0) 100%);
+  transform: translateX(-100%); animation: evPackSweep 3s cubic-bezier(0.42, 0, 0.58, 1) infinite;
 }
 .ev-bolt { animation: evBolt 1.2s ease-in-out infinite; }
-@keyframes evStripes { from { background-position: 0 0; } to { background-position: 16px 0; } }
-@keyframes evSweep { 0% { left: -45%; } 65%, 100% { left: 110%; } }
-@keyframes evNext { 0%, 100% { opacity: 0.12; } 50% { opacity: 0.6; } }
+@keyframes evPackSweep { 0% { transform: translateX(-100%); } 75%, 100% { transform: translateX(670%); } }
 @keyframes evBolt { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.18); opacity: 0.75; } }
 @media (prefers-reduced-motion: reduce) {
-  .ev-batt-fill.is-charging::before, .ev-batt-fill.is-charging::after, .ev-batt-next, .ev-bolt { animation: none; }
+  .ev-pack-sweep { display: none; }
+  .ev-bolt { animation: none; }
 }
 
 .row-hover:hover { background: rgba(0, 122, 255, 0.05); }
