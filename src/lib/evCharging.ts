@@ -2,7 +2,7 @@
  * EV Charging — งานชาร์จแบตรถไฟฟ้าในลาน (สถานี EV Charging + เมนูแอดมิน)
  *
  * 1 รอบชาร์จ = 1 แถว (ตาราง ev_charges, supabase-ev-charging.sql):
- *   เริ่ม: รูปเลขวิน + รูปหน้าจอก่อนชาร์จ + % ก่อนชาร์จ (AI อ่านให้ พนักงานแก้ได้) → บันทึก
+ *   เริ่ม: รูปเลขวิน + รูปหน้าจอก่อนชาร์จ + % ก่อนชาร์จ (พนักงานพิมพ์ตามหน้าจอ) → บันทึก
  *   จบ:   รูปหน้าจอหลังชาร์จ + % หลังชาร์จ → บันทึก · เวลาชาร์จ = เวลาบันทึกหลัง − เวลาบันทึกก่อน
  * รถคันเดียวมีได้ทีละ 1 รอบที่ยังไม่จบ — ยิงวินซ้ำระหว่างชาร์จจะเข้าขั้น "หลังชาร์จ" ของรอบเดิม
  */
@@ -22,13 +22,10 @@ export interface EvCharge {
   vinPhoto: string
   beforePhoto: string
   beforePct: number | null
-  /** ค่าที่ AI อ่านได้ตอนถ่าย — เก็บไว้เทียบกับค่าที่บันทึกจริง */
-  beforeAi: number | null
   beforeAt: number
   beforeBy: string
   afterPhoto: string
   afterPct: number | null
-  afterAi: number | null
   /** 0 = ยังชาร์จอยู่ */
   afterAt: number
   afterBy: string
@@ -155,30 +152,6 @@ export function monthSummary(list: Iterable<EvTimes>, ym: string): EvMonthSummar
   const finished = days.reduce((n, d) => n + d.finished, 0)
   const totalMs = days.reduce((n, d) => n + d.totalMs, 0)
   return { ym, finished, started: days.reduce((n, d) => n + d.started, 0), totalMs, avgMs: finished ? totalMs / finished : 0, days }
-}
-
-/** อ่าน % จากรูปหน้าจอ (Pages Function /api/ev/battery)
- *  ok=false + reason: 'off' = ยังไม่ได้ตั้งคีย์ AI · 'unreadable' = AI อ่านไม่ออก · 'error' = เน็ต/ระบบ */
-export type BatteryRead = { ok: true; percent: number } | { ok: false; reason: 'off' | 'unreadable' | 'error' }
-
-const BATTERY_URL = '/api/ev/battery'
-const BATTERY_TIMEOUT_MS = 60_000
-
-export async function readBatteryPercent(dataUrl: string): Promise<BatteryRead> {
-  try {
-    const blob = await (await fetch(dataUrl)).blob()
-    const ctrl = new AbortController()
-    const timer = setTimeout(() => ctrl.abort(), BATTERY_TIMEOUT_MS)
-    const res = await fetch(BATTERY_URL, {
-      method: 'POST', body: blob, headers: { 'content-type': blob.type || 'image/jpeg' }, signal: ctrl.signal,
-    }).finally(() => clearTimeout(timer))
-    if (res.status === 501 || res.status === 404) return { ok: false, reason: 'off' }
-    if (!res.ok) return { ok: false, reason: 'error' }
-    const { percent } = (await res.json()) as { percent?: number | null }
-    return typeof percent === 'number' ? { ok: true, percent } : { ok: false, reason: 'unreadable' }
-  } catch {
-    return { ok: false, reason: 'error' }
-  }
 }
 
 /** ช่องกรอก % → ตัวเลข 0–100 หรือ null */

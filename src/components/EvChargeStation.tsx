@@ -2,19 +2,19 @@
  * EV Charging station (Ops Scan) — ดู lib/evCharging.ts
  *
  * สแกนวิน → ถ้ารถยังไม่มีรอบที่ชาร์จค้าง = ขั้น "ก่อนชาร์จ": บังคับรูปเลขวิน + รูปหน้าจอแบต
- * (AI อ่าน % ให้ แก้เองได้) → บันทึก · ยิงคันเดิมอีกครั้ง = ขั้น "หลังชาร์จ": บังคับรูปหน้าจอ
+ * แล้วพนักงานพิมพ์ % แบตตามหน้าจอ → บันทึก · ยิงคันเดิมอีกครั้ง = ขั้น "หลังชาร์จ": บังคับรูปหน้าจอ
  * แบต + % → บันทึก แล้วสรุปเวลาชาร์จของคันนั้น
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { BatteryCharging, Camera, Images, Sparkles, X, CheckCircle2, Clock, Zap, ChevronLeft, ChevronRight } from 'lucide-react'
+import { BatteryCharging, Camera, Images, X, CheckCircle2, Clock, Zap, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useYard } from '../store/useYard'
 import { useTracking } from '../store/useTracking'
 import { useEvCharging } from '../store/useEvCharging'
 import { compressToDataUrl } from '../lib/photo'
 import { storePhoto } from '../lib/photoStore'
 import {
-  EV_CELL, SOC_CELL, evChargeId, evCellText, openChargeOf, isCharging, chargeMs, dailySummary, readBatteryPercent, parsePct,
-  fmtDuration, fmtEvTime, fmtDayKey, fmtPct, monthKey, fmtMonth, shiftMonth, monthRange, monthSummary, type EvCharge, type BatteryRead,
+  EV_CELL, SOC_CELL, evChargeId, evCellText, openChargeOf, isCharging, chargeMs, dailySummary, parsePct,
+  fmtDuration, fmtEvTime, fmtDayKey, fmtPct, monthKey, fmtMonth, shiftMonth, monthRange, monthSummary, type EvCharge,
 } from '../lib/evCharging'
 import { fetchEvTimes } from '../lib/db'
 import { dateKey } from '../lib/dayKey'
@@ -312,57 +312,27 @@ function usePhoto() {
   const [photo, setPhoto] = useState('')
   const [busy, setBusy] = useState(false)
   const token = useRef(0)
-  /** withBig: also return a sharper copy for the AI reader (the stored copy stays 900px like every other photo) */
-  const take = async (file: File, withBig = false): Promise<{ big: string; my: number } | null> => {
+  const take = async (file: File): Promise<void> => {
     const my = ++token.current
     setBusy(true)
     try {
-      const [small, big] = await Promise.all([compressToDataUrl(file, 900), withBig ? compressToDataUrl(file, 1280) : Promise.resolve('')])
-      if (my !== token.current) return null
+      const small = await compressToDataUrl(file, 900)
+      if (my !== token.current) return
       setPhoto(small)
       storePhoto(small).then((url) => { if (my === token.current) { setPhoto(url); setBusy(false) } })
-      return { big, my }
     } catch {
       if (my === token.current) setBusy(false)
-      return null
     }
   }
   const clear = () => { token.current++; setPhoto(''); setBusy(false) }
-  return { photo, busy, take, clear, isCurrent: (my: number) => my === token.current }
+  return { photo, busy, take, clear }
 }
 
-type AiState = 'idle' | 'reading' | 'ok' | Extract<BatteryRead, { ok: false }>['reason']
-
-const AI_TEXT: Record<Exclude<AiState, 'idle'>, string> = {
-  reading: 'AI กำลังอ่าน % จากรูป…',
-  ok: 'AI อ่านได้ — ตรวจให้ตรงกับหน้าจอ แก้ได้',
-  unreadable: 'AI อ่านไม่ออก — กรอก % เอง',
-  off: 'ยังไม่ได้เปิดระบบ AI — กรอก % เอง',
-  error: 'AI อ่านไม่ได้ (เน็ต/ระบบ) — กรอก % เอง',
-}
-
-/** รูปหน้าจอแบต + ช่อง % ที่ AI เติมให้ */
+/** รูปหน้าจอแบต + ช่อง % ที่พนักงานพิมพ์ตามหน้าจอ */
 function useBatteryShot() {
   const ph = usePhoto()
   const [pct, setPct] = useState('')
-  const [ai, setAi] = useState<number | null>(null)
-  const [aiState, setAiState] = useState<AiState>('idle')
-  const touched = useRef(false)
-  const onFile = async (file: File) => {
-    touched.current = false
-    setAi(null); setAiState('reading')
-    const got = await ph.take(file, true)
-    if (!got) { setAiState('idle'); return }
-    const r = await readBatteryPercent(got.big)
-    if (!ph.isCurrent(got.my)) return
-    if (r.ok) {
-      setAi(r.percent); setAiState('ok')
-      if (!touched.current) setPct(String(r.percent))
-    } else setAiState(r.reason)
-  }
-  const clear = () => { ph.clear(); setAi(null); setAiState('idle') }
-  const edit = (v: string) => { touched.current = true; setPct(v) }
-  return { ...ph, onFile, clear, pct, edit, ai, aiState, value: parsePct(pct) }
+  return { ...ph, pct, edit: setPct, value: parsePct(pct) }
 }
 
 function PctField({ shot, label }: { shot: ReturnType<typeof useBatteryShot>; label: string }) {
@@ -378,13 +348,9 @@ function PctField({ shot, label }: { shot: ReturnType<typeof useBatteryShot>; la
           <span className="pr-3 text-[15px] font-bold" style={{ color: 'var(--muted)' }}>%</span>
         </div>
       </div>
-      {shot.aiState !== 'idle' && (
-        <div className="flex items-center gap-1.5 text-[11.5px]" data-ev-ai={shot.aiState}
-          style={{ color: shot.aiState === 'ok' ? EV_ACCENT : shot.aiState === 'reading' ? 'var(--muted)' : '#b45309' }}>
-          <Sparkles size={13} /> {AI_TEXT[shot.aiState]}{shot.aiState === 'ok' && shot.ai != null ? ` (${shot.ai}%)` : ''}
-        </div>
-      )}
-      {bad && <div className="text-[11.5px]" style={{ color: 'var(--st-damage)' }}>กรอกตัวเลข 0–100</div>}
+      <div className="text-[11.5px]" style={{ color: bad ? 'var(--st-damage)' : 'var(--muted)' }}>
+        {bad ? 'กรอกตัวเลข 0–100' : 'ใส่ตัวเลข % แบตตามที่เห็นบนหน้าจอรถ'}
+      </div>
     </div>
   )
 }
@@ -431,12 +397,12 @@ export function EvChargePanel({ vin, cells, unitModel, unitColor, onClose }: {
     let c: EvCharge
     if (open) {
       if (shot.value < (open.beforePct ?? 0) && !window.confirm(`% หลังชาร์จ (${shot.value}%) น้อยกว่าก่อนชาร์จ (${open.beforePct}%) — บันทึกต่อไหม`)) return
-      c = { ...open, remark: remark.trim(), afterPhoto: shot.photo, afterPct: shot.value, afterAi: shot.ai, afterAt: at, afterBy: by, updatedAt: at }
+      c = { ...open, remark: remark.trim(), afterPhoto: shot.photo, afterPct: shot.value, afterAt: at, afterBy: by, updatedAt: at }
     } else {
       c = {
         id: evChargeId(vin, at), site: useYard.getState().currentSite ?? undefined, vin, model, color, from, remark: remark.trim(),
-        vinPhoto: vinShot.photo, beforePhoto: shot.photo, beforePct: shot.value, beforeAi: shot.ai, beforeAt: at, beforeBy: by,
-        afterPhoto: '', afterPct: null, afterAi: null, afterAt: 0, afterBy: '', updatedAt: at,
+        vinPhoto: vinShot.photo, beforePhoto: shot.photo, beforePct: shot.value, beforeAt: at, beforeBy: by,
+        afterPhoto: '', afterPct: null, afterAt: 0, afterBy: '', updatedAt: at,
       }
     }
     // the round lands on this device at once (store + sheet cell) and the panel closes — the cloud write
@@ -492,8 +458,8 @@ export function EvChargePanel({ vin, cells, unitModel, unitColor, onClose }: {
             photo={vinShot.photo} busy={vinShot.busy} onFile={(f) => { vinShot.take(f) }} onClear={vinShot.clear} />
         )}
         <EvPhotoSlot slot={open ? 'after' : 'before'} label={open ? 'รูปหน้าจอแบต หลังชาร์จ' : 'รูปหน้าจอแบต ก่อนชาร์จ'}
-          hint="ถ่ายหน้าจอที่เห็นเปอร์เซ็นต์แบตชัด ๆ — AI จะอ่าน % ให้"
-          photo={shot.photo} busy={shot.busy} onFile={shot.onFile} onClear={shot.clear} />
+          hint="ถ่ายหน้าจอที่เห็นเปอร์เซ็นต์แบตชัด ๆ"
+          photo={shot.photo} busy={shot.busy} onFile={(f) => { shot.take(f) }} onClear={shot.clear} />
         <PctField shot={shot} label={open ? '% หลังชาร์จ' : '% ก่อนชาร์จ'} />
         <div className="space-y-1.5">
           <div className="text-[12px] font-bold">Remark</div>

@@ -14,12 +14,12 @@ create table if not exists public.ev_charges (
   vin_photo     text not null default '',    -- รูปเลขวิน (Export Label) — ลิงก์รูป
   before_photo  text not null default '',
   before_pct    integer,                     -- เปอร์เซ็นต์ที่บันทึกจริง (พนักงานแก้ได้)
-  before_ai     integer,                     -- ค่าที่ AI อ่านได้ (เก็บไว้ตรวจย้อนหลัง)
+  before_ai     integer,                     -- ไม่ใช้แล้ว (เลิกใช้ AI อ่าน % — พนักงานพิมพ์เอง) คงไว้ให้ตรงกับตารางที่สร้างแล้ว
   before_at     timestamptz,
   before_by     text not null default '',
   after_photo   text not null default '',
   after_pct     integer,
-  after_ai      integer,
+  after_ai      integer,                     -- ไม่ใช้แล้ว เหมือน before_ai
   after_at      timestamptz,                 -- ว่าง = ยังชาร์จอยู่
   after_by      text not null default '',
   updated_at    timestamptz default now()

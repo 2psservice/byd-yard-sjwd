@@ -1,18 +1,18 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import {
   chargeMs, dailySummary, evCellText, evChargeId, fmtDuration, openChargeOf, parsePct, hoursOf, type EvCharge,
   monthSummary, shiftMonth, monthRange, fmtMonth, monthKey, fmtDayKey,
 } from '../src/lib/evCharging'
 import { defaultColumns, EV_CHARGING_KEY } from '../src/lib/trackingColumns'
 
-/** งานชาร์จแบต EV: สรุปเวลาชาร์จต่อคัน · วันละกี่คัน · ช่องสรุปในชีต · AI อ่าน % จากรูป */
+/** งานชาร์จแบต EV: สรุปเวลาชาร์จต่อคัน · วันละกี่คัน · ยอดเดือน · ช่องสรุปในชีต · ช่องกรอก % */
 
 const at = (d: number, h: number, m = 0) => new Date(2026, 9, d, h, m).getTime()
 function ev(vin: string, before: number, after = 0, beforePct: number | null = 18, afterPct: number | null = null): EvCharge {
   return {
     id: evChargeId(vin, before), vin, model: 'DOLPHIN', color: 'GREY', from: '38RAI', remark: '',
-    vinPhoto: 'v', beforePhoto: 'b', beforePct, beforeAi: beforePct, beforeAt: before, beforeBy: 'A',
-    afterPhoto: after ? 'a' : '', afterPct, afterAi: afterPct, afterAt: after, afterBy: after ? 'B' : '', updatedAt: after || before,
+    vinPhoto: 'v', beforePhoto: 'b', beforePct, beforeAt: before, beforeBy: 'A',
+    afterPhoto: after ? 'a' : '', afterPct, afterAt: after, afterBy: after ? 'B' : '', updatedAt: after || before,
   }
 }
 
@@ -98,64 +98,5 @@ describe('รอบที่ค้าง / ช่อง EV Charging ในชี
     expect(parsePct('101')).toBeNull()
     expect(parsePct('')).toBeNull()
     expect(parsePct('abc')).toBeNull()
-  })
-})
-
-// ── Pages Function: /api/ev/battery ─────────────────────────────────────────
-
-const create = vi.fn()
-vi.mock('@anthropic-ai/sdk', () => {
-  class APIError extends Error { status?: number }
-  class Anthropic {
-    static APIError = APIError
-    beta = { messages: { create } }
-    constructor(public opts: unknown) {}
-  }
-  return { default: Anthropic }
-})
-
-const { onRequestPost, percentFrom } = await import('../functions/api/ev/battery')
-const req = (body: BodyInit | null, headers: Record<string, string> = {}) =>
-  new Request('https://yard.example.com/api/ev/battery', { method: 'POST', body, headers: { 'content-type': 'image/jpeg', ...headers } })
-
-describe('AI อ่าน % แบตจากรูป', () => {
-  beforeEach(() => create.mockReset())
-
-  it('แปลงคำตอบ JSON → เลข 0–100 (นอกช่วง/อ่านไม่ออก = null)', () => {
-    expect(percentFrom('{"percent":18}')).toBe(18)
-    expect(percentFrom('{"percent":61.6}')).toBe(62)
-    expect(percentFrom('{"percent":null}')).toBeNull()
-    expect(percentFrom('{"percent":140}')).toBeNull()
-    expect(percentFrom('not json')).toBeNull()
-  })
-  it('ยังไม่ได้ตั้งคีย์ → 501 (แอปให้กรอกเอง)', async () => {
-    const res = await onRequestPost({ request: req(new Uint8Array([1, 2, 3])), env: {} })
-    expect(res.status).toBe(501)
-    expect(create).not.toHaveBeenCalled()
-  })
-  it('เว็บอื่นเรียกไม่ได้ (ใช้เครดิต API)', async () => {
-    const res = await onRequestPost({ request: req(new Uint8Array([1]), { origin: 'https://evil.example.net' }), env: { ANTHROPIC_API_KEY: 'k' } })
-    expect(res.status).toBe(403)
-  })
-  it('ไม่ใช่รูป → 415', async () => {
-    const res = await onRequestPost({ request: req('x', { 'content-type': 'text/plain' }), env: { ANTHROPIC_API_KEY: 'k' } })
-    expect(res.status).toBe(415)
-  })
-  it('ส่งรูปให้โมเดลแบบ base64 + บังคับรูปแบบคำตอบ แล้วคืน % ที่อ่านได้', async () => {
-    create.mockResolvedValue({ stop_reason: 'end_turn', content: [{ type: 'text', text: '{"percent":18}' }] })
-    const res = await onRequestPost({ request: req(new Uint8Array([255, 216, 255]), { origin: 'https://yard.example.com' }), env: { ANTHROPIC_API_KEY: 'k' } })
-    expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ percent: 18 })
-    const args = create.mock.calls[0][0]
-    expect(args.model).toBe('claude-opus-5-5')
-    expect(args.output_config.format.type).toBe('json_schema')
-    expect(args.fallbacks).toBe('default')
-    const img = args.messages[0].content[0]
-    expect(img).toMatchObject({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: '/9j/' } })
-  })
-  it('โมเดลปฏิเสธ → percent null (แอปให้กรอกเอง)', async () => {
-    create.mockResolvedValue({ stop_reason: 'refusal', content: [] })
-    const res = await onRequestPost({ request: req(new Uint8Array([1])), env: { ANTHROPIC_API_KEY: 'k' } })
-    expect(await res.json()).toEqual({ percent: null, reason: 'refusal' })
   })
 })
