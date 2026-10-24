@@ -59,6 +59,10 @@ export interface QueueItem {
   returnedAt?: number
   // ── delivery sequence (Grouping to Dealer) ──
   laneLoad?: string        // loading-lane target, from the grouping Lane load (e.g. "O1")
+  /** who last typed this lane on the Grouping sheet, and when — an import's
+   *  own O1, O2 … carries neither, so a lane with a name on it was set by hand */
+  laneBy?: string
+  laneAt?: number
   dest?: string            // delivery / dealer location
   /** หมายเหตุ from the grouping plan — what the office wrote against this car.
    *  Kept on the item so a reprint of the run still carries it. */
@@ -327,17 +331,18 @@ interface OpsState {
   recordCheck: (id: string, vin: string, result: 'OK' | 'NG', by?: string) => void
   returnToSlot: (id: string, vin: string, by?: string) => void
   // ── delivery sequence (Grouping to Dealer) ──
-  createSequence: (name: string, by: string, items: { vin: string; laneLoad?: string; dest?: string; group?: string; remark?: string }[]) => string
+  createSequence: (name: string, by: string, items: { vin: string; laneLoad?: string; laneBy?: string; laneAt?: number; dest?: string; group?: string; remark?: string }[]) => string
   markAtWash: (id: string, vin: string, by?: string) => void        // driver scan #1
   markAtLane: (id: string, vin: string, by?: string) => void        // driver scan #2
   confirmSeqGateOut: (id: string, vin: string, by?: string) => void // gate-out confirmed
   /** Close many cars of the same sequence at once (scan-DN bulk gate-out) —
    *  ONE state update + ONE cloud push for the whole run. */
   confirmSeqGateOutMany: (id: string, vins: string[], by?: string) => void
-  /** Admin edited the Lane load per grouping code — apply to every sequence
-   *  item carrying that code, so the field's queue cards show the new lane
-   *  immediately. Returns how many queues changed. */
-  setLaneLoads: (byGroup: Record<string, string>) => number
+  /** Admin edited the Lane load per grouping code on ONE delivery run's sheet —
+   *  apply it to that run's items only (another day's or yard's run that happens
+   *  to carry the same code is a different plan), stamping who / when, so the
+   *  field's queue cards show the new lane immediately. Returns how many items changed. */
+  setLaneLoads: (queueId: string, byGroup: Record<string, string>, by: string) => number
   /** Pull queues from the cloud. authoritative=true replaces local even when the cloud is empty
    *  (broadcast refetch); false = boot merge (cloud wins when non-empty, else seed local up). */
   loadFromCloud: (authoritative?: boolean) => Promise<void>
@@ -578,8 +583,16 @@ export const useOps = create<OpsState>()(
             // keep only what belongs to the LOT (its plan), never the old trip's
             // ticks, times or people — those are what made the car look done
             const fresh: QueueItem = { vin: v, addedAt: Date.now(), done: false }
-            const laneLoad = old?.laneLoad || plan?.laneLoad, dest = old?.dest || plan?.dest, group = old?.group || plan?.group
+            // the plan passed in is the car's CURRENT group on this run. An old item written
+            // under another group (the car was re-grouped since) carries that group's lane and
+            // dealer, which no longer apply — only the same group's old values may fill gaps.
+            const norm = (g?: string) => (g ?? '').toUpperCase().replace(/\s+/g, '')
+            const keepOld = !old || !plan?.group || !old.group || norm(old.group) === norm(plan.group)
+            const was = keepOld ? old : undefined
+            const group = was?.group || plan?.group || old?.group // same group: keep the run's own spelling of it
+            const laneLoad = was?.laneLoad || plan?.laneLoad, dest = was?.dest || plan?.dest
             if (laneLoad) fresh.laneLoad = laneLoad
+            if (laneLoad && laneLoad === was?.laneLoad && was.laneBy) { fresh.laneBy = was.laneBy; fresh.laneAt = was.laneAt }
             if (dest) fresh.dest = dest
             if (group) fresh.group = group
             if (old?.remark) fresh.remark = old.remark
@@ -835,9 +848,13 @@ export const useOps = create<OpsState>()(
         const site = useYard.getState().currentSite ?? undefined
         const now = Date.now()
         const rows: QueueItem[] = items
-          .map((it) => ({ vin: it.vin.trim().toUpperCase(), laneLoad: it.laneLoad, dest: it.dest, group: it.group?.trim().toUpperCase() || undefined, remark: it.remark?.trim() || undefined }))
+          .map((it) => ({ vin: it.vin.trim().toUpperCase(), laneLoad: it.laneLoad, laneBy: it.laneBy, laneAt: it.laneAt, dest: it.dest, group: it.group?.trim().toUpperCase() || undefined, remark: it.remark?.trim() || undefined }))
           .filter((it) => it.vin)
-          .map((it) => ({ vin: it.vin, addedAt: now, done: false, laneLoad: it.laneLoad, dest: it.dest, group: it.group, remark: it.remark }))
+          .map((it) => {
+            const row: QueueItem = { vin: it.vin, addedAt: now, done: false, laneLoad: it.laneLoad, dest: it.dest, group: it.group, remark: it.remark }
+            if (it.laneBy) { row.laneBy = it.laneBy; row.laneAt = it.laneAt }
+            return row
+          })
         const existing = get().queues.find((q) => (q.name ?? '').toLowerCase() === n.toLowerCase())
         if (existing) {
           // re-uploading the same sequence: replace its items, keep the id.
@@ -850,8 +867,11 @@ export const useOps = create<OpsState>()(
             const p = was.get(it.vin)
             // addedAt เดิมด้วย — การออกจากลานนับเฉพาะหลังรถเข้าคิว (ดู itemLeftYard)
             // อัปโหลดซ้ำแล้วเวลาเข้าคิวเลื่อนมาเป็นตอนนี้ = รถที่ออกไปก่อนหน้าค้างเป็น "รอ"
-            return p ? { ...it, addedAt: p.addedAt ?? it.addedAt, done: p.done, gatedOut: p.gatedOut, doneAt: p.doneAt, doneBy: p.doneBy, stage: p.stage,
-              atWashAt: p.atWashAt, atLaneAt: p.atLaneAt, deliveredBy: p.deliveredBy, returnedBy: p.returnedBy, returnedAt: p.returnedAt } : it
+            if (!p) return it
+            // a hand-set lane the new sheet keeps unchanged keeps its who / when too
+            const lane = !it.laneBy && p.laneBy && p.laneLoad === it.laneLoad ? { laneBy: p.laneBy, laneAt: p.laneAt } : {}
+            return { ...it, ...lane, addedAt: p.addedAt ?? it.addedAt, done: p.done, gatedOut: p.gatedOut, doneAt: p.doneAt, doneBy: p.doneBy, stage: p.stage,
+              atWashAt: p.atWashAt, atLaneAt: p.atLaneAt, deliveredBy: p.deliveredBy, returnedBy: p.returnedBy, returnedAt: p.returnedAt }
           })
           // Clear any leftover `type` too — a name collision with an old
           // arrival lot (same shipment, uploaded once as Pre Gate-in and
@@ -909,27 +929,25 @@ export const useOps = create<OpsState>()(
         pushQueue(get, id)
       },
 
-      setLaneLoads: (byGroup) => {
-        const dirty: string[] = []
+      setLaneLoads: (queueId, byGroup, by) => {
+        let changed = 0
+        const at = Date.now()
         set((s) => ({
           queues: s.queues.map((q) => {
-            if (q.kind !== 'sequence') return q
-            let changed = false
+            if (q.id !== queueId || !isSequenceQueue(q)) return q
             const items = q.items.map((i) => {
               const g = i.group
               if (g && byGroup[g] != null && i.laneLoad !== byGroup[g]) {
-                changed = true
-                return { ...i, laneLoad: byGroup[g] }
+                changed++
+                return { ...i, laneLoad: byGroup[g], laneBy: by || undefined, laneAt: at }
               }
               return i
             })
-            if (!changed) return q
-            dirty.push(q.id)
-            return { ...q, items }
+            return changed ? { ...q, items } : q
           }),
         }))
-        for (const id of dirty) pushQueue(get, id)
-        return dirty.length
+        if (changed) pushQueue(get, queueId)
+        return changed
       },
 
       loadFromCloud: async (authoritative = false) => {
