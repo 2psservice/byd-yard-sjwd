@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, Upload, FileSpreadsheet, ScanLine, Car, Map, List, SlidersHorizontal,
-  Search, Menu, Zap, Globe, Plug, X, Bell, Smartphone, Radar, MapPin, ChevronDown, Settings, ClipboardList, ClipboardCheck, User, ShieldAlert, LogOut, Layers, CalendarClock, History,
+  Search, Menu, Zap, Globe, Plug, X, Bell, Smartphone, Radar, MapPin, ChevronDown, Settings, ClipboardList, ClipboardCheck, User, ShieldAlert, LogOut, Layers, CalendarClock, History, BatteryCharging,
 } from 'lucide-react'
 import { BuildStamp } from './BuildStamp'
 import { createPortal } from 'react-dom'
@@ -23,6 +23,7 @@ const NAV: { view: View; icon: ReactNode }[] = [
   { view: 'tracking', icon: <Radar size={18} /> },
   { view: 'operation', icon: <ClipboardList size={18} /> },
   { view: 'pm', icon: <CalendarClock size={18} /> },
+  { view: 'ev', icon: <BatteryCharging size={18} /> },
   { view: 'pdi', icon: <ClipboardCheck size={18} /> },
   { view: 'damages',   icon: <ShieldAlert size={18} /> },
   { view: 'grouping',  icon: <Layers size={18} /> },

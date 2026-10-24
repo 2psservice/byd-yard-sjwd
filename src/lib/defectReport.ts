@@ -143,7 +143,7 @@ void fill // fill kept exported-adjacent for parity with the tracking sheet; not
 
 // ── standalone exports (Damages page): a chosen VIN set → xlsx / pdf ─────────
 
-function downloadBlob(data: BlobPart, type: string, filename: string): void {
+export function downloadBlob(data: BlobPart, type: string, filename: string): void {
   const url = URL.createObjectURL(new Blob([data], { type }))
   const a = document.createElement('a')
   a.href = url
@@ -190,7 +190,7 @@ const P_IMG_W = 232
 const P_IMG_H = 168
 
 /** 1-based column number → A1-style letter(s). */
-function colLetter(n: number): string {
+export function colLetter(n: number): string {
   let s = ''
   while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26) }
   return s
@@ -208,7 +208,7 @@ function localDay(ts: number): Date {
 
 /** URL / data-URL → workbook image id (cached — the same VIN-label shot repeats
  *  on every row of that car). null when the photo can't be read (row stays blank). */
-async function photoImageId(wb: any, src: string | undefined, cache: Map<string, Promise<number | null>>): Promise<number | null> {
+export async function photoImageId(wb: any, src: string | undefined, cache: Map<string, Promise<number | null>>): Promise<number | null> {
   if (!src) return null
   let p = cache.get(src)
   if (!p) {

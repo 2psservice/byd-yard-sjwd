@@ -1682,3 +1682,65 @@ export async function deleteVisits(ids: string[]): Promise<boolean> {
   }
   return true
 }
+
+// ── ev_charges (งานชาร์จแบต EV — ตาราง supabase-ev-charging.sql) ───────────────
+
+import type { EvCharge } from './evCharging'
+
+const isoOrNull = (ms: number) => (ms ? new Date(ms).toISOString() : null)
+const msOf = (s: unknown) => (s ? new Date(String(s)).getTime() || 0 : 0)
+const pctOf = (v: unknown) => (v == null || v === '' ? null : Number(v))
+
+function evToRow(c: EvCharge) {
+  return {
+    id: c.id, site_id: c.site ?? null, vin: c.vin, model: c.model, color: c.color, from_yard: c.from, remark: c.remark,
+    vin_photo: c.vinPhoto,
+    before_photo: c.beforePhoto, before_pct: c.beforePct, before_ai: c.beforeAi, before_at: isoOrNull(c.beforeAt), before_by: c.beforeBy,
+    after_photo: c.afterPhoto, after_pct: c.afterPct, after_ai: c.afterAi, after_at: isoOrNull(c.afterAt), after_by: c.afterBy,
+    updated_at: new Date(c.updatedAt || Date.now()).toISOString(),
+  }
+}
+function rowToEv(r: any): EvCharge {
+  return {
+    id: String(r.id), site: r.site_id ?? undefined, vin: String(r.vin),
+    model: r.model ?? '', color: r.color ?? '', from: r.from_yard ?? '', remark: r.remark ?? '',
+    vinPhoto: r.vin_photo ?? '',
+    beforePhoto: r.before_photo ?? '', beforePct: pctOf(r.before_pct), beforeAi: pctOf(r.before_ai), beforeAt: msOf(r.before_at), beforeBy: r.before_by ?? '',
+    afterPhoto: r.after_photo ?? '', afterPct: pctOf(r.after_pct), afterAi: pctOf(r.after_ai), afterAt: msOf(r.after_at), afterBy: r.after_by ?? '',
+    updatedAt: msOf(r.updated_at),
+  }
+}
+
+/** รอบชาร์จของยาร์ดนี้ ที่เริ่มตั้งแต่ `sinceMs` + รอบที่ยังชาร์จอยู่ทั้งหมด (ไม่ว่าเริ่มเมื่อไร)
+ *  null = ดึงไม่ได้ (ยังไม่ได้รัน SQL / ออฟไลน์) — ผู้เรียกใช้ของในเครื่องต่อ */
+export async function fetchEvCharges(siteId: string | null, sinceMs: number): Promise<EvCharge[] | null> {
+  if (!isConfigured()) return null
+  const out = new Map<string, EvCharge>()
+  const PAGE = 500
+  const pull = async (open: boolean): Promise<boolean> => {
+    for (let from = 0; ; from += PAGE) {
+      let q = supabase.from('ev_charges').select('*')
+      if (siteId) q = q.eq('site_id', siteId)
+      q = open ? q.is('after_at', null) : q.gte('before_at', new Date(sinceMs).toISOString())
+      const { data, error } = await q.order('before_at', { ascending: false }).range(from, from + PAGE - 1)
+      if (error) { console.error('[db] fetchEvCharges', error); return false }
+      for (const r of data ?? []) out.set(String(r.id), rowToEv(r))
+      if (!data || data.length < PAGE) return true
+    }
+  }
+  if (!(await pull(false)) || !(await pull(true))) return null
+  return [...out.values()]
+}
+
+/** true = ขึ้นคลาวด์แล้ว · false = ตารางยังไม่มี / เน็ตหลุด (ผู้เรียกเก็บไว้ในเครื่องแล้วลองใหม่) */
+export async function upsertEvCharge(c: EvCharge): Promise<boolean> {
+  if (!isConfigured()) return true
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const { error } = await supabase.from('ev_charges').upsert(evToRow(c), { onConflict: 'id' })
+    if (!error) return true
+    if (isMissingColumn(error)) { console.warn('[db] upsertEvCharge: ev_charges table missing?', error); return false }
+    console.error('[db] upsertEvCharge', error)
+    await sleep(400 * (attempt + 1))
+  }
+  return false
+}

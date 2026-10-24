@@ -21,6 +21,7 @@ const D: Dict = {
   tracking: { th: 'ติดตาม GPS', en: 'GPS Tracking' },
   operation: { th: 'Operation', en: 'Operation' },
   pm: { th: 'แผน PM', en: 'PM Plan' },
+  ev: { th: 'EV Charging', en: 'EV Charging' },
   pdi: { th: 'PDI', en: 'PDI' },
   damages:   { th: 'Damages', en: 'Damages' },
   grouping: { th: 'Grouping', en: 'Grouping' },
