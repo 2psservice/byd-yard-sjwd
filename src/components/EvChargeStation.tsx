@@ -6,7 +6,8 @@
  * แบต + % → บันทึก แล้วสรุปเวลาชาร์จของคันนั้น
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { BatteryCharging, Camera, Images, X, CheckCircle2, Clock, Zap, ChevronLeft, ChevronRight } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import { BatteryCharging, Camera, Images, X, CheckCircle2, Clock, Zap, ChevronDown } from 'lucide-react'
 import { useYard } from '../store/useYard'
 import { useTracking } from '../store/useTracking'
 import { useEvCharging } from '../store/useEvCharging'
@@ -14,7 +15,7 @@ import { compressToDataUrl } from '../lib/photo'
 import { storePhoto } from '../lib/photoStore'
 import {
   EV_CELL, SOC_CELL, evChargeId, evCellText, openChargeOf, isCharging, chargeMs, dailySummary, parsePct,
-  fmtDuration, fmtEvTime, fmtDayKey, fmtPct, monthKey, fmtMonth, shiftMonth, monthRange, monthSummary, type EvCharge,
+  fmtDuration, fmtEvTime, fmtPct, monthKey, fmtMonth, shiftMonth, monthRange, monthSummary, type EvCharge, type EvMonthSummary,
 } from '../lib/evCharging'
 import { fetchEvTimes } from '../lib/db'
 import { dateKey } from '../lib/dayKey'
@@ -75,13 +76,17 @@ function BatteryPack({ pct, charging, label, height = 26 }: {
   )
 }
 
-/** รอบชาร์จของยาร์ดนี้ที่เริ่มหรือจบในเดือน ym — ดึงเฉพาะเวลา/% จากคลาวด์ (ย้อนหลังได้ทุกเดือน)
+/** ย้อนหลังได้กี่เดือน (รวมเดือนนี้) */
+const MONTHS_BACK = 12
+
+/** ยอดรายเดือนของยาร์ดนี้ ย้อนหลัง MONTHS_BACK เดือน — ดึงครั้งเดียว เฉพาะเวลา/% (ไม่ดึงรูป)
  *  แล้วทับด้วยของในเครื่อง (รอบที่เพิ่งบันทึก/ยังไม่ขึ้นคลาวด์) · ดึงใหม่ทุกครั้งที่มีการบันทึก */
-function useEvMonth(ym: string): { list: EvCharge[]; ready: boolean } {
+function useEvMonths(): { months: EvMonthSummary[]; ready: boolean } {
   const site = useYard((s) => s.currentSite) ?? null
   const charges = useEvCharging((s) => s.charges)
+  const thisMonth = monthKey()
   const [cloud, setCloud] = useState<{ key: string; rows: EvCharge[] | null } | null>(null)
-  const key = `${site}|${ym}`
+  const key = `${site}|${thisMonth}`
   const version = useMemo(() => {
     let v = 0
     for (const c of Object.values(charges)) v = Math.max(v, c.updatedAt)
@@ -89,8 +94,10 @@ function useEvMonth(ym: string): { list: EvCharge[]; ready: boolean } {
   }, [charges])
   useEffect(() => {
     let off = false
-    const [a, b] = monthRange(ym)
-    fetchEvTimes(site, a, b).then((rows) => { if (!off) setCloud({ key, rows }) }).catch(() => { if (!off) setCloud({ key, rows: null }) })
+    const from = monthRange(shiftMonth(thisMonth, -(MONTHS_BACK - 1)))[0]
+    fetchEvTimes(site, from, monthRange(thisMonth)[1])
+      .then((rows) => { if (!off) setCloud({ key, rows }) })
+      .catch(() => { if (!off) setCloud({ key, rows: null }) })
     return () => { off = true }
   }, [key, version])
   return useMemo(() => {
@@ -101,79 +108,50 @@ function useEvMonth(ym: string): { list: EvCharge[]; ready: boolean } {
       const cur = merged.get(c.id)
       if (!cur || cur.updatedAt <= c.updatedAt) merged.set(c.id, c)
     }
-    return { list: [...merged.values()], ready: cloud?.key === key }
-  }, [cloud, charges, key, site])
+    const list = [...merged.values()]
+    const months = Array.from({ length: MONTHS_BACK }, (_, k) => monthSummary(list, shiftMonth(thisMonth, -k)))
+    return { months, ready: cloud?.key === key }
+  }, [cloud, charges, key, site, thisMonth])
 }
 
-/** ยอดเดือน (เดือนนี้ + ย้อนหลังทีละเดือน) · ดูรายวันของเดือนนั้นได้ */
-function EvMonthCard() {
-  const thisMonth = monthKey()
-  const [ym, setYm] = useState(thisMonth)
-  const [showDays, setShowDays] = useState(false)
-  const { list, ready } = useEvMonth(ym)
-  const sum = monthSummary(list, ym)
-  const navBtn = 'w-9 h-9 rounded-xl flex items-center justify-center transition disabled:opacity-30'
-  return (
-    <div className="panel p-3" data-ev-month={ym}>
-      <div className="flex items-center gap-2">
-        <button className={navBtn} style={{ border: '1px solid var(--line)' }} aria-label="เดือนก่อน" data-ev-month-prev
-          onClick={() => { setYm(shiftMonth(ym, -1)); setShowDays(false) }}>
-          <ChevronLeft size={17} />
-        </button>
-        <div className="flex-1 text-center">
-          <div className="text-[11px] font-bold uppercase tracking-wider" style={{ color: 'var(--muted)' }}>{ym === thisMonth ? 'ยอดเดือนนี้' : 'ยอดเดือน'}</div>
-          <div className="text-[15px] font-bold">{fmtMonth(ym)}</div>
+/** แผ่นเลือกเดือน — แต่ละเดือนบอกยอดชาร์จเสร็จ + เฉลี่ยต่อคัน */
+function EvMonthSheet({ months, value, onPick, onClose }: {
+  months: EvMonthSummary[]; value: string; onPick: (ym: string) => void; onClose: () => void
+}) {
+  return createPortal(
+    <div className="fixed inset-0 z-[80] flex items-end justify-center" style={{ background: 'rgba(15,23,42,0.45)' }} onClick={onClose}>
+      <div className="w-full max-w-md rounded-t-2xl p-4 pb-6 pop" style={{ background: 'var(--panel)', maxHeight: '80vh', overflowY: 'auto' }}
+        onClick={(e) => e.stopPropagation()} role="dialog" aria-label="เลือกเดือน" data-ev-month-sheet>
+        <div className="flex items-center mb-3">
+          <div className="text-[15px] font-bold flex-1">รวมทั้งเดือน · เลือกเดือน</div>
+          <button onClick={onClose} aria-label="ปิด" className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ border: '1px solid var(--line)' }}>
+            <X size={15} />
+          </button>
         </div>
-        <button className={navBtn} style={{ border: '1px solid var(--line)' }} aria-label="เดือนถัดไป" data-ev-month-next
-          disabled={ym >= thisMonth} onClick={() => { setYm(shiftMonth(ym, 1)); setShowDays(false) }}>
-          <ChevronRight size={17} />
-        </button>
+        <div className="space-y-1.5">
+          {months.map((m) => {
+            const on = m.ym === value
+            return (
+              <button key={m.ym} onClick={() => onPick(m.ym)} data-ev-month-opt={m.ym}
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition"
+                style={on ? { background: EV_ACCENT + '18', border: `1.5px solid ${EV_ACCENT}` } : { border: '1px solid var(--line)' }}>
+                <div className="flex-1">
+                  <div className="text-[14px] font-bold">{fmtMonth(m.ym)}{m.ym === monthKey() ? ' · เดือนนี้' : ''}</div>
+                  <div className="text-[11.5px]" style={{ color: 'var(--muted)' }}>
+                    {m.finished ? `เฉลี่ย ${fmtDuration(m.avgMs)}/คัน · รวม ${fmtDuration(m.totalMs)}` : 'ยังไม่มีรถชาร์จเสร็จ'}
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="text-[20px] font-bold tabular leading-none" style={{ color: m.finished ? EV_ACCENT : 'var(--faint)' }}>{m.finished}</div>
+                  <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>คัน</div>
+                </div>
+              </button>
+            )
+          })}
+        </div>
       </div>
-      <div className="grid grid-cols-3 gap-2 mt-3 text-center">
-        {[
-          ['ชาร์จเสร็จ', `${sum.finished}`, 'คัน', 'finished'],
-          ['เฉลี่ย/คัน', sum.finished ? fmtDuration(sum.avgMs).replace(' ชม.', '') : '—', 'ชม.', 'avg'],
-          ['เวลารวม', sum.totalMs ? fmtDuration(sum.totalMs).replace(' ชม.', '') : '—', 'ชม.', 'total'],
-        ].map(([label, v, unit, id]) => (
-          <div key={id} className="rounded-xl py-2" style={{ background: 'var(--panel-2)' }}>
-            <div className="text-[10.5px] font-bold" style={{ color: 'var(--muted)' }}>{label}</div>
-            <div className="text-[20px] font-bold tabular leading-tight" style={{ color: EV_ACCENT }} data-ev-month-stat={id}>{v}</div>
-            <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>{unit}</div>
-          </div>
-        ))}
-      </div>
-      <div className="text-[11.5px] text-center mt-2" style={{ color: 'var(--muted)' }}>
-        {ready ? `เริ่มชาร์จในเดือนนี้ ${sum.started} คัน` : 'กำลังโหลด…'}
-      </div>
-      {sum.days.length > 0 && (
-        <button onClick={() => setShowDays(!showDays)} className="w-full mt-2 py-1.5 rounded-lg text-[12px] font-semibold"
-          style={{ color: EV_ACCENT, background: EV_ACCENT + '12' }} data-ev-month-days>
-          {showDays ? 'ซ่อนรายวัน' : `ดูรายวัน (${sum.days.length} วัน)`}
-        </button>
-      )}
-      {showDays && (
-        <table className="w-full mt-2 text-[12px] tabular">
-          <thead>
-            <tr style={{ color: 'var(--muted)' }}>
-              <th className="text-left py-1 font-semibold">วันที่</th>
-              <th className="text-right py-1 font-semibold">เริ่ม</th>
-              <th className="text-right py-1 font-semibold">เสร็จ</th>
-              <th className="text-right py-1 font-semibold">เฉลี่ย/คัน</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sum.days.map((d) => (
-              <tr key={d.day} style={{ borderTop: '1px solid var(--line)' }}>
-                <td className="py-1">{fmtDayKey(d.day)}</td>
-                <td className="py-1 text-right">{d.started}</td>
-                <td className="py-1 text-right font-bold" style={{ color: EV_ACCENT }}>{d.finished}</td>
-                <td className="py-1 text-right">{d.finished ? fmtDuration(d.avgMs).replace(' ชม.', '') : '—'}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -187,6 +165,10 @@ export function EvStationHome({ onPick }: { onPick: (vin: string) => void }) {
   const charging = list.filter(isCharging)
   const today = dailySummary(list).find((d) => d.day === dateKey(new Date()))
   const doneToday = list.filter((c) => c.afterAt && dateKey(new Date(c.afterAt)) === dateKey(new Date()))
+  const [ym, setYm] = useState(monthKey)
+  const [picking, setPicking] = useState(false)
+  const { months } = useEvMonths()
+  const month = months.find((m) => m.ym === ym)
 
   return (
     <div className="space-y-3">
@@ -195,21 +177,29 @@ export function EvStationHome({ onPick }: { onPick: (vin: string) => void }) {
           ยังบันทึกขึ้นระบบไม่ได้ {pendingN ? `(ค้างในเครื่อง ${pendingN} รายการ จะส่งให้อัตโนมัติ)` : ''} — แจ้งผู้ดูแลให้รัน supabase-ev-charging.sql
         </div>
       )}
-      <div className="grid grid-cols-3 gap-2">
+      {/* 4 การ์ด: วันนี้ 3 ใบ + รวมทั้งเดือน (แตะเพื่อเลือกเดือนย้อนหลัง) */}
+      <div className="grid grid-cols-4 gap-2">
         {[
           ['เสร็จวันนี้', `${today?.finished ?? 0}`, 'คัน'],
           ['เฉลี่ย/คัน', today?.finished ? fmtDuration(today.avgMs).replace(' ชม.', '') : '—', 'ชม.'],
           ['กำลังชาร์จ', `${charging.length}`, 'คัน'],
         ].map(([label, v, unit]) => (
-          <div key={label} className="panel p-3 text-center">
-            <div className="text-[10.5px] font-bold uppercase tracking-wide" style={{ color: 'var(--muted)' }}>{label}</div>
+          <div key={label} className="panel px-1 py-3 text-center">
+            <div className="text-[10.5px] font-bold whitespace-nowrap" style={{ color: 'var(--muted)' }}>{label}</div>
             <div className="text-[22px] font-bold tabular leading-tight" style={{ color: EV_ACCENT }}>{v}</div>
             <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>{unit}</div>
           </div>
         ))}
+        <button className="panel px-1 py-3 text-center transition active:scale-95" onClick={() => setPicking(true)}
+          data-ev-month={ym} aria-label={`รวมทั้งเดือน ${fmtMonth(ym)} — แตะเพื่อเลือกเดือน`} style={{ touchAction: 'manipulation' }}>
+          <div className="text-[10.5px] font-bold whitespace-nowrap" style={{ color: 'var(--muted)' }}>รวมทั้งเดือน</div>
+          <div className="text-[22px] font-bold tabular leading-tight" style={{ color: EV_ACCENT }} data-ev-month-stat="finished">{month?.finished ?? 0}</div>
+          <div className="text-[10.5px] flex items-center justify-center gap-0.5 whitespace-nowrap" style={{ color: EV_ACCENT }}>
+            {fmtMonth(ym).split(' ')[0]}{ym.slice(0, 4) !== monthKey().slice(0, 4) ? ` ${ym.slice(2, 4)}` : ''} <ChevronDown size={12} />
+          </div>
+        </button>
       </div>
-
-      <EvMonthCard />
+      {picking && <EvMonthSheet months={months} value={ym} onPick={(v) => { setYm(v); setPicking(false) }} onClose={() => setPicking(false)} />}
 
       <div className="panel p-3">
         <div className="text-[11px] font-bold uppercase tracking-wider mb-2" style={{ color: 'var(--muted)' }}>
