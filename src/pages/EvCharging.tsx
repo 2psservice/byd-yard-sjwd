@@ -11,6 +11,7 @@ import { chargeMs, dailySummary, isCharging, fmtDuration, fmtEvDate, fmtEvTime, 
 import { dateKey } from '../lib/dayKey'
 import { fileStamp } from '../lib/printDoc'
 import { PageHead, Stat, Segmented, PhotoLightbox } from '../components/ui'
+import { BatteryPack } from '../components/BatteryPack'
 
 const ACCENT = '#16a34a'
 type StatusFilter = 'all' | 'charging' | 'done'
@@ -151,17 +152,17 @@ export function EvCharging() {
             </label>
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full text-[12.5px] tabular" style={{ minWidth: 1250 }} data-ev-table>
+            <table className="w-full text-[12.5px] tabular" style={{ minWidth: 1500 }} data-ev-table>
               <thead>
                 <tr style={{ color: 'var(--muted)', background: 'var(--chip)' }}>
-                  {['No', 'From', 'Vin Number', 'Model', 'Color', 'Export Label', 'Before', 'After', 'เวลาชาร์จ', 'Date', 'เริ่ม', 'เสร็จ', 'Remark', 'ผู้บันทึก'].map((h) => (
+                  {['No', 'From', 'Vin Number', 'Model', 'Color', 'Export Label', 'Before', 'After', 'แบตเตอรี่', 'เวลาชาร์จ', 'Date', 'เริ่ม', 'เสร็จ', 'Remark', 'ผู้บันทึก'].map((h) => (
                     <th key={h} className="px-2 py-2 font-semibold text-center whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {list.length === 0 && (
-                  <tr><td colSpan={14} className="py-8 text-center" style={{ color: 'var(--faint)' }}>ยังไม่มีงานชาร์จในช่วงนี้ — เริ่มได้ที่ Yard Ops › EV Charging</td></tr>
+                  <tr><td colSpan={15} className="py-8 text-center" style={{ color: 'var(--faint)' }}>ยังไม่มีงานชาร์จในช่วงนี้ — เริ่มได้ที่ Yard Ops › EV Charging</td></tr>
                 )}
                 {list.map((c, i) => (
                   <tr key={c.id} style={{ borderTop: '1px solid var(--line)' }} data-ev-row={c.vin}>
@@ -173,6 +174,11 @@ export function EvCharging() {
                     <td className="px-2 py-2"><Thumb src={c.vinPhoto} onOpen={() => open(c, 0)} label={`รูปเลขวิน ${c.vin}`} /></td>
                     <td className="px-2 py-2"><Thumb src={c.beforePhoto} pct={c.beforePct} onOpen={() => open(c, 1)} label={`ก่อนชาร์จ ${c.vin}`} /></td>
                     <td className="px-2 py-2">{c.afterPhoto ? <Thumb src={c.afterPhoto} pct={c.afterPct} onOpen={() => open(c, 2)} label={`หลังชาร์จ ${c.vin}`} /> : <span className="block text-center text-[11.5px] font-semibold" style={{ color: ACCENT }}>กำลังชาร์จ</span>}</td>
+                    <td className="px-2 py-2" style={{ minWidth: 250 }}>
+                      {isCharging(c)
+                        ? <BatteryPack pct={c.beforePct} charging height={22} label={`เริ่ม ${fmtPct(c.beforePct)}`} />
+                        : <BatteryPack pct={c.afterPct} height={22} label={`${fmtPct(c.beforePct)} → ${fmtPct(c.afterPct)}`} />}
+                    </td>
                     <td className="px-2 py-2 text-center font-bold whitespace-nowrap" data-ev-hours style={{ color: c.afterAt ? 'var(--text)' : 'var(--faint)' }}>
                       {c.afterAt ? fmtDuration(chargeMs(c)) : '—'}
                     </td>
