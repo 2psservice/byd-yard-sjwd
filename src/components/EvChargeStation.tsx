@@ -306,11 +306,13 @@ function PctField({ shot, label }: { shot: ReturnType<typeof useBatteryShot>; la
     <div className="space-y-1">
       <div className="flex items-center gap-2">
         <label className="text-[12px] font-bold shrink-0">{label} <span style={{ color: 'var(--st-damage)' }}>*</span></label>
-        <div className="flex items-center rounded-xl overflow-hidden ml-auto" style={{ border: `1.5px solid ${bad ? 'var(--st-damage)' : 'var(--line-strong)'}` }}>
-          <input value={shot.pct} onChange={(e) => shot.edit(e.target.value)} inputMode="numeric" placeholder="0–100"
+        {/* the one value the operator must type — a bold red frame so it can't be missed */}
+        <div className="flex items-center rounded-xl overflow-hidden ml-auto" data-ev-pct-box
+          style={{ border: '3px solid var(--st-damage)', background: 'rgba(255,59,48,0.06)', boxShadow: '0 0 0 3px rgba(255,59,48,0.14)' }}>
+          <input value={shot.pct} onChange={(e) => shot.edit(e.target.value)} inputMode="numeric"
             data-ev-pct={label} aria-label={label}
             className="w-20 px-3 py-2 text-[18px] font-bold tabular text-right bg-transparent outline-none" />
-          <span className="pr-3 text-[15px] font-bold" style={{ color: 'var(--muted)' }}>%</span>
+          <span className="pr-3 text-[15px] font-bold" style={{ color: 'var(--st-damage)' }}>%</span>
         </div>
       </div>
       <div className="text-[11.5px]" style={{ color: bad ? 'var(--st-damage)' : 'var(--muted)' }}>
