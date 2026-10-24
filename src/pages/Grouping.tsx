@@ -3,8 +3,9 @@ import { Layers, Upload, Printer, MapPin, Loader2, FileSpreadsheet, CheckCircle2
 import { useYard, useUnits } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { rowsForSite } from '../lib/siteScope'
-import { useOps, type WorkQueue } from '../store/useOps'
+import { useOps, isSequenceQueue, type WorkQueue } from '../store/useOps'
 import { PageHead } from '../components/ui'
+import { clock } from '../lib/format'
 import { parseGroupingWorkbook, siteGroupingConfig, yardLocCode, LAST_LOCATION_KEY } from '../lib/groupingImport'
 import { printGrouping, printFindCar, exportGroupingXlsx, exportFindCarXlsx, type GroupPrintRow, type GroupPrintMeta } from '../lib/groupingPrint'
 import { printIr, printDn, printIrPaper } from '../lib/dnir'
@@ -268,7 +269,7 @@ export function Grouping() {
         // the หมายเหตุ rides on the run's own item, so a reprint days later
         // still carries what the planner wrote — the tracking sheet is never
         // touched (its หมายเหตุ column is the PM note, a different thing)
-        laneLoad: i.laneLoad ?? '', receiveDate: '', remark: i.remark ?? '',
+        laneLoad: i.laneLoad ?? '', laneBy: i.laneBy, laneAt: i.laneAt, receiveDate: '', remark: i.remark ?? '',
       }
     })
     const m: GroupPrintMeta = {
@@ -293,6 +294,39 @@ export function Grouping() {
 
   const canPrint = !!sheetRows && sheetRows.length > 0 && !!sheetMeta
   const hasLaneEdits = Object.keys(laneEdits).length > 0
+
+  // ── Lane load checks: the import numbers groups O1, O2 … with no repeats, so a lane
+  // two groups share, or one that isn't O + number, was typed by hand. Flagged, never
+  // blocked — two small groups loading in one lane can be intended.
+  const laneCheck = useMemo(() => {
+    const laneOf = new Map<string, string>()
+    const stamp = new Map<string, { by: string; at: number }>() // newest hand edit per group
+    for (const r of sheetRows ?? []) {
+      if (!r.grouping) continue
+      if (!laneOf.has(r.grouping)) laneOf.set(r.grouping, r.laneLoad.trim())
+      const st = stamp.get(r.grouping)
+      if (r.laneBy && (!st || (r.laneAt ?? 0) > st.at)) stamp.set(r.grouping, { by: r.laneBy, at: r.laneAt ?? 0 })
+    }
+    const groupsOf = new Map<string, string[]>()
+    for (const [g, l] of laneOf) if (l) groupsOf.set(l, [...(groupsOf.get(l) ?? []), g])
+    const sharedWith = (g: string) => (groupsOf.get(laneOf.get(g) ?? '') ?? []).filter((x) => x !== g)
+    const odd = (g: string) => { const l = laneOf.get(g) ?? ''; return !!l && !/^O\d+$/.test(l) }
+    return { laneOf, stamp, sharedWith, odd }
+  }, [sheetRows])
+  const laneNote = (g: string): string => {
+    const l = laneCheck.laneOf.get(g) ?? ''
+    const notes: string[] = []
+    const shared = laneCheck.sharedWith(g)
+    if (shared.length) notes.push(`${l} ใช้ร่วมกับ ${shared.join(', ')}`)
+    if (laneCheck.odd(g)) notes.push(`${l} ไม่ได้ขึ้นต้นด้วย O`)
+    return notes.join(' · ')
+  }
+  // the run บันทึก Lane load writes to: the one on screen, or (fresh import) the run
+  // Create Sequence would overwrite, same name. No run yet = the lanes stay on this sheet
+  // and travel with Create Sequence.
+  const laneRunId = usingQueue
+    ? queueSheet!.id
+    : queues.find((q) => isSequenceQueue(q) && (q.name ?? '').trim().toLowerCase() === seqName.trim().toLowerCase())?.id
 
   // ── pick what DN / IR print: single VINs, whole groupings, or everything ──
   const [selVins, setSelVins] = useState<Set<string>>(new Set())
@@ -407,14 +441,17 @@ export function Grouping() {
     if (!hasLaneEdits) return
     const updates: Record<string, string> = {}
     for (const [g, l] of Object.entries(laneEdits)) if (g) updates[g] = l.trim()
+    // ask before saving a lane another group already uses, or one that isn't O + number
+    const warn = Object.keys(updates).map((g) => (laneNote(g) ? `${g} · ${laneNote(g)}` : '')).filter(Boolean)
+    if (warn.length && !window.confirm(`Lane load ที่จะบันทึกมีจุดที่ควรตรวจ\n\n${warn.join('\n')}\n\nยืนยันบันทึกตามนี้?`)) return
     // queue items carry the lane the field reads — updating them (and pushing to
     // cloud) is exactly what makes every device show the new lane automatically
-    const changed = setLaneLoads(updates)
-    if (rows) setRows(rows.map((r) => (updates[r.grouping] != null ? { ...r, laneLoad: updates[r.grouping] } : r)))
+    const changed = laneRunId ? setLaneLoads(laneRunId, updates, currentUser) : 0
+    const at = Date.now()
+    if (rows) setRows(rows.map((r) => (updates[r.grouping] != null && updates[r.grouping] !== r.laneLoad
+      ? { ...r, laneLoad: updates[r.grouping], laneBy: currentUser || undefined, laneAt: at } : r)))
     setLaneEdits({})
-    toast('ok', changed
-      ? `บันทึก Lane load แล้ว · อัปเดตคิวงาน ${changed} คิว — หน้างานเห็น lane ใหม่ทันที`
-      : 'บันทึก Lane load แล้ว')
+    toast('ok', changed ? 'บันทึก Lane load แล้ว · หน้างานเห็น lane ใหม่ทันที' : 'บันทึก Lane load แล้ว')
   }
 
   const doCreateSequence = () => {
@@ -424,7 +461,13 @@ export function Grouping() {
     try {
       // the grouping code travels with the item: the run keeps following it, so a
       // car whose number is cleared later drops out and a car stamped with it joins
-      const items = sheetRows.map((r) => ({ vin: r.vin, laneLoad: r.laneLoad, dest: r.deliveryLocation, group: r.grouping, remark: r.remark }))
+      // a lane typed but not yet saved is still a hand edit — it carries who / when like a saved one
+      const at = Date.now()
+      const items = sheetRows.map((r) => {
+        const typed = laneEdits[r.grouping] != null
+        return { vin: r.vin, laneLoad: r.laneLoad, laneBy: typed ? currentUser || undefined : r.laneBy, laneAt: typed ? at : r.laneAt,
+          dest: r.deliveryLocation, group: r.grouping, remark: r.remark }
+      })
       const id = createSequence(name, currentUser, items)
       if (!id) { toast('err', 'สร้างลำดับงานไม่สำเร็จ — ชื่อคิวว่าง'); return }
       toast('ok', `สร้างลำดับงาน "${name}" · ${items.length} คัน — ไปที่ Operation / Yard Ops ได้เลย`)
@@ -634,17 +677,25 @@ export function Grouping() {
                       <td style={td({ textAlign: 'center', color: r.yardLocation ? '#111' : '#d97706', fontWeight: 600 })} className="tabular whitespace-nowrap">
                         {r.yardLocation || 'ไม่พบ'}
                       </td>
-                      {first && (
-                        <td rowSpan={span} style={td({ textAlign: 'center', padding: 2 })}>
-                          <input
-                            value={r.laneLoad}
-                            onChange={(e) => setLaneEdits((p) => ({ ...p, [r.grouping]: e.target.value.toUpperCase() }))}
-                            className="tabular"
-                            style={{ width: 52, textAlign: 'center', fontWeight: 700, fontSize: 12.5, color: '#2563eb',
-                              border: '1.5px solid #2563eb55', borderRadius: 6, padding: '3px 2px', background: '#fff' }}
-                          />
-                        </td>
-                      )}
+                      {first && (() => {
+                        const note = laneNote(r.grouping)
+                        const st = laneCheck.stamp.get(r.grouping)
+                        // lanes typed before who / when was kept carry no name — say nothing rather than guess
+                        const tip = [note, st ? `แก้ Lane load โดย ${st.by} · ${clock(st.at)}` : ''].filter(Boolean).join('\n') || undefined
+                        return (
+                          <td rowSpan={span} style={td({ textAlign: 'center', padding: 2 })}>
+                            <input
+                              value={r.laneLoad}
+                              onChange={(e) => setLaneEdits((p) => ({ ...p, [r.grouping]: e.target.value.toUpperCase() }))}
+                              title={tip} aria-label={`Lane load ${r.grouping}`}
+                              data-lane={r.grouping} data-lane-warn={note ? '1' : undefined} data-lane-by={st?.by}
+                              className="tabular"
+                              style={{ width: 52, textAlign: 'center', fontWeight: 700, fontSize: 12.5, color: note ? '#c2410c' : '#2563eb',
+                                border: `1.5px solid ${note ? '#f97316' : '#2563eb55'}`, borderRadius: 6, padding: '3px 2px', background: note ? '#ffedd5' : '#fff' }}
+                            />
+                          </td>
+                        )
+                      })()}
                       {first && (
                         <td rowSpan={span} style={td({ textAlign: 'center' })} className="tabular whitespace-nowrap">
                           {r.receiveDate || sheetMeta.date}

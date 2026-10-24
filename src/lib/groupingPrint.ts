@@ -20,6 +20,9 @@ export interface GroupPrintRow {
   groupUnit: number   // cars in this grouping number
   yardLocation: string // "N-V41" (blank if the car isn't placed in the yard)
   laneLoad: string    // "O1"
+  /** set when someone typed this lane on the Grouping sheet (screen only) */
+  laneBy?: string
+  laneAt?: number
   receiveDate: string
   remark: string
 }
