@@ -37,6 +37,10 @@ export const EV_CELL = EV_CHARGING_KEY
 /** ค่าที่วัดในชีต (เดียวกับที่สถานี PDI/PM ลง) — สถานีเขียน % ล่าสุดที่บันทึกลงช่องนี้ด้วย */
 export const SOC_CELL = '% SOC'
 
+/** รุ่นรถตามที่สถานีบันทึก: ช่อง Model ก่อน แล้วค่อย Model name (ตัด "BYD ") — ใช้จับกลุ่มรุ่นในแผนชาร์จด้วย */
+export const evModelOf = (cells: Record<string, string>, fallback = '') =>
+  (cells['Model'] || (cells['Model name'] || '').replace(/^BYD\s+/i, '') || fallback).trim()
+
 export const evChargeId = (vin: string, at: number) => `${vin}#${at.toString(36)}`
 export const isCharging = (c: EvCharge) => !c.afterAt
 
