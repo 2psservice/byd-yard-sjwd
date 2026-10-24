@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Layers, Upload, Printer, MapPin, Loader2, FileSpreadsheet, CheckCircle2, AlertTriangle, ListChecks, X, Save, FileText, Pencil, CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Layers, Upload, Printer, MapPin, Loader2, FileSpreadsheet, CheckCircle2, AlertTriangle, ListChecks, X, Save, FileText, Pencil, CalendarDays, ChevronLeft, ChevronRight, Check } from 'lucide-react'
 import { useYard, useUnits } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { rowsForSite } from '../lib/siteScope'
@@ -8,6 +8,7 @@ import { PageHead } from '../components/ui'
 import { parseGroupingWorkbook, siteGroupingConfig, yardLocCode, LAST_LOCATION_KEY } from '../lib/groupingImport'
 import { printGrouping, printFindCar, exportGroupingXlsx, exportFindCarXlsx, type GroupPrintRow, type GroupPrintMeta } from '../lib/groupingPrint'
 import { printIr, printDn, printIrPaper } from '../lib/dnir'
+import { markPrinted, printedAt } from '../lib/printMarks'
 import type { TrackRow } from '../lib/excelTracking'
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
@@ -334,10 +335,27 @@ export function Grouping() {
     for (const r of printSheetRows) if (r.grouping) m.set(r.vin, r.grouping)
     return (vin: string) => m.get(vin) ?? ''
   }, [printSheetRows])
+  // …and the destination the table shows (the plan's Delivery Location) — IR "Delivery To" and DN
+  // "Destination" used to read only the car's Dealer Location cell, so a car whose cell was blank
+  // printed an empty destination while this table showed the dealer
+  const destOfVin = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const r of printSheetRows) if (r.deliveryLocation) m.set(r.vin, r.deliveryLocation)
+    return (vin: string) => m.get(vin) ?? ''
+  }, [printSheetRows])
   const trackRowsOrWarn = (): TrackRow[] => {
     const missing = printSheetRows.length - printTrackRows.length
     if (missing > 0) toast('err', `ไม่พบข้อมูล ${missing} คันในระบบ — พิมพ์เฉพาะคันที่พบ`)
     return printTrackRows
+  }
+  /** print, then tick the printed cars (column พิมพ์แล้ว) */
+  const printDoc = (kind: 'dn' | 'ir' | 'irp') => {
+    const rows = trackRowsOrWarn()
+    if (!rows.length) return
+    if (kind === 'dn') printDn(rows, groupOfVin, destOfVin)
+    else if (kind === 'ir') printIr(rows, siteName, destOfVin)
+    else printIrPaper(rows, siteName, destOfVin)
+    markPrinted(rows, kind === 'dn' ? 'dn' : 'ir', groupOfVin)
   }
   const doExport = (fn: () => Promise<void>) =>
     fn().catch((e) => { console.error('[grouping] export', e); toast('err', `Export ไม่สำเร็จ: ${(e as Error)?.message ?? e}`) })
@@ -470,15 +488,15 @@ export function Grouping() {
               </button>
             </span>
           )}
-          <button className="btn" onClick={() => printDn(trackRowsOrWarn(), groupOfVin)} disabled={!printTrackRows.length}
+          <button className="btn" onClick={() => printDoc('dn')} disabled={!printTrackRows.length}
             title="พิมพ์ใบส่งมอบรถ (Delivery Note) — 1 ใบ ต่อ 1 Grouping · พิมพ์เฉพาะคันที่ติ๊ก (ไม่ติ๊ก = ทั้งใบ)">
             <FileText size={15} /> พิมพ์ DN ({printCount})
           </button>
-          <button className="btn" onClick={() => printIr(trackRowsOrWarn(), siteName)} disabled={!printTrackRows.length}
+          <button className="btn" onClick={() => printDoc('ir')} disabled={!printTrackRows.length}
             title="พิมพ์ใบตรวจรถ (Inspector Report) เต็มฟอร์ม — 1 หน้า ต่อ 1 คัน ลงกระดาษเปล่า · พิมพ์เฉพาะคันที่ติ๊ก (ไม่ติ๊ก = ทั้งใบ)">
             <Printer size={15} /> พิมพ์ IR ({printCount})
           </button>
-          <button className="btn" onClick={() => printIrPaper(trackRowsOrWarn(), siteName)} disabled={!printTrackRows.length}
+          <button className="btn" onClick={() => printDoc('irp')} disabled={!printTrackRows.length}
             title="พิมพ์เฉพาะข้อมูลลงบนกระดาษฟอร์ม IR ที่พิมพ์ไว้ล่วงหน้า (ตรงตำแหน่ง AMS 100%) · พิมพ์เฉพาะคันที่ติ๊ก (ไม่ติ๊ก = ทั้งใบ)">
             <Printer size={15} /> พิมพ์กระดาษ IR ({printCount})
           </button>
@@ -571,7 +589,7 @@ export function Grouping() {
                     <th style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 5px', textAlign: 'center', fontSize: 11, color: '#111' }}
                       title="กด − เพื่อเอารถออกจาก Grouping">เอาออก</th>
                   )}
-                  {['No', 'Vin', 'Model', 'Color', 'Delivery Location', 'Groupping Number', 'Grouping (Unit)', 'Location', 'Lane load', 'วันที่ในการเข้ารับ', 'หมายเหตุ'].map((h) => (
+                  {['No', 'Vin', 'Model', 'Color', 'Delivery Location', 'Groupping Number', 'Grouping (Unit)', 'Location', 'Lane load', 'วันที่ในการเข้ารับ', 'หมายเหตุ', 'พิมพ์แล้ว'].map((h) => (
                     <th key={h} className="whitespace-nowrap"
                       style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 6px', fontWeight: 700, fontSize: 11, color: '#111', textAlign: 'center' }}>
                       {h}
@@ -633,6 +651,24 @@ export function Grouping() {
                         </td>
                       )}
                       <td style={td({ minWidth: 60 })}>{r.remark}</td>
+                      {(() => {
+                        // ✓ once this car's DN / IR has been printed for THIS grouping
+                        const cells = rowByVin.get(r.vin)?.cells
+                        const dn = printedAt(cells, 'dn', r.grouping), ir = printedAt(cells, 'ir', r.grouping)
+                        const done = [dn != null ? 'DN' : '', ir != null ? 'IR' : ''].filter(Boolean)
+                        const tip = [dn != null ? `DN ${dn}` : '', ir != null ? `IR ${ir}` : ''].filter(Boolean).join(' · ')
+                        return (
+                          <td style={td({ textAlign: 'center', minWidth: 58, padding: '2px 4px' })} data-printed={done.join(',')}
+                            title={tip ? `พิมพ์แล้ว: ${tip}` : 'ยังไม่ได้พิมพ์ DN / IR'}>
+                            {done.length > 0 && (
+                              <span className="inline-flex flex-col items-center" style={{ color: '#16a34a', lineHeight: 1 }}>
+                                <Check size={18} strokeWidth={3.2} />
+                                <span style={{ fontSize: 10, fontWeight: 800 }}>{done.join(' · ')}</span>
+                              </span>
+                            )}
+                          </td>
+                        )
+                      })()}
                     </tr>
                   )
                 })}
@@ -642,7 +678,7 @@ export function Grouping() {
                   <td colSpan={editingVins ? 8 : 7} style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 6px', fontWeight: 700, textAlign: 'center' }}>Total</td>
                   <td style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 6px', fontWeight: 700, textAlign: 'center' }} className="tabular">{sheetMeta.totalUnits}</td>
                   <td style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 6px', fontWeight: 700, textAlign: 'center' }}>Cars.</td>
-                  <td colSpan={3} style={{ background: '#ffff00', border: '1px solid #000' }} />
+                  <td colSpan={4} style={{ background: '#ffff00', border: '1px solid #000' }} />
                 </tr>
               </tfoot>
             </table>

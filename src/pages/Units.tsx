@@ -9,7 +9,9 @@ import {
 } from 'lucide-react'
 import { compressImage } from '../lib/photo'
 import { CarTopView } from '../components/CarTopView'
-import { printIr, printDn, printIrPaper } from '../lib/dnir'
+import { printIr, printDn, printIrPaper, dealerCell, type DestOf } from '../lib/dnir'
+import { markPrinted } from '../lib/printMarks'
+import { latestQueueDest } from '../store/useOps'
 import { printVehicleLabels } from '../lib/vehicleLabel'
 import { useYard } from '../store/useYard'
 import type { Unit } from '../types'
@@ -214,6 +216,10 @@ const COLOR_SW: Record<string, string> = {
 }
 
 type SortDir = 1 | -1
+/** ปลายทางบนใบ IR / DN ที่พิมพ์จากหน้านี้: ช่อง Dealer Location ของแถวที่พิมพ์ ถ้าว่างใช้แผน Grouping
+ *  รอบใหม่สุดของรถคันนั้น (ช่องว่างเคยทำให้กระดาษ IR ไม่มี Delivery To ทั้งที่หน้า Grouping แสดงปลายทาง) */
+const unitsDestOf: DestOf = (vin, row) => dealerCell(row) || latestQueueDest(vin, useYard.getState().currentSite)
+
 type Tab = 'grouping' | 'units' | 'mylist'
 
 /** Sheets one IR-paper print may send at once. Every VIN is its own page, and
@@ -561,7 +567,8 @@ export function Units() {
                 const toast = useYard.getState().toast
                 if (!targets.length) { toast('err', 'ไม่มีรถให้พิมพ์ — เลือกรถหรือปรับตัวกรองก่อน'); return }
                 if (targets.length > IR_PRINT_MAX) { toast('err', `เลือกไว้ ${targets.length.toLocaleString()} คัน — พิมพ์ได้ครั้งละไม่เกิน ${IR_PRINT_MAX} แผ่น`); return }
-                printIrPaper(targets, sites.find((s) => s.id === currentSite)?.name ?? '')
+                printIrPaper(targets, sites.find((s) => s.id === currentSite)?.name ?? '', unitsDestOf)
+                markPrinted(targets, 'ir')
                 toast('ok', `พิมพ์กระดาษ IR ${targets.length.toLocaleString()} แผ่น`)
               }}>
               <Printer size={14} /> พิมพ์กระดาษ IR ({printTargets.length.toLocaleString()})
@@ -1305,13 +1312,13 @@ function GroupingView({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort
             <button className="btn btn-ghost py-1.5 text-[12.5px]" onClick={toggleGroupSel} disabled={!shownRows.length}>
               <CheckSquare size={14} /> {allSel ? 'ยกเลิกทั้งกลุ่ม' : 'เลือกทั้งกลุ่ม'}
             </button>
-            <button className="btn py-1.5 text-[12.5px]" onClick={() => printDn(toPrint)} disabled={!toPrint.length} title="พิมพ์ใบส่งมอบรถ (Delivery Note) — 1 ใบ ต่อ 1 Grouping">
+            <button className="btn py-1.5 text-[12.5px]" onClick={() => { printDn(toPrint, undefined, unitsDestOf); markPrinted(toPrint, 'dn') }} disabled={!toPrint.length} title="พิมพ์ใบส่งมอบรถ (Delivery Note) — 1 ใบ ต่อ 1 Grouping">
               <FileText size={14} /> พิมพ์ DN ({toPrint.length})
             </button>
-            <button className="btn btn-primary py-1.5 text-[12.5px]" onClick={() => printIr(toPrint, siteName)} disabled={!toPrint.length} title="พิมพ์ใบตรวจรถ (Inspector Report) เต็มฟอร์ม — 1 หน้า ต่อ 1 คัน ลงกระดาษเปล่า">
+            <button className="btn btn-primary py-1.5 text-[12.5px]" onClick={() => { printIr(toPrint, siteName, unitsDestOf); markPrinted(toPrint, 'ir') }} disabled={!toPrint.length} title="พิมพ์ใบตรวจรถ (Inspector Report) เต็มฟอร์ม — 1 หน้า ต่อ 1 คัน ลงกระดาษเปล่า">
               <Printer size={14} /> พิมพ์ IR ({toPrint.length})
             </button>
-            <button className="btn py-1.5 text-[12.5px]" onClick={() => printIrPaper(toPrint, siteName)} disabled={!toPrint.length} title="พิมพ์เฉพาะข้อมูลลงบนกระดาษฟอร์ม IR ที่พิมพ์ไว้ล่วงหน้า (ตรงตำแหน่ง AMS 100%)">
+            <button className="btn py-1.5 text-[12.5px]" onClick={() => { printIrPaper(toPrint, siteName, unitsDestOf); markPrinted(toPrint, 'ir') }} disabled={!toPrint.length} title="พิมพ์เฉพาะข้อมูลลงบนกระดาษฟอร์ม IR ที่พิมพ์ไว้ล่วงหน้า (ตรงตำแหน่ง AMS 100%)">
               <Printer size={14} /> พิมพ์กระดาษ IR ({toPrint.length})
             </button>
           </div>
@@ -1421,7 +1428,8 @@ function MylistView({ rows, allRows, visCols, sel, setSel, sortKey, sortDir, tog
   const doIrPaper = () => {
     if (!irTargets.length) return
     if (irTargets.length > IR_PRINT_MAX) { toast('err', `เลือกไว้ ${irTargets.length.toLocaleString()} คัน — พิมพ์ได้ครั้งละไม่เกิน ${IR_PRINT_MAX} แผ่น`); return }
-    printIrPaper(irTargets, siteName)
+    printIrPaper(irTargets, siteName, unitsDestOf)
+    markPrinted(irTargets, 'ir')
     toast('ok', `พิมพ์กระดาษ IR ${irTargets.length.toLocaleString()} แผ่น`)
   }
 

@@ -1412,6 +1412,18 @@ export function useSiteQueues(): WorkQueue[] {
   return useMemo(() => (currentSite ? all.filter((q) => !q.site || q.site === currentSite) : all), [all, currentSite])
 }
 
+/** ปลายทาง (Delivery Location) ของรถตามแผน Grouping รอบใหม่สุดที่มีรถคันนี้ ในยาร์ดนี้ —
+ *  ใบ IR / DN ที่พิมพ์จากหน้าอื่น (Units) ใช้เมื่อช่อง Dealer Location ของรถว่าง */
+export function latestQueueDest(vin: string, site?: string | null): string {
+  let best: { at: number; dest: string } | null = null
+  for (const q of useOps.getState().queues) {
+    if (q.kind !== 'sequence' || (site && q.site && q.site !== site)) continue
+    const dest = q.items.find((i) => i.vin === vin)?.dest?.trim()
+    if (dest && (!best || q.createdAt > best.at)) best = { at: q.createdAt, dest }
+  }
+  return best?.dest ?? ''
+}
+
 // "this car's gate work is finished" lives in carStatus.ts (hasLeftGate) so the
 // reconciler, the queue cards and the station badges cannot drift apart again.
 
