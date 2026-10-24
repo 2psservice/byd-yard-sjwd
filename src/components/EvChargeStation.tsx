@@ -6,16 +6,17 @@
  * แบต + % → บันทึก แล้วสรุปเวลาชาร์จของคันนั้น
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { BatteryCharging, Camera, Images, Sparkles, X, CheckCircle2, Clock, Zap } from 'lucide-react'
+import { BatteryCharging, Camera, Images, Sparkles, X, CheckCircle2, Clock, Zap, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useYard } from '../store/useYard'
 import { useTracking } from '../store/useTracking'
 import { useEvCharging } from '../store/useEvCharging'
 import { compressToDataUrl } from '../lib/photo'
 import { storePhoto } from '../lib/photoStore'
 import {
-  EV_CELL, evChargeId, evCellText, openChargeOf, isCharging, chargeMs, dailySummary, readBatteryPercent, parsePct,
-  fmtDuration, fmtEvTime, fmtPct, type EvCharge, type BatteryRead,
+  EV_CELL, SOC_CELL, evChargeId, evCellText, openChargeOf, isCharging, chargeMs, dailySummary, readBatteryPercent, parsePct,
+  fmtDuration, fmtEvTime, fmtDayKey, fmtPct, monthKey, fmtMonth, shiftMonth, monthRange, monthSummary, type EvCharge, type BatteryRead,
 } from '../lib/evCharging'
+import { fetchEvTimes } from '../lib/db'
 import { dateKey } from '../lib/dayKey'
 import { PhotoLightbox, cx } from './ui'
 
@@ -74,6 +75,108 @@ function BatteryPack({ pct, charging, label, height = 26 }: {
   )
 }
 
+/** รอบชาร์จของยาร์ดนี้ที่เริ่มหรือจบในเดือน ym — ดึงเฉพาะเวลา/% จากคลาวด์ (ย้อนหลังได้ทุกเดือน)
+ *  แล้วทับด้วยของในเครื่อง (รอบที่เพิ่งบันทึก/ยังไม่ขึ้นคลาวด์) · ดึงใหม่ทุกครั้งที่มีการบันทึก */
+function useEvMonth(ym: string): { list: EvCharge[]; ready: boolean } {
+  const site = useYard((s) => s.currentSite) ?? null
+  const charges = useEvCharging((s) => s.charges)
+  const [cloud, setCloud] = useState<{ key: string; rows: EvCharge[] | null } | null>(null)
+  const key = `${site}|${ym}`
+  const version = useMemo(() => {
+    let v = 0
+    for (const c of Object.values(charges)) v = Math.max(v, c.updatedAt)
+    return `${Object.keys(charges).length}:${v}`
+  }, [charges])
+  useEffect(() => {
+    let off = false
+    const [a, b] = monthRange(ym)
+    fetchEvTimes(site, a, b).then((rows) => { if (!off) setCloud({ key, rows }) }).catch(() => { if (!off) setCloud({ key, rows: null }) })
+    return () => { off = true }
+  }, [key, version])
+  return useMemo(() => {
+    const merged = new Map<string, EvCharge>()
+    if (cloud?.key === key && cloud.rows) for (const r of cloud.rows) merged.set(r.id, r)
+    for (const c of Object.values(charges)) {
+      if (site && c.site && c.site !== site) continue
+      const cur = merged.get(c.id)
+      if (!cur || cur.updatedAt <= c.updatedAt) merged.set(c.id, c)
+    }
+    return { list: [...merged.values()], ready: cloud?.key === key }
+  }, [cloud, charges, key, site])
+}
+
+/** ยอดเดือน (เดือนนี้ + ย้อนหลังทีละเดือน) · ดูรายวันของเดือนนั้นได้ */
+function EvMonthCard() {
+  const thisMonth = monthKey()
+  const [ym, setYm] = useState(thisMonth)
+  const [showDays, setShowDays] = useState(false)
+  const { list, ready } = useEvMonth(ym)
+  const sum = monthSummary(list, ym)
+  const navBtn = 'w-9 h-9 rounded-xl flex items-center justify-center transition disabled:opacity-30'
+  return (
+    <div className="panel p-3" data-ev-month={ym}>
+      <div className="flex items-center gap-2">
+        <button className={navBtn} style={{ border: '1px solid var(--line)' }} aria-label="เดือนก่อน" data-ev-month-prev
+          onClick={() => { setYm(shiftMonth(ym, -1)); setShowDays(false) }}>
+          <ChevronLeft size={17} />
+        </button>
+        <div className="flex-1 text-center">
+          <div className="text-[11px] font-bold uppercase tracking-wider" style={{ color: 'var(--muted)' }}>{ym === thisMonth ? 'ยอดเดือนนี้' : 'ยอดเดือน'}</div>
+          <div className="text-[15px] font-bold">{fmtMonth(ym)}</div>
+        </div>
+        <button className={navBtn} style={{ border: '1px solid var(--line)' }} aria-label="เดือนถัดไป" data-ev-month-next
+          disabled={ym >= thisMonth} onClick={() => { setYm(shiftMonth(ym, 1)); setShowDays(false) }}>
+          <ChevronRight size={17} />
+        </button>
+      </div>
+      <div className="grid grid-cols-3 gap-2 mt-3 text-center">
+        {[
+          ['ชาร์จเสร็จ', `${sum.finished}`, 'คัน', 'finished'],
+          ['เฉลี่ย/คัน', sum.finished ? fmtDuration(sum.avgMs).replace(' ชม.', '') : '—', 'ชม.', 'avg'],
+          ['เวลารวม', sum.totalMs ? fmtDuration(sum.totalMs).replace(' ชม.', '') : '—', 'ชม.', 'total'],
+        ].map(([label, v, unit, id]) => (
+          <div key={id} className="rounded-xl py-2" style={{ background: 'var(--panel-2)' }}>
+            <div className="text-[10.5px] font-bold" style={{ color: 'var(--muted)' }}>{label}</div>
+            <div className="text-[20px] font-bold tabular leading-tight" style={{ color: EV_ACCENT }} data-ev-month-stat={id}>{v}</div>
+            <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>{unit}</div>
+          </div>
+        ))}
+      </div>
+      <div className="text-[11.5px] text-center mt-2" style={{ color: 'var(--muted)' }}>
+        {ready ? `เริ่มชาร์จในเดือนนี้ ${sum.started} คัน` : 'กำลังโหลด…'}
+      </div>
+      {sum.days.length > 0 && (
+        <button onClick={() => setShowDays(!showDays)} className="w-full mt-2 py-1.5 rounded-lg text-[12px] font-semibold"
+          style={{ color: EV_ACCENT, background: EV_ACCENT + '12' }} data-ev-month-days>
+          {showDays ? 'ซ่อนรายวัน' : `ดูรายวัน (${sum.days.length} วัน)`}
+        </button>
+      )}
+      {showDays && (
+        <table className="w-full mt-2 text-[12px] tabular">
+          <thead>
+            <tr style={{ color: 'var(--muted)' }}>
+              <th className="text-left py-1 font-semibold">วันที่</th>
+              <th className="text-right py-1 font-semibold">เริ่ม</th>
+              <th className="text-right py-1 font-semibold">เสร็จ</th>
+              <th className="text-right py-1 font-semibold">เฉลี่ย/คัน</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sum.days.map((d) => (
+              <tr key={d.day} style={{ borderTop: '1px solid var(--line)' }}>
+                <td className="py-1">{fmtDayKey(d.day)}</td>
+                <td className="py-1 text-right">{d.started}</td>
+                <td className="py-1 text-right font-bold" style={{ color: EV_ACCENT }}>{d.finished}</td>
+                <td className="py-1 text-right">{d.finished ? fmtDuration(d.avgMs).replace(' ชม.', '') : '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  )
+}
+
 // ── หน้าแรกของสถานี: สรุปวันนี้ + รถที่กำลังชาร์จ ─────────────────────────────
 
 export function EvStationHome({ onPick }: { onPick: (vin: string) => void }) {
@@ -105,6 +208,8 @@ export function EvStationHome({ onPick }: { onPick: (vin: string) => void }) {
           </div>
         ))}
       </div>
+
+      <EvMonthCard />
 
       <div className="panel p-3">
         <div className="text-[11px] font-bold uppercase tracking-wider mb-2" style={{ color: 'var(--muted)' }}>
@@ -312,8 +417,11 @@ export function EvChargePanel({ vin, cells, unitModel, unitColor, onClose }: {
   const uploading = vinShot.busy || shot.busy
   const canSave = !missing.length && !uploading && !saving
 
+  // ช่องในชีตของรถ: สรุปรอบชาร์จ + % SOC = ค่าที่เพิ่งบันทึก (ก่อนชาร์จตอนเริ่ม · หลังชาร์จตอนจบ) ให้หน้า Units เห็นค่าล่าสุด
   const writeCell = (c: EvCharge) => {
-    if (useTracking.getState().rows[vin]) useTracking.getState().updateCell(vin, EV_CELL, evCellText(c), 'scan')
+    if (!useTracking.getState().rows[vin]) return
+    const soc = c.afterAt ? c.afterPct : c.beforePct
+    useTracking.getState().updateCells(vin, { [EV_CELL]: evCellText(c), ...(soc != null ? { [SOC_CELL]: String(soc) } : {}) }, 'scan')
   }
 
   const save = async () => {

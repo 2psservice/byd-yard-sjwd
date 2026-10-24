@@ -37,12 +37,17 @@ export interface EvCharge {
 
 /** ช่องในชีต (Units / Units Mylist) ที่สรุปรอบชาร์จล่าสุดของรถ */
 export const EV_CELL = EV_CHARGING_KEY
+/** ค่าที่วัดในชีต (เดียวกับที่สถานี PDI/PM ลง) — สถานีเขียน % ล่าสุดที่บันทึกลงช่องนี้ด้วย */
+export const SOC_CELL = '% SOC'
 
 export const evChargeId = (vin: string, at: number) => `${vin}#${at.toString(36)}`
 export const isCharging = (c: EvCharge) => !c.afterAt
 
 /** เวลาชาร์จ (ms) — รอบที่ยังไม่จบนับถึง `now` */
-export const chargeMs = (c: EvCharge, now = Date.now()) => Math.max(0, (c.afterAt || now) - c.beforeAt)
+/** เวลาเริ่ม/จบของรอบ — พอสำหรับสรุปเวลา (สรุปรายเดือนดึงมาแค่ช่องเหล่านี้ ไม่ดึงรูป) */
+export type EvTimes = Pick<EvCharge, 'beforeAt' | 'afterAt'>
+
+export const chargeMs = (c: EvTimes, now = Date.now()) => Math.max(0, (c.afterAt || now) - c.beforeAt)
 /** ms → ชั่วโมงทศนิยม 2 ตำแหน่ง (ช่องตัวเลขใน Excel) */
 export const hoursOf = (ms: number) => Math.round((ms / 3_600_000) * 100) / 100
 
@@ -63,6 +68,8 @@ export function fmtEvTime(ts: number): string {
   const d = new Date(ts)
   return `${p2(d.getHours())}:${p2(d.getMinutes())}`
 }
+/** "2026-10-01" → "01/10/26" */
+export const fmtDayKey = (day: string) => `${day.slice(8, 10)}/${day.slice(5, 7)}/${day.slice(2, 4)}`
 export const fmtPct = (n: number | null | undefined) => (n == null ? '—' : `${n}%`)
 
 /** รอบที่ยังไม่จบของรถคันนี้ (ใหม่สุด) */
@@ -91,7 +98,7 @@ export interface EvDaySummary {
 }
 
 /** สรุปรายวัน: วันละกี่คัน + คันละกี่ชั่วโมง (ใหม่สุดก่อน) */
-export function dailySummary(list: Iterable<EvCharge>): EvDaySummary[] {
+export function dailySummary(list: Iterable<EvTimes>): EvDaySummary[] {
   const by = new Map<string, EvDaySummary>()
   const get = (day: string) => {
     let s = by.get(day)
@@ -109,6 +116,45 @@ export function dailySummary(list: Iterable<EvCharge>): EvDaySummary[] {
   const out = [...by.values()]
   for (const s of out) s.avgMs = s.finished ? s.totalMs / s.finished : 0
   return out.sort((a, b) => (a.day < b.day ? 1 : a.day > b.day ? -1 : 0))
+}
+
+const TH_MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.']
+/** "YYYY-MM" ของเวลานี้ (เวลาท้องถิ่น) */
+export const monthKey = (ts = Date.now()) => dateKey(new Date(ts)).slice(0, 7)
+/** "2026-10" → "ต.ค. 2026" (ปี ค.ศ. เหมือนวันที่อื่นในแอป) */
+export function fmtMonth(ym: string): string {
+  const [y, m] = ym.split('-').map(Number)
+  return `${TH_MONTHS[m - 1]} ${y}`
+}
+/** เลื่อนเดือน: shiftMonth('2026-01', -1) = '2025-12' */
+export function shiftMonth(ym: string, by: number): string {
+  const [y, m] = ym.split('-').map(Number)
+  const d = new Date(y, m - 1 + by, 1)
+  return dateKey(d).slice(0, 7)
+}
+/** [ต้นเดือน, ต้นเดือนถัดไป) เป็น ms ตามเวลาท้องถิ่น */
+export function monthRange(ym: string): [number, number] {
+  const [y, m] = ym.split('-').map(Number)
+  return [new Date(y, m - 1, 1).getTime(), new Date(y, m, 1).getTime()]
+}
+
+export interface EvMonthSummary {
+  ym: string
+  /** รถที่ชาร์จเสร็จในเดือนนี้ (ตามวันที่บันทึกหลังชาร์จ) */
+  finished: number
+  started: number
+  totalMs: number
+  avgMs: number
+  /** รายวันของเดือนนี้ ใหม่สุดก่อน */
+  days: EvDaySummary[]
+}
+
+/** ยอดเดือน — นับแบบเดียวกับสรุปรายวัน แล้วรวมเฉพาะวันในเดือนนั้น */
+export function monthSummary(list: Iterable<EvTimes>, ym: string): EvMonthSummary {
+  const days = dailySummary(list).filter((d) => d.day.startsWith(ym + '-'))
+  const finished = days.reduce((n, d) => n + d.finished, 0)
+  const totalMs = days.reduce((n, d) => n + d.totalMs, 0)
+  return { ym, finished, started: days.reduce((n, d) => n + d.started, 0), totalMs, avgMs: finished ? totalMs / finished : 0, days }
 }
 
 /** อ่าน % จากรูปหน้าจอ (Pages Function /api/ev/battery)
