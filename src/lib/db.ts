@@ -1744,3 +1744,22 @@ export async function upsertEvCharge(c: EvCharge): Promise<boolean> {
   }
   return false
 }
+
+/** รอบชาร์จที่เริ่มหรือจบในช่วง [fromMs, toMs) — เฉพาะเวลาและ % (ไม่ดึงรูป) สำหรับยอดรายเดือนย้อนหลัง
+ *  null = ดึงไม่ได้ (ยังไม่ได้รัน SQL / ออฟไลน์) */
+export async function fetchEvTimes(siteId: string | null, fromMs: number, toMs: number): Promise<EvCharge[] | null> {
+  if (!isConfigured()) return null
+  const a = new Date(fromMs).toISOString(), b = new Date(toMs).toISOString()
+  const out: EvCharge[] = []
+  const PAGE = 1000
+  for (let from = 0; ; from += PAGE) {
+    let q = supabase.from('ev_charges').select('id,site_id,vin,model,before_pct,before_at,after_pct,after_at,updated_at')
+    if (siteId) q = q.eq('site_id', siteId)
+    q = q.or(`and(before_at.gte."${a}",before_at.lt."${b}"),and(after_at.gte."${a}",after_at.lt."${b}")`)
+    const { data, error } = await q.order('id').range(from, from + PAGE - 1)
+    if (error) { console.error('[db] fetchEvTimes', error); return null }
+    for (const r of data ?? []) out.push(rowToEv(r))
+    if (!data || data.length < PAGE) break
+  }
+  return out
+}
