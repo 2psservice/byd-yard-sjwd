@@ -28,14 +28,26 @@ const SARABUN_BASELINE_EM = 0.6935
 const irField = (cls: string, x: number, yBase: number, size: number, val: string) =>
   val ? `<div class="${cls}" style="left:${x}pt;top:${(yBase - SARABUN_BASELINE_EM * size).toFixed(2)}pt;font-size:${size}pt">${esc(val)}</div>` : ''
 
+/** ปลายทางของรถตามช่องในชีต (Dealer Location → Dealer Code) */
+export const dealerCell = (r: TrackRow): string => cell(r, 'Dealer Location', 'Dealer Code')
+/** Where the page that prints already knows each car is going (the Grouping
+ *  plan's Delivery Location, or Units' plan fallback) — gets the printed row too. */
+export type DestOf = (vin: string, row: TrackRow) => string
+/** IR "Delivery To" / DN "Destination": the caller's value first, the car's own
+ *  cell after. The Grouping table shows the plan's destination, while these
+ *  sheets used to read ONLY the tracking cell — a car whose cell was blank (row
+ *  not on the device when the plan was imported, or cleared later) printed an
+ *  empty Delivery To although the screen showed the dealer. */
+const destination = (r: TrackRow, destOf?: DestOf): string => (destOf?.(r.vin, r) || '').trim() || dealerCell(r)
+
 /** The values one IR sheet carries, shared by both print styles. */
-function irData(r: TrackRow, siteName?: string) {
+function irData(r: TrackRow, siteName?: string, destOf?: DestOf) {
   return {
     model: cell(r, 'Model name', 'Model'),
     color: cell(r, 'Color'),
     engMotor: [cell(r, 'Engine No.', 'Model Code'), cell(r, 'Front Motor no.', 'Rear Motor no.')].filter(Boolean).join(' '),
     yard: cell(r, 'Location yard', 'storage Yard') || siteName || '',
-    dealer: cell(r, 'Dealer Location', 'Dealer Code'),
+    dealer: destination(r, destOf),
   }
 }
 
@@ -43,8 +55,8 @@ const TRAILER_LICENSE = 'Trailer License Plate No.:.............................
 const TRAILER_COMPANY = 'Trailer Company Name:................................'
 
 // ── Inspector Report (IR) — official form image + data overlay (A4) ──────────
-function irSheetHtml(r: TrackRow, siteName?: string): string {
-  const d = irData(r, siteName)
+function irSheetHtml(r: TrackRow, siteName?: string, destOf?: DestOf): string {
+  const d = irData(r, siteName, destOf)
   const F = (x: number, y: number, size: number, val: string) => irField('irf', x, y, size, val)
   return `<section class="ir-sheet">
     <img class="ir-bg" src="/ir-form.png" alt="">
@@ -60,8 +72,8 @@ function irSheetHtml(r: TrackRow, siteName?: string): string {
 }
 
 // ── IR "paper" overlay — data only, printed onto pre-printed IR forms (Letter) ──
-function irPaperSheetHtml(r: TrackRow, siteName?: string): string {
-  const d = irData(r, siteName)
+function irPaperSheetHtml(r: TrackRow, siteName?: string, destOf?: DestOf): string {
+  const d = irData(r, siteName, destOf)
   const P = (x: number, y: number, val: string) => irField('irpf', x, y, 12, val)
   return `<section class="irp-sheet">
     ${P(15, 113, d.model)}
@@ -120,6 +132,37 @@ const DN_HEAD_BOT = 194.12   // header bottom = first data row top
 const DN_ROW_H = 43.945      // data row height
 const DN_LINE_H = 15.61      // multi-line cell line height
 const DN_ROWS_MAX = 8        // rows per sheet — keeps the signature block on-page
+/** the table may grow down to where 8 standard rows end — taller rows (a long
+ *  destination wrapping to 3 lines) move the sheet break earlier instead of
+ *  pushing the signature block off the page */
+const DN_BODY_MAX = DN_ROWS_MAX * DN_ROW_H
+/** columns whose text wraps inside the row (Destination … Location on the trailer) */
+const DN_WRAP_COLS = [2, 3, 4, 5, 6] as const
+
+/** Width (pt) of a string set in 12pt TH Sarabun New. */
+export type MeasureText = (s: string) => number
+/** used when the font can't be measured — a generous average width, so a long
+ *  name gets an extra line of room rather than clipping */
+const roughMeasure: MeasureText = (s) => s.length * 4.8
+
+/** Lines a .dnk cell needs — greedy word-wrap at spaces (white-space:pre-line),
+ *  the way the print engine wraps it. A word wider than the column stays whole. */
+export function wrapLines(text: string, widthPt: number, measure: MeasureText): number {
+  let total = 0
+  const space = measure(' ')
+  for (const para of (text ?? '').split('\n')) {
+    const words = para.split(/\s+/).filter(Boolean)
+    let lines = 1, cur = 0
+    for (const w of words) {
+      const ww = measure(w)
+      if (cur === 0) cur = ww
+      else if (cur + space + ww <= widthPt) cur += space + ww
+      else { lines++; cur = ww }
+    }
+    total += lines
+  }
+  return Math.max(1, total)
+}
 
 /** Thai footer labels — 600-dpi crops from the reference PDF itself. The AMS
  *  bold face only survives as a subset whose Thai needs the GSUB table the PDF
@@ -163,9 +206,28 @@ const dnTh = (label: string, x: number, yBase: number) => {
 const dnLine = (x: number, y: number, w: number, h: number) =>
   `<div class="dnl" style="left:${x.toFixed(2)}pt;top:${y.toFixed(2)}pt;width:${w.toFixed(2)}pt;height:${h.toFixed(2)}pt"></div>`
 
+/** One DN row's cell texts, by column. */
+const dnRowTexts = (r: TrackRow, destOf?: DestOf): Record<number, string> => ({
+  2: destination(r, destOf),
+  3: cell(r, 'Model Code', 'Model'),
+  4: cell(r, 'Engine No.'),
+  5: cell(r, 'Color'),
+  6: cell(r, 'Location on the trailer'),
+})
+/** Row height: the AMS 2-line row, plus one line for every line beyond two that
+ *  the longest-wrapping cell needs (1.5pt kept clear of the column lines). */
+function dnRowHeight(texts: Record<number, string>, measure: MeasureText): number {
+  let lines = 1
+  for (const c of DN_WRAP_COLS) {
+    const t = texts[c]
+    if (t) lines = Math.max(lines, wrapLines(t, DN_COLS[c + 1] - DN_COLS[c] - 1.5, measure))
+  }
+  return DN_ROW_H + Math.max(0, lines - 2) * DN_LINE_H
+}
+
 /** Delivery Note (ใบส่งมอบรถยนต์) — rebuilt 1:1 against the AMS reference:
  *  same TH Sarabun New faces, same coordinates, same dot-leader runs. */
-function dnSheetHtml(rows: TrackRow[], seq0: number, grouping: string, trip: string, printDate: string): string {
+function dnSheetHtml(rows: TrackRow[], heights: number[], seq0: number, grouping: string, trip: string, printDate: string, destOf?: DestOf): string {
   const parts: string[] = []
   // ── page header ──
   parts.push(dnT(false, 20, 18.44, 10, `Grouping : ${grouping || '—'}`))
@@ -178,10 +240,13 @@ function dnSheetHtml(rows: TrackRow[], seq0: number, grouping: string, trip: str
   parts.push(dnC(143.00, 14, 'Vehicle List'))
 
   // ── table grid ──
-  const n = rows.length
-  const tblBot = DN_HEAD_BOT + n * DN_ROW_H            // bottom line center
+  // row tops: each row is as tall as its longest-wrapping cell needs
+  const tops: number[] = []
+  let y = DN_HEAD_BOT
+  for (const h of heights) { tops.push(y); y += h }
+  const tblBot = y                                     // bottom line center
   parts.push(dnLine(10, DN_HEAD_TOP - 0.5, 574.28, 1)) // header top
-  for (let i = 0; i <= n; i++) parts.push(dnLine(10, DN_HEAD_BOT + i * DN_ROW_H - 0.5, 574.28, 1))
+  for (const t of [...tops, tblBot]) parts.push(dnLine(10, t - 0.5, 574.28, 1))
   for (const x of DN_COLS) parts.push(dnLine(x - 0.5, DN_HEAD_TOP - 0.5, 1, tblBot - DN_HEAD_TOP + 1))
 
   // ── table header (regular 12pt, first baseline 12.63pt under the top line) ──
@@ -192,15 +257,12 @@ function dnSheetHtml(rows: TrackRow[], seq0: number, grouping: string, trip: str
 
   // ── rows ──
   rows.forEach((r, i) => {
-    const T = DN_HEAD_BOT + i * DN_ROW_H
+    const T = tops[i]
+    const texts = dnRowTexts(r, destOf)
     parts.push(dnCell(0, T + 12.63, String(seq0 + i + 1)))
     parts.push(`<div class="dnbc" style="left:47.01pt;top:${(T + 5.43).toFixed(2)}pt;width:133.83pt;height:17.26pt">${barcodeSvg(r.vin)}</div>`)
     parts.push(dnCell(1, T + 35.96, r.vin))
-    parts.push(dnCell(2, T + 12.63, cell(r, 'Dealer Location', 'Dealer Code')))
-    parts.push(dnCell(3, T + 12.63, cell(r, 'Model Code', 'Model')))
-    parts.push(dnCell(4, T + 12.63, cell(r, 'Engine No.')))
-    parts.push(dnCell(5, T + 12.63, cell(r, 'Color')))
-    parts.push(dnCell(6, T + 12.63, cell(r, 'Location on the trailer')))
+    for (const c of DN_WRAP_COLS) parts.push(dnCell(c, T + 12.63, texts[c]))
   })
 
   // ── signature block — flows under the table (reference offsets from its
@@ -290,12 +352,12 @@ const htmlDoc = (title: string, body: string, css: string = CSS): string =>
   `<!doctype html><html lang="th"><head><meta charset="utf-8"><title>${title}</title><style>${css}</style></head><body>${body}</body></html>`
 
 /** Inspector Report (IR) — one image-backed sheet per VIN. */
-export const buildIrHtml = (rows: TrackRow[], siteName?: string): string =>
-  htmlDoc(`IR — ${rows.length} VIN`, rows.map((r) => irSheetHtml(r, siteName)).join(''))
+export const buildIrHtml = (rows: TrackRow[], siteName?: string, destOf?: DestOf): string =>
+  htmlDoc(`IR — ${rows.length} VIN`, rows.map((r) => irSheetHtml(r, siteName, destOf)).join(''))
 /** Delivery Note (DN) — one manifest per grouping (a DN *is* one trip, so cars
  *  from several groupings must never share a sheet). Long trips continue onto
  *  extra sheets with the sequence running on. */
-export const buildDnHtml = (rows: TrackRow[], groupOf?: (vin: string) => string): string => {
+export const buildDnHtml = (rows: TrackRow[], groupOf?: (vin: string) => string, destOf?: DestOf, measure: MeasureText = roughMeasure): string => {
   const byGroup = new Map<string, TrackRow[]>()
   for (const r of rows) {
     // The caller's own grouping wins. The Grouping page already knows which run
@@ -322,14 +384,24 @@ export const buildDnHtml = (rows: TrackRow[], groupOf?: (vin: string) => string)
     // no grouping at all looks for a Trip No column; a VIN is never a trip.
     const grouping = g === '—' ? '' : g
     const trip = grouping || cell(list[0], 'Trip No', 'Trip No.', 'TripNo')
-    for (let i = 0; i < list.length; i += DN_ROWS_MAX)
-      sheets.push(dnSheetHtml(list.slice(i, i + DN_ROWS_MAX), i, grouping, trip, printDate))
+    // break sheets by height, not count: 8 standard rows still fill one sheet,
+    // and a run with long destinations breaks earlier with the sequence running on
+    const heights = list.map((r) => dnRowHeight(dnRowTexts(r, destOf), measure))
+    let start = 0, used = 0
+    list.forEach((_, i) => {
+      if (i > start && used + heights[i] > DN_BODY_MAX + 0.01) {
+        sheets.push(dnSheetHtml(list.slice(start, i), heights.slice(start, i), start, grouping, trip, printDate, destOf))
+        start = i; used = 0
+      }
+      used += heights[i]
+    })
+    if (list.length) sheets.push(dnSheetHtml(list.slice(start), heights.slice(start), start, grouping, trip, printDate, destOf))
   }
   return htmlDoc(`DN — ${byGroup.size} Grouping · ${rows.length} VIN`, sheets.join(''))
 }
 /** IR paper overlay (data only) — to print onto pre-printed IR forms. */
-export const buildIrPaperHtml = (rows: TrackRow[], siteName?: string): string =>
-  htmlDoc(`IR paper — ${rows.length} VIN`, rows.map((r) => irPaperSheetHtml(r, siteName)).join(''), CSS_IRP)
+export const buildIrPaperHtml = (rows: TrackRow[], siteName?: string, destOf?: DestOf): string =>
+  htmlDoc(`IR paper — ${rows.length} VIN`, rows.map((r) => irPaperSheetHtml(r, siteName, destOf)).join(''), CSS_IRP)
 
 /** The two TH Sarabun faces as data: URLs — fetched ONCE per session (served
  *  from the PWA precache when available) and swapped into the print document's
@@ -351,6 +423,30 @@ function fontData(): Promise<[string, string]> {
   // a failed fetch must not poison every later print — retry next time
   fontDataP.catch(() => { fontDataP = null })
   return fontDataP
+}
+
+/** Measures text in the DN's own TH Sarabun New (canvas, 12pt) so row heights
+ *  are worked out before the sheet is laid out. Falls back to a rough width when
+ *  the font can't be loaded. */
+const MEASURE_FAMILY = 'THSarabunNew AMS Measure'
+let measureP: Promise<MeasureText> | null = null
+function fontMeasure(): Promise<MeasureText> {
+  measureP ??= (async (): Promise<MeasureText> => {
+    try {
+      const [reg] = await fontData()
+      const face = new FontFace(MEASURE_FAMILY, `url(${reg})`)
+      await face.load()
+      document.fonts.add(face)
+      const ctx = document.createElement('canvas').getContext('2d')
+      if (!ctx) return roughMeasure
+      ctx.font = `16px '${MEASURE_FAMILY}'` // 12pt
+      return (s) => ctx.measureText(s).width * 0.75 // px → pt
+    } catch {
+      measureP = null // try the font again next print
+      return roughMeasure
+    }
+  })()
+  return measureP
 }
 
 /** Render HTML in a hidden iframe, wait for images + fonts, then print. */
@@ -398,14 +494,15 @@ function printHtml(html: string, fileName?: string): void {
 }
 
 /** Print the Inspector Report (IR) — one A4 page per VIN. */
-export const printIr = (rows: TrackRow[], siteName?: string): void => {
-  if (rows.length) printHtml(buildIrHtml(rows, siteName), `ใบ IR ${rows.length} คัน ${fileStamp()}`)
+export const printIr = (rows: TrackRow[], siteName?: string, destOf?: DestOf): void => {
+  if (rows.length) printHtml(buildIrHtml(rows, siteName, destOf), `ใบ IR ${rows.length} คัน ${fileStamp()}`)
 }
 /** Print the Delivery Note (DN) — one manifest for the selected VINs. */
-export const printDn = (rows: TrackRow[], groupOf?: (vin: string) => string): void => {
-  if (rows.length) printHtml(buildDnHtml(rows, groupOf), `ใบ DN ${rows.length} คัน ${fileStamp()}`)
+export const printDn = (rows: TrackRow[], groupOf?: (vin: string) => string, destOf?: DestOf): void => {
+  if (!rows.length) return
+  void fontMeasure().then((measure) => printHtml(buildDnHtml(rows, groupOf, destOf, measure), `ใบ DN ${rows.length} คัน ${fileStamp()}`))
 }
 /** Print the IR paper overlay (data only) onto pre-printed IR forms. */
-export const printIrPaper = (rows: TrackRow[], siteName?: string): void => {
-  if (rows.length) printHtml(buildIrPaperHtml(rows, siteName), `กระดาษ IR ${rows.length} คัน ${fileStamp()}`)
+export const printIrPaper = (rows: TrackRow[], siteName?: string, destOf?: DestOf): void => {
+  if (rows.length) printHtml(buildIrPaperHtml(rows, siteName, destOf), `กระดาษ IR ${rows.length} คัน ${fileStamp()}`)
 }
