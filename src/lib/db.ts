@@ -1695,8 +1695,8 @@ function evToRow(c: EvCharge) {
   return {
     id: c.id, site_id: c.site ?? null, vin: c.vin, model: c.model, color: c.color, from_yard: c.from, remark: c.remark,
     vin_photo: c.vinPhoto,
-    before_photo: c.beforePhoto, before_pct: c.beforePct, before_ai: c.beforeAi, before_at: isoOrNull(c.beforeAt), before_by: c.beforeBy,
-    after_photo: c.afterPhoto, after_pct: c.afterPct, after_ai: c.afterAi, after_at: isoOrNull(c.afterAt), after_by: c.afterBy,
+    before_photo: c.beforePhoto, before_pct: c.beforePct, before_at: isoOrNull(c.beforeAt), before_by: c.beforeBy,
+    after_photo: c.afterPhoto, after_pct: c.afterPct, after_at: isoOrNull(c.afterAt), after_by: c.afterBy,
     updated_at: new Date(c.updatedAt || Date.now()).toISOString(),
   }
 }
@@ -1705,8 +1705,8 @@ function rowToEv(r: any): EvCharge {
     id: String(r.id), site: r.site_id ?? undefined, vin: String(r.vin),
     model: r.model ?? '', color: r.color ?? '', from: r.from_yard ?? '', remark: r.remark ?? '',
     vinPhoto: r.vin_photo ?? '',
-    beforePhoto: r.before_photo ?? '', beforePct: pctOf(r.before_pct), beforeAi: pctOf(r.before_ai), beforeAt: msOf(r.before_at), beforeBy: r.before_by ?? '',
-    afterPhoto: r.after_photo ?? '', afterPct: pctOf(r.after_pct), afterAi: pctOf(r.after_ai), afterAt: msOf(r.after_at), afterBy: r.after_by ?? '',
+    beforePhoto: r.before_photo ?? '', beforePct: pctOf(r.before_pct), beforeAt: msOf(r.before_at), beforeBy: r.before_by ?? '',
+    afterPhoto: r.after_photo ?? '', afterPct: pctOf(r.after_pct), afterAt: msOf(r.after_at), afterBy: r.after_by ?? '',
     updatedAt: msOf(r.updated_at),
   }
 }

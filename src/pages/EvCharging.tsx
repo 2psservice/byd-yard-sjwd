@@ -1,6 +1,6 @@
 /**
  * EV Charging (แอดมิน) — ตารางงานชาร์จแบตของยาร์ดนี้: รถ · วิน · รุ่น · สี · รูปเลขวิน ·
- * ก่อน/หลังชาร์จ (รูป + % ที่ AI อ่าน/พนักงานยืนยัน) · เวลาชาร์จ · สรุปรายวัน (วันละกี่คัน คันละกี่ชั่วโมง)
+ * ก่อน/หลังชาร์จ (รูป + % ที่พนักงานบันทึก) · เวลาชาร์จ · สรุปรายวัน (วันละกี่คัน คันละกี่ชั่วโมง)
  * Export Excel ตามรูปแบบไฟล์ที่หน้างานใช้ (รูปฝังในเซลล์) — ดู lib/evExcel.ts
  */
 import { useEffect, useMemo, useState } from 'react'
@@ -80,7 +80,7 @@ export function EvCharging() {
         <div className="flex-1 min-w-[240px]">
           <PageHead
             title={<span className="flex items-center gap-2"><BatteryCharging size={20} style={{ color: ACCENT }} /> EV Charging</span>}
-            sub="งานชาร์จแบตจากสถานี EV Charging (Ops Scan) — รูปเลขวิน · รูป/เปอร์เซ็นต์ก่อนและหลังชาร์จ (AI อ่าน % ให้ พนักงานยืนยัน) · เวลาชาร์จต่อคัน · สรุปรายวัน"
+            sub="งานชาร์จแบตจากสถานี EV Charging (Ops Scan) — รูปเลขวิน · รูป/เปอร์เซ็นต์ก่อนและหลังชาร์จ · เวลาชาร์จต่อคัน · สรุปรายวัน"
           />
         </div>
         <label className="flex items-center gap-2 px-3 py-2 rounded-xl" style={{ background: 'var(--chip)' }}>
