@@ -44,6 +44,7 @@ const YardOps = lazy(() => import('./pages/YardOps').then((m) => ({ default: m.Y
 const Tracking = lazy(() => import('./pages/Tracking').then((m) => ({ default: m.Tracking })))
 const Operation = lazy(() => import('./pages/Operation').then((m) => ({ default: m.Operation })))
 const PmPlan = lazy(() => import('./pages/PmPlan').then((m) => ({ default: m.PmPlan })))
+const EvCharging = lazy(() => import('./pages/EvCharging').then((m) => ({ default: m.EvCharging })))
 const PdiBoard = lazy(() => import('./pages/PdiBoard').then((m) => ({ default: m.PdiBoard })))
 const Damages = lazy(() => import('./pages/Damages').then((m) => ({ default: m.Damages })))
 const Grouping = lazy(() => import('./pages/Grouping').then((m) => ({ default: m.Grouping })))
@@ -553,6 +554,7 @@ export default function App() {
     tracking: <Tracking />,
     operation: <Operation />,
     pm: <PmPlan />,
+    ev: <EvCharging />,
     pdi: <PdiBoard />,
     damages:   <Damages />,
     grouping:  <Grouping />,

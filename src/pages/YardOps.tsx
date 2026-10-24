@@ -11,7 +11,7 @@ import {
   CheckCircle2, XCircle, AlertTriangle, Navigation, Clock,
   User, RefreshCw, Plus, Trash2,
   ArrowRight, Zap, Hand, X, Camera, Pencil, Gauge, Route, Crosshair,
-  LogOut, MapPin, ClipboardList, ListChecks, Copy, Check, Images, Sparkles, Download,
+  LogOut, MapPin, ClipboardList, ListChecks, Copy, Check, Images, Sparkles, Download, BatteryCharging,
 } from 'lucide-react'
 import { useYard, useUnits, useTrips, useBlocks, attachPendingDamages, type PlacementResult } from '../store/useYard'
 import { isAtLanePos, planLaneUpdates, recordableDrafts } from '../lib/laneRebuild'
@@ -51,6 +51,7 @@ import { useRecentOps } from '../store/useRecentOps'
 import { buildWorkRows, buildEventLog, fmtHistAt, histOf } from '../lib/carHistory'
 import { roundOf, roundHistory } from '../lib/tripHistory'
 import { exportSpecialQueue } from '../lib/opsReport'
+import { EvChargePanel, EvStationHome, useEvStationLoad, EV_ACCENT } from '../components/EvChargeStation'
 
 // A queue's car list used to render every item at once — fine for a dozen
 // cars, but a yard-wide Pre Gate-in/PDI/PM lot can hold 700+, and that many
@@ -280,7 +281,7 @@ function DefectStatusSelect({ d, onChange }: { d: Damage; onChange: (s: string) 
   )
 }
 
-type RoleKey = 'walk' | 'driver' | 'pdi' | 'pm' | 'fc' | 'mechanic' | 'special' | 'gateout' | 'relocation' | 'check' | 'updatedmg' | 'walkcheck'
+type RoleKey = 'walk' | 'driver' | 'pdi' | 'pm' | 'fc' | 'mechanic' | 'special' | 'gateout' | 'relocation' | 'check' | 'updatedmg' | 'walkcheck' | 'ev'
 const ROLES: { key: RoleKey; th: string; en: string; icon: React.ReactNode; color: string; desc: string }[] = [
   { key: 'walk',      th: 'Gate-in',         en: 'Gate-in',         icon: <ScanLine size={28} />,      color: 'var(--brand)',   desc: 'ตรวจรับรถเข้าลาน' },
   { key: 'gateout',  th: 'Gate-out',        en: 'Gate-out',        icon: <LogOut size={28} />,        color: '#64748b',        desc: 'บันทึกรถออกจากลาน' },
@@ -296,6 +297,7 @@ const ROLES: { key: RoleKey; th: string; en: string; icon: React.ReactNode; colo
   { key: 'check',    th: 'Check',           en: 'Check',           icon: <ClipboardList size={28} />, color: '#0891b2',        desc: 'ตรวจสอบข้อมูลรถ' },
   { key: 'mechanic', th: 'ช่าง',             en: 'Mechanic',        icon: <Wrench size={28} />,        color: '#c2680b',        desc: 'คิวงานซ่อม · แก้ไข NG' },
   { key: 'special',  th: 'งานพิเศษ',         en: 'Special',         icon: <Sparkles size={28} />,      color: '#9333ea',        desc: 'คิวงานพิเศษ · แก้ไข NG' },
+  { key: 'ev',       th: 'EV Charging',     en: 'EV Charging',     icon: <BatteryCharging size={28} />, color: EV_ACCENT,      desc: 'ชาร์จแบต · รูปก่อน / หลังชาร์จ' },
 ]
 
 // ── shared: "not gated-in" guard ──────────────────────────────────────────────
@@ -6305,6 +6307,42 @@ function CheckView() {
   )
 }
 
+// ── EV Charging: สแกนวิน → ก่อนชาร์จ / หลังชาร์จ (ดู components/EvChargeStation) ──
+// ชาร์จได้ทุกเวลาที่รถอยู่ในยาร์ดนี้ จึงไม่บังคับสถานะ Gate-in เหมือนสถานีตรวจ
+function EvView() {
+  const trackingRows = useSiteRows()
+  const units = useSiteUnits()
+  const toast = useYard((s) => s.toast)
+  const [vin, setVin] = useState<string | null>(null)
+  useEvStationLoad()
+
+  const onScanRef = useRef<(v: string) => void>(() => {})
+  const scanNotFound = useCloudNotFound(onScanRef)
+  const onScan = (v: string) => {
+    let found: string | null = trackingRows.find(r => r.vin === v)?.vin ?? units.find(u => u.vin === v)?.vin ?? null
+    if (!found && v.length <= 8) {
+      const hits = new Set([...trackingRows.filter(r => r.vin.endsWith(v)).map(r => r.vin), ...units.filter(u => u.vin.endsWith(v)).map(u => u.vin)])
+      if (hits.size > 1) { toast('err', `พบ ${hits.size} คัน — พิมพ์ให้ยาวขึ้น`); return }
+      found = [...hits][0] ?? null
+    }
+    if (!found) { scanNotFound(v); return }
+    setVin(found)
+    recordRecent('ev', found)
+  }
+  onScanRef.current = onScan
+
+  const row = vin ? trackingRows.find(r => r.vin === vin) : undefined
+  const unit = vin ? units.find(u => u.vin === vin) : undefined
+  return (
+    <div className="space-y-4">
+      <VinInput onScan={onScan} accent={EV_ACCENT} />
+      {vin
+        ? <EvChargePanel key={vin} vin={vin} cells={row?.cells ?? {}} unitModel={unit?.modelName} unitColor={unit?.color} onClose={() => setVin(null)} />
+        : <EvStationHome onPick={onScan} />}
+    </div>
+  )
+}
+
 // ── main: role selector + router ──────────────────────────────────────────────
 // The open station survives a page reload: field tablets reload every time the
 // operator app-switches (LINE → back), and losing the screen mid-shift meant
@@ -6464,6 +6502,7 @@ export function YardOps() {
       {role === 'check'      && <CheckView />}
       {role === 'mechanic'   && <MechanicView types={['REPAIR']} accent="#c2680b" stationLabel="ช่าง (Mechanic)" emptyLabel="ยังไม่มีคิวงานซ่อม" />}
       {role === 'special'    && <MechanicView types={['SPECIAL']} accent="#9333ea" stationLabel="งานพิเศษ" emptyLabel="ยังไม่มีคิวงานพิเศษ" okNgMode />}
+      {role === 'ev'         && <EvView />}
     </div>
   )
 }

@@ -30,6 +30,7 @@ export type View =
   | 'tracking'
   | 'operation'
   | 'pm'
+  | 'ev'
   | 'pdi'
   | 'damages'
   | 'grouping'

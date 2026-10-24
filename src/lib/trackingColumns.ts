@@ -36,6 +36,8 @@ export const CAR_STATUS_VALUES = ['Pre Gate-in', 'In Yard', 'Moving', 'PDI', 'Re
  *  pressure (the combined "FL / FR / RL / RR" cell). Label = key on purpose — the edit log
  *  files each change under the column LABEL, and every reader of those lines looks for these names. */
 export const MEASUREMENT_KEYS = ['% SOC', 'Mileage', 'Voltage of 12V', 'Tire Pressure'] as const
+/** รอบชาร์จแบตล่าสุดของรถ — สถานี EV Charging เขียนสรุปลงช่องนี้ (ดู lib/evCharging.ts) แก้ในตารางไม่ได้ */
+export const EV_CHARGING_KEY = 'EV Charging'
 
 // columns shown by default (a focused TOS-style working set)
 const DEFAULT_VISIBLE = new Set([
@@ -44,6 +46,7 @@ const DEFAULT_VISIBLE = new Set([
   'Status Tax', 'PIC (PDI)', 'หมายเหตุ',
   // ค่าที่วัดตอน PDI / PM (สถานีลงค่าไว้ที่ช่องเหล่านี้อยู่แล้ว — แค่เปิดให้เห็นในตาราง)
   ...MEASUREMENT_KEYS,
+  EV_CHARGING_KEY,
 ])
 
 /** Synthetic column key for the computed yard-location code (prefix-block+ช่อง+ลำดับ,
@@ -201,7 +204,7 @@ const SELECT_OPTIONS: Record<string, string[]> = {
 // columns that become 'select' with options derived from live distinct values
 const SELECT_FROM_DATA = new Set(['Model', 'Location yard', 'PIC (PDI)', 'Stock of Status', 'Vin Of Status'])
 
-const NON_EDITABLE = new Set(['No', 'Vin', '__location'])
+const NON_EDITABLE = new Set(['No', 'Vin', '__location', EV_CHARGING_KEY])
 
 interface Spec { key: string; label?: string; group: ColGroup; width?: number }
 
@@ -241,6 +244,7 @@ const SPECS: Spec[] = [
   { key: 'Mileage', group: 'status', width: 90 },
   { key: 'Voltage of 12V', group: 'status', width: 120 },
   { key: 'Tire Pressure', group: 'status', width: 190 }, // "FL / FR / RL / RR"
+  { key: EV_CHARGING_KEY, group: 'status', width: 240 }, // "18% → 62% · 3:45 ชม. · 01/10/26"
   { key: 'Vin Of Status', group: 'status', width: 140 },
   { key: 'Gate In (Rayong yard)', label: 'Gate In', group: 'location', width: 110 },
   { key: 'Final check date', group: 'status', width: 110 },
