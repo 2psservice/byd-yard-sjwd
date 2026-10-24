@@ -6338,7 +6338,8 @@ function EvView() {
       <VinInput onScan={onScan} accent={EV_ACCENT} />
       {vin
         ? <EvChargePanel key={vin} vin={vin} cells={row?.cells ?? {}} unitModel={unit?.modelName} unitColor={unit?.color} onClose={() => setVin(null)} />
-        : <EvStationHome onPick={onScan} />}
+        // a car on the charging list is already known by its charge record — open it directly, no sheet lookup
+        : <EvStationHome onPick={(v) => { setVin(v); recordRecent('ev', v) }} />}
     </div>
   )
 }
