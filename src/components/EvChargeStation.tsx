@@ -14,7 +14,7 @@ import { useEvCharging } from '../store/useEvCharging'
 import { compressToDataUrl } from '../lib/photo'
 import { storePhoto } from '../lib/photoStore'
 import {
-  EV_CELL, SOC_CELL, evChargeId, evCellText, openChargeOf, isCharging, chargeMs, dailySummary, parsePct,
+  EV_CELL, SOC_CELL, evChargeId, evCellText, evModelOf, openChargeOf, isCharging, chargeMs, dailySummary, parsePct,
   fmtDuration, fmtEvTime, fmtPct, monthKey, fmtMonth, shiftMonth, monthRange, monthSummary, type EvCharge, type EvMonthSummary,
 } from '../lib/evCharging'
 import { fetchEvTimes } from '../lib/db'
@@ -338,7 +338,7 @@ export function EvChargePanel({ vin, cells, unitModel, unitColor, onClose }: {
   const [remark, setRemark] = useState(open?.remark ?? '')
   const [saving, setSaving] = useState(false)
 
-  const model = (cells['Model'] || (cells['Model name'] || '').replace(/^BYD\s+/i, '') || unitModel || open?.model || '').trim()
+  const model = evModelOf(cells, unitModel || open?.model || '')
   const color = (cells['Color'] || unitColor || open?.color || '').trim()
   const from = (cells['From'] || open?.from || '').trim()
   const last = list.find((c) => c.vin === vin && !isCharging(c))

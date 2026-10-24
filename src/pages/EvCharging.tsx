@@ -1,16 +1,21 @@
 /**
  * EV Charging (แอดมิน) — ตารางงานชาร์จแบตของยาร์ดนี้: รถ · วิน · รุ่น · สี · รูปเลขวิน ·
  * ก่อน/หลังชาร์จ (รูป + % ที่พนักงานบันทึก) · เวลาชาร์จ · สรุปรายวัน (วันละกี่คัน คันละกี่ชั่วโมง)
- * Export Excel ตามรูปแบบไฟล์ที่หน้างานใช้ (รูปฝังในเซลล์) — ดู lib/evExcel.ts
+ * Export Excel ตามไฟล์ "Plan ชาร์จแบต" ที่หน้างานส่ง BYD (3 ชีต: Plan/Actual · รายชื่อรถตามแผน · รูปก่อน-หลัง)
+ * เลือกรุ่น / วันละกี่คัน / วันเริ่มแผน ก่อนดาวน์โหลด — ดู lib/evExcel.ts
  */
 import { useEffect, useMemo, useState } from 'react'
 import { BatteryCharging, Download, Search } from 'lucide-react'
 import { useYard } from '../store/useYard'
 import { useEvCharging } from '../store/useEvCharging'
-import { chargeMs, dailySummary, isCharging, fmtDuration, fmtEvDate, fmtEvTime, fmtPct, type EvCharge } from '../lib/evCharging'
+import { useTrackingRows } from '../store/useTracking'
+import { chargeMs, dailySummary, evModelOf, isCharging, fmtDayKey, fmtDuration, fmtEvDate, fmtEvTime, fmtPct, type EvCharge } from '../lib/evCharging'
+import { buildEvPlan, evPlanCars, exportEvPlanExcel } from '../lib/evExcel'
 import { dateKey } from '../lib/dayKey'
-import { fileStamp } from '../lib/printDoc'
-import { PageHead, Stat, Segmented, PhotoLightbox } from '../components/ui'
+import { rowInSite } from '../lib/siteScope'
+import { deriveCarStatus, IN_YARD_STATUSES } from '../lib/carStatus'
+import { siteGroupingConfig, yardLocCode } from '../lib/groupingImport'
+import { PageHead, Stat, Segmented, PhotoLightbox, Modal } from '../components/ui'
 import { BatteryPack } from '../components/BatteryPack'
 
 const ACCENT = '#16a34a'
@@ -31,6 +36,112 @@ function Thumb({ src, pct, onOpen, label }: { src: string; pct?: number | null; 
   )
 }
 
+/** ก่อนดาวน์โหลด: เลือกรุ่นที่อยู่ในแผน · วันละกี่คัน · วันเริ่มแผน (ค่าเริ่มต้น = วันที่เริ่มชาร์จคันแรกในช่วง) */
+function EvPlanDialog({ site, ranged, from, onClose }: { site: string | null; ranged: EvCharge[]; from: string; onClose: () => void }) {
+  const sites = useYard((s) => s.sites)
+  const units = useYard((s) => s.units)
+  const toast = useYard((s) => s.toast)
+  const rows = useTrackingRows()
+  const siteObj = sites.find((x) => x.id === site)
+  const siteName = siteObj?.name ?? ''
+
+  const yardCars = useMemo(() => rows
+    .filter((r) => rowInSite(r, site, sites) && IN_YARD_STATUSES.has(deriveCarStatus(r.cells)))
+    .map((r) => {
+      const u = units[r.vin]
+      return { vin: r.vin, model: evModelOf(r.cells, u?.modelName), modelName: r.cells['Model name'] || u?.modelName || '', color: r.cells['Color'] || u?.color || '', from: r.cells['From'] || '' }
+    })
+    .filter((r) => r.model), [rows, site, sites, units])
+
+  const options = useMemo(() => {
+    const m = new Map<string, { vins: Set<string>; charged: Set<string> }>()
+    const of = (k: string) => { let o = m.get(k); if (!o) m.set(k, (o = { vins: new Set(), charged: new Set() })); return o }
+    for (const r of yardCars) of(r.model).vins.add(r.vin)
+    for (const c of ranged) if (c.model) { const o = of(c.model); o.vins.add(c.vin); o.charged.add(c.vin) }
+    return [...m].map(([model, o]) => ({ model, cars: o.vins.size, charged: o.charged.size }))
+      .sort((a, b) => b.charged - a.charged || b.cars - a.cars || a.model.localeCompare(b.model))
+  }, [yardCars, ranged])
+
+  const [sel, setSel] = useState<string[]>(() => options.filter((o) => o.charged).map((o) => o.model))
+  const [perDay, setPerDay] = useState(4)
+  const [start, setStart] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const prefix = siteGroupingConfig(siteName).prefix
+  const locOf = (vin: string) => {
+    const u = units[vin]
+    const code = u && (!u.site || u.site === site) ? yardLocCode({ block: u.block, slot: u.slot }) : ''
+    return code ? `${prefix}-${code}` : ''
+  }
+  const cars = useMemo(() => evPlanCars(sel, yardCars, ranged, () => ''), [sel, yardCars, ranged])
+  const vins = useMemo(() => new Set(cars.map((c) => c.vin)), [cars])
+  const charges = useMemo(() => ranged.filter((c) => vins.has(c.vin)), [ranged, vins])
+  const autoStart = charges.length ? dateKey(new Date(Math.min(...charges.map((c) => c.beforeAt)))) : from
+  const startKey = start || autoStart
+  const plan = useMemo(() => buildEvPlan(cars, charges, perDay, startKey), [cars, charges, perDay, startKey])
+  const doneCars = new Set(charges.filter((c) => !isCharging(c)).map((c) => c.vin)).size
+
+  const download = async () => {
+    setBusy(true)
+    try {
+      const located = evPlanCars(sel, yardCars, ranged, locOf)
+      await exportEvPlanExcel({ siteName, siteCode: siteObj?.code ?? '', perDay, start: startKey, cars: located, charges })
+      onClose()
+    } catch (e: any) {
+      toast('err', e?.message || 'สร้างไฟล์ไม่สำเร็จ')
+    } finally { setBusy(false) }
+  }
+
+  const toggle = (m: string) => setSel((s) => (s.includes(m) ? s.filter((x) => x !== m) : [...s, m]))
+  const label = 'text-[12px] font-bold uppercase tracking-wider mb-1.5'
+  return (
+    <Modal open onClose={onClose} title="Export Excel · แผนชาร์จแบต"
+      footer={<>
+        <button className="btn px-3 py-2 text-[13px]" onClick={onClose}>ยกเลิก</button>
+        <button className="btn btn-primary px-3 py-2 text-[13px]" onClick={download} disabled={busy || !cars.length} data-ev-plan-download>
+          <Download size={14} /> {busy ? 'กำลังสร้างไฟล์…' : 'ดาวน์โหลด Excel'}
+        </button>
+      </>}>
+      <div className="grid gap-4 text-[13px]" data-ev-plan>
+        <div>
+          <div className={label} style={{ color: 'var(--muted)' }}>รุ่นที่อยู่ในแผน</div>
+          <div className="flex flex-wrap gap-2">
+            {options.length === 0 && <span style={{ color: 'var(--faint)' }}>ไม่มีรถในลานนี้</span>}
+            {options.map((o) => {
+              const on = sel.includes(o.model)
+              return (
+                <button key={o.model} onClick={() => toggle(o.model)} data-ev-plan-model={o.model} aria-pressed={on}
+                  className="px-3 py-1.5 rounded-xl text-[12.5px] font-semibold"
+                  style={{ background: on ? `${ACCENT}22` : 'var(--chip)', color: on ? ACCENT : 'var(--text)', border: `1.5px solid ${on ? ACCENT : 'transparent'}` }}>
+                  {o.model} · {o.cars} คัน{o.charged ? ` · ชาร์จแล้ว ${o.charged}` : ''}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-4">
+          <label className="grid">
+            <span className={label} style={{ color: 'var(--muted)' }}>แผนวันละ (คัน)</span>
+            <input type="number" min={1} value={perDay} onChange={(e) => setPerDay(Math.max(1, Math.floor(Number(e.target.value)) || 1))} data-ev-plan-perday
+              className="px-3 py-2 rounded-xl w-28 tabular font-bold outline-none" style={{ background: 'var(--chip)' }} />
+          </label>
+          <label className="grid">
+            <span className={label} style={{ color: 'var(--muted)' }}>เริ่มแผนวันที่</span>
+            <input type="date" value={startKey} onChange={(e) => setStart(e.target.value)} data-ev-plan-start
+              className="px-3 py-2 rounded-xl tabular font-bold outline-none" style={{ background: 'var(--chip)' }} />
+          </label>
+        </div>
+        <div className="rounded-xl px-3 py-2.5" style={{ background: 'var(--chip)' }} data-ev-plan-summary>
+          {cars.length
+            ? <>แผน <b>{cars.length}</b> คัน · {plan.days.length} วัน ({fmtDayKey(plan.days[0])} – {fmtDayKey(plan.days[plan.days.length - 1])}) · ชาร์จเสร็จแล้ว <b style={{ color: ACCENT }}>{doneCars}</b> คัน</>
+            : 'เลือกรุ่นอย่างน้อย 1 รุ่น'}
+          <div className="text-[12px] mt-1" style={{ color: 'var(--muted)' }}>ไฟล์มี 3 ชีต: Plan / Actual รายวัน · รายชื่อรถตามแผน · รูปก่อน-หลังชาร์จ</div>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 export function EvCharging() {
   const site = useYard((s) => s.currentSite)
   const charges = useEvCharging((s) => s.charges)
@@ -40,34 +151,29 @@ export function EvCharging() {
   const [status, setStatus] = useState<StatusFilter>('all')
   const [q, setQ] = useState('')
   const [view, setView] = useState<{ photos: string[]; i: number } | null>(null)
-  const [exporting, setExporting] = useState(false)
+  const [planOpen, setPlanOpen] = useState(false)
 
   useEffect(() => { useEvCharging.getState().load(site ?? null, dayStart(from)).catch(() => {}) }, [site, from])
 
-  const list = useMemo(() => {
+  const ranged = useMemo(() => {
     const lo = dayStart(from), hi = dayStart(to) + 86_400_000
-    const needle = q.trim().toUpperCase()
     return Object.values(charges)
       .filter((c) => !site || !c.site || c.site === site)
       // a car still on the charger is current work — shown whatever the range
       .filter((c) => isCharging(c) || (c.beforeAt >= lo && c.beforeAt < hi))
+  }, [charges, site, from, to])
+  const list = useMemo(() => {
+    const needle = q.trim().toUpperCase()
+    return ranged
       .filter((c) => status === 'all' || (status === 'charging') === isCharging(c))
       .filter((c) => !needle || c.vin.includes(needle) || c.model.toUpperCase().includes(needle))
       .sort((a, b) => b.beforeAt - a.beforeAt)
-  }, [charges, site, from, to, status, q])
+  }, [ranged, status, q])
 
   const days = useMemo(() => dailySummary(list), [list])
   const done = list.filter((c) => !isCharging(c))
   const avgMs = done.length ? done.reduce((s, c) => s + chargeMs(c), 0) / done.length : 0
   const today = days.find((d) => d.day === dateKey(new Date()))
-
-  const doExport = async () => {
-    setExporting(true)
-    try {
-      const { exportEvChargingExcel } = await import('../lib/evExcel')
-      await exportEvChargingExcel(list, `EV Charging ${fileStamp()}.xlsx`)
-    } finally { setExporting(false) }
-  }
 
   const open = (c: EvCharge, which: 0 | 1 | 2) => {
     const photos = [c.vinPhoto, c.beforePhoto, c.afterPhoto]
@@ -92,9 +198,9 @@ export function EvCharging() {
           <input type="date" value={to} min={from} onChange={(e) => e.target.value && setTo(e.target.value)} aria-label="ถึงวันที่"
             className="bg-transparent outline-none text-[13px] font-bold tabular" style={{ color: 'var(--brand)' }} />
         </label>
-        <button className="btn btn-primary px-3 py-2 text-[12.5px]" onClick={doExport} disabled={exporting || !list.length} data-ev-export
-          title="ออกไฟล์ Excel ตามรูปแบบเดิม (รูปเลขวิน / ก่อน / หลังชาร์จ ฝังในเซลล์) + ชีตสรุปรายวัน">
-          <Download size={14} /> {exporting ? 'กำลังสร้างไฟล์…' : 'Export Excel'}
+        <button className="btn btn-primary px-3 py-2 text-[12.5px]" onClick={() => setPlanOpen(true)} data-ev-export
+          title="ไฟล์แผนชาร์จแบต 3 ชีต: Plan / Actual รายวัน · รายชื่อรถตามแผน · รูปก่อน-หลังชาร์จ">
+          <Download size={14} /> Export Excel
         </button>
       </div>
 
@@ -197,6 +303,7 @@ export function EvCharging() {
         </div>
       </div>
       {view && <PhotoLightbox photos={view.photos} index={view.i} onClose={() => setView(null)} />}
+      {planOpen && <EvPlanDialog site={site ?? null} ranged={ranged} from={from} onClose={() => setPlanOpen(false)} />}
     </div>
   )
 }
