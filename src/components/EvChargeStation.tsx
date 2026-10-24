@@ -303,18 +303,19 @@ function useBatteryShot() {
 function PctField({ shot, label }: { shot: ReturnType<typeof useBatteryShot>; label: string }) {
   const bad = shot.pct.trim() !== '' && shot.value == null
   return (
-    <div className="space-y-1">
-      <div className="flex items-center gap-2">
-        <label className="text-[12px] font-bold shrink-0">{label} <span style={{ color: 'var(--st-damage)' }}>*</span></label>
-        {/* the one value the operator must type — a bold red frame so it can't be missed */}
-        <div className="flex items-center rounded-xl overflow-hidden ml-auto" data-ev-pct-box
-          style={{ border: '3px solid var(--st-damage)', background: 'rgba(255,59,48,0.06)', boxShadow: '0 0 0 3px rgba(255,59,48,0.14)' }}>
-          <input value={shot.pct} onChange={(e) => shot.edit(e.target.value)} inputMode="numeric"
-            data-ev-pct={label} aria-label={label}
-            className="w-20 px-3 py-2 text-[18px] font-bold tabular text-right bg-transparent outline-none" />
-          <span className="pr-3 text-[15px] font-bold" style={{ color: 'var(--st-damage)' }}>%</span>
-        </div>
-      </div>
+    <div className="space-y-1.5">
+      <div className="text-[12px] font-bold">{label} <span style={{ color: 'var(--st-damage)' }}>*</span></div>
+      {/* the one value the operator must type — a full-width bold red frame, tap anywhere in it to type */}
+      {/* the size sits on the frame: phone CSS pins Ops inputs to max(16px, 1em), so 1em must be 36px */}
+      <label className="flex items-center w-full rounded-2xl overflow-hidden cursor-text text-[36px] leading-none" data-ev-pct-box
+        style={{ border: '3px solid var(--st-damage)', background: 'rgba(255,59,48,0.06)', boxShadow: '0 0 0 3px rgba(255,59,48,0.14)' }}>
+        {/* invisible twin of the % sign keeps the number centred in the frame */}
+        <span aria-hidden className="pl-5 text-[26px] font-extrabold invisible">%</span>
+        <input value={shot.pct} onChange={(e) => shot.edit(e.target.value)} inputMode="numeric" pattern="[0-9]*" enterKeyHint="done"
+          data-ev-pct={label} aria-label={label}
+          className="flex-1 min-w-0 w-full px-2 py-3 text-[1em] leading-none font-extrabold tabular text-center bg-transparent outline-none" />
+        <span className="pr-5 text-[26px] font-extrabold" style={{ color: 'var(--st-damage)' }}>%</span>
+      </label>
       <div className="text-[11.5px]" style={{ color: bad ? 'var(--st-damage)' : 'var(--muted)' }}>
         {bad ? 'กรอกตัวเลข 0–100' : 'ใส่ตัวเลข % แบตตามที่เห็นบนหน้าจอรถ'}
       </div>
