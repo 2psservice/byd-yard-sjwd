@@ -2,9 +2,12 @@
  * Report 2PS — Report Inspection Tracking Status (On Yard): every station
  * event (Gate-in / PDI / PM / Final Check / ช่าง) and every Defect event
  * (found / status change) recorded by this app, for cars currently on yard.
+ * The Defect tab lists only what the yard's own inspection stations found
+ * (Gate-in / Walk Around Check / Update Damage). A date range narrows both
+ * tabs and the Excel export.
  */
 import { useMemo, useState } from 'react'
-import { Search, ChevronLeft, ChevronRight, Download } from 'lucide-react'
+import { Search, ChevronLeft, ChevronRight, Download, X } from 'lucide-react'
 import { useYard, useUnits } from '../store/useYard'
 import { useTrackingRows } from '../store/useTracking'
 import { useActiveQueues, queueTypeOf, isSequenceQueue, type QueueType, type WorkQueue } from '../store/useOps'
@@ -14,6 +17,8 @@ import { stationLabelOf } from '../lib/carHistory'
 import { deriveCarStatus, IN_YARD_STATUSES } from '../lib/carStatus'
 import { rowsForSite } from '../lib/siteScope'
 import { realDefects } from '../lib/finalCheckList'
+import { downloadBlob } from '../lib/defectReport'
+import { dateKey } from '../lib/dayKey'
 import type { TrackRow } from '../lib/excelTracking'
 import type { Unit } from '../types'
 
@@ -45,6 +50,12 @@ interface DefectEvent {
 /** Station labels are mostly already English ("PDI", "Gate-in", "Final Check")
  *  except the couple recorded bilingual for Thai readability on screen — strip
  *  those down to English-only for the export. */
+/** Defect tab: only the yard's own inspection stations. PDI / PM / ช่าง / Co-Inspection
+ *  imports / manual entries are not used for this report (the office's ask). */
+export const DEFECT_STATIONS = ['Walk Around Check', 'Update Damage', 'Gate-in'] as const
+const DEFECT_STATION_SET = new Set<string>(DEFECT_STATIONS.map((s) => s.toLowerCase()))
+export const isReportDefectStation = (label: string) => DEFECT_STATION_SET.has(label.trim().toLowerCase())
+
 const STATION_EN: Record<string, string> = {
   'ช่าง (Mechanic)': 'Mechanic',
   'เพิ่มเอง (Manual)': 'Manual',
@@ -92,6 +103,7 @@ function buildDefectEvents(units: Unit[]): DefectEvent[] {
   for (const u of units) {
     for (const d of realDefects(u.damages)) {
       const station = stationLabelOf(d)
+      if (!isReportDefectStation(station)) continue
       const area = partLabel(d, 'th') || partLabel(d, 'en')
       const defect = defectLabel(d, 'th') || defectLabel(d, 'en')
       const areaEn = partBilingual(d).en
@@ -105,15 +117,38 @@ function buildDefectEvents(units: Unit[]): DefectEvent[] {
   return out.sort((a, b) => b.at - a.at)
 }
 
-function toCsv(filename: string, headers: string[], rows: (string | number)[][]) {
-  const esc = (v: string | number) => { const s = String(v ?? ''); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s }
-  const body = [headers, ...rows].map((r) => r.map(esc).join(',')).join('\n')
-  const blob = new Blob(['﻿' + body], { type: 'text/csv;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url; a.download = filename; a.click()
-  URL.revokeObjectURL(url)
+/** exceljs writes Date as UTC — pin the LOCAL wall-clock so the cell shows the time the yard saw */
+const localCell = (ts: number) => {
+  const d = new Date(ts)
+  return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes()))
 }
+
+/** One-sheet .xlsx: bold header, frozen, filter on every column; the last column is the event time
+ *  as a real date (sorts and filters by date in Excel). */
+async function exportXlsx(filename: string, sheet: string, headers: string[], widths: number[], rows: (string | number)[][], times: number[]): Promise<void> {
+  const XJS: any = await import('exceljs')
+  const ExcelJS = XJS.default ?? XJS
+  const wb = new ExcelJS.Workbook()
+  wb.creator = 'SJWD Yard Control'
+  const ws = wb.addWorksheet(sheet, { views: [{ state: 'frozen', ySplit: 1 }] })
+  ws.columns = [...widths, 18].map((width) => ({ width }))
+  const head = ws.addRow(headers)
+  head.eachCell((c: any) => {
+    c.font = { bold: true, color: { argb: 'FF111111' } }
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF00' } }
+    c.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } }
+    c.alignment = { vertical: 'middle', horizontal: 'center' }
+  })
+  rows.forEach((r, i) => {
+    const row = ws.addRow([...r, localCell(times[i])])
+    row.getCell(headers.length).numFmt = 'dd/mm/yyyy hh:mm'
+  })
+  ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: headers.length } }
+  const buf = await wb.xlsx.writeBuffer()
+  downloadBlob(buf, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename)
+}
+
+const dayStart = (key: string) => { const [y, m, d] = key.split('-').map(Number); return new Date(y, m - 1, d).getTime() }
 
 export function Report2ps() {
   const allUnits = useUnits()
@@ -124,6 +159,10 @@ export function Report2ps() {
   const [tab, setTab] = useState<'station' | 'defect'>('station')
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
+  // date range (YYYY-MM-DD, local) — blank = no bound
+  const [from, setFrom] = useState('')
+  const [to, setTo] = useState('')
+  const [exporting, setExporting] = useState(false)
 
   // ── ยาร์ดใคร ยาร์ดมัน ────────────────────────────────────────────────────
   // เดิมกรองด้วย "!site || site === currentSite" — รถที่ยังไม่มียาร์ดกำกับจึง
@@ -156,33 +195,41 @@ export function Report2ps() {
   const defectEvents = useMemo(() => buildDefectEvents(onYardUnits), [onYardUnits])
 
   const q = search.trim().toUpperCase()
+  const lo = from ? dayStart(from) : -Infinity
+  const hi = to ? dayStart(to) + 86_400_000 : Infinity
   const filteredStation = useMemo(
-    () => (!q ? stationEvents : stationEvents.filter((e) =>
+    () => stationEvents.filter((e) => e.at >= lo && e.at < hi && (!q ||
       e.vin.includes(q) || e.model.toUpperCase().includes(q) || e.by.toUpperCase().includes(q) || e.station.toUpperCase().includes(q))),
-    [stationEvents, q],
+    [stationEvents, q, lo, hi],
   )
   const filteredDefect = useMemo(
-    () => (!q ? defectEvents : defectEvents.filter((e) =>
+    () => defectEvents.filter((e) => e.at >= lo && e.at < hi && (!q ||
       e.vin.includes(q) || e.model.toUpperCase().includes(q) || e.by.toUpperCase().includes(q) ||
       e.station.toUpperCase().includes(q) || e.area.toUpperCase().includes(q))),
-    [defectEvents, q],
+    [defectEvents, q, lo, hi],
   )
 
   const list: (StationEvent | DefectEvent)[] = tab === 'station' ? filteredStation : filteredDefect
   const totalPages = Math.max(1, Math.ceil(list.length / PAGE_SIZE))
   const pageRows = list.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
 
-  const doExport = () => {
-    const stamp = new Date().toISOString().slice(0, 10)
-    if (tab === 'station') {
-      toCsv(`SJWD-StationHistory-${stamp}.csv`, ['VIN', 'Model', 'Station', 'Result', 'ผู้บันทึก', 'วันที่/เวลา'],
-        filteredStation.map((e) => [e.vin, e.model, e.station, e.result ?? '', e.by, fmt(e.at)]))
-    } else {
-      // English throughout — the on-screen table stays Thai-first for yard
-      // staff, but the exported file is read outside the yard
-      toCsv(`SJWD-DefectHistory-${stamp}.csv`, ['VIN', 'Model', 'Station Found', 'Zone', 'Defect', 'Event', 'Status', 'Severity', 'Recorded By', 'Date/Time'],
-        filteredDefect.map((e) => [e.vin, e.model, stationEn(e.station), e.areaEn, e.defectEn, e.kind === 'found' ? 'Found Defect' : 'Status Change', e.status ?? '', e.severity ?? '', e.by, fmt(e.at)]))
-    }
+  const doExport = async () => {
+    // the file name carries the range it covers
+    const span = from || to ? `${from || 'start'}_${to || dateKey(new Date())}` : dateKey(new Date())
+    setExporting(true)
+    try {
+      if (tab === 'station') {
+        await exportXlsx(`SJWD-StationHistory-${span}.xlsx`, 'Station History', ['VIN', 'Model', 'Station', 'Result', 'ผู้บันทึก', 'วันที่/เวลา'], [22, 16, 18, 10, 22],
+          filteredStation.map((e) => [e.vin, e.model, e.station, e.result ?? '', e.by]), filteredStation.map((e) => e.at))
+      } else {
+        // English throughout — the on-screen table stays Thai-first for yard
+        // staff, but the exported file is read outside the yard
+        await exportXlsx(`SJWD-DefectHistory-${span}.xlsx`, 'Defect History', ['VIN', 'Model', 'Station Found', 'Zone', 'Defect', 'Event', 'Status', 'Severity', 'Recorded By', 'Date/Time'],
+          [22, 16, 18, 22, 28, 14, 16, 10, 22],
+          filteredDefect.map((e) => [e.vin, e.model, stationEn(e.station), e.areaEn, e.defectEn, e.kind === 'found' ? 'Found Defect' : 'Status Change', e.status ?? '', e.severity ?? '', e.by]),
+          filteredDefect.map((e) => e.at))
+      }
+    } finally { setExporting(false) }
   }
 
   return (
@@ -191,8 +238,9 @@ export function Report2ps() {
         title="Report 2PS"
         sub="Report Inspection Tracking Status (On Yard) — ประวัติการเคลื่อนไหวทุก activity ของรถในลาน"
         right={
-          <button className="btn btn-primary" onClick={doExport}>
-            <Download size={15} /> Export CSV
+          <button className="btn btn-primary" onClick={doExport} disabled={exporting || !list.length} data-report-export
+            title="ดาวน์โหลดเป็นไฟล์ Excel ตามแท็บ ช่วงวันที่ และคำค้นที่เลือกไว้">
+            <Download size={15} /> {exporting ? 'กำลังสร้างไฟล์…' : 'Export Excel'}
           </button>
         }
       />
@@ -215,6 +263,19 @@ export function Report2ps() {
             onChange={(e) => { setSearch(e.target.value); setPage(1) }}
           />
         </div>
+        <label className="flex items-center gap-2 px-3 py-2 rounded-xl" style={{ background: 'var(--chip)' }}>
+          <span className="text-[12.5px] font-semibold" style={{ color: 'var(--muted)' }}>ตั้งแต่</span>
+          <input type="date" value={from} max={to || undefined} onChange={(e) => { setFrom(e.target.value); setPage(1) }} aria-label="ตั้งแต่วันที่" data-report-from
+            className="bg-transparent outline-none text-[13px] font-bold tabular" style={{ color: 'var(--brand)' }} />
+          <span className="text-[12.5px] font-semibold" style={{ color: 'var(--muted)' }}>ถึง</span>
+          <input type="date" value={to} min={from || undefined} onChange={(e) => { setTo(e.target.value); setPage(1) }} aria-label="ถึงวันที่" data-report-to
+            className="bg-transparent outline-none text-[13px] font-bold tabular" style={{ color: 'var(--brand)' }} />
+          {(from || to) && (
+            <button onClick={() => { setFrom(''); setTo(''); setPage(1) }} title="ล้างช่วงวันที่ (แสดงทั้งหมด)" aria-label="ล้างช่วงวันที่" style={{ color: 'var(--muted)' }}>
+              <X size={14} />
+            </button>
+          )}
+        </label>
         <div className="text-[13px] ml-auto" style={{ color: 'var(--muted)' }}>
           {list.length} record{list.length !== 1 ? 's' : ''}
         </div>
