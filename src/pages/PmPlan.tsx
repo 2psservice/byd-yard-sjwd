@@ -432,7 +432,7 @@ export function PmPlan() {
   }
 
   return (
-    <div className="max-w-[1400px] mx-auto">
+    <div className="w-full">
       <div className="panel p-4 mb-4 flex items-center gap-3 flex-wrap">
         <div className="flex-1 min-w-[240px]">
           <PageHead

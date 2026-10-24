@@ -438,7 +438,7 @@ export function Grouping() {
   }
 
   return (
-    <div className="max-w-[1200px] mx-auto">
+    <div className="w-full">
       <PageHead
         title={<span className="flex items-center gap-2"><Layers size={20} style={{ color: 'var(--brand)' }} /> Grouping</span>}
         sub={`นำเข้าแผน Grouping ต่อ Site · ใส่เลข Grouping ให้รถอัตโนมัติ · พิมพ์ใบ Grouping / ใบหารถ${siteName ? ` — ${siteName}` : ''}`}

@@ -27,7 +27,7 @@ export function Trailers() {
   const arrived = trailers.filter((x) => x.arrived).length
 
   return (
-    <div className="max-w-[1300px] mx-auto">
+    <div className="w-full">
       <PageHead title={t('trailersTitle')} sub={lang === 'th' ? 'แต่ละหาง = 1 Grouping ตามที่ขึ้นจากโรงงาน' : 'Each trailer = one grouping loaded at the factory'}
         right={
           <div className="panel px-4 py-2.5 flex items-center gap-4">

@@ -455,7 +455,7 @@ export function Dashboard() {
     fromTracking ? () => { setView('units'); setUnitPreset(preset) } : () => openPopup(label, accent, filter)
 
   return (
-    <div className="max-w-[1400px] mx-auto">
+    <div className="w-full">
       <PageHead
         title={t('dashboard')}
         sub={`${new Date().toLocaleDateString('th-TH', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}`}

@@ -37,7 +37,7 @@ export function Rules() {
   }
 
   return (
-    <div className="max-w-[1200px] mx-auto">
+    <div className="w-full">
       <PageHead title={t('rulesTitle')} sub={t('rulesIntro')} />
 
       {/* global */}

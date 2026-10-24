@@ -91,7 +91,7 @@ export function Tracking() {
   const pick = (vin: string) => { setSelVin(vin); setSelTripId(null) }
 
   return (
-    <div className="max-w-[1300px] mx-auto">
+    <div className="w-full">
       <PageHead
         title={<span className="flex items-center gap-2"><Radar size={20} style={{ color: 'var(--brand)' }} /> ติดตาม GPS รถ</span>}
         sub="ตำแหน่งล่าสุด · เส้นทางการขับ · ประวัติคนขับรายคัน"

@@ -1012,7 +1012,7 @@ export function GateIn() {
   const groups = useMemo(() => buildGroups(siteRows), [siteRows])
 
   return (
-    <div className="max-w-[1400px] mx-auto">
+    <div className="w-full">
       <PageHead
         title="Gate In / Gate Out"
         sub={filterDate ? `กำลังดูย้อนหลัง — วันที่ ${fmtDateTh(filterDate)}` : 'ความคืบหน้าการตรวจรับและส่งออกรถแต่ละ Lot'}

@@ -182,7 +182,7 @@ export function Driver() {
   const totalCars    = totalParked + totalDriving
 
   return (
-    <div className="max-w-[1400px] mx-auto space-y-4">
+    <div className="w-full space-y-4">
       <PageHead title="กิจกรรมพนักงานขับรถ" sub="ติดตามการเคลื่อนย้ายรถของแต่ละคนขับ — ขับคันไหน จากไหน ไปที่ไหน เมื่อไหร่" />
 
       {/* KPI */}
