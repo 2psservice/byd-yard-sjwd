@@ -17,7 +17,7 @@ import {
   fmtDuration, fmtEvTime, fmtPct, type EvCharge, type BatteryRead,
 } from '../lib/evCharging'
 import { dateKey } from '../lib/dayKey'
-import { PhotoLightbox } from './ui'
+import { PhotoLightbox, cx } from './ui'
 
 export const EV_ACCENT = '#16a34a'
 
@@ -43,6 +43,32 @@ function useMinuteTick(): number {
   const [now, setNow] = useState(Date.now())
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 60_000); return () => clearInterval(t) }, [])
   return now
+}
+
+const battColor = (p: number) => (p < 20 ? 'var(--st-damage)' : p < 50 ? 'var(--st-pending)' : EV_ACCENT)
+
+/** หลอดแบต — เติมตาม % ที่บันทึกไว้จริง (ระหว่างชาร์จไม่มีใครรู้ % ปัจจุบัน จึงไม่เดา)
+ *  charging = ไฟวิ่ง + ช่องถัดไปกะพริบ · from = % ก่อนชาร์จ (ส่วนที่ชาร์จเพิ่มเข้มกว่า) */
+function BatteryBar({ pct, from, charging, label, height = 24 }: {
+  pct: number | null; from?: number | null; charging?: boolean; label?: string; height?: number
+}) {
+  const p = Math.max(0, Math.min(100, pct ?? 0))
+  const color = battColor(p)
+  const gained = from != null && from < p && p > 0
+  const fill = gained ? `linear-gradient(90deg, color-mix(in srgb, ${color} 45%, transparent) 0 ${(from! / p) * 100}%, ${color} ${(from! / p) * 100}%)` : color
+  return (
+    <div className="ev-batt" style={{ height }} role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={p}
+      aria-label={label ?? `แบต ${p}%`} data-ev-batt={pct ?? ''} data-ev-charging={charging ? '1' : undefined}>
+      <div className="ev-batt-body">
+        {pct != null && <div className={cx('ev-batt-fill', charging && 'is-charging')} style={{ width: `${Math.max(p, 4)}%`, background: fill }} />}
+        {charging && pct != null && p < 100 && (
+          <div className="ev-batt-next" style={{ left: `calc(${p}% + 3px)`, width: `min(8%, calc(${100 - p}% - 4px))`, background: color }} />
+        )}
+        <span className="ev-batt-label">{label ?? fmtPct(pct)}</span>
+      </div>
+      <div className="ev-batt-cap" />
+    </div>
+  )
 }
 
 // ── หน้าแรกของสถานี: สรุปวันนี้ + รถที่กำลังชาร์จ ─────────────────────────────
@@ -85,14 +111,19 @@ export function EvStationHome({ onPick }: { onPick: (vin: string) => void }) {
         <div className="space-y-1.5">
           {charging.map((c) => (
             <button key={c.id} onClick={() => onPick(c.vin)} data-ev-open={c.vin}
-              className="w-full flex items-center gap-3 p-2.5 rounded-xl text-left transition hover:bg-[var(--chip)]"
+              className="w-full p-2.5 rounded-xl text-left transition hover:bg-[var(--chip)]"
               style={{ border: '1px solid var(--line)', touchAction: 'manipulation' }}>
-              <BatteryCharging size={18} style={{ color: EV_ACCENT }} />
-              <div className="min-w-0 flex-1">
-                <div className="mono text-[13px] font-bold truncate">{c.vin}</div>
-                <div className="text-[11.5px]" style={{ color: 'var(--muted)' }}>{c.model || '—'} · เริ่ม {fmtEvTime(c.beforeAt)} · {fmtPct(c.beforePct)}</div>
+              <div className="flex items-center gap-3">
+                <BatteryCharging size={18} className="ev-bolt shrink-0" style={{ color: EV_ACCENT }} />
+                <div className="min-w-0 flex-1">
+                  <div className="mono text-[13px] font-bold truncate">{c.vin}</div>
+                  <div className="text-[11.5px]" style={{ color: 'var(--muted)' }}>{c.model || '—'} · เริ่ม {fmtEvTime(c.beforeAt)}</div>
+                </div>
+                <div className="text-[12px] font-bold tabular" style={{ color: EV_ACCENT }}>{fmtDuration(chargeMs(c, now))}</div>
               </div>
-              <div className="text-[12px] font-bold tabular" style={{ color: EV_ACCENT }}>{fmtDuration(chargeMs(c, now))}</div>
+              <div className="mt-2" style={{ paddingLeft: 30 }}>
+                <BatteryBar pct={c.beforePct} charging label={`เริ่ม ${fmtPct(c.beforePct)} · กำลังชาร์จ`} />
+              </div>
             </button>
           ))}
         </div>
@@ -101,13 +132,17 @@ export function EvStationHome({ onPick }: { onPick: (vin: string) => void }) {
       {doneToday.length > 0 && (
         <div className="panel p-3">
           <div className="text-[11px] font-bold uppercase tracking-wider mb-2" style={{ color: 'var(--muted)' }}>เสร็จวันนี้</div>
-          <div className="space-y-1">
+          <div className="space-y-2.5">
             {doneToday.map((c) => (
-              <div key={c.id} className="flex items-center gap-2 text-[12px]">
-                <CheckCircle2 size={14} style={{ color: EV_ACCENT }} />
-                <span className="mono font-semibold">{c.vin.slice(-8)}</span>
-                <span style={{ color: 'var(--muted)' }}>{fmtPct(c.beforePct)} → {fmtPct(c.afterPct)}</span>
-                <span className="ml-auto tabular font-semibold">{fmtDuration(chargeMs(c))}</span>
+              <div key={c.id} className="space-y-1" data-ev-done={c.vin}>
+                <div className="flex items-center gap-2 text-[12px]">
+                  <CheckCircle2 size={14} style={{ color: EV_ACCENT }} />
+                  <span className="mono font-semibold">{c.vin.slice(-8)}</span>
+                  <span className="ml-auto tabular font-semibold">{fmtDuration(chargeMs(c))}</span>
+                </div>
+                <div style={{ paddingLeft: 22 }}>
+                  <BatteryBar pct={c.afterPct} from={c.beforePct} height={20} label={`${fmtPct(c.beforePct)} → ${fmtPct(c.afterPct)}`} />
+                </div>
               </div>
             ))}
           </div>
@@ -262,9 +297,9 @@ export function EvChargePanel({ vin, cells, unitModel, unitColor, onClose }: {
   const [remark, setRemark] = useState(open?.remark ?? '')
   const [saving, setSaving] = useState(false)
 
-  const model = (cells['Model'] || (cells['Model name'] || '').replace(/^BYD\s+/i, '') || unitModel || '').trim()
-  const color = (cells['Color'] || unitColor || '').trim()
-  const from = (cells['From'] || '').trim()
+  const model = (cells['Model'] || (cells['Model name'] || '').replace(/^BYD\s+/i, '') || unitModel || open?.model || '').trim()
+  const color = (cells['Color'] || unitColor || open?.color || '').trim()
+  const from = (cells['From'] || open?.from || '').trim()
   const last = list.find((c) => c.vin === vin && !isCharging(c))
 
   const missing: string[] = []
@@ -331,6 +366,7 @@ export function EvChargePanel({ vin, cells, unitModel, unitColor, onClose }: {
           <div className="flex-1 min-w-0 text-[12.5px]">
             <div className="font-bold" style={{ color: EV_ACCENT }}>กำลังชาร์จ · ก่อนชาร์จ {fmtPct(open.beforePct)}</div>
             <div style={{ color: 'var(--muted)' }}>เริ่ม {fmtEvTime(open.beforeAt)} โดย {open.beforeBy || '—'}</div>
+            <div className="mt-1.5"><BatteryBar pct={open.beforePct} charging height={20} label={`เริ่ม ${fmtPct(open.beforePct)}`} /></div>
           </div>
           <div className="flex items-center gap-1 text-[13px] font-bold tabular"><Clock size={14} /> {fmtDuration(chargeMs(open, now))}</div>
         </div>
