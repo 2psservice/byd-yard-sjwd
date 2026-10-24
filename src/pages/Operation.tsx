@@ -106,7 +106,7 @@ export function Operation() {
   const openQueue = openId ? queues.find((q) => q.id === openId) ?? null : null
 
   return (
-    <div className="max-w-[1200px] mx-auto">
+    <div className="w-full">
       <PageHead
         title={<span className="flex items-center gap-2"><ClipboardList size={20} style={{ color: 'var(--brand)' }} /> Operation · คิวงาน</span>}
         sub={<span className="flex items-center gap-1.5">สร้างคิวงาน PDI / PM / FINAL CHECK หรืองานพิเศษ · บันทึกเสร็จแล้วข้อมูลเข้า Overview{siteName && <><span style={{ color: 'var(--line-strong)' }}>·</span><MapPin size={12} style={{ color: 'var(--brand)' }} /><b style={{ color: 'var(--brand)' }}>{siteName}</b></>}</span>}

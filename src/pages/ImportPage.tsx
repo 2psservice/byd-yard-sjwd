@@ -613,7 +613,7 @@ export function ImportPage() {
   }, [siteRows])
 
   return (
-    <div className="max-w-[1100px] mx-auto">
+    <div className="w-full">
       <PageHead
         title={tab === 'import' ? 'นำเข้าข้อมูล' : 'Master Defect List'}
         sub={tab === 'import'

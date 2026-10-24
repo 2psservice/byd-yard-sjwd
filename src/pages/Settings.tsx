@@ -981,7 +981,7 @@ export function Settings() {
   }
 
   return (
-    <div className="max-w-[920px] mx-auto">
+    <div className="w-full">
       <PageHead
         title={<span className="flex items-center gap-2"><SettingsIcon size={20} style={{ color: 'var(--brand)' }} /> ตั้งค่า</span>}
         sub="จัดการ Site งาน และการตั้งค่าระบบ"

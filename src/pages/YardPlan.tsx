@@ -394,7 +394,7 @@ export function YardPlan() {
   }
 
   return (
-    <div className="max-w-[1400px] mx-auto">
+    <div className="w-full">
       <PageHead
         title={
           <span className="flex items-center gap-2.5">
