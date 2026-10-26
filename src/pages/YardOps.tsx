@@ -52,6 +52,8 @@ import { buildWorkRows, buildEventLog, fmtHistAt, histOf } from '../lib/carHisto
 import { roundOf, roundHistory } from '../lib/tripHistory'
 import { exportSpecialQueue } from '../lib/opsReport'
 import { EvChargePanel, EvStationHome, useEvStationLoad, EV_ACCENT } from '../components/EvChargeStation'
+import { useEvCharging } from '../store/useEvCharging'
+import { isCharging } from '../lib/evCharging'
 
 // A queue's car list used to render every item at once — fine for a dozen
 // cars, but a yard-wide Pre Gate-in/PDI/PM lot can hold 700+, and that many
@@ -6077,6 +6079,14 @@ export function YardOps() {
   const trackingRows = useSiteRows()
   const dismissedPreGateIn = useOps(s => s.dismissed)
   const closedQueues = useOps(s => s.closed) // admin-archived lots leave the Gate-in board
+  // EV Charging: cars on the charger in this yard right now (a paused one still holds its spot) — the
+  // same number as the station's own "กำลังชาร์จ" card
+  useEvStationLoad()
+  const evSite = useYard((s) => s.currentSite)
+  const evCharges = useEvCharging((s) => s.charges)
+  const evOpen = useMemo(
+    () => Object.values(evCharges).filter((c) => isCharging(c) && (!evSite || !c.site || c.site === evSite)).length,
+    [evCharges, evSite])
   const menuBadges = useMemo(() => {
     const n: Partial<Record<RoleKey, number>> = {}
     const add = (k: RoleKey, v: number) => { if (v > 0) n[k] = (n[k] ?? 0) + v }
@@ -6117,8 +6127,9 @@ export function YardOps() {
     // Dashboard's sitewide Pre Gate-in tally
     add('walk', trackingRows.filter(r => !queuedPreGateInVins.has(r.vin) && !dismissedPreGateIn[r.vin]
       && deriveCarStatus(r.cells) === 'Pre Gate-in').length)
+    add('ev', evOpen)
     return n
-  }, [queues, trackingRows, dismissedPreGateIn, closedQueues])
+  }, [queues, trackingRows, dismissedPreGateIn, closedQueues, evOpen])
 
   const activeRole = ROLES.find(r => r.key === role)
 
