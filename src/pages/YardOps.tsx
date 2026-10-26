@@ -14,7 +14,7 @@ import {
   LogOut, MapPin, ClipboardList, ListChecks, Copy, Check, Images, Sparkles, Download, BatteryCharging,
 } from 'lucide-react'
 import { useYard, useUnits, useTrips, useBlocks, attachPendingDamages, type PlacementResult } from '../store/useYard'
-import { isAtLanePos, planLaneUpdates, recordableDrafts } from '../lib/laneRebuild'
+import { isAtLanePos, planLaneUpdates, recordableDrafts, laneEntryKind } from '../lib/laneRebuild'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { overlayInspection } from '../lib/inspectionStatus'
 import { isDamaged, deriveCarStatus, hasLeftGate, IN_YARD_STATUSES, CAR_STATUS_META, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY, returningGateOut, fmtGateOutStamp, gateScannedThisRound } from '../lib/carStatus'
@@ -4828,34 +4828,21 @@ function laneOccupants(list: Unit[], blockId: string, slot: number, exceptVin?: 
     .sort((a, b) => (a.row ?? 0) - (b.row ?? 0))
 }
 
-/** The shallowest depth nobody occupies, or null when the lane is full. */
-function firstFreeDepth(list: Unit[], blockId: string, slot: number, depth: number, exceptVin?: string): number | null {
-  if (!blockId || !slot) return null
-  const taken = new Set(laneOccupants(list, blockId, slot, exceptVin).map(u => u.row))
-  for (let r = 1; r <= depth; r++) if (!taken.has(r)) return r
-  return null
-}
 
 function RelocationView() {
   const trackingRows = useSiteRows()
   const siteUnits = useSiteUnits()
   const blocks = useBlocks()
   const { loadFromIdb, appendHistory } = useTracking()
-  const { toast, sites, currentSite, currentUser, updateLocations } = useYardPick('toast', 'sites', 'currentSite', 'currentUser', 'updateLocations')
+  const { toast, currentSite, currentUser, updateLocations } = useYardPick('toast', 'currentSite', 'currentUser', 'updateLocations')
   const { block: blockGate, blockWith: blockGate2, modal: gateModal } = useNotGatedIn()
-  const [vin, setVin] = useState<string | null>(null)
-  const [fLoc, setFLoc] = useState('')
-  const [saved, setSaved] = useState(false)
-  const [saving, setSaving] = useState(false) // cloud write in flight — the card waits for its answer
-  // ── ยิงตามแถว: pick a lane once (e.g. A10), then scan car after car — each
-  // one lands on the next free space down that lane automatically ──
-  const [mode, setMode] = useState<'one' | 'lane'>('one')
+  // ── ยิงตามแถว: pick a lane once (e.g. A10), then scan car after car in the
+  // order they stand — the scan order IS the lane order (คันแรกที่ยิง = คันที่ 1) ──
   const [laneStr, setLaneStr] = useState('')
   const [laneAdded, setLaneAdded] = useState<{ vin: string; code: string }[]>([])
   // ผลตรวจทานหลังเขียนเสร็จ (ดู verifyLane): อ่านเลนจากคลาวด์มาเทียบกับที่ยิง ถ้ามี
   // ช่องซ้อน/คันหาย/เลขคันไม่ตรง ขึ้นเตือนตรงนี้ให้คนยิงแก้ทันที แทนไปเจอในผังทีหลัง
   const [laneIssue, setLaneIssue] = useState<string | null>(null)
-  const lastSaveGuard = useRef(0)          // double-fire guard: single-car save
   const lastLaneHit = useRef({ v: '', at: 0 }) // double-fire guard: lane scans
   // scan order of THIS round (oldest first) — the scan sequence IS the lane
   // order: 1st scan parks as คันที่ 1, 2nd as คันที่ 2, … (ref: scans arrive
@@ -4889,82 +4876,6 @@ function RelocationView() {
 
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
 
-  const siteName = sites.find(s => s.id === currentSite)?.name ?? ''
-  const row = vin ? (trackingRows.find(r => r.vin === vin) ?? null) : null
-  const unit = vin ? siteUnits.find(u => u.vin === vin) : undefined
-  // the yard the car is in (a site name — "NYB2 Phase 2") vs. where it stands
-  // inside that yard (block + slot + row). The card used to show only the first.
-  const curYard = row ? (row.cells['Location yard'] || row.cells['storage Yard'] || siteName || '—') : ''
-  const placed = !!(unit?.block && unit.row && unit.slot)
-
-  // The position lives on the UNIT, and units arrive from the cloud page by
-  // page — a phone opened minutes ago can easily not hold the very car the
-  // operator is standing next to, while its tracking row (IndexedDB + realtime)
-  // is already there. The card then read "ยังไม่ระบุตำแหน่งในลาน", which states
-  // a FACT about the car when the truth was only "this device hasn't loaded it
-  // yet" — two phones on the same VIN disagreed, and an operator trusting the
-  // empty one would re-park a car that already has a slot. Hurry that single
-  // VIN (same one-shot fetch the other stations use) and, until it answers, say
-  // we are loading rather than that there is no position.
-  const [unitFetching, setUnitFetching] = useState(false)
-  const [unitMissing, setUnitMissing] = useState(false)
-  useEffect(() => {
-    if (!vin || unit) { setUnitFetching(false); setUnitMissing(false); return }
-    let cancelled = false
-    let tries = 0
-    setUnitFetching(true); setUnitMissing(false)
-    const attempt = () => {
-      if (cancelled) return
-      tries++
-      fetchUnitFallback(vin).then((found) => {
-        if (cancelled || found) return // found → `unit` re-renders this effect away
-        if (tries < 4) setTimeout(attempt, 1500 * tries)
-        else { setUnitFetching(false); setUnitMissing(true) }
-      })
-    }
-    attempt()
-    return () => { cancelled = true }
-  }, [vin, unit])
-
-  // every relocation this car has been through IN THIS YARD's round — updateCell
-  // logs who/when/where under the Location column, so the station sees the same
-  // trail the admin does (moves at the previous yard are its own round's — hidden)
-  const moves = useMemo(() =>
-    (row ? roundHistory(row) : []).filter(e => e.field === 'Location' || e.field === LOCATION_KEY).reverse(),
-  [row])
-
-  // ตำแหน่งปัจจุบันที่ไม่ตรงกับประวัติการสแกนล่าสุด (เช่น การเขียน `units` พลาด
-  // ตอนย้ายรถ) เคยถูกแก้เองเงียบๆ ที่นี่ทุกครั้งที่เปิดการ์ดรถคันนี้ — ตำแหน่ง/
-  // โลเคชั่นต้องมาจากข้อมูลที่กรอกเข้าไปจริงเท่านั้น (สแกน/แอดมินแก้เอง) ระบบ
-  // ห้ามปรับเปลี่ยนเอง แม้จะตั้งใจ "ซ่อม" ก็ตาม — ถ้าไม่ตรงกันจริง ให้แอดมินกด
-  // ซ่อมเองที่ Settings (ดู repairOrphanPositions ใน useTracking.ts)
-
-  // one field, written the way the upload file writes a lane: "R14" (block +
-  // column). The token resolves to the block it NAMES — name-first, so an
-  // internal id can never hijack another block's letter.
-  const parsed = parseLane(fLoc.trim())
-  const blk = useMemo(
-    () => (parsed ? resolveBlockByName(parsed.block, blocks) : null),
-    [parsed?.block, blocks], // eslint-disable-line react-hooks/exhaustive-deps
-  )
-  // the canonical tag stamped on the car — the block's name, one letter
-  const blockId = parsed ? (blk ? blockTag(blk) : blockKeyOfTag(parsed.block)) : ''
-
-  // the digits after the block letter are the COLUMN — the numbers across the
-  // top of the plan, 1…cols. Depth down the column is assigned automatically.
-  const slotNo = parsed?.row ?? 0
-  const slotOk = slotNo >= 1 && (!blk || slotNo <= blk.cols)
-
-  /** Which space down that column: the first free one, exactly how the Update
-   *  Location import stacks cars into a lane. */
-  const nextRow = useMemo(() => firstFreeDepth(siteUnits, blockId, slotNo, blk?.rows ?? 8, vin ?? undefined),
-    [blockId, slotNo, slotOk, blk, siteUnits, vin]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const laneFull = !!blockId && slotOk && nextRow === null
-  // a block this plan does not draw has no grid to land in, so refuse it rather
-  // than park the car somewhere that only exists in the typo
-  const blockOk = !!blockId && (blocks.length === 0 || !!blk)
-  const canSave = !!row && blockOk && slotOk && nextRow !== null && !saved && !saving
 
   // The Car Status CELL can lag reality: a unit standing in the yard (placed by
   // gate-in on another device, or a lane/plan import) while the sheet still says
@@ -4992,31 +4903,6 @@ function RelocationView() {
     return true
   }
 
-  const onScanRef = useRef<(v: string) => void>(() => {})
-  const scanNotFound = useCloudNotFound(onScanRef)
-  const onScan = (v: string) => {
-    setSaved(false); setFLoc('')
-    let r = trackingRows.find(x => x.vin === v)
-    if (!r && v.length <= 8) {
-      const hits = trackingRows.filter(x => x.vin.endsWith(v))
-      if (hits.length === 1) r = hits[0]
-      else if (hits.length > 1) { toast('err', `พบ ${hits.length} คัน — พิมพ์ให้ยาวขึ้น`); return }
-    }
-    if (!r) { scanNotFound(v); return }
-    // "has left" is tested BEFORE "never arrived": a row whose Car Status cell is
-    // blank but whose Gate-Out stamp is set is a departed car, and the
-    // not-gated-in popup would name the wrong reason
-    if (hasGoneOut(r.cells)) {
-      blockGate2(r.vin, r.cells['Model name'] ?? r.cells['Model'] ?? '', 'รถออกจากลานแล้ว',
-        <>รถคันนี้ <b style={{ color: '#dc2626' }}>Gate-out</b> ไปแล้ว จึงไม่มีตำแหน่งในลานให้ย้าย<br />
-          หากรถกลับเข้าลาน ต้องทำ <b>Gate-in</b> ใหม่ก่อน</>)
-      return
-    }
-    if (!passGateGuard(r)) { blockGate(r.vin, r.cells['Model name'] ?? r.cells['Model'] ?? ''); return }
-    setVin(r.vin)
-    recordRecent('reloc:search', r.vin)
-  }
-  onScanRef.current = onScan
 
   /** "T1201" — block name + column + which car down it, the yard's own form. */
   const codeOf = (b: string, col: number, depth: number) =>
@@ -5179,7 +5065,7 @@ function RelocationView() {
       // ตรวจทานหลังคลาวด์รับชุดนี้แล้ว — เฉพาะชุดล่าสุด (gen) ของการยิงรัวชุดนี้
       updateLocations(updates, (results) => {
         for (const d of recordableDrafts(drafts, results)) {
-          appendHistory(d.vin, { at: scannedAt, by: currentUser, field: 'Location', src: 'scan', from: d.from, to: d.to })
+          appendHistory(d.vin, { at: scannedAt, by: currentUser, field: 'Location', src: 'scan', from: d.from, to: d.to, ...(d.pushed ? { pushed: true as const } : {}) })
         }
         settleRecent(results)
         if (results.some(x => x.status === 'queued')) toast('info', 'สัญญาณไม่ดี — บันทึกตำแหน่งไว้ในเครื่องแล้ว กำลังรอส่งขึ้นระบบ')
@@ -5260,337 +5146,133 @@ function RelocationView() {
     toast('err', msg)
   }
 
-  const doSave = async () => {
-    if (!canSave || !row || nextRow === null) return
-    // double-tap / double-Enter guard: `saved` state hasn't flushed yet when a
-    // second event lands in the same frame — this ref has
-    if (Date.now() - lastSaveGuard.current < 1200) return
-    lastSaveGuard.current = Date.now()
-    // `nextRow` came from this device's units, which may not hold every car
-    // already standing in the lane — confirm the depth against the cloud so two
-    // phones can never hand out the same คันที่ and stack two cars on one square
-    const depthMax = blk?.rows ?? 8
-    // อ่านเลนจากคลาวด์ไม่ได้ (สัญญาณไม่ดี) → ไม่เดาคันที่จากข้อมูลในเครื่อง: มือถือที่โหลดรถไม่ครบจะแจกคันที่ที่มีรถอยู่ = ช่องซ้อน
-    // (ต้นเหตุเดียวกับยิงตามแถว P05 17 ต.ค.) · ระหว่างรอ (สูงสุด ~12 วิ) ปุ่มขึ้นกำลังบันทึก กดซ้ำไม่ได้
-    setSaving(true)
-    let lane: Unit[]
-    try {
-      lane = await laneFromCloudStrict(siteUnits, currentSite, blockId, slotNo)
-    } catch (e) {
-      console.error('[reloc] cloud lane read failed', e)
-      setSaving(false)
-      lastSaveGuard.current = 0
-      toast('err', `สัญญาณไม่ดี — ตรวจแถว ${blockId}${slotNo} จากระบบไม่ได้ ยังไม่บันทึก กดบันทึกใหม่`)
-      return
-    }
-    const depth = firstFreeDepth(lane, blockId, slotNo, depthMax, row.vin)
-    if (depth === null) {
-      setSaving(false)
-      lastSaveGuard.current = 0
-      toast('err', `แถว ${blockId}${slotNo} เต็มแล้ว (${depthMax} คัน)`)
-      return
-    }
-    if (depth !== nextRow) toast('info', `แถวนี้มีรถเพิ่มจากเครื่องอื่น — ลงเป็นคันที่ ${depth}`)
-    const code = codeOf(blockId, slotNo, depth)
-    const fromCode = placed ? yardLocFull(unit) : ''
-    // move the CAR, not the "Location yard" cell — that cell names the yard and
-    // is what scopes a row to its site, so a slot code written into it used to
-    // drop the car out of its own yard.
-    // The worker is standing at this car and just typed where it goes — that
-    // entry IS the truth, so it is written as-is, with no `from` compare-and-
-    // set. It used to carry `from` = where THIS phone last saw the car, and
-    // whenever the cloud disagreed (another phone's old auto-dedupe had quietly
-    // re-numbered it, Q3501→Q3506) the cloud won: the typed move was thrown
-    // away and the car snapped to the cloud's spot — while the history line and
-    // the green toast had already announced "ย้ายไป Q3701". The guard stays only
-    // on cars nobody scanned (lane-mode bystanders, see buildAndApply).
-    const n = updateLocations([{
-      vin: row.vin, block: blockId, row: depth, slot: slotNo,
-      modelName: row.cells['Model name'] || row.cells['Model'] || undefined,
-      color: row.cells['Color'] || undefined,
-    }], (results) => {
-      setSaving(false)
-      const r0 = results.find(x => x.vin === row.vin)
-      if (r0?.status === 'lost') {
-        lastSaveGuard.current = 0
-        toast('err', `ตำแหน่ง ${code} ไม่ถูกบันทึก — กรุณาลองใหม่`)
-        return
-      }
-      // only now — once the cloud has answered — does the move go into the
-      // car's ประวัติการย้าย and the worker see "บันทึกแล้ว"; before, both fired
-      // the instant the button was tapped, so a write the cloud then rejected
-      // left a history line (and a green toast) for a move that never happened
-      appendHistory(row.vin, { at: Date.now(), by: currentUser, field: 'Location', src: 'scan', from: fromCode, to: code })
-      recordRecent('reloc:save', row.vin, `ย้ายไป ${code}`)
-      setSaved(true)
-      if (r0?.status === 'queued') toast('info', `ย้ายไป ${code} · ${row.vin.slice(-6)} — สัญญาณไม่ดี บันทึกไว้ในเครื่องแล้ว กำลังรอส่งขึ้นระบบ`)
-      else toast('ok', `ย้ายไป ${code} · ${row.vin.slice(-6)}`)
-      setTimeout(() => { setVin(null); setSaved(false) }, 1600)
-    })
-    if (!n) setSaving(false)
-  }
 
   return (
     <div className="space-y-4">
-      {/* mode: move one car ↔ scan a whole lane (ยิงตามแถว) */}
-      <div className="grid grid-cols-2 gap-2">
-        <button onClick={() => setMode('one')}
-          className="py-2.5 rounded-xl text-[13px] font-bold transition"
-          style={mode === 'one' ? { background: '#0ea5e9', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>
-          ทีละคัน
-        </button>
-        <button onClick={() => setMode('lane')}
-          className="py-2.5 rounded-xl text-[13px] font-bold transition"
-          style={mode === 'lane' ? { background: '#0ea5e9', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>
-          ยิงตามแถว
-        </button>
-      </div>
-
-      {mode === 'lane' && (
-        <div className="space-y-4 fade-up">
-          <div className="panel p-4 space-y-2.5">
-            <div className="text-[11px] font-semibold" style={{ color: 'var(--muted)' }}>แถวปลายทาง (Block + เลขช่อง)</div>
-            <input
-              className="input w-full font-bold text-center text-[17px] uppercase tabular"
-              placeholder="A10" autoCapitalize="characters" autoCorrect="off" spellCheck={false}
-              value={laneStr}
-              onChange={e => {
-                const v = e.target.value.toUpperCase().replace(/\s+/g, '')
-                setLaneStr(v)
-                // reset the scan round only on a real lane edit — a handheld
-                // burst appending a VIN here is NOT a lane change
-                if (v === '' || parseLane(v)) { setLaneAdded([]); laneOrderRef.current = []; lanePendingRecentRef.current.clear(); laneSavedRef.current.clear(); laneGenRef.current++ }
-              }}
-            />
-            {laneReady ? (
-              <div className="text-[12px] font-semibold flex items-center gap-1.5" style={{ color: '#0284c7' }}>
-                <MapPin size={13} /> Block {laneBlockId} ช่อง {laneSlot} · มีรถ {laneCars.length}/{laneDepthMax} คัน
-                {laneNextRow !== null
-                  ? <span style={{ color: 'var(--muted)', fontWeight: 500 }}>· คันถัดไปลงคันที่ {laneNextRow}</span>
-                  : <span style={{ color: '#dc2626' }}>· แถวเต็มแล้ว</span>}
-              </div>
-            ) : laneStr.trim() ? (
-              <div className="text-[12px] font-semibold flex items-center gap-1.5" style={{ color: '#dc2626' }}>
-                <AlertTriangle size={13} />
-                {!laneParsed ? 'รูปแบบไม่ถูกต้อง — พิมพ์ Block ตามด้วยเลขช่อง เช่น A10'
-                  : !laneBlockOk ? `ไม่มี Block ${laneParsed.block} ในผังลานนี้`
-                  : laneBlk ? `Block ${blockTag(laneBlk)} มีช่อง 1–${laneBlk.cols}` : 'เลขช่องไม่ถูกต้อง'}
-              </div>
-            ) : (
-              <div className="text-[11px]" style={{ color: 'var(--faint)' }}>
-                ใส่แถวครั้งเดียว แล้วสแกน/พิมพ์วินทีละคันจนครบ — รถต่อท้ายคันที่มีอยู่ในแถวอัตโนมัติ
-              </div>
-            )}
-
-            {/* walking direction — tail mode lets the worker loop the row once
-                without walking back to the head before scanning */}
-            <div className="grid grid-cols-2 gap-2 pt-0.5">
-              <button onClick={() => switchLaneDir('head')}
-                className="py-2 rounded-xl text-[12px] font-bold transition"
-                style={laneDir === 'head' ? { background: '#16a34a', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>
-                ยิงจากหัวแถว
-                <div className="text-[10px] font-medium" style={{ opacity: 0.85 }}>คันแรกที่ยิง = คันที่ 1</div>
-              </button>
-              <button onClick={() => switchLaneDir('tail')}
-                className="py-2 rounded-xl text-[12px] font-bold transition"
-                style={laneDir === 'tail' ? { background: '#dc2626', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>
-                ยิงจากท้ายแถว
-                <div className="text-[10px] font-medium" style={{ opacity: 0.85 }}>คันล่าสุดที่ยิง = คันที่ 1</div>
-              </button>
+      <div className="space-y-4 fade-up">
+        <div className="panel p-4 space-y-2.5">
+          <div className="text-[11px] font-semibold" style={{ color: 'var(--muted)' }}>แถวปลายทาง (Block + เลขช่อง)</div>
+          <input
+            className="input w-full font-bold text-center text-[17px] uppercase tabular"
+            placeholder="A10" autoCapitalize="characters" autoCorrect="off" spellCheck={false}
+            value={laneStr}
+            onChange={e => {
+              const v = e.target.value.toUpperCase().replace(/\s+/g, '')
+              setLaneStr(v)
+              // reset the scan round only on a real lane edit — a handheld
+              // burst appending a VIN here is NOT a lane change
+              if (v === '' || parseLane(v)) { setLaneAdded([]); laneOrderRef.current = []; lanePendingRecentRef.current.clear(); laneSavedRef.current.clear(); laneGenRef.current++ }
+            }}
+          />
+          {laneReady ? (
+            <div className="text-[12px] font-semibold flex items-center gap-1.5" style={{ color: '#0284c7' }}>
+              <MapPin size={13} /> Block {laneBlockId} ช่อง {laneSlot} · มีรถ {laneCars.length}/{laneDepthMax} คัน
+              {laneNextRow !== null
+                ? <span style={{ color: 'var(--muted)', fontWeight: 500 }}>· ยิงตั้งแต่คันที่ 1 ตามลำดับที่จอดจริง ให้ครบทั้งแถว</span>
+                : <span style={{ color: '#dc2626' }}>· แถวเต็มแล้ว</span>}
             </div>
-          </div>
-
-          {/* autoFocus off: this input MOUNTS the moment the lane string turns
-              valid ("A1" while typing "A12") — grabbing focus mid-keystroke
-              yanked the cursor out of the lane field */}
-          {laneReady && <VinInput onScan={onLaneScan} accent="#0ea5e9" autoFocus={false} />}
-
-          {laneIssue && (
-            <div data-testid="lane-issue" className="panel p-3 flex items-start gap-2 text-[12.5px] font-semibold fade-up"
-              style={{ background: '#fef2f2', color: '#b91c1c', border: '1px solid #fecaca' }}>
-              <AlertTriangle size={15} className="shrink-0 mt-0.5" />
-              <span>{laneIssue}</span>
+          ) : laneStr.trim() ? (
+            <div className="text-[12px] font-semibold flex items-center gap-1.5" style={{ color: '#dc2626' }}>
+              <AlertTriangle size={13} />
+              {!laneParsed ? 'รูปแบบไม่ถูกต้อง — พิมพ์ Block ตามด้วยเลขช่อง เช่น A10'
+                : !laneBlockOk ? `ไม่มี Block ${laneParsed.block} ในผังลานนี้`
+                : laneBlk ? `Block ${blockTag(laneBlk)} มีช่อง 1–${laneBlk.cols}` : 'เลขช่องไม่ถูกต้อง'}
+            </div>
+          ) : (
+            <div className="text-[11px]" style={{ color: 'var(--faint)' }}>
+              ใส่แถวครั้งเดียว แล้วยิงทุกคันในแถวตามลำดับที่จอดจริง — คันที่เคยอยู่แถวนี้แต่ไม่ได้ยิง จะต่อท้าย
             </div>
           )}
 
-          {/* live view of the lane, depth order — just-scanned cars highlighted */}
-          {laneReady && (laneCars.length > 0 || laneAdded.length > 0) && (
+          {/* walking direction — tail mode lets the worker loop the row once
+              without walking back to the head before scanning */}
+          <div className="grid grid-cols-2 gap-2 pt-0.5">
+            <button onClick={() => switchLaneDir('head')}
+              className="py-2 rounded-xl text-[12px] font-bold transition"
+              style={laneDir === 'head' ? { background: '#16a34a', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>
+              ยิงจากหัวแถว
+              <div className="text-[10px] font-medium" style={{ opacity: 0.85 }}>คันแรกที่ยิง = คันที่ 1</div>
+            </button>
+            <button onClick={() => switchLaneDir('tail')}
+              className="py-2 rounded-xl text-[12px] font-bold transition"
+              style={laneDir === 'tail' ? { background: '#dc2626', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>
+              ยิงจากท้ายแถว
+              <div className="text-[10px] font-medium" style={{ opacity: 0.85 }}>คันล่าสุดที่ยิง = คันที่ 1</div>
+            </button>
+          </div>
+        </div>
+
+        {/* autoFocus off: this input MOUNTS the moment the lane string turns
+            valid ("A1" while typing "A12") — grabbing focus mid-keystroke
+            yanked the cursor out of the lane field */}
+        {laneReady && <VinInput onScan={onLaneScan} accent="#0ea5e9" autoFocus={false} />}
+
+        {laneIssue && (
+          <div data-testid="lane-issue" className="panel p-3 flex items-start gap-2 text-[12.5px] font-semibold fade-up"
+            style={{ background: '#fef2f2', color: '#b91c1c', border: '1px solid #fecaca' }}>
+            <AlertTriangle size={15} className="shrink-0 mt-0.5" />
+            <span>{laneIssue}</span>
+          </div>
+        )}
+
+        {/* live view of the lane, depth order — just-scanned cars highlighted ·
+            cars nobody scanned (pushed behind the scanned ones) listed apart as ประวัติเก่า */}
+        {laneReady && (laneCars.length > 0 || laneAdded.length > 0) && (() => {
+          const entries = laneCars.map(u => {
+            const fresh = laneAdded.some(a => a.vin === u.vin)
+            const tr = trackingRows.find(x => x.vin === u.vin)
+            // who recorded this car's LAST move and when — the car's ประวัติการย้าย
+            const lastMove = (tr ? roundHistory(tr) : []).filter(e => e.field === 'Location' || e.field === LOCATION_KEY).pop()
+            const old = !fresh && laneEntryKind(lastMove, codeOf(laneBlockId, laneSlot, u.row ?? 0)) === 'old'
+            return { u, tr, fresh, lastMove, old }
+          })
+          const confirmed = entries.filter(e => !e.old)
+          const stale = entries.filter(e => e.old)
+          const rowOf = ({ u, tr, fresh, lastMove, old }: (typeof entries)[number]) => (
+            <div key={u.vin} className="px-4 py-2 flex items-center gap-3"
+              style={fresh ? { background: 'rgba(22,163,74,0.07)' } : old ? { opacity: 0.55 } : undefined}>
+              <span className="tabular font-bold text-[13px] shrink-0" style={{ color: old ? 'var(--muted)' : '#0284c7', width: 30 }}>{u.row}</span>
+              <div className="min-w-0 flex-1">
+                <div className="vin text-[12.5px] font-bold clip">{u.vin}</div>
+                <div className="text-[11px] flex flex-wrap gap-x-1.5" style={{ color: 'var(--muted)' }}>
+                  <span>{u.modelName || '—'}</span><span>· {u.color || tr?.cells['Color'] || '—'}</span>
+                </div>
+              </div>
+              <div className="text-right shrink-0">
+                {old && <span className="badge inline-block mb-0.5" style={{ background: 'var(--chip)', color: 'var(--muted)', fontSize: 10 }}>ประวัติเก่า</span>}
+                {lastMove ? (
+                  <div className="text-[10.5px] leading-tight" style={{ color: 'var(--muted)' }}>
+                    <div className="font-semibold" style={{ color: fresh ? '#16a34a' : 'var(--text)' }}>{lastMove.by || '—'}</div>
+                    <div className="tabular">{fmtCheckedAt(lastMove.at)}</div>
+                  </div>
+                ) : (
+                  <span className="text-[10.5px]" style={{ color: 'var(--faint)' }}>—</span>
+                )}
+              </div>
+              {fresh && <CheckCircle2 size={15} className="shrink-0" style={{ color: '#16a34a' }} />}
+            </div>
+          )
+          return (
             <div className="panel overflow-hidden fade-up">
               <div className="px-4 py-2.5 border-b hairline text-[12px] font-bold" style={{ background: 'var(--chip)' }}>
                 รถในแถว {laneBlockId}{laneSlot} ({laneCars.length}/{laneDepthMax})
+                <span className="ml-1.5 font-semibold" style={{ color: 'var(--muted)' }}>· ยิงยืนยัน {confirmed.length}{stale.length > 0 && ` · ประวัติเก่า ${stale.length}`}</span>
                 {laneAdded.length > 0 && <span className="ml-1.5" style={{ color: '#16a34a' }}>· ยิงรอบนี้ {laneAdded.length} คัน</span>}
               </div>
               <div className="divide-y max-h-[45vh] overflow-y-auto" style={{ borderColor: 'var(--line)' }}>
-                {laneCars.map(u => {
-                  const fresh = laneAdded.some(a => a.vin === u.vin)
-                  const tr = trackingRows.find(x => x.vin === u.vin)
-                  const color = u.color || tr?.cells['Color'] || '—'
-                  // who recorded this car's LAST move and when — the same trail
-                  // the single-car mode's ประวัติการย้าย shows
-                  const lastMove = (tr ? roundHistory(tr) : []).filter(e => e.field === 'Location' || e.field === LOCATION_KEY).pop()
-                  return (
-                    <div key={u.vin} className="px-4 py-2 flex items-center gap-3"
-                      style={fresh ? { background: 'rgba(22,163,74,0.07)' } : undefined}>
-                      <span className="tabular font-bold text-[13px] shrink-0" style={{ color: '#0284c7', width: 30 }}>{u.row}</span>
-                      <div className="min-w-0 flex-1">
-                        <div className="vin text-[12.5px] font-bold clip">{u.vin}</div>
-                        <div className="text-[11px] flex flex-wrap gap-x-1.5" style={{ color: 'var(--muted)' }}>
-                          <span>{u.modelName || '—'}</span><span>· {color}</span>
-                        </div>
-                      </div>
-                      <div className="text-right shrink-0">
-                        {lastMove ? (
-                          <div className="text-[10.5px] leading-tight" style={{ color: 'var(--muted)' }}>
-                            <div className="font-semibold" style={{ color: fresh ? '#16a34a' : 'var(--text)' }}>{lastMove.by || '—'}</div>
-                            <div className="tabular">{fmtCheckedAt(lastMove.at)}</div>
-                          </div>
-                        ) : (
-                          <span className="text-[10.5px]" style={{ color: 'var(--faint)' }}>—</span>
-                        )}
-                      </div>
-                      {fresh && <CheckCircle2 size={15} className="shrink-0" style={{ color: '#16a34a' }} />}
-                    </div>
-                  )
-                })}
+                {confirmed.map(rowOf)}
+                {stale.length > 0 && (
+                  <div data-testid="lane-old-history" className="px-4 py-1.5 text-[11px] font-semibold" style={{ background: 'var(--chip)', color: 'var(--muted)' }}>
+                    ประวัติเก่า — ไม่พบตอนยิงแถวครั้งล่าสุด
+                  </div>
+                )}
+                {stale.map(rowOf)}
               </div>
             </div>
-          )}
-        </div>
-      )}
-
-      {mode === 'one' && <VinInput onScan={onScan} accent="#0ea5e9" />}
+          )
+        })()}
+      </div>
       {gateModal}
-      {mode === 'one' && !row && <RecentPanel station="reloc" accent="#0ea5e9" onPick={onScan} />}
-      {mode === 'one' && row && (
-        <div className="panel p-4 space-y-4 fade-up">
-          <div className="flex items-center gap-2">
-            <span className="vin text-[13.5px] font-bold">{row.vin}</span>
-            <span className="ml-auto text-[12px]" style={{ color: 'var(--muted)' }}>{row.cells['Model name'] ?? ''}</span>
-          </div>
-
-          <div className="rounded-2xl p-3.5" style={{ background: 'var(--chip)' }}>
-            <div className="text-[11px] font-semibold mb-1" style={{ color: 'var(--muted)' }}>ตำแหน่งปัจจุบัน</div>
-            {placed ? (
-              <>
-                <div className="font-bold text-[20px] leading-tight tabular">{yardLocFull(unit)}</div>
-                <div className="text-[11.5px] mt-0.5 font-semibold" style={{ color: 'var(--muted)' }}>
-                  Block {blockCode(unit!.block ?? '')} · ช่อง {unit!.slot} · คันที่ {unit!.row} ในช่อง
-                </div>
-              </>
-            ) : unitFetching ? (
-              // still fetching this VIN — never claim the car has no position
-              <div className="font-bold text-[15px] flex items-center gap-2 animate-pulse" style={{ color: 'var(--muted)' }}>
-                <RefreshCw size={14} className="animate-spin" /> กำลังโหลดตำแหน่ง…
-              </div>
-            ) : unitMissing ? (
-              // the fetch gave up (offline / weak yard wifi) — still not proof the
-              // car is unplaced, so offer a retry instead of a wrong statement
-              <div>
-                <div className="font-bold text-[15px]" style={{ color: '#b45309' }}>โหลดตำแหน่งไม่สำเร็จ</div>
-                <button onClick={() => { setUnitMissing(false); setUnitFetching(true); fetchUnitFallback(vin!).then((f) => { if (!f) { setUnitFetching(false); setUnitMissing(true) } }) }}
-                  className="btn btn-ghost mt-1.5 text-[12px] py-1 px-2.5">ลองใหม่</button>
-              </div>
-            ) : (
-              <div className="font-bold text-[15px]" style={{ color: 'var(--faint)' }}>ยังไม่ระบุตำแหน่งในลาน</div>
-            )}
-            <div className="text-[11.5px] mt-1.5 flex items-center gap-1" style={{ color: 'var(--muted)' }}>
-              <MapPin size={11} /> {curYard}
-            </div>
-            {/* who recorded the position last, and when — the latest Location move */}
-            {moves[0] && (() => {
-              const d = new Date(moves[0].at)
-              const p2 = (n: number) => String(n).padStart(2, '0')
-              return (
-                <div className="text-[11.5px] mt-1 flex items-center gap-x-2 flex-wrap" style={{ color: 'var(--muted)' }}>
-                  <span className="flex items-center gap-1"><User size={11} /> บันทึกโดย <b style={{ color: 'var(--text)' }}>{moves[0].by || '—'}</b></span>
-                  <span className="flex items-center gap-1"><Clock size={11} /> {p2(d.getDate())}/{p2(d.getMonth() + 1)}/{d.getFullYear()} {p2(d.getHours())}:{p2(d.getMinutes())}</span>
-                </div>
-              )
-            })()}
-          </div>
-
-          <div>
-            <div className="text-[11px] font-semibold mb-2" style={{ color: 'var(--muted)' }}>ตำแหน่งใหม่</div>
-            {/* one field, written the way the upload file writes a lane: "R14" */}
-            <input
-              className="input w-full font-bold text-center text-[17px] uppercase tabular"
-              placeholder="R14" autoCapitalize="characters" autoCorrect="off" spellCheck={false}
-              value={fLoc}
-              onChange={e => setFLoc(e.target.value.toUpperCase())}
-              onKeyDown={e => e.key === 'Enter' && doSave()}
-            />
-            <div className="text-[11px] mt-1.5" style={{ color: 'var(--faint)' }}>
-              Block + เลขช่อง เช่น R14 · รถจะต่อท้ายคันที่มีอยู่ในช่องนั้นอัตโนมัติ
-            </div>
-
-            {/* say exactly where it will land — the order down the column is
-                assigned for them, R1401 → R1402 → R1403 … */}
-            {canSave && (
-              <div className="mt-2.5 text-[12px] font-semibold flex items-center gap-1.5" style={{ color: '#0284c7' }}>
-                <ArrowRight size={13} /> {codeOf(blockId, slotNo, nextRow!)}
-                <span style={{ color: 'var(--muted)', fontWeight: 500 }}>· คันที่ {nextRow} ในช่อง {slotNo}</span>
-              </div>
-            )}
-            {laneFull && (
-              <div className="mt-2.5 text-[12px] font-semibold flex items-center gap-1.5" style={{ color: '#dc2626' }}>
-                <AlertTriangle size={13} /> Block {blockId} ช่อง {slotNo} เต็มแล้ว ({blk?.rows ?? 8} คัน)
-              </div>
-            )}
-            {!!parsed && blockOk && !slotOk && (
-              <div className="mt-2.5 text-[12px] font-semibold flex items-center gap-1.5" style={{ color: '#dc2626' }}>
-                <AlertTriangle size={13} /> {blk ? `Block ${blockTag(blk)} มีช่อง 1–${blk.cols}` : 'เลขช่องไม่ถูกต้อง'}
-              </div>
-            )}
-            {/* a block the plan has no grid for → the car would sit off-plan */}
-            {!!parsed && !blk && blocks.length > 0 && (
-              <div className="mt-2.5 text-[12px] font-semibold flex items-center gap-1.5" style={{ color: '#dc2626' }}>
-                <AlertTriangle size={13} /> ไม่มี Block {parsed.block} ในผังลานนี้
-              </div>
-            )}
-            {!!fLoc.trim() && !parsed && (
-              <div className="mt-2.5 text-[12px] font-semibold flex items-center gap-1.5" style={{ color: '#dc2626' }}>
-                <AlertTriangle size={13} /> รูปแบบไม่ถูกต้อง — พิมพ์ Block ตามด้วยเลขช่อง เช่น R14
-              </div>
-            )}
-          </div>
-
-          <button
-            onClick={doSave}
-            disabled={!canSave}
-            className="w-full py-3 rounded-2xl text-[15px] font-bold text-white flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-40"
-            style={{ background: saved ? '#16a34a' : '#0ea5e9' }}>
-            {saved ? <><CheckCircle2 size={18} /> บันทึกแล้ว!</>
-              : saving ? <><RefreshCw size={18} className="animate-spin" /> กำลังบันทึก…</>
-              : <><MapPin size={18} /> บันทึกตำแหน่งใหม่</>}
-          </button>
-
-          {/* every move this car has made: where, by whom, when */}
-          {moves.length > 0 && (
-            <div>
-              <div className="text-[11px] font-semibold mb-2 flex items-center gap-1.5" style={{ color: 'var(--muted)' }}>
-                <Clock size={11} /> ประวัติการย้าย ({moves.length})
-              </div>
-              <div className="space-y-1.5">
-                {moves.map((m, i) => {
-                  const d = new Date(m.at)
-                  const p2 = (n: number) => String(n).padStart(2, '0')
-                  return (
-                    <div key={i} className="rounded-xl px-3 py-2 text-[12px] flex items-center gap-2"
-                      style={{ background: 'var(--chip)' }}>
-                      <span className="tabular font-semibold" style={{ color: 'var(--muted)' }}>{m.from || '—'}</span>
-                      <ArrowRight size={11} className="shrink-0" style={{ color: 'var(--faint)' }} />
-                      <span className="tabular font-bold">{m.to}</span>
-                      <span className="ml-auto text-right text-[11px] leading-tight shrink-0" style={{ color: 'var(--muted)' }}>
-                        {m.by}<br />{p2(d.getDate())}/{p2(d.getMonth() + 1)}/{d.getFullYear()} {p2(d.getHours())}:{p2(d.getMinutes())}
-                      </span>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
     </div>
   )
 }

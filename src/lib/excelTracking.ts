@@ -20,6 +20,8 @@ export interface RowEvent {
    *  — the position-heal treats these as ground truth over file imports and
    *  auto-park. Absent on older entries and on non-scan writers. */
   src?: 'scan'
+  /** ยิงตามแถว: คันนี้ไม่ได้ถูกยิง แค่ถูกดันไปต่อท้ายคันที่ยิง — ตำแหน่งเป็น "ประวัติเก่า" ไม่ใช่การยืนยัน (ดู laneEntryKind) */
+  pushed?: true
 }
 
 /** Was this Location history line written by a FIELD SCAN (driver parking /

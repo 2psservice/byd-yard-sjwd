@@ -5,14 +5,15 @@
  * การย้าย + แจ้งสำเร็จทันทีที่ยิง ก่อนเขียนคลาวด์ ถ้าเขียนไม่สำเร็จ/ถูกข้าม ประวัติก็ยังบอกว่าย้ายแล้ว (ประวัติไม่ตรงตำแหน่ง, ยิง 5 เห็น 4)
  */
 import type { Unit } from '../types'
-import type { TrackRow } from './excelTracking'
+import type { TrackRow, RowEvent } from './excelTracking'
 
 export interface LaneUpdate {
   vin: string; block: string; row: number; slot: number; modelName?: string; color?: string
   /** compare-and-set: ใส่เฉพาะรถที่ "ไม่ได้ยิง" (เลื่อนลงตามหลัง) — รถที่ยิงเขียนตามที่คนยืนยันเสมอ */
   from?: { block?: string; row?: number; slot?: number }
 }
-export interface LaneDraft { vin: string; from: string; to: string }
+/** pushed = คันที่ไม่ได้ยิง ถูกดันไปต่อท้าย — บรรทัดประวัติจดไว้ให้รู้ว่าเป็น "ประวัติเก่า" */
+export interface LaneDraft { vin: string; from: string; to: string; pushed?: true }
 export interface SettledResult { vin: string; status: 'ok' | 'queued' | 'lost' }
 
 export interface PlanLaneInput {
@@ -64,7 +65,7 @@ export function planLaneUpdates(p: PlanLaneInput): { updates: LaneUpdate[]; draf
       from: { block: cu.block, row: cu.row, slot: cu.slot },
     })
     // ประวัติของรถที่ถูกเลื่อนใช้ "ตำแหน่งตามเครื่องนี้" เป็นต้นทาง (เหมือนเดิม) ไม่ใช่ตำแหน่งจากคลาวด์
-    drafts.push({ vin: cu.vin, from: p.locOf(p.unitOf(cu.vin)), to: p.codeOf(p.blockId, p.slot, row) })
+    drafts.push({ vin: cu.vin, from: p.locOf(p.unitOf(cu.vin)), to: p.codeOf(p.blockId, p.slot, row), pushed: true })
   })
   shifted.sort((a, b) => b.row - a.row)
   return { updates: [...shifted, ...scanned], drafts }
@@ -74,4 +75,14 @@ export function planLaneUpdates(p: PlanLaneInput): { updates: LaneUpdate[]; draf
 export function recordableDrafts(drafts: LaneDraft[], results: SettledResult[]): LaneDraft[] {
   const status = new Map(results.map((r) => [r.vin, r.status] as const))
   return drafts.filter((d) => { const s = status.get(d.vin); return s === 'ok' || s === 'queued' })
+}
+
+/**
+ * รถในแถวคันนี้ "ยิงยืนยัน" หรือ "ประวัติเก่า" — จากบรรทัด Location ล่าสุดของรถ (lastMove) เทียบกับช่องที่มันอยู่ตอนนี้ (code)
+ * ประวัติเก่า = ไม่มีบรรทัดตำแหน่งเลย · บรรทัดล่าสุดคือการถูกดัน (pushed) · หรือช่องตอนนี้ไม่ตรงกับที่บรรทัดล่าสุดบอก
+ * (ข้อมูลก่อนมีป้าย pushed: การดันครั้งหลังเขียนตำแหน่งโดยไม่ลงประวัติ — …210472 ประวัติ V0506 แต่อยู่คันที่ 7 · 23 ต.ค.)
+ */
+export function laneEntryKind(lastMove: Pick<RowEvent, 'to' | 'pushed'> | undefined, code: string): 'confirmed' | 'old' {
+  if (!lastMove || lastMove.pushed) return 'old'
+  return (lastMove.to || '').replace(/\s+/g, '').toUpperCase() === code.toUpperCase() ? 'confirmed' : 'old'
 }

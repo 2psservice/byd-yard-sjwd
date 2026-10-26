@@ -33,7 +33,7 @@ describe('planLaneUpdates', () => {
     const { updates, drafts } = plan(['A'], [inc1, inc2], [car('A', 'Q', 35, 1), inc1, inc2])
     expect(updates.map((u) => [u.vin, u.row])).toEqual([['I1', 2], ['A', 1]])
     expect(updates[0].from).toEqual({ block: 'Q', row: 1, slot: 37 })
-    expect(drafts).toEqual([{ vin: 'A', from: 'Q3501', to: 'Q3701' }, { vin: 'I1', from: 'Q3701', to: 'Q3702' }])
+    expect(drafts).toEqual([{ vin: 'A', from: 'Q3501', to: 'Q3701' }, { vin: 'I1', from: 'Q3701', to: 'Q3702', pushed: true }])
   })
 
   it('ยิงหลายคัน: คันที่ 2 ใน seq ได้ row 2, รถที่ยังไม่มีตำแหน่งมี from เป็นค่าว่าง', () => {
