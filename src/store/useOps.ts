@@ -92,6 +92,13 @@ export interface WorkQueue {
 
 export const PRESET_QUEUES = ['PM', 'Wash for sale', 'PDI', 'FINAL CHECK'] as const
 
+/** คิวที่เก็บสำเนาในเครื่อง (localStorage) — เฉพาะคิวที่สร้างภายในกี่วัน
+ *  26 ต.ค. คิวทั้งระบบ 262 คิว ~3.8MB เกินโควตา Safari (~5MB นับเป็น UTF-16) → บันทึกล้ม ("พื้นที่จัดเก็บในเครื่องเต็ม")
+ *  แล้วเครื่องค้างสำเนาเก่าที่เก็บได้ครั้งสุดท้ายไว้ใช้ตอนเปิดแอป · คิวที่เก่ากว่านี้ดึงจากคลาวด์ตอนเปิดแอปเหมือนเดิม */
+export const PERSIST_QUEUE_DAYS = 7
+export const queuesToPersist = (queues: WorkQueue[], now: number): WorkQueue[] =>
+  queues.filter((q) => (q.createdAt || 0) >= now - PERSIST_QUEUE_DAYS * 86_400_000)
+
 /** Resolve a queue's work category — explicit `type` on new queues, else inferred
  *  from the name so legacy queues (created before `type` existed) still classify. */
 export function queueTypeOf(q: WorkQueue): QueueType {
@@ -995,6 +1002,8 @@ export const useOps = create<OpsState>()(
       // tried to persist — the cloud copy (pushQueue) is the real record
       storage: quotaSafeStorage(() =>
         useYard.getState().toast('err', 'พื้นที่จัดเก็บในเครื่องเต็ม — ข้อมูลยังถูกบันทึกขึ้น cloud ตามปกติ')),
+      // เก็บเฉพาะคิวล่าสุด (ดู queuesToPersist) — ทั้งชุดอยู่ในคลาวด์ ดึงมาแทนตอนเปิดแอป
+      partialize: (s) => ({ ...s, queues: queuesToPersist(s.queues, Date.now()) }),
       // heal corrupted queues left in localStorage by older app versions —
       // one name:null / items:null entry crashed every queue screen
       merge: (persisted, current) => {
