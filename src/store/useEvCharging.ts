@@ -29,9 +29,11 @@ interface EvState {
   loaded: boolean
   /** ตาราง ev_charges ยังไม่มี / เขียนไม่ได้ */
   cloudMissing: boolean
+  /** ตารางยังไม่มีคอลัมน์ pauses — รอบที่มีการหยุดพักขึ้นคลาวด์ได้ทุกช่องยกเว้นช่วงพัก (เก็บไว้ในเครื่องรอส่ง) */
+  pausesMissing: boolean
   /** ดึงรอบของยาร์ดนี้ที่เริ่มตั้งแต่ sinceMs (+ รอบที่ยังชาร์จอยู่) — ใหม่กว่าชนะ */
   load: (siteId: string | null, sinceMs: number) => Promise<void>
-  /** บันทึกรอบ (เริ่ม / จบ) — true = ขึ้นคลาวด์แล้ว */
+  /** บันทึกรอบ (เริ่ม / หยุดพัก / ชาร์จต่อ / จบ) — true = ขึ้นคลาวด์แล้ว */
   save: (c: EvCharge) => Promise<boolean>
 }
 
@@ -42,6 +44,7 @@ export const useEvCharging = create<EvState>()((set, get) => ({
   pending: readPending(),
   loaded: false,
   cloudMissing: false,
+  pausesMissing: false,
 
   load: async (siteId, sinceMs) => {
     // a wider earlier query stays in force — the admin page asks for a month, the station for two days
@@ -53,7 +56,12 @@ export const useEvCharging = create<EvState>()((set, get) => ({
     const cloud = await db.fetchEvCharges(lastQuery.siteId, lastQuery.sinceMs)
     if (!cloud) { set({ loaded: true, cloudMissing: db.isConfigured() }); return }
     const merged = { ...get().charges }
+    const waiting = get().pending
     for (const c of cloud) {
+      // an edit still waiting on this device outranks the cloud copy of the same moment — the cloud may
+      // hold that very round minus its pauses (column not added yet)
+      const mine = waiting[c.id]
+      if (mine && (mine.updatedAt ?? 0) >= (c.updatedAt ?? 0)) continue
       const cur = merged[c.id]
       if (!cur || (cur.updatedAt ?? 0) <= (c.updatedAt ?? 0)) merged[c.id] = c
     }
@@ -65,12 +73,19 @@ export const useEvCharging = create<EvState>()((set, get) => ({
     const pending = { ...get().pending, [c.id]: c }
     set({ charges: { ...get().charges, [c.id]: c }, pending })
     writePending(pending)
-    const ok = await db.upsertEvCharge(c)
-    if (!ok) { set({ cloudMissing: true }); return false }
+    const res = await db.upsertEvCharge(c)
+    if (res === 'fail') { set({ cloudMissing: true }); return false }
+    if (res === 'no-pauses') {
+      // everything but the pauses is up: other devices see the round, and this device keeps it queued so
+      // the pauses go up by themselves once the column exists
+      set({ cloudMissing: false, pausesMissing: true })
+      sendSync('ev')
+      return true
+    }
     const rest = { ...get().pending }
     // a newer local edit of the same round may have arrived while this one was in flight
     if (rest[c.id] && rest[c.id].updatedAt <= c.updatedAt) delete rest[c.id]
-    set({ pending: rest, cloudMissing: false })
+    set({ pending: rest, cloudMissing: false, pausesMissing: c.pauses?.length ? false : get().pausesMissing })
     writePending(rest)
     sendSync('ev')
     return true

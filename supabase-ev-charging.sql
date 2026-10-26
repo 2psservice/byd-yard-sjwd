@@ -2,6 +2,8 @@
 -- 1 แถว = รถ 1 คัน 1 รอบชาร์จ: รูปเลขวิน · รูป/เปอร์เซ็นต์ก่อนชาร์จ · รูป/เปอร์เซ็นต์หลังชาร์จ · เวลาเริ่ม/จบ
 -- รันครั้งเดียวใน Supabase Dashboard → SQL Editor → Run (รันซ้ำได้ ไม่ทับข้อมูลที่แอปเขียนแล้ว)
 -- เป็นตารางใหม่ ไม่แตะตารางเดิม · ถ้ายังไม่รัน สถานีจะแจ้งว่าบันทึกขึ้นระบบไม่ได้ และเก็บไว้ในเครื่องก่อน
+-- รุ่นที่มีปุ่ม "หยุดพัก / เริ่มชาร์จต่อ": เพิ่มคอลัมน์ pauses (ถ้าตารางมีอยู่แล้ว รันไฟล์นี้ซ้ำได้เลย —
+-- แค่เพิ่มคอลัมน์ว่าง ไม่แก้ / ไม่ลบแถวเดิม)
 
 create table if not exists public.ev_charges (
   id            text primary key,            -- "<vin>#<เวลาเริ่ม base36>"
@@ -22,8 +24,12 @@ create table if not exists public.ev_charges (
   after_ai      integer,                     -- ไม่ใช้แล้ว เหมือน before_ai
   after_at      timestamptz,                 -- ว่าง = ยังชาร์จอยู่
   after_by      text not null default '',
+  pauses        jsonb not null default '[]'::jsonb, -- ช่วงหยุดพัก [{at, by, until?, untilBy?}] (ms) — ไม่นับเป็นเวลาชาร์จ
   updated_at    timestamptz default now()
 );
+
+-- ตารางที่สร้างไว้ก่อนมีปุ่มหยุดพัก
+alter table public.ev_charges add column if not exists pauses jsonb not null default '[]'::jsonb;
 
 create index if not exists ev_charges_site_before_idx on public.ev_charges (site_id, before_at);
 create index if not exists ev_charges_vin_idx on public.ev_charges (vin);
@@ -35,6 +41,7 @@ create policy "allow all ev_charges" on public.ev_charges
 
 notify pgrst, 'reload schema';
 
--- ผลตรวจ (คำสั่งสุดท้าย — Supabase SQL Editor แสดงผลเฉพาะคำสั่งสุดท้าย): ต้องได้ table_ready = true
+-- ผลตรวจ (คำสั่งสุดท้าย — Supabase SQL Editor แสดงผลเฉพาะคำสั่งสุดท้าย): ต้องได้ table_ready = true และ pauses_ready = true
 select exists (select 1 from information_schema.tables where table_schema = 'public' and table_name = 'ev_charges') as table_ready,
+       exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'ev_charges' and column_name = 'pauses') as pauses_ready,
        (select count(*) from public.ev_charges) as rows;

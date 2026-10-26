@@ -6,6 +6,8 @@ import { Zap } from 'lucide-react'
 import { cx } from './ui'
 
 export const EV_ACCENT = '#16a34a'
+/** สีของรอบที่หยุดพัก */
+export const EV_PAUSE = '#d97706'
 
 const PACK_CELLS = 20
 

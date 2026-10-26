@@ -5,9 +5,18 @@
  *   เริ่ม: รูปเลขวิน + รูปหน้าจอก่อนชาร์จ + % ก่อนชาร์จ (พนักงานพิมพ์ตามหน้าจอ) → บันทึก
  *   จบ:   รูปหน้าจอหลังชาร์จ + % หลังชาร์จ → บันทึก · เวลาชาร์จ = เวลาบันทึกหลัง − เวลาบันทึกก่อน
  * รถคันเดียวมีได้ทีละ 1 รอบที่ยังไม่จบ — ยิงวินซ้ำระหว่างชาร์จจะเข้าขั้น "หลังชาร์จ" ของรอบเดิม
+ * ระหว่างชาร์จกด "หยุดพัก" / "เริ่มชาร์จต่อ" ได้ — ช่วงที่พักไม่นับเป็นเวลาชาร์จ
  */
 import { dateKey } from './dayKey'
 import { EV_CHARGING_KEY } from './trackingColumns'
+
+/** หยุดพัก 1 ช่วง (ถอดสาย / ย้ายเครื่องชาร์จไปคันอื่น) — `until` ว่าง = ยังพักอยู่ */
+export interface EvPause {
+  at: number
+  by: string
+  until?: number
+  untilBy?: string
+}
 
 export interface EvCharge {
   /** "<vin>#<เวลาเริ่ม base36>" */
@@ -29,6 +38,8 @@ export interface EvCharge {
   /** 0 = ยังชาร์จอยู่ */
   afterAt: number
   afterBy: string
+  /** ช่วงหยุดพัก เก่าสุดก่อน (รอบเก่าก่อนมีปุ่มหยุดพักไม่มีช่องนี้) */
+  pauses?: EvPause[]
   updatedAt: number
 }
 
@@ -44,11 +55,38 @@ export const evModelOf = (cells: Record<string, string>, fallback = '') =>
 export const evChargeId = (vin: string, at: number) => `${vin}#${at.toString(36)}`
 export const isCharging = (c: EvCharge) => !c.afterAt
 
-/** เวลาชาร์จ (ms) — รอบที่ยังไม่จบนับถึง `now` */
-/** เวลาเริ่ม/จบของรอบ — พอสำหรับสรุปเวลา (สรุปรายเดือนดึงมาแค่ช่องเหล่านี้ ไม่ดึงรูป) */
-export type EvTimes = Pick<EvCharge, 'beforeAt' | 'afterAt'>
+/** เวลาเริ่ม/จบ/ช่วงพักของรอบ — พอสำหรับสรุปเวลา (สรุปรายเดือนดึงมาแค่ช่องเหล่านี้ ไม่ดึงรูป) */
+export type EvTimes = Pick<EvCharge, 'beforeAt' | 'afterAt' | 'pauses'>
 
-export const chargeMs = (c: EvTimes, now = Date.now()) => Math.max(0, (c.afterAt || now) - c.beforeAt)
+/** ช่วงพักที่ยังไม่กดเริ่มชาร์จต่อ */
+export const openPause = (c: Pick<EvCharge, 'pauses'>): EvPause | undefined => {
+  const p = c.pauses?.[c.pauses.length - 1]
+  return p && !p.until ? p : undefined
+}
+export const isPaused = (c: EvCharge) => isCharging(c) && !!openPause(c)
+
+/** เวลาพักรวม (ms) ในรอบ — ช่วงที่ยังพักอยู่นับถึงเวลาจบ (หรือ `now` ถ้ายังไม่จบ) */
+export function pausedMs(c: EvTimes, now = Date.now()): number {
+  const end = c.afterAt || now
+  let ms = 0
+  for (const p of c.pauses ?? []) ms += Math.max(0, Math.min(p.until || end, end) - Math.max(p.at, c.beforeAt))
+  return ms
+}
+
+/** เวลาชาร์จจริง (ms) = เริ่ม → จบ หักช่วงหยุดพัก · รอบที่ยังไม่จบนับถึง `now` (ระหว่างพักเวลาไม่เดิน) */
+export const chargeMs = (c: EvTimes, now = Date.now()) => Math.max(0, (c.afterAt || now) - c.beforeAt - pausedMs(c, now))
+
+/** กดหยุดพัก — รอบที่จบแล้วหรือพักอยู่แล้วไม่เปลี่ยน */
+export function pauseCharge(c: EvCharge, by: string, at = Date.now()): EvCharge {
+  if (!isCharging(c) || openPause(c)) return c
+  return { ...c, pauses: [...(c.pauses ?? []), { at, by }], updatedAt: at }
+}
+/** กดเริ่มชาร์จต่อ (หรือบันทึกหลังชาร์จระหว่างพัก) — ปิดช่วงพักที่ค้างอยู่ */
+export function resumeCharge(c: EvCharge, by: string, at = Date.now()): EvCharge {
+  const p = openPause(c)
+  if (!p) return c
+  return { ...c, pauses: [...(c.pauses ?? []).slice(0, -1), { ...p, until: at, untilBy: by }], updatedAt: at }
+}
 /** ms → ชั่วโมงทศนิยม 2 ตำแหน่ง (ช่องตัวเลขใน Excel) */
 export const hoursOf = (ms: number) => Math.round((ms / 3_600_000) * 100) / 100
 
@@ -82,6 +120,7 @@ export function openChargeOf(list: Iterable<EvCharge>, vin: string): EvCharge | 
 
 /** ข้อความในช่อง EV Charging ของชีต */
 export function evCellText(c: EvCharge): string {
+  if (isPaused(c)) return `หยุดพัก ${fmtPct(c.beforePct)} · ${fmtEvDate(c.beforeAt)} ${fmtEvTime(c.beforeAt)}`
   if (isCharging(c)) return `กำลังชาร์จ ${fmtPct(c.beforePct)} · ${fmtEvDate(c.beforeAt)} ${fmtEvTime(c.beforeAt)}`
   return `${fmtPct(c.beforePct)} → ${fmtPct(c.afterPct)} · ${fmtDuration(chargeMs(c))} · ${fmtEvDate(c.afterAt)}`
 }

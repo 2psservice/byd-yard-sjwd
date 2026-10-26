@@ -1685,7 +1685,7 @@ export async function deleteVisits(ids: string[]): Promise<boolean> {
 
 // ── ev_charges (งานชาร์จแบต EV — ตาราง supabase-ev-charging.sql) ───────────────
 
-import type { EvCharge } from './evCharging'
+import type { EvCharge, EvPause } from './evCharging'
 
 const isoOrNull = (ms: number) => (ms ? new Date(ms).toISOString() : null)
 const msOf = (s: unknown) => (s ? new Date(String(s)).getTime() || 0 : 0)
@@ -1697,9 +1697,16 @@ function evToRow(c: EvCharge) {
     vin_photo: c.vinPhoto,
     before_photo: c.beforePhoto, before_pct: c.beforePct, before_at: isoOrNull(c.beforeAt), before_by: c.beforeBy,
     after_photo: c.afterPhoto, after_pct: c.afterPct, after_at: isoOrNull(c.afterAt), after_by: c.afterBy,
+    // only sent once the round has a pause: a round's pauses never shrink back to none, and leaving the
+    // key out keeps every pause-free round writable on a table that hasn't had the column added yet
+    ...(c.pauses?.length ? { pauses: c.pauses } : {}),
     updated_at: new Date(c.updatedAt || Date.now()).toISOString(),
   }
 }
+const pausesOf = (v: unknown): EvPause[] =>
+  Array.isArray(v) ? v.filter((p) => p && Number(p.at)).map((p) => ({
+    at: Number(p.at), by: String(p.by ?? ''), ...(p.until ? { until: Number(p.until), untilBy: String(p.untilBy ?? '') } : {}),
+  })) : []
 function rowToEv(r: any): EvCharge {
   return {
     id: String(r.id), site: r.site_id ?? undefined, vin: String(r.vin),
@@ -1707,9 +1714,13 @@ function rowToEv(r: any): EvCharge {
     vinPhoto: r.vin_photo ?? '',
     beforePhoto: r.before_photo ?? '', beforePct: pctOf(r.before_pct), beforeAt: msOf(r.before_at), beforeBy: r.before_by ?? '',
     afterPhoto: r.after_photo ?? '', afterPct: pctOf(r.after_pct), afterAt: msOf(r.after_at), afterBy: r.after_by ?? '',
+    pauses: pausesOf(r.pauses),
     updatedAt: msOf(r.updated_at),
   }
 }
+
+/** ev_charges.pauses มีหรือยัง (supabase-ev-charging.sql รุ่นที่มีปุ่มหยุดพัก) — false หลังเจอว่าไม่มี จนกว่าจะเปิดแอปใหม่ */
+let evPausesColumn = true
 
 /** รอบชาร์จของยาร์ดนี้ ที่เริ่มตั้งแต่ `sinceMs` + รอบที่ยังชาร์จอยู่ทั้งหมด (ไม่ว่าเริ่มเมื่อไร)
  *  null = ดึงไม่ได้ (ยังไม่ได้รัน SQL / ออฟไลน์) — ผู้เรียกใช้ของในเครื่องต่อ */
@@ -1732,17 +1743,30 @@ export async function fetchEvCharges(siteId: string | null, sinceMs: number): Pr
   return [...out.values()]
 }
 
-/** true = ขึ้นคลาวด์แล้ว · false = ตารางยังไม่มี / เน็ตหลุด (ผู้เรียกเก็บไว้ในเครื่องแล้วลองใหม่) */
-export async function upsertEvCharge(c: EvCharge): Promise<boolean> {
-  if (!isConfigured()) return true
+/** 'ok' = ขึ้นคลาวด์ครบ · 'no-pauses' = ขึ้นแล้วทุกช่อง ยกเว้นช่วงหยุดพัก (ตารางยังไม่มีคอลัมน์ pauses —
+ *  ผู้เรียกเก็บรอบนี้ไว้ในเครื่องแล้วส่งใหม่หลังรัน SQL) · 'fail' = ตารางยังไม่มี / เน็ตหลุด */
+export async function upsertEvCharge(c: EvCharge): Promise<'ok' | 'no-pauses' | 'fail'> {
+  if (!isConfigured()) return 'ok'
+  let row: Record<string, unknown> = evToRow(c)
+  let dropped = false
   for (let attempt = 0; attempt < 3; attempt++) {
-    const { error } = await supabase.from('ev_charges').upsert(evToRow(c), { onConflict: 'id' })
-    if (!error) return true
-    if (isMissingColumn(error)) { console.warn('[db] upsertEvCharge: ev_charges table missing?', error); return false }
+    const { error } = await supabase.from('ev_charges').upsert(row, { onConflict: 'id' })
+    if (!error) return dropped ? 'no-pauses' : 'ok'
+    if (isMissingColumn(error)) {
+      // the pauses column may be the only thing missing — land the rest of the round (photos, %, times)
+      // now, and say so, instead of holding the whole round off the cloud
+      if ('pauses' in row && !dropped) {
+        console.warn('[db] upsertEvCharge: ev_charges.pauses missing — run supabase-ev-charging.sql', error)
+        const { pauses: _drop, ...rest } = row
+        row = rest; dropped = true; attempt--
+        continue
+      }
+      console.warn('[db] upsertEvCharge: ev_charges table missing?', error); return 'fail'
+    }
     console.error('[db] upsertEvCharge', error)
     await sleep(400 * (attempt + 1))
   }
-  return false
+  return 'fail'
 }
 
 /** รอบชาร์จที่เริ่มหรือจบในช่วง [fromMs, toMs) — เฉพาะเวลาและ % (ไม่ดึงรูป) สำหรับยอดรายเดือนย้อนหลัง
@@ -1753,10 +1777,13 @@ export async function fetchEvTimes(siteId: string | null, fromMs: number, toMs: 
   const out: EvCharge[] = []
   const PAGE = 1000
   for (let from = 0; ; from += PAGE) {
-    let q = supabase.from('ev_charges').select('id,site_id,vin,model,before_pct,before_at,after_pct,after_at,updated_at')
+    const cols = `id,site_id,vin,model,before_pct,before_at,after_pct,after_at,updated_at${evPausesColumn ? ',pauses' : ''}`
+    let q = supabase.from('ev_charges').select(cols)
     if (siteId) q = q.eq('site_id', siteId)
     q = q.or(`and(before_at.gte."${a}",before_at.lt."${b}"),and(after_at.gte."${a}",after_at.lt."${b}")`)
     const { data, error } = await q.order('id').range(from, from + PAGE - 1)
+    // table not yet given the pauses column: read the times without it (no paused time to take off)
+    if (error && evPausesColumn && isMissingColumn(error)) { evPausesColumn = false; out.length = 0; from = -PAGE; continue }
     if (error) { console.error('[db] fetchEvTimes', error); return null }
     for (const r of data ?? []) out.push(rowToEv(r))
     if (!data || data.length < PAGE) break

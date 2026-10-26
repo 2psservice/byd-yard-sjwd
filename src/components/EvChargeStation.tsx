@@ -3,11 +3,12 @@
  *
  * สแกนวิน → ถ้ารถยังไม่มีรอบที่ชาร์จค้าง = ขั้น "ก่อนชาร์จ": บังคับรูปเลขวิน + รูปหน้าจอแบต
  * แล้วพนักงานพิมพ์ % แบตตามหน้าจอ → บันทึก · ยิงคันเดิมอีกครั้ง = ขั้น "หลังชาร์จ": บังคับรูปหน้าจอ
- * แบต + % → บันทึก แล้วสรุปเวลาชาร์จของคันนั้น
+ * แบต + % → บันทึก แล้วสรุปเวลาชาร์จของคันนั้น · ระหว่างชาร์จกด "หยุดพัก" / "เริ่มชาร์จต่อ" ได้
+ * (ช่วงพักไม่นับเป็นเวลาชาร์จ)
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { BatteryCharging, Camera, Images, X, CheckCircle2, Clock, ChevronDown } from 'lucide-react'
+import { BatteryCharging, Camera, Images, X, CheckCircle2, Clock, ChevronDown, Pause, Play } from 'lucide-react'
 import { useYard } from '../store/useYard'
 import { useTracking } from '../store/useTracking'
 import { useEvCharging } from '../store/useEvCharging'
@@ -15,14 +16,15 @@ import { compressToDataUrl } from '../lib/photo'
 import { storePhoto } from '../lib/photoStore'
 import {
   EV_CELL, SOC_CELL, evChargeId, evCellText, evModelOf, openChargeOf, isCharging, chargeMs, dailySummary, parsePct,
+  isPaused, openPause, pausedMs, pauseCharge, resumeCharge,
   fmtDuration, fmtEvTime, fmtPct, monthKey, fmtMonth, shiftMonth, monthRange, monthSummary, type EvCharge, type EvMonthSummary,
 } from '../lib/evCharging'
 import { fetchEvTimes } from '../lib/db'
 import { dateKey } from '../lib/dayKey'
 import { PhotoLightbox } from './ui'
-import { BatteryPack, EV_ACCENT } from './BatteryPack'
+import { BatteryPack, EV_ACCENT, EV_PAUSE } from './BatteryPack'
 
-export { EV_ACCENT }
+export { EV_ACCENT, EV_PAUSE }
 
 /** รอบชาร์จของยาร์ดนี้ที่โหลดไว้ (เรียงใหม่สุดก่อน) */
 function useSiteCharges(): EvCharge[] {
@@ -154,7 +156,7 @@ export function EvStationHome({ onPick }: { onPick: (vin: string) => void }) {
         {[
           ['เสร็จวันนี้', `${today?.finished ?? 0}`, 'คัน'],
           ['เฉลี่ย/คัน', today?.finished ? fmtDuration(today.avgMs).replace(' ชม.', '') : '—', 'ชม.'],
-          ['กำลังชาร์จ', `${charging.length}`, 'คัน'],
+          ['กำลังชาร์จ', `${charging.length}`, charging.some(isPaused) ? `พัก ${charging.filter(isPaused).length}` : 'คัน'],
         ].map(([label, v, unit]) => (
           <div key={label} className="panel px-1 py-3 text-center">
             <div className="text-[10.5px] font-bold whitespace-nowrap" style={{ color: 'var(--muted)' }}>{label}</div>
@@ -179,23 +181,31 @@ export function EvStationHome({ onPick }: { onPick: (vin: string) => void }) {
         </div>
         {charging.length === 0 && <div className="text-[12.5px] py-2" style={{ color: 'var(--muted)' }}>ยังไม่มีรถที่ชาร์จค้างอยู่ — สแกนวินเพื่อเริ่มชาร์จ</div>}
         <div className="space-y-1.5">
-          {charging.map((c) => (
-            <button key={c.id} onClick={() => onPick(c.vin)} data-ev-open={c.vin}
-              className="w-full p-2.5 rounded-xl text-left transition hover:bg-[var(--chip)]"
-              style={{ border: '1px solid var(--line)', touchAction: 'manipulation' }}>
-              <div className="flex items-center gap-3">
-                <BatteryCharging size={18} className="ev-bolt shrink-0" style={{ color: EV_ACCENT }} />
-                <div className="min-w-0 flex-1">
-                  <div className="mono text-[13px] font-bold truncate">{c.vin}</div>
-                  <div className="text-[11.5px]" style={{ color: 'var(--muted)' }}>{c.model || '—'} · เริ่ม {fmtEvTime(c.beforeAt)}</div>
+          {charging.map((c) => {
+            const pause = openPause(c)
+            return (
+              <button key={c.id} onClick={() => onPick(c.vin)} data-ev-open={c.vin} data-ev-paused={pause ? '1' : undefined}
+                className="w-full p-2.5 rounded-xl text-left transition hover:bg-[var(--chip)]"
+                style={{ border: `1px solid ${pause ? EV_PAUSE + '88' : 'var(--line)'}`, background: pause ? EV_PAUSE + '0d' : undefined, touchAction: 'manipulation' }}>
+                <div className="flex items-center gap-3">
+                  {pause
+                    ? <Pause size={18} className="shrink-0" style={{ color: EV_PAUSE }} />
+                    : <BatteryCharging size={18} className="ev-bolt shrink-0" style={{ color: EV_ACCENT }} />}
+                  <div className="min-w-0 flex-1">
+                    <div className="mono text-[13px] font-bold truncate">{c.vin}</div>
+                    <div className="text-[11.5px]" style={{ color: 'var(--muted)' }}>
+                      {c.model || '—'} · เริ่ม {fmtEvTime(c.beforeAt)}
+                      {pause && <b style={{ color: EV_PAUSE }}> · หยุดพัก {fmtEvTime(pause.at)}</b>}
+                    </div>
+                  </div>
+                  <div className="text-[12px] font-bold tabular" style={{ color: pause ? EV_PAUSE : EV_ACCENT }}>{fmtDuration(chargeMs(c, now))}</div>
                 </div>
-                <div className="text-[12px] font-bold tabular" style={{ color: EV_ACCENT }}>{fmtDuration(chargeMs(c, now))}</div>
-              </div>
-              <div className="mt-2" style={{ paddingLeft: 30 }}>
-                <BatteryPack pct={c.beforePct} charging label={`เริ่ม ${fmtPct(c.beforePct)}`} />
-              </div>
-            </button>
-          ))}
+                <div className="mt-2" style={{ paddingLeft: 30 }}>
+                  <BatteryPack pct={c.beforePct} charging={!pause} label={pause ? `หยุดพัก · เริ่ม ${fmtPct(c.beforePct)}` : `เริ่ม ${fmtPct(c.beforePct)}`} />
+                </div>
+              </button>
+            )
+          })}
         </div>
       </div>
 
@@ -358,6 +368,23 @@ export function EvChargePanel({ vin, cells, unitModel, unitColor, onClose }: {
     useTracking.getState().updateCells(vin, { [EV_CELL]: evCellText(c), ...(soc != null ? { [SOC_CELL]: String(soc) } : {}) }, 'scan')
   }
 
+  const paused = open ? openPause(open) : undefined
+  /** หยุดพัก / เริ่มชาร์จต่อ — บันทึกทันที (ไม่ต้องถ่ายรูป) แล้วกลับหน้าสแกน */
+  const togglePause = async () => {
+    if (!open || saving) return
+    const by = useYard.getState().currentUser
+    const c = paused ? resumeCharge(open, by) : pauseCharge(open, by)
+    setSaving(true)
+    const landed = useEvCharging.getState().save(c)
+    writeCell(c)
+    const ended = paused ? c.pauses?.[c.pauses.length - 1] : undefined
+    toast('ok', ended
+      ? `ชาร์จต่อ ${vin.slice(-6)} · พักไป ${fmtDuration((ended.until ?? ended.at) - ended.at)}`
+      : `หยุดพัก ${vin.slice(-6)} · เวลาชาร์จหยุดเดินจนกว่าจะกดเริ่มชาร์จต่อ`)
+    onClose()
+    if (!(await landed)) toast('err', `EV ${vin.slice(-6)} ยังขึ้นระบบไม่ได้ — เก็บไว้ในเครื่องแล้ว จะส่งให้อัตโนมัติ`)
+  }
+
   const save = async () => {
     if (!canSave || shot.value == null) return
     const by = useYard.getState().currentUser
@@ -365,7 +392,8 @@ export function EvChargePanel({ vin, cells, unitModel, unitColor, onClose }: {
     let c: EvCharge
     if (open) {
       if (shot.value < (open.beforePct ?? 0) && !window.confirm(`% หลังชาร์จ (${shot.value}%) น้อยกว่าก่อนชาร์จ (${open.beforePct}%) — บันทึกต่อไหม`)) return
-      c = { ...open, remark: remark.trim(), afterPhoto: shot.photo, afterPct: shot.value, afterAt: at, afterBy: by, updatedAt: at }
+      // finishing during a pause ends the pause at the same moment — the charge time stops where the pause began
+      c = { ...resumeCharge(open, by, at), remark: remark.trim(), afterPhoto: shot.photo, afterPct: shot.value, afterAt: at, afterBy: by, updatedAt: at }
     } else {
       c = {
         id: evChargeId(vin, at), site: useYard.getState().currentSite ?? undefined, vin, model, color, from, remark: remark.trim(),
@@ -406,14 +434,33 @@ export function EvChargePanel({ vin, cells, unitModel, unitColor, onClose }: {
       </div>
 
       {open && (
-        <div className="panel p-3 flex items-center gap-3" style={{ borderColor: EV_ACCENT + '66' }}>
-          {open.beforePhoto && <img src={open.beforePhoto} alt="ก่อนชาร์จ" className="w-16 h-16 rounded-lg object-cover" style={{ border: '1px solid var(--line)' }} />}
-          <div className="flex-1 min-w-0 text-[12.5px]">
-            <div className="font-bold" style={{ color: EV_ACCENT }}>กำลังชาร์จ · ก่อนชาร์จ {fmtPct(open.beforePct)}</div>
-            <div style={{ color: 'var(--muted)' }}>เริ่ม {fmtEvTime(open.beforeAt)} โดย {open.beforeBy || '—'}</div>
-            <div className="mt-1.5"><BatteryPack pct={open.beforePct} charging height={22} label={`เริ่ม ${fmtPct(open.beforePct)}`} /></div>
+        <div className="panel p-3 space-y-3" style={{ borderColor: (paused ? EV_PAUSE : EV_ACCENT) + '66' }} data-ev-state={paused ? 'paused' : 'charging'}>
+          <div className="flex items-center gap-3">
+            {open.beforePhoto && <img src={open.beforePhoto} alt="ก่อนชาร์จ" className="w-16 h-16 rounded-lg object-cover" style={{ border: '1px solid var(--line)' }} />}
+            <div className="flex-1 min-w-0 text-[12.5px]">
+              <div className="font-bold" style={{ color: paused ? EV_PAUSE : EV_ACCENT }}>
+                {paused ? 'หยุดพัก' : 'กำลังชาร์จ'} · ก่อนชาร์จ {fmtPct(open.beforePct)}
+              </div>
+              <div style={{ color: 'var(--muted)' }}>เริ่ม {fmtEvTime(open.beforeAt)} โดย {open.beforeBy || '—'}</div>
+              {paused && <div style={{ color: EV_PAUSE }}>พักตั้งแต่ {fmtEvTime(paused.at)} โดย {paused.by || '—'}</div>}
+              <div className="mt-1.5"><BatteryPack pct={open.beforePct} charging={!paused} height={22} label={paused ? `หยุดพัก · เริ่ม ${fmtPct(open.beforePct)}` : `เริ่ม ${fmtPct(open.beforePct)}`} /></div>
+            </div>
+            <div className="text-right shrink-0">
+              <div className="flex items-center justify-end gap-1 text-[13px] font-bold tabular" style={{ color: paused ? EV_PAUSE : undefined }} data-ev-charge-time>
+                <Clock size={14} /> {fmtDuration(chargeMs(open, now))}
+              </div>
+              {(open.pauses?.length ?? 0) > 0 && (
+                <div className="text-[11px] tabular" style={{ color: 'var(--muted)' }} data-ev-paused-time>พักรวม {fmtDuration(pausedMs(open, now))}</div>
+              )}
+            </div>
           </div>
-          <div className="flex items-center gap-1 text-[13px] font-bold tabular"><Clock size={14} /> {fmtDuration(chargeMs(open, now))}</div>
+          <button onClick={togglePause} disabled={saving} data-ev-pause={paused ? 'resume' : 'pause'}
+            className="w-full py-3 rounded-xl text-[14.5px] font-bold flex items-center justify-center gap-2 transition active:scale-[.98] disabled:opacity-50"
+            style={paused
+              ? { background: EV_ACCENT, color: '#fff', touchAction: 'manipulation' }
+              : { background: EV_PAUSE + '14', color: EV_PAUSE, border: `2px solid ${EV_PAUSE}`, touchAction: 'manipulation' }}>
+            {paused ? <><Play size={17} fill="currentColor" /> เริ่มชาร์จต่อ</> : <><Pause size={17} fill="currentColor" /> หยุดพัก</>}
+          </button>
         </div>
       )}
 
