@@ -86,4 +86,41 @@ describe('คิวส่งรถ: รอยออกจากลานที�
     ops.reconcileGateOuts()
     expect(itemOf(ops, 'V1')).toMatchObject({ done: true, gatedOut: true })
   })
+
+  // แถวที่ยังเป็น Pre Gate-out (ยิงออกรอบก่อน) บนเครื่องที่ข้อมูลเก่า — 24 ต.ค. …022362
+  const rowGoneAt = (vin: string, outAt?: number) => ({
+    vin, site: 'S1', updatedAt: outAt ?? 0, history: [],
+    cells: { Vin: vin, 'Car Status': 'Pre Gate-out', 'Location yard': S1.name, 'Grouping  Number': 'G1',
+      ...(outAt ? { 'Gate Out Time': String(outAt) } : {}) },
+  })
+  const runOf = (created: number) => [{ id: 'Q', name: 'run', createdAt: created, kind: 'sequence', site: 'S1',
+    items: [{ vin: 'V1', addedAt: created, done: false, group: 'G1' }] }]
+
+  it('สถานะ Pre Gate-out จากการยิงออกรอบก่อน (ก่อนเข้าคิว) → ไม่ตราว่าออกแล้ว', async () => {
+    const { useTracking, ops } = await setup()
+    const created = Date.now()
+    useTracking.setState({ loaded: true, rows: { V1: rowGoneAt('V1', created - 47 * HOUR) } } as any)
+    ops.useOps.setState({ queues: runOf(created) } as any)
+    ops.reconcileGateOuts()
+    expect(itemOf(ops, 'V1').done).toBe(false)
+    expect(itemOf(ops, 'V1').gatedOut).toBeFalsy()
+  })
+
+  it('(ควบคุม) ยิงออกหลังเข้าคิว → ตราว่าออกแล้ว', async () => {
+    const { useTracking, ops } = await setup()
+    const created = Date.now()
+    useTracking.setState({ loaded: true, rows: { V1: rowGoneAt('V1', created + 20 * 60_000) } } as any)
+    ops.useOps.setState({ queues: runOf(created) } as any)
+    ops.reconcileGateOuts()
+    expect(itemOf(ops, 'V1')).toMatchObject({ done: true, gatedOut: true })
+  })
+
+  it('(ควบคุม) ออกแล้วแต่ไม่มีเวลายิงออก (ไฟล์/แอดมินแก้) → ตราว่าออกแล้วเหมือนเดิม', async () => {
+    const { useTracking, ops } = await setup()
+    const created = Date.now()
+    useTracking.setState({ loaded: true, rows: { V1: rowGoneAt('V1') } } as any)
+    ops.useOps.setState({ queues: runOf(created) } as any)
+    ops.reconcileGateOuts()
+    expect(itemOf(ops, 'V1')).toMatchObject({ done: true, gatedOut: true })
+  })
 })

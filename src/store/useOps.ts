@@ -1231,8 +1231,12 @@ export function reconcileGateOuts() {
     // "รถออกประตูของรันนี้ไปหรือยัง" คำตอบไม่มีวันหมดอายุ (since = 0) ส่วนคิว
     // สถานีถามว่า "งานที่สั่งไว้รอบนี้ยังต้องทำอยู่ไหม" การออกจากลานเมื่อรอบ
     // ก่อน (รถเคยไป แล้วกลับมาใหม่ แล้วถูกสั่งงานใหม่) ต้องไม่มาปิดงานรอบนี้
-    const leftYard = (vin: string, since = 0): boolean => {
-      if (isGone(vin)) return true
+    // goneSince = สถานะ "ออกแล้ว" ในแถวต้องมาจากการยิงออกหลังเวลานี้ด้วย (ไม่มีเวลายิงออก = นับตามเดิม)
+    const leftYard = (vin: string, since = 0, goneSince = false): boolean => {
+      if (isGone(vin)) {
+        const outAt = goneSince ? gateOutScanMs(rows[vin]?.cells ?? {}) : 0
+        if (!outAt || outAt >= since) return true
+      }
       if (!q.site) return false
       const cells = rows[vin]?.cells
       return !!cells && departedFromSite(cells, q.site, sites, since)
@@ -1242,8 +1246,10 @@ export function reconcileGateOuts() {
     // ออกจากลานที่เก่ากว่าคิว ไม่ใช่การออกของรันนี้: 21 ต.ค. เครื่องที่ยังถือแถว
     // ก่อนแก้ (ย้ายยาร์ดผิด 20 ต.ค. 20:21 ที่ย้อนไปแล้ว) ตราคิวที่สร้าง 13:08 ว่า
     // 2 คันออกแล้วถาวร ทั้งที่รถยังจอดอยู่ หน้างานยิงออกไม่ได้ ("ไม่มีคิวงาน")
+    // สถานะ Pre Gate-out/Gate-out ในแถวก็เช่นกัน: 24 ต.ค. เครื่องที่ยังถือแถวรอบก่อน (ยิงออก 22 ต.ค.)
+    // ตรารถที่กลับเข้าลานแล้ว (Gate-in 10:43) ว่าออกในคิวที่สร้าง 13:10 — นับเฉพาะยิงออกหลังเข้าคิว
     const itemLeftYard = (i: QueueItem) =>
-      isSequenceQueue(q) ? leftYard(i.vin, (i.addedAt ?? 0) - SEQUENCE_DEPARTURE_SLACK_MS) : leftYard(i.vin, i.addedAt ?? 0)
+      isSequenceQueue(q) ? leftYard(i.vin, (i.addedAt ?? 0) - SEQUENCE_DEPARTURE_SLACK_MS, true) : leftYard(i.vin, i.addedAt ?? 0)
     // Pre Gate-in must be resolved the SAME way every other screen resolves it
     // (queue type first, name only as the legacy fallback). Testing the name
     // alone broke the moment an admin renamed an arrival lot to something
