@@ -9,14 +9,14 @@ import { BatteryCharging, Download, Search } from 'lucide-react'
 import { useYard } from '../store/useYard'
 import { useEvCharging } from '../store/useEvCharging'
 import { useTrackingRows } from '../store/useTracking'
-import { chargeMs, dailySummary, evModelOf, isCharging, fmtDayKey, fmtDuration, fmtEvDate, fmtEvTime, fmtPct, type EvCharge } from '../lib/evCharging'
+import { chargeMs, dailySummary, evModelOf, isCharging, openPause, pausedMs, fmtDayKey, fmtDuration, fmtEvDate, fmtEvTime, fmtPct, type EvCharge } from '../lib/evCharging'
 import { buildEvPlan, evPlanCars, exportEvPlanExcel } from '../lib/evExcel'
 import { dateKey } from '../lib/dayKey'
 import { rowInSite } from '../lib/siteScope'
 import { deriveCarStatus, IN_YARD_STATUSES } from '../lib/carStatus'
 import { siteGroupingConfig, yardLocCode } from '../lib/groupingImport'
 import { PageHead, Stat, Segmented, PhotoLightbox, Modal } from '../components/ui'
-import { BatteryPack } from '../components/BatteryPack'
+import { BatteryPack, EV_PAUSE } from '../components/BatteryPack'
 
 const ACCENT = '#16a34a'
 type StatusFilter = 'all' | 'charging' | 'done'
@@ -146,6 +146,7 @@ export function EvCharging() {
   const site = useYard((s) => s.currentSite)
   const charges = useEvCharging((s) => s.charges)
   const cloudMissing = useEvCharging((s) => s.cloudMissing)
+  const pausesMissing = useEvCharging((s) => s.pausesMissing)
   const [from, setFrom] = useState(firstOfMonth)
   const [to, setTo] = useState(() => dateKey(new Date()))
   const [status, setStatus] = useState<StatusFilter>('all')
@@ -209,11 +210,17 @@ export function EvCharging() {
           ยังอ่านตาราง ev_charges ไม่ได้ — รันไฟล์ supabase-ev-charging.sql ใน Supabase SQL Editor หนึ่งครั้ง
         </div>
       )}
+      {!cloudMissing && pausesMissing && (
+        <div className="panel p-3 mb-4 text-[13px]" style={{ color: EV_PAUSE }} data-ev-pauses-missing>
+          ตาราง ev_charges ยังไม่มีช่องเก็บเวลาหยุดพัก — รันไฟล์ supabase-ev-charging.sql ใน Supabase SQL Editor อีกครั้ง
+          (ข้อมูลอื่นขึ้นระบบแล้ว เวลาหยุดพักเก็บไว้ในเครื่องที่บันทึก และจะส่งให้เองหลังรัน)
+        </div>
+      )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
         <Stat label="รถในช่วงนี้" value={list.length} sub="คัน" accent={ACCENT} />
         <Stat label="ชาร์จเสร็จ" value={done.length} sub={today ? `วันนี้ ${today.finished} คัน` : 'วันนี้ 0 คัน'} accent={ACCENT} />
-        <Stat label="กำลังชาร์จ" value={list.length - done.length} sub="คัน" />
+        <Stat label="กำลังชาร์จ" value={list.length - done.length} sub={list.some((c) => isCharging(c) && openPause(c)) ? `หยุดพัก ${list.filter((c) => isCharging(c) && openPause(c)).length} คัน` : 'คัน'} />
         <Stat label="เฉลี่ยต่อคัน" value={done.length ? fmtDuration(avgMs) : '—'} sub="เวลาชาร์จ" />
       </div>
 
@@ -279,14 +286,22 @@ export function EvCharging() {
                     <td className="px-2 py-2 text-center">{c.color || '—'}</td>
                     <td className="px-2 py-2"><Thumb src={c.vinPhoto} onOpen={() => open(c, 0)} label={`รูปเลขวิน ${c.vin}`} /></td>
                     <td className="px-2 py-2"><Thumb src={c.beforePhoto} pct={c.beforePct} onOpen={() => open(c, 1)} label={`ก่อนชาร์จ ${c.vin}`} /></td>
-                    <td className="px-2 py-2">{c.afterPhoto ? <Thumb src={c.afterPhoto} pct={c.afterPct} onOpen={() => open(c, 2)} label={`หลังชาร์จ ${c.vin}`} /> : <span className="block text-center text-[11.5px] font-semibold" style={{ color: ACCENT }}>กำลังชาร์จ</span>}</td>
+                    <td className="px-2 py-2">{c.afterPhoto ? <Thumb src={c.afterPhoto} pct={c.afterPct} onOpen={() => open(c, 2)} label={`หลังชาร์จ ${c.vin}`} />
+                      : isCharging(c) && openPause(c)
+                        ? <span className="block text-center text-[11.5px] font-semibold" style={{ color: EV_PAUSE }} data-ev-paused>หยุดพัก {fmtEvTime(openPause(c)!.at)}</span>
+                        : <span className="block text-center text-[11.5px] font-semibold" style={{ color: ACCENT }}>กำลังชาร์จ</span>}</td>
                     <td className="px-2 py-2" style={{ minWidth: 250 }}>
                       {isCharging(c)
-                        ? <BatteryPack pct={c.beforePct} charging height={22} label={`เริ่ม ${fmtPct(c.beforePct)}`} />
+                        ? <BatteryPack pct={c.beforePct} charging={!openPause(c)} height={22} label={`${openPause(c) ? 'หยุดพัก · ' : ''}เริ่ม ${fmtPct(c.beforePct)}`} />
                         : <BatteryPack pct={c.afterPct} height={22} label={`${fmtPct(c.beforePct)} → ${fmtPct(c.afterPct)}`} />}
                     </td>
                     <td className="px-2 py-2 text-center font-bold whitespace-nowrap" data-ev-hours style={{ color: c.afterAt ? 'var(--text)' : 'var(--faint)' }}>
                       {c.afterAt ? fmtDuration(chargeMs(c)) : '—'}
+                      {(c.pauses?.length ?? 0) > 0 && (
+                        <div className="text-[11px] font-semibold" style={{ color: EV_PAUSE }} data-ev-row-paused title={`หยุดพัก ${c.pauses!.length} ครั้ง`}>
+                          พัก {fmtDuration(pausedMs(c))}
+                        </div>
+                      )}
                     </td>
                     <td className="px-2 py-2 text-center whitespace-nowrap">{fmtEvDate(c.beforeAt)}</td>
                     <td className="px-2 py-2 text-center">{fmtEvTime(c.beforeAt)}</td>
