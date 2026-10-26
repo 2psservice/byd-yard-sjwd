@@ -221,21 +221,31 @@ const fmtTime = (ts?: number) => ts ? `${fmtDay(dayKeyOfTs(ts))} ${new Date(ts).
  */
 interface StationDone { vin: string; clock?: number; result?: 'OK' | 'NG'; lot?: string }
 
+/** The sheet column(s) each station's save stamps its date into (history `field` = the column label). */
+const STAMP_FIELD: Record<'PDI' | 'FINAL' | 'PM', RegExp> = {
+  PDI: /pdi/i,                    // PDI · RE PDI #1…#8
+  PM: /^PM\s*#?\d+$/i,            // PM1 … PM15
+  FINAL: /^final check date$/i,
+}
+
 /**
- * When the station itself wrote this car's PDI date — the row's own audit line.
+ * When the station itself wrote this car's date — the row's own audit line.
  *
- * A car scanned at the PDI station with NO queue item behind it does not go
- * through recordCheck, so there is no `checkedAt` to read; the save stamps the
- * PDI date ladder on the sheet instead, and the list printed a bare date while
- * the car beside it (which happened to be in a lot) showed a time. The stamp's
- * own audit entry carries the moment it was written, and `src: 'scan'` marks it
- * as a FIELD write — an import writes no history at all and an office cell edit
- * carries no `src`, so neither can be mistaken for the yard recording the work.
+ * A car scanned at a station with NO queue item behind it on that device does
+ * not go through recordCheck, so there is no `checkedAt` to read; the save stamps
+ * the date ladder on the sheet instead, and the list printed a bare date while
+ * the car beside it (which happened to be in a lot) showed a time. Worse, the
+ * queue reconciler on another device then closes that car's queue item from the
+ * sheet date — still with no time — so the shift matrix counted it in the total
+ * but in no period (PM 26/10: 35 done, P4 showed 8). The stamp's own audit entry
+ * carries the moment it was written, and `src: 'scan'` marks it as a FIELD write —
+ * an import writes no history at all and an office cell edit carries no `src`, so
+ * neither can be mistaken for the yard recording the work.
  */
-function scanStampAt(r: TrackRow, day: string): number | undefined {
+function scanStampAt(r: TrackRow | undefined, day: string, type: 'PDI' | 'FINAL' | 'PM'): number | undefined {
   let at: number | undefined
-  for (const h of r.history ?? []) {
-    if (h.src !== 'scan' || !/pdi/i.test(h.field ?? '')) continue
+  for (const h of r?.history ?? []) {
+    if (h.src !== 'scan' || !STAMP_FIELD[type].test((h.field ?? '').trim())) continue
     if (!cellOnDay(h.to, day)) continue
     if (at === undefined || h.at > at) at = h.at
   }
@@ -244,15 +254,17 @@ function scanStampAt(r: TrackRow, day: string): number | undefined {
 
 function stationDone(ctx: ReportCtx, type: 'PDI' | 'FINAL' | 'PM'): StationDone[] {
   const out = new Map<string, StationDone>()
+  const rows = rowMap(ctx)
+  // a queue item closed from the sheet date has no checkedAt — the station's own stamp still knows the time
   for (const i of checkedItems(ctx, type))
-    out.set(i.vin, { vin: i.vin, clock: i.checkedAt, result: i.result, lot: i.queueName })
+    out.set(i.vin, { vin: i.vin, clock: i.checkedAt ?? scanStampAt(rows.get(i.vin), ctx.day, type), result: i.result, lot: i.queueName })
   // …plus every car the SHEET says was done today that no queue item covers
   // (scanned straight at the station, or its queue archived after the work).
   if (type === 'PDI') {
     for (const r of ctx.rows) {
       if (out.has(r.vin)) continue
       if (PDI_KEYS.some((k) => cellOnDay(r.cells[k], ctx.day)))
-        out.set(r.vin, { vin: r.vin, clock: scanStampAt(r, ctx.day) })
+        out.set(r.vin, { vin: r.vin, clock: scanStampAt(r, ctx.day, 'PDI') })
     }
   }
   return [...out.values()]
