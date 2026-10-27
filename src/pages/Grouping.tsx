@@ -59,6 +59,9 @@ export function Grouping() {
   const unitByVin = useMemo(() => new Map(units.map((u) => [u.vin, u])), [units])
   const trackVins = useMemo(() => new Set(trackingRows.map((r) => r.vin)), [trackingRows])
   const rowByVin = useMemo(() => new Map(trackingRows.map((r) => [r.vin, r])), [trackingRows])
+  // the car's sheet row from ANY yard — Model / Color are the car's, not the yard's; read only when this
+  // yard has no row for it (moved here without its row, or imported under another yard)
+  const anyRowByVin = useMemo(() => new Map(allTrackingRows.map((r) => [r.vin, r])), [allTrackingRows])
 
   const [rows, setRows] = useState<GroupPrintRow[] | null>(null)
   const [meta, setMeta] = useState<GroupPrintMeta | null>(null)
@@ -105,8 +108,12 @@ export function Grouping() {
         // still shows a location instead of "ไม่พบ"
         const loc = yardLocCode(u) || String(rowByVin.get(r.vin)?.cells[LAST_LOCATION_KEY] ?? '')
         if (loc) placed++
+        const known = rowByVin.get(r.vin)?.cells ?? anyRowByVin.get(r.vin)?.cells
         return {
-          no: i + 1, vin: r.vin, modelName: r.modelName, model: r.model, color: r.color,
+          no: i + 1, vin: r.vin, modelName: r.modelName,
+          // the file's own Model / Color first; a blank one falls back to what the yard knows of the car
+          model: r.model || known?.['Model'] || known?.['Model name'] || u?.modelName || '',
+          color: r.color || known?.['Color'] || u?.color || '',
           deliveryLocation: r.deliveryLocation, grouping: r.grouping, groupUnit: unitCount.get(r.grouping) ?? 0,
           yardLocation: loc, laneLoad: laneOf.get(r.grouping) ?? '', receiveDate: r.receiveDate || res.headerDate,
           remark: r.remark,
@@ -256,11 +263,16 @@ export function Grouping() {
     for (const i of q.items) count.set(i.group ?? '', (count.get(i.group ?? '') ?? 0) + 1)
     const sheetRows: GroupPrintRow[] = q.items.map((i, idx) => {
       const r = rowByVin.get(i.vin)
+      // Model / Color: this yard's sheet row → the plan file's values kept on the run → the car's yard unit →
+      // its sheet row at any yard. Reading the yard's row alone left both blank for a car whose row isn't
+      // tagged to this yard, while the plan file itself had printed them (27/10 LGXC74C40SG009826)
+      const u = unitByVin.get(i.vin)
+      const any = r ?? anyRowByVin.get(i.vin)
       return {
         no: idx + 1, vin: i.vin,
-        modelName: String(r?.cells['Model name'] ?? ''),
-        model: String(r?.cells['Model'] || r?.cells['Model name'] || ''),
-        color: String(r?.cells['Color'] ?? ''),
+        modelName: String(any?.cells['Model name'] ?? ''),
+        model: String(r?.cells['Model'] || r?.cells['Model name'] || i.model || u?.modelName || any?.cells['Model'] || any?.cells['Model name'] || ''),
+        color: String(r?.cells['Color'] || i.color || u?.color || any?.cells['Color'] || ''),
         deliveryLocation: i.dest || String(r?.cells['Dealer Location'] ?? ''),
         grouping: i.group ?? '', groupUnit: count.get(i.group ?? '') ?? 0,
         // reprinting a run days later can outlive the car's stay in the yard —
@@ -277,7 +289,7 @@ export function Grouping() {
       groupCount: count.size, locPrefix: siteGroupingConfig(siteName).prefix,
     }
     return { id: q.id, name: q.name, rows: sheetRows, meta: m }
-  }, [rows, queues, currentSite, rowByVin, unitByVin, siteName, viewQueueId, dayFilter])
+  }, [rows, queues, currentSite, rowByVin, anyRowByVin, unitByVin, siteName, viewQueueId, dayFilter])
 
   // admin's Lane load edits (grouping code → lane), shown live in the sheet and
   // carried into prints/Create even before บันทึก writes them to the queues
@@ -466,7 +478,7 @@ export function Grouping() {
       const items = sheetRows.map((r) => {
         const typed = laneEdits[r.grouping] != null
         return { vin: r.vin, laneLoad: r.laneLoad, laneBy: typed ? currentUser || undefined : r.laneBy, laneAt: typed ? at : r.laneAt,
-          dest: r.deliveryLocation, group: r.grouping, remark: r.remark }
+          dest: r.deliveryLocation, group: r.grouping, remark: r.remark, model: r.model, color: r.color }
       })
       const id = createSequence(name, currentUser, items)
       if (!id) { toast('err', 'สร้างลำดับงานไม่สำเร็จ — ชื่อคิวว่าง'); return }
