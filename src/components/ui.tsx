@@ -181,14 +181,15 @@ export function PhotoLightbox({ photos, index, onClose }: { photos: string[]; in
     // viewport shifts under a `fixed` overlay, or an edge-swipe reads as a
     // back-navigation, either of which reads as the viewer "เด้งออก" (bouncing
     // closed) while the operator is still trying to look at the photo.
-    // app-safe: the header/footer below are position:absolute against THIS
-    // fixed container, so padding here shifts their top-4/bottom-6 anchor —
-    // without it, an iPhone's notch/Dynamic Island status bar (time, signal,
-    // battery) sat right on top of the control row, squashing the download
-    // button underneath it until it was barely visible or tappable.
+    // app-safe keeps the photo inside the safe area. The control rows are
+    // position:absolute, and an absolute child's top / bottom is measured from
+    // the PADDING edge — the container's padding never moved them, so on an
+    // iPhone the ✕ and download buttons sat under the Dynamic Island and the
+    // status bar took the taps (27/10). Each row adds the inset itself.
     <div className="fixed inset-0 z-[300] flex flex-col items-center justify-center select-none app-safe"
       style={{ background: 'rgba(8,15,28,0.94)', touchAction: 'none' }} onClick={onClose}>
-      <div className="absolute top-4 left-4 right-4 flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+      <div className="absolute flex items-center gap-2" onClick={(e) => e.stopPropagation()}
+        style={{ top: 'calc(env(safe-area-inset-top, 0px) + 12px)', left: 'calc(env(safe-area-inset-left, 0px) + 16px)', right: 'calc(env(safe-area-inset-right, 0px) + 16px)' }}>
         {photos.length > 1 && (
           <span className="text-[13px] font-bold px-2.5 py-1 rounded-lg" style={{ color: '#fff', background: 'rgba(255,255,255,0.14)' }}>{i + 1} / {photos.length}</span>
         )}
@@ -213,7 +214,8 @@ export function PhotoLightbox({ photos, index, onClose }: { photos: string[]; in
       </div>
 
       {photos.length > 1 && (
-        <div className="absolute bottom-6 flex items-center gap-4" onClick={(e) => e.stopPropagation()}>
+        <div className="absolute flex items-center gap-4" onClick={(e) => e.stopPropagation()}
+          style={{ bottom: 'calc(env(safe-area-inset-bottom, 0px) + 24px)' }}>
           <button onClick={prev} className="w-11 h-11 rounded-full flex items-center justify-center" style={iconBtn}><ChevronLeft size={20} /></button>
           <button onClick={next} className="w-11 h-11 rounded-full flex items-center justify-center" style={iconBtn}><ChevronLeft size={20} style={{ transform: 'rotate(180deg)' }} /></button>
         </div>
