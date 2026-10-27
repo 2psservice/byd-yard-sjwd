@@ -8,7 +8,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { BatteryCharging, Camera, Images, X, CheckCircle2, Clock, ChevronDown, Pause, Play } from 'lucide-react'
+import { BatteryCharging, Camera, Images, X, CheckCircle2, Clock, ChevronDown, ChevronRight, Pause, Play, RefreshCw } from 'lucide-react'
 import { useYard } from '../store/useYard'
 import { useTracking } from '../store/useTracking'
 import { useEvCharging } from '../store/useEvCharging'
@@ -17,7 +17,7 @@ import { storePhoto } from '../lib/photoStore'
 import {
   EV_CELL, SOC_CELL, evChargeId, evCellText, evModelOf, openChargeOf, isCharging, chargeMs, dailySummary, parsePct,
   isPaused, openPause, pausedMs, pauseCharge, resumeCharge,
-  fmtDuration, fmtEvTime, fmtPct, monthKey, fmtMonth, shiftMonth, monthRange, monthSummary, type EvCharge, type EvMonthSummary,
+  fmtDuration, fmtEvDate, fmtEvTime, fmtPct, monthKey, fmtMonth, shiftMonth, monthRange, monthSummary, type EvCharge, type EvMonthSummary,
 } from '../lib/evCharging'
 import { fetchEvTimes } from '../lib/db'
 import { dateKey } from '../lib/dayKey'
@@ -129,6 +129,136 @@ function EvMonthSheet({ months, value, onPick, onClose }: {
   )
 }
 
+// ── รายละเอียดรอบชาร์จ: ดูรูป / ข้อมูล · เปลี่ยนรูปที่ถ่ายผิด ──────────────────
+
+const PHOTO_SLOTS = [
+  { key: 'vinPhoto', label: 'รูปเลขวิน' },
+  { key: 'beforePhoto', label: 'ก่อนชาร์จ' },
+  { key: 'afterPhoto', label: 'หลังชาร์จ' },
+] as const
+type PhotoKey = (typeof PHOTO_SLOTS)[number]['key']
+
+/** แผ่นรายละเอียดของรอบที่ชาร์จเสร็จ: แตะรูปดูเต็มจอ · เวลา / % / ผู้บันทึก · เปลี่ยนรูป
+ *  (รูปใหม่ขึ้นให้ดูก่อน กด "บันทึกรูปนี้" จึงเปลี่ยนจริง — กันเลือกรูปผิดแล้วทับรูปเดิมทันที) */
+function EvChargeDetail({ charge: c, onClose }: { charge: EvCharge; onClose: () => void }) {
+  const toast = useYard((s) => s.toast)
+  const [view, setView] = useState<number | null>(null)
+  const [edit, setEdit] = useState<{ key: PhotoKey; photo: string; busy: boolean } | null>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+  const pickFor = useRef<PhotoKey>('vinPhoto')
+  const token = useRef(0)
+  const shown = PHOTO_SLOTS.map((p) => c[p.key]).filter(Boolean)
+  const labelOf = (k: PhotoKey) => PHOTO_SLOTS.find((p) => p.key === k)!.label
+
+  const choose = (key: PhotoKey) => { pickFor.current = key; fileRef.current?.click() }
+  const onFile = async (f: File) => {
+    const key = pickFor.current
+    const my = ++token.current
+    setEdit({ key, photo: '', busy: true })
+    try {
+      const small = await compressToDataUrl(f, 900)
+      if (my !== token.current) return
+      setEdit({ key, photo: small, busy: true })
+      const url = await storePhoto(small)
+      if (my === token.current) setEdit({ key, photo: url, busy: false })
+    } catch {
+      if (my === token.current) { setEdit(null); toast('err', 'อ่านรูปไม่สำเร็จ — ลองใหม่อีกครั้ง') }
+    }
+  }
+  const saveEdit = async () => {
+    if (!edit || edit.busy || !edit.photo) return
+    const next: EvCharge = { ...c, [edit.key]: edit.photo, updatedAt: Date.now() }
+    const label = labelOf(edit.key)
+    token.current++
+    setEdit(null)
+    const landed = useEvCharging.getState().save(next)
+    toast('ok', `เปลี่ยน${label} ${c.vin.slice(-6)} แล้ว`)
+    if (!(await landed)) toast('err', `EV ${c.vin.slice(-6)} ยังขึ้นระบบไม่ได้ — เก็บไว้ในเครื่องแล้ว จะส่งให้อัตโนมัติ`)
+  }
+  const cancelEdit = () => { token.current++; setEdit(null) }
+
+  const when = (ts: number, by: string) => (ts ? `${fmtEvDate(ts)} ${fmtEvTime(ts)}${by ? ` · ${by}` : ''}` : '—')
+  const info: [string, string][] = [
+    ['เริ่มชาร์จ', when(c.beforeAt, c.beforeBy)],
+    ['ชาร์จเสร็จ', isCharging(c) ? 'ยังชาร์จอยู่' : when(c.afterAt, c.afterBy)],
+    ['เวลาชาร์จ', `${fmtDuration(chargeMs(c))}${c.pauses?.length ? ` · พักรวม ${fmtDuration(pausedMs(c))}` : ''}`],
+    ['Remark', c.remark || '—'],
+  ]
+
+  // the photo viewer sits beside the backdrop, not inside it: React bubbles its clicks up the component
+  // tree, and inside the backdrop its close button would close this sheet too
+  return createPortal(<>
+    <div className="fixed inset-0 z-[80] flex items-end justify-center" style={{ background: 'rgba(15,23,42,0.45)' }} onClick={onClose}>
+      <div className="w-full max-w-md rounded-t-2xl p-4 pb-6 pop space-y-3" style={{ background: 'var(--panel)', maxHeight: '88vh', overflowY: 'auto' }}
+        onClick={(e) => e.stopPropagation()} role="dialog" aria-label={`รายละเอียด ${c.vin}`} data-ev-detail={c.vin}>
+        <div className="flex items-start gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="mono text-[15px] font-bold truncate">{c.vin}</div>
+            <div className="text-[12px]" style={{ color: 'var(--muted)' }}>{[c.model, c.color, c.from && `From ${c.from}`].filter(Boolean).join(' · ') || '—'}</div>
+          </div>
+          <button onClick={onClose} aria-label="ปิด" className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ border: '1px solid var(--line)' }}>
+            <X size={15} />
+          </button>
+        </div>
+        <BatteryPack pct={isCharging(c) ? c.beforePct : c.afterPct} charging={isCharging(c) && !openPause(c)} height={22}
+          label={isCharging(c) ? `เริ่ม ${fmtPct(c.beforePct)}` : `${fmtPct(c.beforePct)} → ${fmtPct(c.afterPct)}`} />
+        <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[12.5px]" data-ev-detail-info>
+          {info.map(([k, v]) => (
+            <div key={k} className="contents">
+              <div style={{ color: 'var(--muted)' }}>{k}</div>
+              <div className="font-semibold tabular min-w-0 break-words">{v}</div>
+            </div>
+          ))}
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          {PHOTO_SLOTS.map((p) => {
+            const src = c[p.key]
+            const pending = edit?.key === p.key ? edit : null
+            return (
+              <div key={p.key} className="space-y-1.5" data-ev-detail-photo={p.key}>
+                <div className="text-[11px] font-bold" style={{ color: 'var(--muted)' }}>{p.label}</div>
+                {pending ? (
+                  <div className="relative">
+                    {pending.photo
+                      ? <img src={pending.photo} alt={`${p.label} (รูปใหม่)`} className="w-full rounded-lg object-cover" style={{ aspectRatio: '3 / 4', border: `2px solid ${EV_ACCENT}` }} />
+                      : <div className="w-full rounded-lg" style={{ aspectRatio: '3 / 4', background: 'var(--chip)' }} />}
+                    <span className="absolute top-1 left-1 px-1.5 rounded text-[10px] font-bold text-white" style={{ background: EV_ACCENT }}>
+                      {pending.busy ? 'กำลังอัปโหลด…' : 'รูปใหม่'}
+                    </span>
+                  </div>
+                ) : src ? (
+                  <button onClick={() => setView(shown.indexOf(src))} className="block w-full cursor-zoom-in" aria-label={`ดู${p.label}`}>
+                    <img src={src} alt={p.label} className="w-full rounded-lg object-cover" style={{ aspectRatio: '3 / 4', border: '1px solid var(--line)' }} />
+                  </button>
+                ) : (
+                  <div className="w-full rounded-lg flex items-center justify-center text-[11px]" style={{ aspectRatio: '3 / 4', background: 'var(--chip)', color: 'var(--faint)' }}>ไม่มีรูป</div>
+                )}
+                {pending ? (
+                  <div className="grid gap-1">
+                    <button onClick={saveEdit} disabled={pending.busy || !pending.photo} data-ev-photo-save
+                      className="py-1.5 rounded-lg text-[11.5px] font-bold text-white disabled:opacity-40" style={{ background: EV_ACCENT }}>บันทึกรูปนี้</button>
+                    <button onClick={cancelEdit} className="py-1.5 rounded-lg text-[11.5px] font-semibold" style={{ border: '1px solid var(--line)' }}>ยกเลิก</button>
+                  </div>
+                ) : (
+                  <button onClick={() => choose(p.key)} disabled={!!edit} data-ev-photo-edit={p.key}
+                    className="w-full py-1.5 rounded-lg text-[11.5px] font-semibold flex items-center justify-center gap-1 disabled:opacity-40"
+                    style={{ border: '1px solid var(--line-strong)', color: 'var(--muted)' }}>
+                    <RefreshCw size={12} /> {src ? 'เปลี่ยนรูป' : 'เพิ่มรูป'}
+                  </button>
+                )}
+              </div>
+            )
+          })}
+        </div>
+        {/* no `capture`: the phone offers camera or photo library */}
+        <input ref={fileRef} type="file" accept="image/*" className="hidden" data-ev-detail-input
+          onChange={(e) => { if (e.target.files?.[0]) void onFile(e.target.files[0]); e.target.value = '' }} />
+      </div>
+    </div>
+    {view != null && shown.length > 0 && <PhotoLightbox photos={shown} index={Math.max(0, view)} onClose={() => setView(null)} />}
+  </>, document.body)
+}
+
 // ── หน้าแรกของสถานี: สรุปวันนี้ + รถที่กำลังชาร์จ ─────────────────────────────
 
 export function EvStationHome({ onPick }: { onPick: (vin: string) => void }) {
@@ -141,6 +271,8 @@ export function EvStationHome({ onPick }: { onPick: (vin: string) => void }) {
   const doneToday = list.filter((c) => c.afterAt && dateKey(new Date(c.afterAt)) === dateKey(new Date()))
   const [ym, setYm] = useState(monthKey)
   const [picking, setPicking] = useState(false)
+  const [detailId, setDetailId] = useState<string | null>(null)
+  const detail = detailId ? list.find((c) => c.id === detailId) : undefined
   const { months } = useEvMonths()
   const month = months.find((m) => m.ym === ym)
 
@@ -211,10 +343,12 @@ export function EvStationHome({ onPick }: { onPick: (vin: string) => void }) {
 
       {doneToday.length > 0 && (
         <div className="panel p-3">
-          <div className="text-[11px] font-bold uppercase tracking-wider mb-2" style={{ color: 'var(--muted)' }}>เสร็จวันนี้</div>
-          <div className="space-y-2.5">
+          <div className="text-[11px] font-bold uppercase tracking-wider mb-2" style={{ color: 'var(--muted)' }}>เสร็จวันนี้ · แตะเพื่อดูรูป / แก้ไข</div>
+          <div className="space-y-1.5">
             {doneToday.map((c) => (
-              <div key={c.id} className="space-y-1" data-ev-done={c.vin}>
+              <button key={c.id} onClick={() => setDetailId(c.id)} data-ev-done={c.vin}
+                className="w-full space-y-1 p-2 -mx-0.5 rounded-xl text-left transition hover:bg-[var(--chip)] active:bg-[var(--chip)]"
+                style={{ touchAction: 'manipulation' }}>
                 <div className="flex items-start gap-2">
                   <CheckCircle2 size={14} className="shrink-0 mt-[3px]" style={{ color: EV_ACCENT }} />
                   <div className="min-w-0 flex-1">
@@ -222,15 +356,17 @@ export function EvStationHome({ onPick }: { onPick: (vin: string) => void }) {
                     <div className="text-[11.5px]" style={{ color: 'var(--muted)' }}>{c.model || '—'} · เสร็จ {fmtEvTime(c.afterAt)}</div>
                   </div>
                   <span className="tabular text-[12px] font-semibold shrink-0">{fmtDuration(chargeMs(c))}</span>
+                  <ChevronRight size={15} className="shrink-0 mt-[2px]" style={{ color: 'var(--faint)' }} />
                 </div>
                 <div style={{ paddingLeft: 22 }}>
                   <BatteryPack pct={c.afterPct} height={20} label={`${fmtPct(c.beforePct)} → ${fmtPct(c.afterPct)}`} />
                 </div>
-              </div>
+              </button>
             ))}
           </div>
         </div>
       )}
+      {detail && <EvChargeDetail charge={detail} onClose={() => setDetailId(null)} />}
     </div>
   )
 }
