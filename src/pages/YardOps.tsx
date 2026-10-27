@@ -46,6 +46,7 @@ import { fetchUnitsByVins, fetchUnitsInLane, fetchTrackingRowsByVin, isConfigure
 import { refreshUnitFocus } from '../lib/unitFocus'
 import { laneFromCloudStrict } from '../lib/laneCloud'
 import { createScanDecoder, decodeImageFile, type ScanDecoder, IS_IOS } from '../lib/scanDecoder'
+import { primeScanBeep, scanBeep } from '../lib/scanBeep'
 import { IN_APP_BROWSER, IS_LINE_BROWSER, IS_ANDROID, openExternal, openChromeIntent, copyLink } from '../lib/inAppBrowser'
 import { useRecentOps } from '../store/useRecentOps'
 import { buildWorkRows, buildEventLog, fmtHistAt, histOf } from '../lib/carHistory'
@@ -940,7 +941,7 @@ function VinInputInner({
     setPhotoBusy(true)
     try {
       const text = await decodeImageFile(f, await sharedScanDecoder())
-      if (text) { closeCamera(); go(text) }
+      if (text) { scanBeep(); closeCamera(); go(text) }
       else setCamErr('อ่านโค้ดจากรูปไม่ได้ — ถ่ายใหม่ให้โค้ดอยู่กลางภาพ ใกล้และชัดขึ้น หรือพิมพ์ VIN เอง')
     } catch (e) {
       console.error('[scan] photo decode', e)
@@ -974,12 +975,12 @@ function VinInputInner({
       </div>
     )}
     <div className="flex gap-2">
-      <button data-testid="cam-photo-fallback" disabled={photoBusy} onClick={() => photoRef.current?.click()}
+      <button data-testid="cam-photo-fallback" disabled={photoBusy} onClick={() => { primeScanBeep(); photoRef.current?.click() }}
         className="flex-1 py-3 rounded-xl text-[14px] font-bold text-white flex items-center justify-center gap-2 disabled:opacity-60"
         style={{ background: accent }}>
         <Camera size={18} /> {photoBusy ? 'กำลังอ่านรูป…' : 'ถ่ายรูปบาร์โค้ด'}
       </button>
-      <button data-testid="cam-photo-pick" disabled={photoBusy} onClick={() => photoPickRef.current?.click()}
+      <button data-testid="cam-photo-pick" disabled={photoBusy} onClick={() => { primeScanBeep(); photoPickRef.current?.click() }}
         className="flex-1 py-3 rounded-xl text-[14px] font-bold flex items-center justify-center gap-2 disabled:opacity-60"
         style={{ background: 'rgba(255,255,255,0.15)', color: '#fff' }}>
         เลือกรูปจากเครื่อง
@@ -988,7 +989,8 @@ function VinInputInner({
     </div>
   )
 
-  const openCamera = () => { setCamErr(''); setCamInfo(''); restartedRef.current = false; setCamOpen(true) }
+  // the tap that opens the camera unlocks sound — iOS plays the scan beep only once a tap has
+  const openCamera = () => { primeScanBeep(); setCamErr(''); setCamInfo(''); restartedRef.current = false; setCamOpen(true) }
   const closeCamera = (warm = false) => { stopScan(warm); setCamOpen(false) }
 
   // จอดับ / สลับแอป / ย่อเบราว์เซอร์ขณะกล้องเปิด → ปล่อยกล้องจริงทันที (บางเครื่อง
@@ -1103,7 +1105,7 @@ function VinInputInner({
 
     const hit = (text?: string | null) => {
       const t = text?.trim().toUpperCase()
-      if (t) { closeCamera(true); go(t) } // warm — the next car is usually seconds away
+      if (t) { scanBeep(); closeCamera(true); go(t) } // warm — the next car is usually seconds away
     }
 
     // ตัวถอดรหัสในแอป (ZXing WebAssembly ใน Web Worker — lib/scanDecoder.ts) ไม่พึ่ง
