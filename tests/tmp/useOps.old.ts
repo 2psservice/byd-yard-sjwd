@@ -1,6 +1,7 @@
 /**
  * สำเนา "ก่อนแก้" ของ src/store/useOps.ts (ตัดจาก commit 12424f3) ใช้เป็นตัวเทียบ (oracle) ใน tests/reconcile.test.ts เท่านั้น
  * — ปรับแค่ import path และ export reconcileGateOuts + ชื่อคีย์ persist ไม่ให้ชนกับตัวจริง ห้ามแก้ตรรกะในไฟล์นี้
+ * (ยกเว้นกติกาที่ตั้งใจเปลี่ยนทั้งสองฝั่งพร้อมกัน — 27/10: ขั้น IN ดึงเฉพาะรถที่อยู่ในยาร์ดของรัน และไม่ใช่ Pre Gate-in)
  * ลบทิ้งได้เมื่อ reconcileGateOuts ฉบับใหม่ขึ้นใช้งานจริงและยืนยันแล้ว (พร้อมกับ test ที่อ้างถึง)
  */
 /**
@@ -16,7 +17,7 @@ import { onSync, sendSync } from '../../src/lib/syncBus'
 import { useYard } from '../../src/store/useYard'
 import { useTracking } from '../../src/store/useTracking' // one-way: tracking never imports ops
 import { hasLeftGate, deriveCarStatus, isGateOutStamp, gateOutScanMs, GATE_OUT_ORIGIN_SITE_KEY } from '../../src/lib/carStatus'
-import { departedFromSite } from '../../src/lib/siteScope'
+import { departedFromSite, rowInSite } from '../../src/lib/siteScope'
 import { PM_KEYS } from '../../src/lib/trackingColumns'
 import type { TrackRow } from '../../src/lib/excelTracking'
 import { quotaSafeStorage } from '../../src/lib/persistStorage'
@@ -1324,7 +1325,8 @@ export function reconcileGateOuts() {
         // ส่งข้ามยาร์ดไปแล้ว ซึ่งไม่เหลือสถานะ "Gate-out" ให้ gone จับได้
         if (!g || held.has(vin) || leftYard(vin)) continue
         if (runOfGroup.get(g) !== q.id) continue
-        if (q.site && rows[vin].site && rows[vin].site !== q.site) continue
+        if (q.site && !rowInSite(rows[vin], q.site, sites)) continue
+        if (deriveCarStatus(rows[vin].cells) === 'Pre Gate-in') continue
         const mate = q.items.find((i) => (i.group || group.get(i.vin)) === g)
         added.push({ vin, addedAt: Date.now(), done: false, group: g, laneLoad: mate?.laneLoad, dest: mate?.dest })
       }
