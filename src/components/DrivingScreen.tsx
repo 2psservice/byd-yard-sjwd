@@ -76,7 +76,8 @@ export function DrivingScreen({
       </div>
 
       {/* top bar */}
-      <div className="relative flex items-center justify-between px-4 pt-4">
+      {/* clear of the iPhone Dynamic Island / notch — this overlay covers the whole screen, status bar included */}
+      <div className="relative flex items-center justify-between px-4" style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 16px)' }}>
         <button onClick={onCancel}
           className="w-10 h-10 rounded-full flex items-center justify-center active:scale-90 transition"
           style={{ background: 'rgba(255,255,255,0.08)', color: '#fff', backdropFilter: 'blur(4px)' }}>
@@ -154,7 +155,7 @@ export function DrivingScreen({
       </div>
 
       {/* driver + timer + actions */}
-      <div className="relative px-4 pb-5">
+      <div className="relative px-4" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 20px)' }}>
         <div className="flex items-center justify-between mb-2.5 text-[12.5px]" style={{ color: 'rgba(255,255,255,0.65)' }}>
           <span className="flex items-center gap-1.5">
             <span className="w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold text-white"
