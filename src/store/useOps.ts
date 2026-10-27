@@ -11,7 +11,7 @@ import { onSync, sendSync } from '../lib/syncBus'
 import { useYard } from './useYard'
 import { useTracking } from './useTracking' // one-way: tracking never imports ops
 import { hasLeftGate, deriveCarStatus, isGateOutStamp, gateOutScanMs, GATE_OUT_ORIGIN_SITE_KEY } from '../lib/carStatus'
-import { departedFromSite } from '../lib/siteScope'
+import { departedFromSite, rowInSite } from '../lib/siteScope'
 import { PM_KEYS } from '../lib/trackingColumns'
 import type { TrackRow } from '../lib/excelTracking'
 import { quotaSafeStorage } from '../lib/persistStorage'
@@ -1392,7 +1392,12 @@ export function reconcileGateOuts() {
       }
       // IN — a car newly stamped with one of this run's grouping codes joins it,
       // inheriting that group's loading lane + dealer. Cars that already left the
-      // yard are not pulled back in.
+      // yard are not pulled back in. Only a car that is IN this run's yard joins:
+      // one BYD group code can name cars at two Auto Tran yards, and the check used
+      // to skip only a row tagged to ANOTHER yard — a row with no yard tag, or one
+      // announced here but never arrived (Pre Gate-in), was pulled in anyway
+      // (60 Rai run 09/10 ATL261009-037 gained LC0CE4CC4TG027909, a car that never
+      // entered 60 Rai, and Gate-out listed it as still to go).
       const held = new Set(items.map((i) => i.vin))
       const added: QueueItem[] = []
       // เดิมวนทุกแถวของชีต (62k) ต่อคิวส่งรถทุกคิว — ตอนนี้ดึงเฉพาะรถที่ถือรหัสกลุ่มของรันนี้จากดัชนีกลุ่ม
@@ -1406,7 +1411,8 @@ export function reconcileGateOuts() {
         // ส่งข้ามยาร์ดไปแล้ว ซึ่งไม่เหลือสถานะ "Gate-out" ให้ gone จับได้
         if (!g || held.has(vin) || leftYard(vin)) continue
         if (runOfGroup.get(g) !== q.id) continue
-        if (q.site && rows[vin].site && rows[vin].site !== q.site) continue
+        if (q.site && !rowInSite(rows[vin], q.site, sites)) continue
+        if (deriveCarStatus(rows[vin].cells) === 'Pre Gate-in') continue // not here yet — joins once it gates in
         const mate = q.items.find((i) => (i.group || groupOfVin(i.vin)) === g)
         added.push({ vin, addedAt: Date.now(), done: false, group: g, laneLoad: mate?.laneLoad, dest: mate?.dest })
       }
