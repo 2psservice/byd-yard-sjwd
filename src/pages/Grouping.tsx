@@ -7,9 +7,9 @@ import { useOps, isSequenceQueue, type WorkQueue } from '../store/useOps'
 import { PageHead } from '../components/ui'
 import { clock } from '../lib/format'
 import { parseGroupingWorkbook, siteGroupingConfig, yardLocCode, LAST_LOCATION_KEY } from '../lib/groupingImport'
-import { printGrouping, printFindCar, exportGroupingXlsx, exportFindCarXlsx, type GroupPrintRow, type GroupPrintMeta } from '../lib/groupingPrint'
+import { printGrouping, printFindCar, exportGroupingXlsx, exportFindCarXlsx, printRowFor, type GroupPrintRow, type GroupPrintMeta } from '../lib/groupingPrint'
 import { printIr, printDn, printIrPaper } from '../lib/dnir'
-import { markPrinted, printedAt } from '../lib/printMarks'
+import { markPrinted, printedAt, printedValue, PRINTED_KEYS } from '../lib/printMarks'
 import type { TrackRow } from '../lib/excelTracking'
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
@@ -53,6 +53,7 @@ export function Grouping() {
   const bulkUpdate = useTracking((s) => s.bulkUpdate)
   const createSequence = useOps((s) => s.createSequence)
   const setLaneLoads = useOps((s) => s.setLaneLoads)
+  const markSeqPrinted = useOps((s) => s.markSeqPrinted)
   const queues = useOps((s) => s.queues)
 
   const siteName = sites.find((s) => s.id === currentSite)?.name ?? ''
@@ -367,12 +368,20 @@ export function Grouping() {
     [sheetRows, selVins])
   const printCount = printSheetRows.length
 
-  // DN / IR print straight off the tracking rows of the picked cars — the
-  // import already stamped 'Grouping  Number' + 'Dealer Location' onto them,
-  // so the manifests carry this plan's data
+  // DN / IR print every picked car — rows of other yards / the plan fill in for a car with no row here
   const printTrackRows = useMemo(
-    () => printSheetRows.map((r) => rowByVin.get(r.vin)).filter((r): r is TrackRow => !!r),
-    [printSheetRows, rowByVin])
+    () => printSheetRows.map((r) => printRowFor(r, rowByVin.get(r.vin), anyRowByVin.get(r.vin), currentSite, sites)),
+    [printSheetRows, rowByVin, anyRowByVin, currentSite, sites])
+  // "พิมพ์แล้ว" of a car with no row here rides on the run's item instead (a row of another yard is never written)
+  const runItemByVin = useMemo(
+    () => new Map((queues.find((q) => q.id === laneRunId)?.items ?? []).map((i) => [i.vin, i])),
+    [queues, laneRunId])
+  const printedCells = (vin: string): Record<string, string> | undefined => {
+    const own = rowByVin.get(vin)?.cells
+    if (own) return own
+    const p = runItemByVin.get(vin)?.printed
+    return p && { [PRINTED_KEYS.dn]: p.dn ?? '', [PRINTED_KEYS.ir]: p.ir ?? '' }
+  }
   // what the SHEET says each car's grouping is — the DN prints this rather than
   // re-reading the tracking cell, so the number on the paper always matches the
   // number in the table the operator just looked at
@@ -389,19 +398,21 @@ export function Grouping() {
     for (const r of printSheetRows) if (r.deliveryLocation) m.set(r.vin, r.deliveryLocation)
     return (vin: string) => m.get(vin) ?? ''
   }, [printSheetRows])
-  const trackRowsOrWarn = (): TrackRow[] => {
-    const missing = printSheetRows.length - printTrackRows.length
-    if (missing > 0) toast('err', `ไม่พบข้อมูล ${missing} คันในระบบ — พิมพ์เฉพาะคันที่พบ`)
-    return printTrackRows
-  }
   /** print, then tick the printed cars (column พิมพ์แล้ว) */
   const printDoc = (kind: 'dn' | 'ir' | 'irp') => {
-    const rows = trackRowsOrWarn()
+    const rows = printTrackRows
     if (!rows.length) return
+    const planOnly = rows.filter((r) => !anyRowByVin.has(r.vin)).length
+    if (planOnly) toast('info', `${planOnly} คันไม่มีข้อมูลในระบบ · พิมพ์จาก Model / Color / ปลายทางในแผน ไม่มีเลขเครื่อง`, 6000)
     if (kind === 'dn') printDn(rows, groupOfVin, destOfVin)
     else if (kind === 'ir') printIr(rows, siteName, destOfVin)
     else printIrPaper(rows, siteName, destOfVin)
-    markPrinted(rows, kind === 'dn' ? 'dn' : 'ir', groupOfVin)
+    const mark = kind === 'dn' ? 'dn' : 'ir'
+    markPrinted(rows.filter((r) => rowByVin.has(r.vin)), mark, groupOfVin)
+    const at = Date.now()
+    const others: Record<string, string> = {}
+    for (const r of rows) if (!rowByVin.has(r.vin)) others[r.vin] = printedValue(groupOfVin(r.vin), at)
+    if (laneRunId && Object.keys(others).length) markSeqPrinted(laneRunId, mark, others)
   }
   const doExport = (fn: () => Promise<void>) =>
     fn().catch((e) => { console.error('[grouping] export', e); toast('err', `Export ไม่สำเร็จ: ${(e as Error)?.message ?? e}`) })
@@ -716,7 +727,7 @@ export function Grouping() {
                       <td style={td({ minWidth: 60 })}>{r.remark}</td>
                       {(() => {
                         // ✓ once this car's DN / IR has been printed for THIS grouping
-                        const cells = rowByVin.get(r.vin)?.cells
+                        const cells = printedCells(r.vin)
                         const dn = printedAt(cells, 'dn', r.grouping), ir = printedAt(cells, 'ir', r.grouping)
                         const done = [dn != null ? 'DN' : '', ir != null ? 'IR' : ''].filter(Boolean)
                         const tip = [dn != null ? `DN ${dn}` : '', ir != null ? `IR ${ir}` : ''].filter(Boolean).join(' · ')

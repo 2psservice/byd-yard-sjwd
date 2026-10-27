@@ -75,6 +75,9 @@ export interface QueueItem {
    *  codes the run covers, so a car re-stamped with one joins it even after the
    *  last car of that group was taken out. Absent on pre-existing queues. */
   group?: string
+  /** "พิมพ์แล้ว" DN / IR for a car with no sheet row at this yard — the row normally carries the mark
+   *  (lib/printMarks), same value format "<Grouping> · dd/mm/yy HH:MM" */
+  printed?: { dn?: string; ir?: string }
   atWashAt?: number        // driver scan #1: car moved to Wash for sale
   atLaneAt?: number        // driver scan #2: car moved from Wash for sale to its loading lane
   gatedOut?: boolean       // gate-out confirmed → Car Status set to Gate-out
@@ -354,6 +357,8 @@ interface OpsState {
    *  to carry the same code is a different plan), stamping who / when, so the
    *  field's queue cards show the new lane immediately. Returns how many items changed. */
   setLaneLoads: (queueId: string, byGroup: Record<string, string>, by: string) => number
+  /** Record DN / IR printed on a run's items (vin → mark value) — for cars whose mark has no row here to live on */
+  markSeqPrinted: (queueId: string, kind: 'dn' | 'ir', values: Record<string, string>) => void
   /** Pull queues from the cloud. authoritative=true replaces local even when the cloud is empty
    *  (broadcast refetch); false = boot merge (cloud wins when non-empty, else seed local up). */
   loadFromCloud: (authoritative?: boolean) => Promise<void>
@@ -883,7 +888,8 @@ export const useOps = create<OpsState>()(
             if (!p) return it
             // a hand-set lane the new sheet keeps unchanged keeps its who / when too
             const lane = !it.laneBy && p.laneBy && p.laneLoad === it.laneLoad ? { laneBy: p.laneBy, laneAt: p.laneAt } : {}
-            return { ...it, ...lane, addedAt: p.addedAt ?? it.addedAt, done: p.done, gatedOut: p.gatedOut, doneAt: p.doneAt, doneBy: p.doneBy, stage: p.stage,
+            // print marks name their grouping, so one from an old group never reads as printed for the new one
+            return { ...it, ...lane, printed: p.printed, addedAt: p.addedAt ?? it.addedAt, done: p.done, gatedOut: p.gatedOut, doneAt: p.doneAt, doneBy: p.doneBy, stage: p.stage,
               atWashAt: p.atWashAt, atLaneAt: p.atLaneAt, deliveredBy: p.deliveredBy, returnedBy: p.returnedBy, returnedAt: p.returnedAt }
           })
           // Clear any leftover `type` too — a name collision with an old
@@ -961,6 +967,23 @@ export const useOps = create<OpsState>()(
         }))
         if (changed) pushQueue(get, queueId)
         return changed
+      },
+
+      markSeqPrinted: (queueId, kind, values) => {
+        let changed = 0
+        set((s) => ({
+          queues: s.queues.map((q) => {
+            if (q.id !== queueId || !isSequenceQueue(q)) return q
+            const items = q.items.map((i) => {
+              const v = values[i.vin]
+              if (!v || i.printed?.[kind] === v) return i
+              changed++
+              return { ...i, printed: { ...i.printed, [kind]: v } }
+            })
+            return changed ? { ...q, items } : q
+          }),
+        }))
+        if (changed) pushQueue(get, queueId)
       },
 
       loadFromCloud: async (authoritative = false) => {
