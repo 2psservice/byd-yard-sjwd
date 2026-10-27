@@ -348,6 +348,7 @@ export function EvChargePanel({ vin, cells, unitModel, unitColor, onClose }: {
   const shot = useBatteryShot()
   const [remark, setRemark] = useState(open?.remark ?? '')
   const [saving, setSaving] = useState(false)
+  const [viewPhotos, setViewPhotos] = useState<string[] | null>(null)
 
   const model = evModelOf(cells, unitModel || open?.model || '')
   const color = (cells['Color'] || unitColor || open?.color || '').trim()
@@ -372,6 +373,8 @@ export function EvChargePanel({ vin, cells, unitModel, unitColor, onClose }: {
   /** หยุดพัก / เริ่มชาร์จต่อ — บันทึกทันที (ไม่ต้องถ่ายรูป) แล้วกลับหน้าสแกน */
   const togglePause = async () => {
     if (!open || saving) return
+    // a mistaken tap stops the clock on a car still plugged in — ask once before pausing
+    if (!paused && !window.confirm(`หยุดพักการชาร์จ ${vin.slice(-6)} ?\n\nเวลาชาร์จจะหยุดนับจนกว่าจะกด "เริ่มชาร์จต่อ"`)) return
     const by = useYard.getState().currentUser
     const c = paused ? resumeCharge(open, by) : pauseCharge(open, by)
     setSaving(true)
@@ -436,7 +439,13 @@ export function EvChargePanel({ vin, cells, unitModel, unitColor, onClose }: {
       {open && (
         <div className="panel p-3 space-y-3" style={{ borderColor: (paused ? EV_PAUSE : EV_ACCENT) + '66' }} data-ev-state={paused ? 'paused' : 'charging'}>
           <div className="flex items-center gap-3">
-            {open.beforePhoto && <img src={open.beforePhoto} alt="ก่อนชาร์จ" className="w-16 h-16 rounded-lg object-cover" style={{ border: '1px solid var(--line)' }} />}
+            {open.beforePhoto && (
+              // tap to see it full size — the before-charge screen, then the VIN label photo
+              <button onClick={() => setViewPhotos([open.beforePhoto, open.vinPhoto].filter(Boolean))} aria-label="ดูรูปก่อนชาร์จ" data-ev-before-thumb
+                className="shrink-0 rounded-lg cursor-zoom-in" style={{ touchAction: 'manipulation' }}>
+                <img src={open.beforePhoto} alt="ก่อนชาร์จ" className="w-16 h-16 rounded-lg object-cover" style={{ border: '1px solid var(--line)' }} />
+              </button>
+            )}
             <div className="flex-1 min-w-0 text-[12.5px]">
               <div className="font-bold" style={{ color: paused ? EV_PAUSE : EV_ACCENT }}>
                 {paused ? 'หยุดพัก' : 'กำลังชาร์จ'} · ก่อนชาร์จ {fmtPct(open.beforePct)}
@@ -502,6 +511,7 @@ export function EvChargePanel({ vin, cells, unitModel, unitColor, onClose }: {
           {uploading ? 'รอรูปอัปโหลดเสร็จ' : `ยังขาด: ${missing.join(' · ')}`}
         </div>
       )}
+      {viewPhotos && viewPhotos.length > 0 && <PhotoLightbox photos={viewPhotos} index={0} onClose={() => setViewPhotos(null)} />}
     </div>
   )
 }
