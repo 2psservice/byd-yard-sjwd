@@ -8,6 +8,9 @@
 
 import { byYardLocation } from './groupingImport'
 import { borrowDocTitle, fileStamp } from './printDoc'
+import { departedViewFrom } from './siteScope'
+import type { TrackRow } from './excelTracking'
+import type { Site } from '../types'
 
 export interface GroupPrintRow {
   no: number
@@ -25,6 +28,21 @@ export interface GroupPrintRow {
   laneAt?: number
   receiveDate: string
   remark: string
+}
+
+/**
+ * The row DN / IR print for one car of the Grouping sheet — every car the sheet lists prints, from the
+ * best copy of its data: this yard's row (the import stamped 'Grouping  Number' + 'Dealer Location' onto
+ * it) → the car as this yard last saw it, when it has gone out and its row now sits at the next yard →
+ * its row at any yard, read only → the plan's own Model / Color / dealer. Only this yard's rows used to
+ * print, so a run whose other cars had no row here printed just the one that did, and ticking only the
+ * others greyed the buttons out (27/10 3D LCB: 6 of 7 cars showing Location ไม่พบ could not be printed).
+ */
+export function printRowFor(r: GroupPrintRow, own: TrackRow | undefined, any: TrackRow | undefined, siteId: string | null, sites: Site[]): TrackRow {
+  if (own) return own
+  if (any) return departedViewFrom(any, siteId, sites) ?? any
+  return { vin: r.vin, cells: { Vin: r.vin, Model: r.model, 'Model name': r.modelName || r.model, Color: r.color,
+    'Grouping  Number': r.grouping, 'Dealer Location': r.deliveryLocation } }
 }
 
 export interface GroupPrintMeta {
