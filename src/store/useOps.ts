@@ -64,6 +64,10 @@ export interface QueueItem {
   laneBy?: string
   laneAt?: number
   dest?: string            // delivery / dealer location
+  /** Model / Color as the grouping plan file printed them — a reprint of the run still has them when
+   *  the car's own sheet row is missing on this yard (moved, or never imported here) */
+  model?: string
+  color?: string
   /** หมายเหตุ from the grouping plan — what the office wrote against this car.
    *  Kept on the item so a reprint of the run still carries it. */
   remark?: string
@@ -338,7 +342,7 @@ interface OpsState {
   recordCheck: (id: string, vin: string, result: 'OK' | 'NG', by?: string) => void
   returnToSlot: (id: string, vin: string, by?: string) => void
   // ── delivery sequence (Grouping to Dealer) ──
-  createSequence: (name: string, by: string, items: { vin: string; laneLoad?: string; laneBy?: string; laneAt?: number; dest?: string; group?: string; remark?: string }[]) => string
+  createSequence: (name: string, by: string, items: { vin: string; laneLoad?: string; laneBy?: string; laneAt?: number; dest?: string; group?: string; remark?: string; model?: string; color?: string }[]) => string
   markAtWash: (id: string, vin: string, by?: string) => void        // driver scan #1
   markAtLane: (id: string, vin: string, by?: string) => void        // driver scan #2
   confirmSeqGateOut: (id: string, vin: string, by?: string) => void // gate-out confirmed
@@ -855,11 +859,13 @@ export const useOps = create<OpsState>()(
         const site = useYard.getState().currentSite ?? undefined
         const now = Date.now()
         const rows: QueueItem[] = items
-          .map((it) => ({ vin: it.vin.trim().toUpperCase(), laneLoad: it.laneLoad, laneBy: it.laneBy, laneAt: it.laneAt, dest: it.dest, group: it.group?.trim().toUpperCase() || undefined, remark: it.remark?.trim() || undefined }))
+          .map((it) => ({ vin: it.vin.trim().toUpperCase(), laneLoad: it.laneLoad, laneBy: it.laneBy, laneAt: it.laneAt, dest: it.dest, group: it.group?.trim().toUpperCase() || undefined, remark: it.remark?.trim() || undefined, model: it.model?.trim() || undefined, color: it.color?.trim() || undefined }))
           .filter((it) => it.vin)
           .map((it) => {
             const row: QueueItem = { vin: it.vin, addedAt: now, done: false, laneLoad: it.laneLoad, dest: it.dest, group: it.group, remark: it.remark }
             if (it.laneBy) { row.laneBy = it.laneBy; row.laneAt = it.laneAt }
+            if (it.model) row.model = it.model
+            if (it.color) row.color = it.color
             return row
           })
         const existing = get().queues.find((q) => (q.name ?? '').toLowerCase() === n.toLowerCase())
