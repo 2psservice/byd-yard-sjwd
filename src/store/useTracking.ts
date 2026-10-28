@@ -374,7 +374,7 @@ interface TrackingState {
    *  opts.anyBlock: ไม่จำกัดบล็อก — ใส่ตามบรรทัดล่าสุดแม้บล็อกนั้นผังไม่ได้วาด (แอดมินสั่งเฉพาะชุด VIN)
    *  opts.onlyVins: คืนเฉพาะ VIN ในรายการ (แอดมินระบุชุดที่ต้องการ) — คันนอกรายการไม่แตะ · ผลรายงานครบทุกคันในรายการ
    *  (คืน/ชน/ไม่มีประวัติ/สถานะไม่ใช่ In Yard/ไม่พบแถว/มีช่องแล้ว) */
-  restorePositionsInBlocks: (blocks: string[], opts?: { offMap?: boolean; onlyVins?: string[]; anyBlock?: boolean }) => Promise<RestorePositionsResult>
+  restorePositionsInBlocks: (blocks: string[], opts?: { offMap?: boolean; onlyVins?: string[]; anyBlock?: boolean; backupKey?: string }) => Promise<RestorePositionsResult>
   commitCoInspection: (res: ParseResult) => { updated: number; added: number; skipped: number; gateOut: number; moved: number; otherYard: number; heldInYard: number }
   /** Set a cell and log it. `src: 'scan'` marks the write as a FIELD STATION
    *  action (ops-scan), which is what lets a report tell a real recording apart
@@ -1504,7 +1504,7 @@ export const useTracking = create<TrackingState>()(
         // เป้าหมาย: แถวชีตที่อยู่ยาร์ดนี้ · ไม่ใช่รถที่ออก/ยังไม่เข้า · unit ไม่มีช่องบนผังของยาร์ดนี้
         // (ถูกล้างไป / ค้างช่องของยาร์ดอื่น / บล็อกนอกผังเมื่อ offMap) · บรรทัด Location ล่าสุด
         // ของรอบนี้ (ที่คนบันทึก) ชี้ไปบล็อกที่ระบุ — ไม่มีบรรทัดยิง = ไม่เดา (noHistory)
-        const plan: { vin: string; target: { block: string; row: number; slot: number }; lastAt: number }[] = []
+        const plan: { vin: string; target: { block: string; row: number; slot: number }; lastAt: number; byScan: boolean }[] = []
         const seenInSet = new Set<string>()
         for (const r of Object.values(rows)) {
           if (only && !only.has(r.vin)) continue // สั่งเฉพาะชุด — นอกรายการไม่แตะ ไม่นับ
@@ -1525,7 +1525,7 @@ export const useTracking = create<TrackingState>()(
           if (!target) { out.noHistory++; why(r.vin, 'ไม่มีบรรทัดยิง Location ในรอบนี้'); continue }
           // บล็อกเป้าหมายต้องอยู่ในรายการ และ (เมื่อ offMap) ต้องมีบนผังจริง — คืนลงบล็อกที่ผังไม่วาดก็ยัง "ไม่มีตำแหน่ง"
           if (!opts?.anyBlock && (!want.has(target.block) || (opts?.offMap && !drawn.has(target.block)))) { out.otherBlock++; why(r.vin, `ยิงล่าสุด ${yardLocFull(target)} เป็นบล็อกนอกผัง`); continue }
-          plan.push({ vin: r.vin, target, lastAt: last.at })
+          plan.push({ vin: r.vin, target, lastAt: last.at, byScan: last.src === 'scan' })
         }
         if (only) { const missing = [...only].filter((v) => !seenInSet.has(v)); out.notFound = missing.length; for (const v of missing) why(v, 'ไม่พบแถวชีตของยาร์ดนี้') }
         if (!plan.length) return out
@@ -1538,7 +1538,7 @@ export const useTracking = create<TrackingState>()(
         const liveUnits = useYard.getState().units // หลัง await — ใช้สำเนาล่าสุดของเครื่อง
         const changed: Unit[] = []
         const lines: { vin: string; from: string; to: string }[] = []
-        for (const { vin, target, lastAt } of plan) {
+        for (const { vin, target, lastAt, byScan } of plan) {
           const key = posKey(target)
           const occ = occupied.get(key)
           if (occ && occ !== vin) { out.collided.push({ vin, want: yardLocFull(target) }); why(vin, `ช่อง ${yardLocFull(target)} มีรถ ${occ.slice(-6)} จอดอยู่`); continue }
@@ -1546,9 +1546,11 @@ export const useTracking = create<TrackingState>()(
           if (!base) { out.skipped++; why(vin, 'ไม่มีข้อมูลรถ (unit)'); continue } // ไม่มี unit ทั้งในเครื่องและคลาวด์ — ไม่เดา
           const baseHeld = base.status !== 'DEPARTED' && !!base.block && !!base.row && !!base.slot
           if (baseHeld && base.site === currentSite && posKey(base) === key) { why(vin, `อยู่ช่อง ${yardLocFull(target)} ในคลาวด์อยู่แล้ว`); continue } // อยู่ช่องนั้นอยู่แล้ว — ไม่มีอะไรให้คืน
-          // GATE_IN ไม่มีช่อง แต่มีบรรทัดยิง = คนขับรับงานไปช่องนั้นแล้วกด "ยกเลิก" (resetParking ล้างช่องโดยไม่ลง
-          // ประวัติ) — บรรทัดชี้ไปช่องที่รถไม่เคยไปถึง ไม่คืน (รายงานแทน)
-          if (!baseHeld && base.status === 'GATE_IN') { out.unreached++; why(vin, 'ยกเลิกขับก่อนถึงช่อง'); continue }
+          // GATE_IN ไม่มีช่อง แต่บรรทัดล่าสุดเป็นการยิงของคนขับ = รับงานไปช่องนั้นแล้วกด "ยกเลิก" (resetParking
+          // ล้างช่องโดยไม่ลงประวัติ) — บรรทัดชี้ไปช่องที่รถไม่เคยไปถึง ไม่คืน (รายงานแทน) · บรรทัดที่แอดมินแก้ช่องเอง
+          // (Unit List / Yard Plan — ไม่มี src 'scan') ไม่มีงานขับให้ยกเลิก รถถูกวางที่ช่องนั้นจริง จึงคืนได้
+          // (3D THUNGKRAT 28 ต.ค.: "รัชนีกร แก้ไข Location (ว่าง) → C0503" แล้วช่องหาย)
+          if (!baseHeld && base.status === 'GATE_IN' && byScan) { out.unreached++; why(vin, 'ยกเลิกขับก่อนถึงช่อง'); continue }
           // unit ยังถือช่องอื่นอยู่ (ยาร์ดอื่น / บล็อกนอกผัง) → ทับได้ต่อเมื่อช่องนั้น "เก่ากว่าการยิงครั้งนี้ชัดเจน"
           // (วางก่อนยิงเกิน 60 วิ — เผื่อนาฬิกาต่างเครื่อง) · วางทีหลัง = ของใหม่กว่า · วางพร้อมกัน/รหัสเดียวกัน =
           // การยิงครั้งเดียวกันจากเครื่องที่เลือกยาร์ดไม่ตรงป้ายแถว (ยาร์ดไหนถูกให้คนตัดสิน) · ไม่มีเวลาวาง = ไม่รู้
@@ -1562,6 +1564,19 @@ export const useTracking = create<TrackingState>()(
           lines.push({ vin, from: baseHeld ? yardLocFull(base) : '', to: yardLocFull(target) })
         }
         if (changed.length) {
+          // สำรองก่อนเขียน (opts.backupKey): ตำแหน่ง / สถานะเดิมของทุกคันที่จะถูกเขียน เก็บลง app_config
+          // ชื่อไม่ซ้ำต่อรอบ (เครื่องที่สองที่ทำงานเดียวกันไม่ทับของเครื่องแรก) · สำรองไม่สำเร็จ = โยน ไม่เขียนอะไรเลย
+          if (opts?.backupKey && db.isConfigured()) {
+            const before = new Map(changed.map((u) => [u.vin, fromCloud.get(u.vin) ?? liveUnits[u.vin]]))
+            await db.saveAppConfig(`${opts.backupKey}:${now}`, {
+              at: now, site: currentSite, by: useYard.getState().currentUser || '',
+              units: changed.map((u) => {
+                const b = before.get(u.vin)
+                return { vin: u.vin, site: b?.site ?? null, block: b?.block ?? null, row: b?.row ?? null, slot: b?.slot ?? null,
+                  status: b?.status ?? null, parkedAt: b?.parkedAt ?? null, importedAt: b?.importedAt ?? null }
+              }),
+            })
+          }
           // คลาวด์ก่อน: ไม่ถึงคลาวด์ = โยน error ออกไปทั้งก้อน เครื่องนี้ไม่ถูกแตะ ไม่ลงประวัติ (ผู้เรียก
           // ลองใหม่รอบหน้าได้ — ไม่งั้นเครื่องจะเห็นตำแหน่งที่คลาวด์ไม่มี และรอบหน้าข้ามเพราะ "มีช่องแล้ว")
           // ทีละ 500 คัน (ยาร์ดใหญ่ เช่น NYB2 อาจมีเป็นพัน) — ชุดกลางทางล้ม = โยน เครื่องไม่ถูกแตะ ชุดก่อนหน้าที่ถึงคลาวด์แล้ว
