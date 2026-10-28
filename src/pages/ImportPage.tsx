@@ -539,6 +539,12 @@ export function ImportPage() {
     [selRows, existing],
   )
   const dupCount = selRows.length - newRows.length - returningRows.length
+  // กลับเข้ามาใหม่ของรถที่แถวปัจจุบันเป็นของยาร์ดอื่น — เปิดรอบใหม่ย้ายรถมายาร์ดนี้ ต้องให้เห็นก่อนกดยืนยัน
+  // (28 ต.ค. 09:31: 264 คันจากแถว NYB2 ที่ถูกเขียนทับ กลายเป็น Pre Gate-in รอบ 2 ที่ 3D LCB)
+  const returningFromOtherYard = useMemo(
+    () => returningRows.filter((r) => { const ex = existing[r.vin]; return !!ex?.site && !!currentSite && ex.site !== currentSite }).length,
+    [returningRows, existing, currentSite],
+  )
   const importCount = newRows.length + returningRows.length
 
   // Rows that will actually END UP in a Gate-in queue — the lot IS the batch the
@@ -731,7 +737,7 @@ export function ImportPage() {
                   {!selectedDate ? 'เลือกวันที่ Gate In ก่อน จึงจะนำเข้าได้'
                     : cloudCheck?.state === 'checking' ? 'กำลังตรวจกับระบบว่ารถคันไหนมีอยู่แล้ว…'
                     : cloudCheck?.state === 'fail' ? <span style={{ color: '#dc2626' }}>สัญญาณไม่ดี — ตรวจกับระบบไม่ได้ ยังนำเข้าไม่ได้ <button className="btn" style={{ padding: '2px 8px' }} onClick={() => setCloudRetry((n) => n + 1)}>ลองใหม่</button></span>
-                    : <>เฉพาะวันที่ <b style={{ color: 'var(--text)' }}>{selectedDate}</b> · </>}{cloudReady && <><b style={{ color: 'var(--st-yard)' }}>{newRows.length.toLocaleString()}</b> ใหม่{returningRows.length ? <> · <b style={{ color: 'var(--brand)' }}>{returningRows.length.toLocaleString()}</b> กลับเข้ามาใหม่ (เคย Gate-out)</> : ''}{dupCount ? <> · <b style={{ color: 'var(--st-pending)' }}>{dupCount.toLocaleString()}</b> เดิมในระบบ (ข้าม)</> : ''}</>}
+                    : <>เฉพาะวันที่ <b style={{ color: 'var(--text)' }}>{selectedDate}</b> · </>}{cloudReady && <><b style={{ color: 'var(--st-yard)' }}>{newRows.length.toLocaleString()}</b> ใหม่{returningRows.length ? <> · <b style={{ color: 'var(--brand)' }}>{returningRows.length.toLocaleString()}</b> กลับเข้ามาใหม่ (เคย Gate-out){returningFromOtherYard ? <> — <b style={{ color: '#d97706' }}>{returningFromOtherYard.toLocaleString()}</b> คันแถวปัจจุบันอยู่ยาร์ดอื่น จะย้ายมายาร์ดนี้</> : ''}</> : ''}{dupCount ? <> · <b style={{ color: 'var(--st-pending)' }}>{dupCount.toLocaleString()}</b> เดิมในระบบ (ข้าม)</> : ''}</>}
                 </span>
                 <div className="flex items-center gap-2">
                   <button className="btn" onClick={() => { setParsed(null); setFileName('') }}>ยกเลิก</button>

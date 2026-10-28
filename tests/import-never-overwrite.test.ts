@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
  */
 type Row = { vin: string; site?: string; cells: Record<string, string>; history?: any[]; updatedAt?: number; deletedAt?: number }
 
-async function setup(cloudRows: Row[]) {
+async function setup(cloudRows: Row[], insertDelayMs = 0) {
   vi.resetModules(); localStorage.clear()
   const cloud = new Map<string, Row>(cloudRows.map((r) => [r.vin, JSON.parse(JSON.stringify(r))]))
   const upserted: string[] = []
@@ -22,6 +22,7 @@ async function setup(cloudRows: Row[]) {
     upsertTrackingRows: async (rows: Row[]) => { for (const r of rows) { upserted.push(r.vin); cloud.set(r.vin, JSON.parse(JSON.stringify(r))) } },
     // ON CONFLICT DO NOTHING — แถวที่มีอยู่แล้ว (รวมแถวที่ถูกลบ) ไม่ถูกแตะ
     insertTrackingRowsIfAbsent: async (rows: Row[]) => {
+      if (insertDelayMs) await new Promise((r) => setTimeout(r, insertDelayMs))
       const inserted = new Set<string>()
       for (const r of rows) if (!cloud.has(r.vin)) { cloud.set(r.vin, JSON.parse(JSON.stringify(r))); inserted.add(r.vin) }
       return inserted
@@ -76,6 +77,27 @@ describe('นำเข้า Vin List Inventory ไม่เขียนทั�
     await settle()
     expect(cloud.get(fresh.vin)?.cells['Car Status']).toBe('Pre Gate-in')
     expect(cloud.get(fresh.vin)?.site).toBe('site-7-nyb')
+    expect(useTracking.getState().rows[fresh.vin]?.cells['Car Status']).toBe('Pre Gate-in')
+  })
+
+  it('ระหว่างรอคลาวด์ตอบ (ฐานข้อมูลช้า): ฉบับไฟล์ไม่อยู่ในเครื่อง · การแก้คันนั้นไม่ทำให้คลาวด์ถูกทับ', async () => {
+    const { cloud, upserted, useTracking } = await setup([atLcb], 80)
+    useTracking.getState().commitImport(parsed([fileRow]))
+    // ฉบับไฟล์ (NYB2 Gate-out) ต้องไม่ค้างในเครื่อง — ตัวกระทบยอดจะอ่านเป็นรถออกแล้วปลดช่องในผัง
+    expect(useTracking.getState().rows[atLcb.vin]).toBeUndefined()
+    useTracking.getState().updateCell(atLcb.vin, 'Remark', 'x')
+    await new Promise((r) => setTimeout(r, 150))
+    expect(upserted).not.toContain(atLcb.vin)
+    expect(cloud.get(atLcb.vin)).toEqual(atLcb)
+    expect(useTracking.getState().rows[atLcb.vin]?.site).toBe('site-1-3d-lcb')
+  })
+
+  it('นำเข้า Co Inspection: รถที่เครื่องไม่มีแต่คลาวด์มี → ไม่ทับ', async () => {
+    const { cloud, upserted, useTracking, settle } = await setup([atLcb])
+    useTracking.getState().commitCoInspection(parsed([{ vin: atLcb.vin, cells: { Vin: atLcb.vin, 'Location yard': 'NYB2 Phase 2', PDI: '1-Oct-26' } }]))
+    await settle()
+    expect(upserted).not.toContain(atLcb.vin)
+    expect(cloud.get(atLcb.vin)).toEqual(atLcb)
   })
 
   it('VIN ที่ถูกลบในคลาวด์ (tombstone) → นำเข้าใหม่ได้เหมือนเดิม', async () => {
