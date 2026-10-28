@@ -404,6 +404,9 @@ export default function App() {
       }
     }
     const runJob = async (job: (typeof ONE_SHOT_RESTORES)[number]) => {
+      // say it is running — the admin is often sitting on this page waiting for it, and a job that found
+      // nothing to do or failed used to look exactly like one that never started
+      useYard.getState().toast('info', `กำลังคืนตำแหน่งรถ${job.label}… อย่าเพิ่งปิดหน้านี้`, 15_000)
       try {
         const res = await useTracking.getState().restorePositionsInBlocks(job.blocks, { offMap: job.offMap, onlyVins: job.vins, anyBlock: job.anyBlock, backupKey: job.backup ? `restore_backup:${job.key}` : undefined })
         // งานเสร็จแล้วจริง (คลาวด์รับแล้ว) — ตั้งธง/แจ้งผลเสมอ แม้ effect ถูกเริ่มใหม่ระหว่างรอ (unitsCloudDone
@@ -429,7 +432,12 @@ export default function App() {
           if (detailN) parts.splice(1, parts.length, `ใส่ไม่ได้ ${detailN} คัน → ${res.reasons.map((x) => `${x.vin.slice(-6)} ${x.why}`).join(' | ')}`)
           useYard.getState().toast(res.collided.length || res.movedSince.length || res.noHistory || notInYardN || res.notFound || detailN ? 'info' : 'ok', parts.join(' · '), job.detail ? 120_000 : 30_000)
         }
-      } catch (e) { console.error('[restore]', job.label, e) } // ไม่ตั้งธง — เปิดครั้งหน้าลองใหม่
+      } catch (e) {
+        // ไม่ตั้งธง — เปิดครั้งหน้าลองใหม่ · บอกแอดมินด้วย (เดิมเงียบ: สำรองข้อมูล / ซิงก์ / เขียนคลาวด์ไม่สำเร็จ
+        // ดูเหมือนงานไม่เคยเริ่ม และไม่มีอะไรบอกว่าต้องเปิดใหม่)
+        console.error('[restore]', job.label, e)
+        useYard.getState().toast('err', `คืนตำแหน่งรถ${job.label} ยังไม่สำเร็จ: ${(e as Error)?.message || e} — เปิดยาร์ดนี้อีกครั้งเพื่อลองใหม่`, 60_000)
+      }
     }
     t = setTimeout(run, 12_000)
     return () => { cancelled = true; clearTimeout(t) }
