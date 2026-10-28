@@ -12,7 +12,8 @@ export interface AppUser {
   role: UserRole
   active: boolean
   username: string
-  password: string
+  /** เฉพาะโหมดออฟไลน์ (ไม่มีคลาวด์) — รายชื่อจากคลาวด์ไม่มีรหัสผ่าน (ตรวจที่เซิร์ฟเวอร์ ดู supabase-security-phase1.sql) */
+  password?: string
 }
 
 export type View =

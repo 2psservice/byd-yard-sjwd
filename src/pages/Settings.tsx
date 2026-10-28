@@ -13,7 +13,6 @@ import type { UserRole } from '../types'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { repairMissingStationDates } from '../store/useOps'
 import { PageHead, cx } from '../components/ui'
-import { hashPassword } from '../lib/password'
 
 const VIN_RE = /^[A-HJ-NPR-Z0-9]{17}$/i
 
@@ -637,12 +636,12 @@ function UserManager() {
     if (editId) {
       updateAppUser(editId, {
         name: n, role: fRole, username: un,
-        ...(fPass ? { password: await hashPassword(fPass) } : {}), // blank = keep current
+        ...(fPass ? { password: fPass } : {}), // blank = keep current · เซิร์ฟเวอร์ hash ให้
       })
       setNotice({ text: `บันทึกผู้ใช้ "${n}" แล้ว`, linkId: editId })
     } else {
       if (!fPass) { setErr('กรุณาตั้งรหัสผ่าน'); return }
-      addAppUser(n, fRole, un, await hashPassword(fPass)) // never store plaintext
+      addAppUser(n, fRole, un, fPass) // ส่งผ่าน HTTPS ไปฟังก์ชันที่เซิร์ฟเวอร์ ซึ่ง hash ก่อนเก็บ
       setNotice({ text: `สร้างผู้ใช้ "${n}" แล้ว` })
     }
     setErr(''); setScreen('list')

@@ -983,27 +983,46 @@ export async function deleteSite(id: string): Promise<void> {
 /** null = fetch FAILED (offline / error) — callers must keep their local roster.
  *  Returning [] for an error made a transient failure look like an empty cloud,
  *  which re-seeded the whole local roster upward (resurrecting deleted users). */
+// รายชื่อผู้ใช้อ่านจาก view ที่ไม่มีรหัสผ่าน · ตรวจรหัสผ่าน/เพิ่ม/แก้/ลบผู้ใช้ทำที่เซิร์ฟเวอร์ (supabase-security-phase1.sql)
+// เดิมแอปดึงทั้งตาราง app_users รวมรหัสผ่านมาตรวจในเบราว์เซอร์ และเขียนผู้ใช้ตรงด้วย anon key
 export async function fetchAppUsers(): Promise<AppUser[] | null> {
   if (!isConfigured()) return null
-  const { data, error } = await supabase.from('app_users').select('id, name, role, username, password, active')
-  if (error) { console.error('[db] fetchAppUsers', error); return null }
-  return ((data ?? []) as { id: string; name: string; role: string; username: string; password: string; active: boolean | null }[])
-    .map((r) => ({ id: r.id, name: r.name, role: r.role as AppUser['role'], username: r.username, password: r.password, active: r.active ?? true }))
+  let res: any = await supabase.from('app_users_public').select('id, name, role, username, active')
+  // ยังไม่ได้รัน SQL ขั้นที่ 1 (ไม่มี view) — อ่านจากตารางเดิมแต่ไม่เอาช่องรหัสผ่าน
+  if (res.error && isMissingColumn(res.error)) res = await supabase.from('app_users').select('id, name, role, username, active')
+  if (res.error) { console.error('[db] fetchAppUsers', res.error); return null }
+  return ((res.data ?? []) as { id: string; name: string; role: string; username: string; active: boolean | null }[])
+    .map((r) => ({ id: r.id, name: r.name, role: r.role as AppUser['role'], username: r.username, active: r.active ?? true }))
 }
 
-/** Retries then THROWS — a lost login account is an operational blocker, so
- *  callers surface the failure (toast) instead of us swallowing it here. */
-export async function upsertAppUser(u: AppUser): Promise<void> {
-  if (!isConfigured()) return
-  await withRetry(() => supabase.from('app_users').upsert(
-    { id: u.id, name: u.name, role: u.role, username: u.username, password: u.password, active: u.active },
-    { onConflict: 'id' },
-  ))
+/** ล็อกอินที่เซิร์ฟเวอร์ · null = ชื่อ/รหัสผิด · throw = ติดต่อคลาวด์ไม่ได้ */
+export async function loginWithPassword(username: string, password: string): Promise<{ user: AppUser; token: string } | null> {
+  const { data, error } = await supabase.rpc('sjwd_login', { p_username: username, p_password: password })
+  if (error) throw error
+  if (!data) return null
+  const r = data as { id: string; name: string; role: string; username: string; active: boolean; token: string }
+  return { user: { id: r.id, name: r.name, role: r.role as AppUser['role'], username: r.username, active: r.active }, token: r.token }
 }
 
-export async function deleteAppUser(id: string): Promise<void> {
-  if (!isConfigured()) return
-  await withRetry(() => supabase.from('app_users').delete().eq('id', id))
+export async function logoutSession(token: string): Promise<void> {
+  if (!isConfigured() || !token) return
+  await supabase.rpc('sjwd_logout', { p_token: token })
+}
+
+/** เพิ่ม/แก้ผู้ใช้ (ต้องเป็นโทเค็นของ admin) · password ว่าง = คงเดิม · คืน id · THROWS เมื่อไม่สำเร็จ */
+export async function adminSaveUser(token: string, u: Omit<AppUser, 'id' | 'password'> & { id?: string }, password?: string): Promise<string> {
+  const { data, error } = await supabase.rpc('sjwd_admin_save_user', {
+    p_token: token, p_id: u.id ?? null, p_name: u.name, p_role: u.role, p_username: u.username,
+    p_active: u.active, p_password: password || null,
+  })
+  if (error) throw error
+  return (data as { id: string }).id
+}
+
+/** ลบผู้ใช้ (ต้องเป็นโทเค็นของ admin) · THROWS เมื่อไม่สำเร็จ */
+export async function adminDeleteUser(token: string, id: string): Promise<void> {
+  const { error } = await supabase.rpc('sjwd_admin_delete_user', { p_token: token, p_id: id })
+  if (error) throw error
 }
 
 // ── shared app config (key/value jsonb) — e.g. the default Unit-List view ────
