@@ -1010,7 +1010,7 @@ export const useTracking = create<TrackingState>()(
         }
         if (outgoing.size) pushRows([...outgoing.values()])
         // การนำเข้าที่ส่งไม่สำเร็จ — ส่งซ้ำแบบเพิ่มเฉพาะที่คลาวด์ยังไม่มี
-        const retryNew = [...pendingInsert.values()].filter((r) => !merged[r.vin] && hasVin(r))
+        const retryNew = [...pendingInsert.values()].filter(hasVin)
         if (retryNew.length) pushNewRows(retryNew)
         set({ lastSync: startedAt })
         loadMark('sync-done')
@@ -2043,7 +2043,8 @@ export const useTracking = create<TrackingState>()(
         const row: TrackRow = { vin: v, cells: fullCells, updatedAt: Date.now(), site: siteForRow(fullCells, sites, currentSite) }
         set({ rows: { ...get().rows, [v]: row } })
         idbPut(row).catch(() => {})
-        pushRows([row])
+        // ไม่มีในเครื่อง ≠ ไม่มีในคลาวด์ (รถของยาร์ดอื่น) — เพิ่มแบบไม่ทับ ถ้ามีแล้วเครื่องรับฉบับคลาวด์แทน
+        pushNewRows([row])
         return true
       },
 
