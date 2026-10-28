@@ -214,21 +214,48 @@ const dnRowTexts = (r: TrackRow, destOf?: DestOf): Record<number, string> => ({
   5: cell(r, 'Color'),
   6: cell(r, 'Location on the trailer'),
 })
+/** A wrap cell set smaller than 12pt so its row keeps the standard height. */
+type DnSmall = { size: number; lineH: number }
+/** One row's layout: its height, plus the cells (by column) set smaller to fit. */
+interface DnRowFit { height: number; small: Record<number, DnSmall> }
+/** Faces a long cell may drop to so a whole grouping stays on ONE sheet — a DN is one trip, and a
+ *  sheet break mid-trip split one grouping's cars over two papers (28/10 North Star groupings of 8,
+ *  whose 3-line dealer names pushed 1–2 cars onto a second sheet). 3 lines fit a standard row from 11pt. */
+const DN_FIT_SIZES = [11, 10, 9] as const
+/** top of a cell's first line box inside its row (the 12pt cell's first baseline sits at +12.63) */
+const DN_CELL_TOP = 12.63 - DN_CELL_OFF
+
 /** Row height: the AMS 2-line row, plus one line for every line beyond two that
- *  the longest-wrapping cell needs (1.5pt kept clear of the column lines). */
-function dnRowHeight(texts: Record<number, string>, measure: MeasureText): number {
+ *  the longest-wrapping cell needs (1.5pt kept clear of the column lines).
+ *  `compact`: a cell that would wrap past two lines is set at the largest of
+ *  DN_FIT_SIZES that holds it inside the standard row instead of growing the row;
+ *  only a cell too long even at 9pt still grows it. */
+function dnRowFit(texts: Record<number, string>, measure: MeasureText, compact = false): DnRowFit {
   let lines = 1
+  const small: Record<number, DnSmall> = {}
   for (const c of DN_WRAP_COLS) {
     const t = texts[c]
-    if (t) lines = Math.max(lines, wrapLines(t, DN_COLS[c + 1] - DN_COLS[c] - 1.5, measure))
+    if (!t) continue
+    const w = DN_COLS[c + 1] - DN_COLS[c] - 1.5
+    const n = wrapLines(t, w, measure)
+    if (compact && n > 2) {
+      const fit = DN_FIT_SIZES.map((size) => ({ size, lineH: size * 1.2 }))
+        .find((f) => DN_CELL_TOP + wrapLines(t, w, (s) => (measure(s) * f.size) / 12) * f.lineH <= DN_ROW_H - 1)
+      if (fit) { small[c] = fit; continue }
+    }
+    lines = Math.max(lines, n)
   }
-  return DN_ROW_H + Math.max(0, lines - 2) * DN_LINE_H
+  return { height: DN_ROW_H + Math.max(0, lines - 2) * DN_LINE_H, small }
 }
+/** a wrap cell at a smaller face (see dnRowFit) — same column box, first line box at the 12pt cell's top */
+const dnCellSmall = (col: number, rowTop: number, text: string, f: DnSmall) =>
+  text ? `<div class="dnk" style="left:${DN_COLS[col]}pt;width:${(DN_COLS[col + 1] - DN_COLS[col]).toFixed(2)}pt;top:${(Math.round((rowTop + DN_CELL_TOP) / 0.75) * 0.75).toFixed(2)}pt;font-size:${f.size}pt;line-height:${f.lineH.toFixed(2)}pt">${esc(text)}</div>` : ''
 
 /** Delivery Note (ใบส่งมอบรถยนต์) — rebuilt 1:1 against the AMS reference:
  *  same TH Sarabun New faces, same coordinates, same dot-leader runs. */
-function dnSheetHtml(rows: TrackRow[], heights: number[], seq0: number, grouping: string, trip: string, printDate: string, destOf?: DestOf): string {
+function dnSheetHtml(rows: TrackRow[], fits: DnRowFit[], seq0: number, grouping: string, trip: string, printDate: string, destOf?: DestOf): string {
   const parts: string[] = []
+  const heights = fits.map((f) => f.height)
   // ── page header ──
   parts.push(dnT(false, 20, 18.44, 10, `Grouping : ${grouping || '—'}`))
   parts.push(dnT(false, 440, 18.44, 10, `Print Date ${printDate}`))
@@ -262,7 +289,10 @@ function dnSheetHtml(rows: TrackRow[], heights: number[], seq0: number, grouping
     parts.push(dnCell(0, T + 12.63, String(seq0 + i + 1)))
     parts.push(`<div class="dnbc" style="left:47.01pt;top:${(T + 5.43).toFixed(2)}pt;width:133.83pt;height:17.26pt">${barcodeSvg(r.vin)}</div>`)
     parts.push(dnCell(1, T + 35.96, r.vin))
-    for (const c of DN_WRAP_COLS) parts.push(dnCell(c, T + 12.63, texts[c]))
+    for (const c of DN_WRAP_COLS) {
+      const sm = fits[i].small[c]
+      parts.push(sm ? dnCellSmall(c, T, texts[c], sm) : dnCell(c, T + 12.63, texts[c]))
+    }
   })
 
   // ── signature block — flows under the table (reference offsets from its
@@ -384,18 +414,22 @@ export const buildDnHtml = (rows: TrackRow[], groupOf?: (vin: string) => string,
     // no grouping at all looks for a Trip No column; a VIN is never a trip.
     const grouping = g === '—' ? '' : g
     const trip = grouping || cell(list[0], 'Trip No', 'Trip No.', 'TripNo')
-    // break sheets by height, not count: 8 standard rows still fill one sheet,
-    // and a run with long destinations breaks earlier with the sequence running on
-    const heights = list.map((r) => dnRowHeight(dnRowTexts(r, destOf), measure))
+    // one grouping = one sheet: rows grow for a long destination only while the grouping still fits;
+    // past that, the long cells are set smaller instead (dnRowFit compact) so every row keeps the
+    // standard height — 8 cars always fit. Only a grouping that STILL overflows (more than 8 cars,
+    // or a cell too long even at 9pt) continues onto another sheet, the sequence running on.
+    const texts = list.map((r) => dnRowTexts(r, destOf))
+    let fits = texts.map((t) => dnRowFit(t, measure))
+    if (fits.reduce((a, f) => a + f.height, 0) > DN_BODY_MAX + 0.01) fits = texts.map((t) => dnRowFit(t, measure, true))
     let start = 0, used = 0
     list.forEach((_, i) => {
-      if (i > start && used + heights[i] > DN_BODY_MAX + 0.01) {
-        sheets.push(dnSheetHtml(list.slice(start, i), heights.slice(start, i), start, grouping, trip, printDate, destOf))
+      if (i > start && used + fits[i].height > DN_BODY_MAX + 0.01) {
+        sheets.push(dnSheetHtml(list.slice(start, i), fits.slice(start, i), start, grouping, trip, printDate, destOf))
         start = i; used = 0
       }
-      used += heights[i]
+      used += fits[i].height
     })
-    if (list.length) sheets.push(dnSheetHtml(list.slice(start), heights.slice(start), start, grouping, trip, printDate, destOf))
+    if (list.length) sheets.push(dnSheetHtml(list.slice(start), fits.slice(start), start, grouping, trip, printDate, destOf))
   }
   return htmlDoc(`DN — ${byGroup.size} Grouping · ${rows.length} VIN`, sheets.join(''))
 }

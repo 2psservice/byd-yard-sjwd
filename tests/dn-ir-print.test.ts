@@ -51,16 +51,52 @@ describe('DN: ช่อง Destination ยาว ขยายแถวลง', (
     expect(h1).toBeCloseTo(43.945, 1)
     expect(h2).toBeCloseTo(43.945 + 15.61, 1)
   })
-  it('8 แถวปกติยังอยู่ใบเดียว · ถ้าแถวสูงขึ้นจนเกินหน้า ขึ้นใบใหม่ เลขลำดับต่อกัน', () => {
+  it('8 แถวปกติยังอยู่ใบเดียว', () => {
     const normal = Array.from({ length: 8 }, (_, i) => row(`N${i}`, { 'Dealer Location': 'Jinlong Motors Co., Ltd.' }))
     expect(buildDnHtml(normal, () => 'G1', undefined, mono).match(/class="dn-sheet"/g)).toHaveLength(1)
-    const tall = Array.from({ length: 8 }, (_, i) => row(`T${i}`, { 'Dealer Location': 'Embassy Automotive Uttaradit Co., Ltd. (Uttaradit)' }))
-    const html = buildDnHtml(tall, () => 'G2', undefined, mono)
-    const sheets = html.split('class="dn-sheet"').slice(1)
-    expect(sheets.length).toBe(2)
-    // 8 × 43.945 = 351.56pt of table per sheet → 5 rows of 59.555pt fit, the rest continue with Seq 6…
-    expect((sheets[0].match(/>T\d</g) ?? []).length).toBe(5)
-    expect(sheets[1]).toContain('>6<')
+  })
+})
+
+describe('DN: 1 Grouping = 1 แผ่น (28/10 North Star 8 คัน ชื่อดีลเลอร์ยาว 3 บรรทัด แยกเป็น 2 แผ่น)', () => {
+  const sheetsOf = (html: string) => html.split('class="dn-sheet"').slice(1)
+  it('8 คันที่ปลายทางยาว 3 บรรทัด: อยู่แผ่นเดียว · ช่องยาวใช้ตัวเล็กลง แถวสูงเท่าแถวปกติ', () => {
+    const tall = Array.from({ length: 8 }, (_, i) => row(`T${i}`, { 'Dealer Location': 'North Star Automotive Lamphun Co., Ltd. (Lamphun)' }))
+    const html = buildDnHtml(tall, () => 'SJWD261028-021', undefined, mono)
+    const sheets = sheetsOf(html)
+    expect(sheets).toHaveLength(1)
+    expect((sheets[0].match(/>T\d</g) ?? []).length).toBe(8)
+    expect(sheets[0]).toContain('>8<')
+    // every destination cell drops to a smaller face that still holds all 3 lines
+    expect(sheets[0].match(/font-size:(?:11|10|9)pt;line-height:[\d.]+pt">North Star Automotive Lamphun/g)).toHaveLength(8)
+    const lines = hLines(html)
+    // header top + 8 row tops + table bottom, every row the standard 43.945pt
+    expect(lines).toHaveLength(10)
+    for (let i = 1; i < lines.length - 1; i++) expect(lines[i + 1] - lines[i]).toBeCloseTo(43.945, 1)
+  })
+
+  it('ปนกัน (ปลายทางสั้น + ยาว) 8 คัน: แผ่นเดียว · ช่องสั้นยังเป็นตัวปกติ', () => {
+    const mixed = Array.from({ length: 8 }, (_, i) => row(`M${i}`, {
+      'Dealer Location': i < 5 ? 'North Star Automotive Lamphun Co., Ltd. (Lamphun)' : 'Hi-Class Auto Co., Ltd.',
+    }))
+    const html = buildDnHtml(mixed, () => 'SJWD261028-020', undefined, mono)
+    expect(sheetsOf(html)).toHaveLength(1)
+    expect(html.match(/line-height:[\d.]+pt">North Star/g)).toHaveLength(5)
+    expect(html).not.toMatch(/line-height:[\d.]+pt">Hi-Class/)
+  })
+
+  it('กลุ่มที่ไม่ล้นหน้า: ตัวปกติ 12pt แถวยาวลงตามเดิม (ไม่ย่อโดยไม่จำเป็น)', () => {
+    const html = buildDnHtml([row('A1', { 'Dealer Location': 'North Star Automotive Lamphun Co., Ltd. (Lamphun)' })], () => 'G', undefined, mono)
+    expect(html).not.toMatch(/font-size:(?:11|10|9)pt;line-height/)
+    const lines = hLines(html)
+    expect(lines[2] - lines[1]).toBeCloseTo(43.945 + 15.61, 1)
+  })
+
+  it('เกิน 8 คัน: ยังต่อแผ่นที่ 2 เลขลำดับต่อกัน (ข้อจำกัดของหน้ากระดาษ)', () => {
+    const nine = Array.from({ length: 9 }, (_, i) => row(`K${i}`, { 'Dealer Location': 'Hi-Class Auto Co., Ltd.' }))
+    const sheets = sheetsOf(buildDnHtml(nine, () => 'G9', undefined, mono))
+    expect(sheets).toHaveLength(2)
+    expect((sheets[0].match(/>K\d</g) ?? []).length).toBe(8)
+    expect(sheets[1]).toContain('>9<')
   })
 })
 
