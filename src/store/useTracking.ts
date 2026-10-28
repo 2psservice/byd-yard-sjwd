@@ -133,6 +133,41 @@ function pushRows(rows: TrackRow[]): void {
   pushSharedCells(rows)
 }
 
+// แถวจากการนำเข้าไฟล์ที่ยังรอ "เพิ่มเฉพาะถ้าคลาวด์ยังไม่มี" สำเร็จ — syncCloud ต้องไม่ส่งแถวเหล่านี้ด้วย upsert ปกติ
+// (ฉบับในเครื่องเป็นของไฟล์ ถ้าคลาวด์มีรถคันนั้นอยู่แล้ว upsert จะเขียนทับ) แต่ส่งซ้ำทาง pushNewRows แทน
+const pendingInsert = new Set<string>()
+/**
+ * ทางส่งของการนำเข้าไฟล์: "ใหม่" ในเครื่องไม่ได้แปลว่าใหม่ในคลาวด์ — เครื่องโหลดแถวเฉพาะยาร์ดตัวเอง
+ * (27 ต.ค.: นำเข้าที่เครื่อง NYB2 เขียนทับ 466 คันที่อยู่ 3D LCB / 3D THUNGKRAT) จึงเพิ่มแบบไม่ทับ
+ * แล้วรับฉบับคลาวด์ของ VIN ที่คลาวด์มีอยู่แล้วแทนฉบับไฟล์ในเครื่อง · VIN ที่ถูกลบในคลาวด์ = นำเข้าใหม่ได้ตามเดิม
+ */
+function pushNewRows(rows: TrackRow[]): void {
+  if (!rows.length) return
+  for (const r of rows) pendingInsert.add(r.vin)
+  pushQueue(rows.map((r) => r.vin), async () => {
+    const inserted = await db.insertTrackingRowsIfAbsent(rows)
+    const skipped = rows.filter((r) => !inserted.has(r.vin))
+    const cloud = skipped.length ? await db.fetchTrackingRowsByVins(skipped.map((r) => r.vin)) : []
+    const byVin = new Map(cloud.map((r) => [r.vin, r] as const))
+    const revive = skipped.filter((r) => { const c = byVin.get(r.vin); return !c || c.deletedAt })
+    if (revive.length) await db.upsertTrackingRows(revive)
+    const keep = cloud.filter((c) => !c.deletedAt).map(stripSystemHistory)
+    if (keep.length) {
+      useTracking.setState((s) => {
+        const next = { ...s.rows }
+        for (const c of keep) next[c.vin] = c
+        return { rows: next }
+      })
+      seedShared(keep)
+      idbBulkPut(keep).catch(() => {})
+    }
+    const written = new Set([...inserted, ...revive.map((r) => r.vin)])
+    pushSharedCells(rows.filter((r) => written.has(r.vin)))
+  })
+    .then(() => { for (const r of rows) pendingInsert.delete(r.vin) })
+    .catch(() => { /* ค้างใน pendingInsert — syncCloud ส่งซ้ำทางเดียวกันนี้ */ })
+}
+
 // ── แยกยาร์ดขั้นที่ 1: เขียนสองทาง — ช่องร่วมต่อคัน (PDI/PM/FINAL/ค่าวัด) ไปตาราง station_checks ──
 // pushRows คือทางเดียวที่ทุกการแก้/นำเข้าไฟล์ผ่าน จึงเทียบที่นี่: ค่าช่องร่วมที่เครื่องนี้รู้ครั้งก่อน
 // (sharedKnown — seed ตอนแถวเข้ามาจาก IDB/คลาวด์) vs ค่าในแถวที่ส่ง → ส่งเฉพาะที่เปลี่ยน
@@ -918,6 +953,8 @@ export const useTracking = create<TrackingState>()(
           // wire) is not ours to write back — pushing it would erase the
           // sender's new audit line for everyone
           if (broadcastOnly.has(lr.vin)) continue
+          // ฉบับไฟล์ที่ยังรอเพิ่มแบบไม่ทับ (pushNewRows) — upsert ตรงนี้คือการเขียนทับแบบ 27 ต.ค.
+          if (pendingInsert.has(lr.vin)) continue
           const cr = cloudByVin.get(lr.vin)
           if (cr?.deletedAt) continue
           if (incremental) {
@@ -968,6 +1005,9 @@ export const useTracking = create<TrackingState>()(
           pushSharedCells(retry)
         }
         if (outgoing.size) pushRows([...outgoing.values()])
+        // การนำเข้าที่ส่งไม่สำเร็จ — ส่งซ้ำแบบเพิ่มเฉพาะที่คลาวด์ยังไม่มี
+        const retryNew = [...pendingInsert].map((vin) => merged[vin]).filter((r): r is TrackRow => !!r && hasVin(r))
+        if (retryNew.length) pushNewRows(retryNew)
         set({ lastSync: startedAt })
         loadMark('sync-done')
         cloudSyncedOnce = true
@@ -1105,7 +1145,7 @@ export const useTracking = create<TrackingState>()(
           rows[r.vin] = stamped; added.push(stamped)
         }
         idbBulkPut(added).catch(() => {})
-        pushRows(added)
+        pushNewRows(added)
         set({
           rows,
           // surface EVERY uploaded column in the Unit List (not just the canonical set)
@@ -1135,7 +1175,7 @@ export const useTracking = create<TrackingState>()(
           rows[r.vin] = stamped; added.push(stamped)
         }
         idbBulkPut(added).catch(() => {})
-        pushRows(added)
+        pushNewRows(added)
         set({ rows, loaded: true })
         return { added: added.length, skipped }
       },

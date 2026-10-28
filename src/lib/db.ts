@@ -1497,6 +1497,47 @@ export async function upsertTrackingRows(rows: TrackRow[]): Promise<void> {
   }
 }
 
+/**
+ * เพิ่มแถวที่คลาวด์ "ยังไม่มี" เท่านั้น (ON CONFLICT DO NOTHING) — ทางนำเข้าไฟล์ใช้ตัวนี้แทน upsert
+ * เครื่องรู้จักเฉพาะแถวของยาร์ดตัวเอง รถที่อยู่ยาร์ดอื่นจึงดูเหมือน "ใหม่" และ upsert เขียนทับทั้งแถว
+ * (27 ต.ค.: 466 คันที่ 3D LCB / 3D THUNGKRAT กลายเป็นแถว NYB2 Gate-out ประวัติหาย)
+ * คืน VIN ที่เพิ่มได้จริง — VIN ที่ไม่อยู่ในผลคือมีในคลาวด์แล้ว (รวมแถวที่ถูกลบ) และไม่ถูกแตะ
+ */
+export async function insertTrackingRowsIfAbsent(rows: TrackRow[]): Promise<Set<string>> {
+  const inserted = new Set<string>()
+  if (!isConfigured() || !rows.length) return inserted
+  const CHUNK = 500
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const slice = rows.slice(i, i + CHUNK).map((r) => ({
+      vin: r.vin, cells: r.cells ?? {},
+      updated_at: new Date(r.updatedAt ?? Date.now()).toISOString(),
+      site: r.site ?? null,
+      history: r.history ?? null,
+      deleted_at: null,
+    }))
+    const { data, error } = await supabase.from('tracking_rows')
+      .upsert(slice, { onConflict: 'vin', ignoreDuplicates: true }).select('vin')
+    if (error) { console.error('[db] insertTrackingRowsIfAbsent chunk', i, error); throw error }
+    for (const r of (data ?? []) as { vin: string }[]) inserted.add(r.vin)
+  }
+  return inserted
+}
+
+/** แถวรถตามรายการ VIN ทั้งชุด (รวมแถวที่ถูกลบ — ผู้เรียกดู deletedAt เอง) ทีละ 200 · ล้มเหลว = โยน */
+export async function fetchTrackingRowsByVins(vins: string[]): Promise<TrackRow[]> {
+  if (!isConfigured() || !vins.length) return []
+  const out: TrackRow[] = []
+  const CHUNK = 200
+  for (let i = 0; i < vins.length; i += CHUNK) {
+    const slice = vins.slice(i, i + CHUNK)
+    const { data, error } = await withRetry(() => supabase.from('tracking_rows')
+      .select('vin, cells, updated_at, site, history, deleted_at').in('vin', slice))
+    if (error) { console.error('[db] fetchTrackingRowsByVins', error); throw error }
+    out.push(...((data ?? []) as TrackRowRow[]).map(toTrackRow))
+  }
+  return out
+}
+
 // ── station_checks — ช่องร่วมต่อคัน (PDI/PM/FINAL/ค่าวัด) แยกยาร์ดขั้นที่ 1 (lib/stationChecks.ts) ──
 export interface DbStationCheck { vin: string; key: string; value: string; at: string | null; by: string | null; src: string | null; site_id: string | null; updated_at?: string }
 
