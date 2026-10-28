@@ -1719,8 +1719,11 @@ function rowToEv(r: any): EvCharge {
   }
 }
 
-/** ev_charges.pauses มีหรือยัง (supabase-ev-charging.sql รุ่นที่มีปุ่มหยุดพัก) — false หลังเจอว่าไม่มี จนกว่าจะเปิดแอปใหม่ */
+/** ev_charges.pauses มีหรือยัง (supabase-ev-charging.sql รุ่นที่มีปุ่มหยุดพัก) — false หลังเจอว่าไม่มี จนกว่าจะเปิดแอปใหม่
+ *  หรือจนกว่าการดึงรอบชาร์จครั้งถัดไปจะเห็นคอลัมน์ */
 let evPausesColumn = true
+/** false = ตารางยังไม่มีคอลัมน์ pauses: เครื่องอื่นไม่เห็นการหยุดพัก (รถที่พักขึ้นว่ากำลังชาร์จ เวลานับต่อ) */
+export const evPausesReady = (): boolean => evPausesColumn
 
 /** รอบชาร์จของยาร์ดนี้ ที่เริ่มตั้งแต่ `sinceMs` + รอบที่ยังชาร์จอยู่ทั้งหมด (ไม่ว่าเริ่มเมื่อไร)
  *  null = ดึงไม่ได้ (ยังไม่ได้รัน SQL / ออฟไลน์) — ผู้เรียกใช้ของในเครื่องต่อ */
@@ -1735,7 +1738,12 @@ export async function fetchEvCharges(siteId: string | null, sinceMs: number): Pr
       q = open ? q.is('after_at', null) : q.gte('before_at', new Date(sinceMs).toISOString())
       const { data, error } = await q.order('before_at', { ascending: false }).range(from, from + PAGE - 1)
       if (error) { console.error('[db] fetchEvCharges', error); return false }
-      for (const r of data ?? []) out.set(String(r.id), rowToEv(r))
+      for (const r of data ?? []) {
+        // select('*') returns every column the table has — a row without the key means the column was never added,
+        // so a pause saved on one phone can't reach any other device (it read as still charging there)
+        evPausesColumn = 'pauses' in r
+        out.set(String(r.id), rowToEv(r))
+      }
       if (!data || data.length < PAGE) return true
     }
   }

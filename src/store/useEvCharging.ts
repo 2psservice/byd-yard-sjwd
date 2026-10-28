@@ -65,7 +65,8 @@ export const useEvCharging = create<EvState>()((set, get) => ({
       const cur = merged[c.id]
       if (!cur || (cur.updatedAt ?? 0) <= (c.updatedAt ?? 0)) merged[c.id] = c
     }
-    set({ charges: merged, loaded: true, cloudMissing: false })
+    // rows came back without the pauses column → say so on every device, not only the one that paused
+    set({ charges: merged, loaded: true, cloudMissing: false, ...(cloud.length ? { pausesMissing: !db.evPausesReady() } : {}) })
     for (const c of Object.values(get().pending)) void get().save(c)
   },
 

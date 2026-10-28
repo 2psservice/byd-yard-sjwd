@@ -34,12 +34,30 @@ function useSiteCharges(): EvCharge[] {
     .sort((a, b) => b.beforeAt - a.beforeAt), [charges, site])
 }
 
-/** โหลดรอบชาร์จของยาร์ดนี้ตั้งแต่เมื่อวาน (+ รอบที่ยังชาร์จอยู่) — สถานีใช้แค่วันนี้กับรถที่ค้าง */
+/** ดึงใหม่ทุกกี่นาทีระหว่างที่จอเปิดอยู่ — กันรายการค้างเมื่อพลาดสัญญาณ 'ev' จากเครื่องอื่น */
+export const EV_REFRESH_MS = 2 * 60_000
+let lastEvPull: { site: string | null; at: number } | null = null
+
+/** โหลดรอบชาร์จของยาร์ดนี้ตั้งแต่เมื่อวาน (+ รอบที่ยังชาร์จอยู่) — สถานีใช้แค่วันนี้กับรถที่ค้าง
+ *  การหยุดพัก / ชาร์จต่อ / จบ จากเครื่องอื่นมาถึงด้วยสัญญาณ 'ev' แต่มือถือที่จอดับหรือเน็ตหลุดพลาดสัญญาณนั้น
+ *  แล้วค้างรายการเก่าทั้งวัน (28 ต.ค.: รถที่หยุดพักไว้ขึ้นว่ากำลังชาร์จ เวลานับไป 25 ชม.) — ดึงใหม่ตอนกลับมาเห็นจอ
+ *  และทุก EV_REFRESH_MS ระหว่างที่จอเปิด */
 export function useEvStationLoad(): void {
   const site = useYard((s) => s.currentSite)
   useEffect(() => {
-    const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - 1)
-    useEvCharging.getState().load(site ?? null, d.getTime()).catch(() => {})
+    const pull = () => {
+      // the ops menu and the EV station both mount this — one pull serves both
+      const now = Date.now()
+      if (lastEvPull && lastEvPull.site === site && now - lastEvPull.at < 30_000) return
+      lastEvPull = { site, at: now }
+      const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - 1)
+      useEvCharging.getState().load(site ?? null, d.getTime()).catch(() => {})
+    }
+    pull()
+    const onVis = () => { if (document.visibilityState === 'visible') pull() }
+    const t = setInterval(() => { if (document.visibilityState === 'visible') pull() }, EV_REFRESH_MS)
+    document.addEventListener('visibilitychange', onVis)
+    return () => { clearInterval(t); document.removeEventListener('visibilitychange', onVis) }
   }, [site])
 }
 
@@ -264,6 +282,7 @@ function EvChargeDetail({ charge: c, onClose }: { charge: EvCharge; onClose: () 
 export function EvStationHome({ onPick }: { onPick: (vin: string) => void }) {
   const list = useSiteCharges()
   const cloudMissing = useEvCharging((s) => s.cloudMissing)
+  const pausesMissing = useEvCharging((s) => s.pausesMissing)
   const pendingN = useEvCharging((s) => Object.keys(s.pending).length)
   const now = useMinuteTick()
   const charging = list.filter(isCharging)
@@ -281,6 +300,11 @@ export function EvStationHome({ onPick }: { onPick: (vin: string) => void }) {
       {cloudMissing && (
         <div className="panel p-3 text-[12px]" style={{ color: 'var(--st-damage)', borderColor: '#fca5a5' }}>
           ยังบันทึกขึ้นระบบไม่ได้ {pendingN ? `(ค้างในเครื่อง ${pendingN} รายการ จะส่งให้อัตโนมัติ)` : ''} — แจ้งผู้ดูแลให้รัน supabase-ev-charging.sql
+        </div>
+      )}
+      {!cloudMissing && pausesMissing && (
+        <div className="panel p-3 text-[12px]" style={{ color: EV_PAUSE, borderColor: EV_PAUSE + '88' }} data-ev-pauses-missing>
+          การหยุดพักยังไม่ส่งถึงเครื่องอื่น — รถที่หยุดพักจากมือถือเครื่องอื่นจะขึ้นว่ากำลังชาร์จ · แจ้งผู้ดูแลให้รัน supabase-ev-charging.sql
         </div>
       )}
       {/* 4 การ์ด: วันนี้ 3 ใบ + รวมทั้งเดือน (แตะเพื่อเลือกเดือนย้อนหลัง) */}
