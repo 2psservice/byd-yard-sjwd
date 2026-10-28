@@ -15,7 +15,7 @@ import * as db from '../lib/db'
 import { useUnitsView } from './useUnitsView'
 import { idbGetAllUnits, idbPutUnits, idbDeleteUnits, idbClearUnits } from '../lib/idb'
 import { onSync, sendSync, type MoveMsg, type MovesPayload } from '../lib/syncBus'
-import { hashPassword, verifyPassword, isHashed } from '../lib/password'
+import { verifyPassword } from '../lib/password'
 import { resolvePart, resolveDefect } from '../lib/masterDefect'
 import { supabase } from '../lib/supabase'
 import { blockKeyOfTag, pos as posCode } from '../lib/format'
@@ -219,6 +219,8 @@ interface YardState {
   setDriver: (d: string) => void
   loggedInUserId: string | null
   loginAt: number | null // session start — day-change auto-logout compares this to "today"
+  /** โทเค็นเซสชันจากเซิร์ฟเวอร์ (sjwd_login) — ใช้กับงานจัดการผู้ใช้ของ admin */
+  sessionToken: string | null
   addAppUser: (name: string, role: UserRole, username: string, password: string) => void
   updateAppUser: (id: string, patch: Partial<Pick<AppUser, 'name' | 'role' | 'active' | 'username' | 'password'>>) => void
   removeAppUser: (id: string) => void
@@ -608,6 +610,15 @@ function debouncedLocalStorage<S>(delay = 500): PersistStorage<S> {
   }
 }
 
+/** ข้อความผิดพลาดของงานจัดการผู้ใช้ (ฟังก์ชันฝั่งเซิร์ฟเวอร์) */
+function userAdminError(e: unknown, fallback: string): string {
+  const msg = String((e as { message?: string })?.message ?? '')
+  if (msg.includes('SJWD_NOT_ADMIN')) return 'สิทธิ์หมดอายุ — กรุณาออกจากระบบแล้วเข้าใหม่ด้วยบัญชี admin'
+  if (msg.includes('SJWD_CANNOT_DELETE_SELF')) return 'ลบบัญชีของตัวเองไม่ได้'
+  if (msg.includes('SJWD_PASSWORD_REQUIRED')) return 'กรุณาตั้งรหัสผ่าน'
+  return fallback
+}
+
 export const useYard = create<YardState>()(
   persist(
     (set, get) => ({
@@ -619,9 +630,9 @@ export const useYard = create<YardState>()(
       laneDepth: 7,
       loggedInUserId: null,
       loginAt: null,
-      appUsers: [
-        { id: 'u1', name: 'admin', role: 'admin', active: true, username: 'admin', password: 'admin' },
-      ],
+      sessionToken: null,
+      // ไม่มีบัญชีเริ่มต้นในโค้ด — รายชื่อมาจากคลาวด์ (เดิมฝัง admin/admin และอัปโหลดขึ้นเองเมื่อคลาวด์ว่าง)
+      appUsers: [],
       view: 'dashboard',
       unitPreset: null,
       unitVinFilter: null,
@@ -672,47 +683,47 @@ export const useYard = create<YardState>()(
       setPlanMode: (planMode) => set({ planMode }),
       setUser: (currentUser) => set({ currentUser }),
       setDriver: (currentDriver) => set({ currentDriver }),
+      // จัดการผู้ใช้ผ่านฟังก์ชันที่เซิร์ฟเวอร์ตรวจว่าเป็น admin (โทเค็นจากการล็อกอิน) — ส่งรหัสผ่านจริง เซิร์ฟเวอร์ hash เอง
       addAppUser: (name, role, username, password) => {
-        const user: AppUser = {
-          id: `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
-          name: name.trim(), role, active: true, username: username.trim(), password,
+        const token = get().sessionToken
+        const base = { name: name.trim(), role, active: true, username: username.trim() }
+        if (!db.isConfigured()) {
+          const user: AppUser = { id: `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`, ...base, password }
+          set(s => ({ appUsers: [...s.appUsers, user] }))
+          return
         }
-        set(s => ({ appUsers: [...s.appUsers, user] }))
-        db.upsertAppUser(user).catch((e) => {
-          console.error('[db] addAppUser', e)
-          get().toast('err', `บันทึกผู้ใช้ "${user.name}" ขึ้นคลาวด์ไม่สำเร็จ — จะซิงค์ให้อัตโนมัติเมื่อเปิดแอปครั้งถัดไป`)
-        })
+        db.adminSaveUser(token ?? '', base, password).then(
+          (id) => set(s => ({ appUsers: [...s.appUsers.filter(u => u.id !== id), { id, ...base }] })),
+          (e) => { console.error('[db] addAppUser', e); get().toast('err', userAdminError(e, `สร้างผู้ใช้ "${base.name}" ไม่สำเร็จ`)) },
+        )
       },
       updateAppUser: (id, patch) => {
-        set(s => ({ appUsers: s.appUsers.map(u => u.id === id ? { ...u, ...patch } : u) }))
-        const updated = get().appUsers.find(u => u.id === id)
-        if (updated) db.upsertAppUser(updated).catch((e) => {
-          console.error('[db] updateAppUser', e)
-          get().toast('err', `บันทึกการแก้ไขผู้ใช้ "${updated.name}" ขึ้นคลาวด์ไม่สำเร็จ`)
-        })
+        const cur = get().appUsers.find(u => u.id === id)
+        if (!cur) return
+        const { password, ...fields } = patch
+        const next = { ...cur, ...fields }
+        if (!db.isConfigured()) {
+          set(s => ({ appUsers: s.appUsers.map(u => u.id === id ? { ...next, ...(password ? { password } : {}) } : u) }))
+          return
+        }
+        db.adminSaveUser(get().sessionToken ?? '', { id, name: next.name, role: next.role, username: next.username, active: next.active }, password).then(
+          () => set(s => ({ appUsers: s.appUsers.map(u => u.id === id ? { ...u, ...fields } : u) })),
+          (e) => { console.error('[db] updateAppUser', e); get().toast('err', userAdminError(e, `บันทึกการแก้ไขผู้ใช้ "${cur.name}" ไม่สำเร็จ`)) },
+        )
       },
       removeAppUser: (id) => {
-        set(s => ({ appUsers: s.appUsers.filter(u => u.id !== id) }))
-        db.deleteAppUser(id).catch((e) => console.error('[db] removeAppUser', e))
+        if (!db.isConfigured()) { set(s => ({ appUsers: s.appUsers.filter(u => u.id !== id) })); return }
+        db.adminDeleteUser(get().sessionToken ?? '', id).then(
+          () => set(s => ({ appUsers: s.appUsers.filter(u => u.id !== id) })),
+          (e) => { console.error('[db] removeAppUser', e); get().toast('err', userAdminError(e, 'ลบผู้ใช้ไม่สำเร็จ')) },
+        )
       },
-      // Reconcile the login roster with Supabase so a field account created on
-      // one device works on any other. MERGE, never blind-overwrite: an account
-      // that exists only locally means its cloud push never landed (refresh
-      // aborted the request, or the account was created on a pre-sync build) —
-      // wipe it and that person can never log in again. Keep it and push it up
-      // instead, so the roster self-heals on every app start.
+      // รายชื่อผู้ใช้จากคลาวด์คือตัวจริง (ไม่มีรหัสผ่าน) — ไม่อัปโหลดรายชื่อจากเครื่องขึ้นไปอีก
+      // (เดิมคลาวด์ว่าง = อัปโหลดรายชื่อในเครื่อง รวมบัญชีเริ่มต้น admin/admin)
       loadAppUsersFromCloud: async () => {
         if (!db.isConfigured()) return
         const cloud = await db.fetchAppUsers()
         if (cloud === null) return // fetch failed (offline) — keep the local roster untouched
-        if (cloud.length === 0) {
-          // TRULY empty cloud (first run) → seed from this device
-          await Promise.all(get().appUsers.map((u) => db.upsertAppUser(u))).catch((e) => console.error('[db] seed appUsers', e))
-          return
-        }
-        // The cloud roster is the source of truth. The old merge kept "local-only"
-        // users AND re-pushed them — so a user deleted by the admin was resurrected
-        // by any device that still cached them, and could log in again forever.
         set({ appUsers: cloud })
         // fail-closed: if the signed-in account was deleted or deactivated,
         // end this session instead of leaving it running (or worse, letting a
@@ -728,30 +739,41 @@ export const useYard = create<YardState>()(
       },
       login: async (username, password) => {
         const s = get()
-        // username matches case-insensitively — an admin typing "TEST" when
-        // creating a user shouldn't lock that person out for typing "test"
-        const norm = (v: string) => v.trim().toLowerCase()
-        const user = s.appUsers.find(u => norm(u.username) === norm(username) && u.active)
-        if (!user || !(await verifyPassword(password, user.password))) return false
-        // legacy plaintext row → upgrade to a salted hash in place (local + cloud)
-        if (!isHashed(user.password)) {
-          const hashed = await hashPassword(password)
-          set((st) => ({ appUsers: st.appUsers.map((u) => (u.id === user.id ? { ...u, password: hashed } : u)) }))
-          db.upsertAppUser({ ...user, password: hashed }).catch((e) => console.error('[db] upgrade password hash', e))
+        let user: AppUser | undefined
+        let token: string | null = null
+        if (db.isConfigured()) {
+          // ตรวจรหัสผ่านที่เซิร์ฟเวอร์ (sjwd_login) — เบราว์เซอร์ไม่ได้ถือรหัสผ่าน/hash ของใครอีก
+          let res: Awaited<ReturnType<typeof db.loginWithPassword>>
+          try { res = await db.loginWithPassword(username.trim(), password) }
+          catch (e) {
+            console.error('[db] login', e)
+            get().toast('err', 'เชื่อมต่อระบบไม่ได้ — ตรวจสัญญาณอินเทอร์เน็ตแล้วลองใหม่')
+            return false
+          }
+          if (!res) return false
+          user = res.user; token = res.token
+          set((st) => ({ appUsers: [...st.appUsers.filter((u) => u.id !== res!.user.id), res!.user] }))
+        } else {
+          // โหมดออฟไลน์ (ไม่ได้ตั้งค่าคลาวด์ — เดโม/พัฒนา) ตรวจกับรายชื่อในเครื่อง
+          const norm = (v: string) => v.trim().toLowerCase()
+          user = s.appUsers.find(u => norm(u.username) === norm(username) && u.active)
+          if (!user || !user.password || !(await verifyPassword(password, user.password))) return false
         }
         // every login: stamp the session day (auto-logout on day change) and
         // clear the site so the operator must pick their yard again — prevents
         // recording work into another site left selected by the previous shift
         set({
-          loggedInUserId: user.id, currentUser: user.name, loginAt: Date.now(),
+          loggedInUserId: user.id, currentUser: user.name, loginAt: Date.now(), sessionToken: token,
           currentSite: null, siteModalOpen: true,
           view: user.role === 'admin' ? s.view : 'yardops',
         })
-        if (norm(user.username) === 'admin' && password === 'admin')
-          get().toast('err', 'บัญชี admin ยังใช้รหัสผ่านเริ่มต้น — กรุณาเปลี่ยนที่หน้า ตั้งค่า')
         return true
       },
-      logout: () => set({ loggedInUserId: null, loginAt: null, currentSite: null, siteModalOpen: false }),
+      logout: () => {
+        const token = get().sessionToken
+        if (token) db.logoutSession(token).catch(() => {})
+        set({ loggedInUserId: null, loginAt: null, sessionToken: null, currentSite: null, siteModalOpen: false })
+      },
       setGroupModels: (groupModelsInRow) => set({ groupModelsInRow }),
       setLaneDepth: (n) => {
         const laneDepth = Math.max(1, Math.min(MAX_LANE_DEPTH, Math.round(n || 0)))
@@ -2494,14 +2516,8 @@ export const useYard = create<YardState>()(
             username: u.username || '',
             password: u.password || '',
           }))
-          const hasAdmin = fixed.some((u: any) => u.role === 'admin' && u.username && u.password)
-          s = {
-            ...s,
-            loggedInUserId: null,
-            appUsers: hasAdmin ? fixed : [
-              { id: 'u1', name: 'admin', role: 'admin', active: true, username: 'admin', password: 'admin' },
-            ],
-          }
+          // ไม่เติมบัญชีเริ่มต้น admin/admin อีก — รายชื่อมาจากคลาวด์
+          s = { ...s, loggedInUserId: null, appUsers: fixed }
         }
         if (fromVersion < 5) {
           // site is no longer remembered across sessions — every entry re-picks
@@ -2531,8 +2547,10 @@ export const useYard = create<YardState>()(
       // logout() clears currentSite, so every LOGIN still re-picks the yard.
       partialize: (s) => ({
         lang: s.lang, planMode: s.planMode, currentUser: s.currentUser, currentDriver: s.currentDriver,
-        groupModelsInRow: s.groupModelsInRow, laneDepth: s.laneDepth, view: s.view, appUsers: s.appUsers, loggedInUserId: s.loggedInUserId,
-        loginAt: s.loginAt, currentSite: s.currentSite,
+        groupModelsInRow: s.groupModelsInRow, laneDepth: s.laneDepth, view: s.view,
+        // รายชื่อในเครื่องไม่เก็บรหัสผ่าน/hash (ยกเว้นโหมดออฟไลน์ที่ไม่มีคลาวด์)
+        appUsers: db.isConfigured() ? s.appUsers.map(({ password: _pw, ...u }) => u) : s.appUsers,
+        loggedInUserId: s.loggedInUserId, loginAt: s.loginAt, sessionToken: s.sessionToken, currentSite: s.currentSite,
         // units moved to IndexedDB (see the write-through above): the snapshot
         // here regularly outgrew localStorage's ~5 MB cap and the whole save
         // then failed silently — losing not just units but EVERYTHING in this

@@ -5,6 +5,7 @@
  */
 import { SELECT_DATA_KEYS } from './trackingColumns'
 import { isGateOutStamp } from './carStatus'
+import { csvSafe } from './excel'
 
 /** One field-level edit, logged by updateCell/bulkUpdate — covers every
  *  station's cell writes (Gate-in, Driver, PDI/PM/FC, Gate-out, Relocation)
@@ -410,7 +411,7 @@ export async function parseImportWorkbook(file: File, yards: YardName[] = []): P
 /** Export the current grid (visible columns) to CSV. */
 export function rowsToCsv(filename: string, columns: { key: string; label: string }[], rows: TrackRow[]) {
   const esc = (v: any) => {
-    const s = String(v ?? '')
+    const s = csvSafe(String(v ?? ''))
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
   }
   const head = columns.map((c) => esc(c.label)).join(',')

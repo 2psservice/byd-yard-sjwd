@@ -43,9 +43,14 @@ export async function parseExcel(file: File): Promise<RawRow[]> {
   return rows
 }
 
+/** กันสูตร Excel ในไฟล์ CSV (formula injection): ค่าที่ขึ้นต้น = + - @ tab CR ที่ไม่ใช่ตัวเลขล้วน → ใส่ ' นำหน้า ให้ Excel อ่านเป็นข้อความ */
+export function csvSafe(s: string): string {
+  return /^[=+\-@\t\r]/.test(s) && !/^[+-]?\d+(\.\d+)?$/.test(s) ? `'${s}` : s
+}
+
 export function exportCsv(filename: string, headers: string[], rows: (string | number)[][]) {
   const esc = (v: any) => {
-    const s = String(v ?? '')
+    const s = csvSafe(String(v ?? ''))
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
   }
   const csv = [headers.map(esc).join(','), ...rows.map((r) => r.map(esc).join(','))].join('\n')
