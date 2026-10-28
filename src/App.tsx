@@ -9,7 +9,7 @@ import { SiteLoadGate } from './components/SiteLoadGate'
 import { useYard, useMe, isOpsOnlyRole, checkUnitsMode, reloadForUnitsMode } from './store/useYard'
 import { useTrackingRows, useTracking, cloudSyncedThisSession } from './store/useTracking'
 import { isConfigured } from './lib/supabase'
-import { NYB2_LOST_LOCATION_20261011, NYB2_LOST_LOCATION_20261016, NYB2_RECHECK_20261016 } from './lib/restoreSets'
+import { NYB2_LOST_LOCATION_20261011, NYB2_LOST_LOCATION_20261016, NYB2_RECHECK_20261016, THUNGKRAT_LOST_LOCATION_20261028 } from './lib/restoreSets'
 import { siteIdForLocation } from './lib/siteScope'
 import { useOps, repairMissingStationDates } from './store/useOps'
 import { useVisits } from './store/useVisits'
@@ -77,8 +77,10 @@ function hasAnyUnit(units: Record<string, unknown>): boolean {
  *    ยาร์ดเดียวมีได้หลายงาน: ทำตามลำดับในรายการ ธงใครธงมัน
  *  - 11 ต.ค. NYB2 Phase 2: ช่อง Location ว่างตั้งแต่ 8 ต.ค. 09:53 — คืนเฉพาะชุด VIN ที่แอดมินระบุ ทุกบล็อกที่ผังวาด
  *    (blocks: ['*']) รายงานทุกคันในชุด: คืน/ชน/ไม่มีประวัติ/สถานะไม่ใช่ In Yard (เช่น Gate-out)/ไม่พบแถว/มีช่องแล้ว
- *  - 16 ต.ค. NYB2: ชุดที่ 2 อีก 270 คัน (ช่อง Location ว่างอีกรอบ) — วิธีเดียวกับชุด 11 ต.ค. ธงแยกต่างหาก */
-const ONE_SHOT_RESTORES: { key: string; yards: string[]; blocks: string[]; offMap?: boolean; anyBlock?: boolean; detail?: boolean; vins?: string[]; label: string }[] = [
+ *  - 16 ต.ค. NYB2: ชุดที่ 2 อีก 270 คัน (ช่อง Location ว่างอีกรอบ) — วิธีเดียวกับชุด 11 ต.ค. ธงแยกต่างหาก
+ *  - 28 ต.ค. 3D THUNGKRAT: 545 คันที่แอดมินระบุ — ใส่ตามบรรทัด Location ล่าสุดใน Event แบบชุดตรวจซ้ำ NYB2
+ *    (anyBlock) และสำรองตำแหน่งเดิมของทุกคันที่จะเขียนลง app_config ก่อน (backup) */
+const ONE_SHOT_RESTORES: { key: string; yards: string[]; blocks: string[]; offMap?: boolean; anyBlock?: boolean; detail?: boolean; backup?: boolean; vins?: string[]; label: string }[] = [
   { key: 'sjwd-restore-fln-60rai-20261006', yards: ['60 RAI'], blocks: ['F', 'L', 'N'], label: 'บล็อก F/L/N ของ 60 RAI' },
   { key: 'sjwd-restore-bcd-3dlcb-20261009', yards: ['3D LCB'], blocks: ['B', 'C', 'D'], offMap: true, label: 'บล็อก B/C/D ของ 3D LCB' },
   { key: 'sjwd-restore-ldc-60rai-20261009', yards: ['60 RAI'], blocks: ['L', 'D', 'C'], offMap: true, label: 'บล็อก L/D/C ของ 60 RAI' },
@@ -87,6 +89,8 @@ const ONE_SHOT_RESTORES: { key: string; yards: string[]; blocks: string[]; offMa
   { key: 'sjwd-restore-set-nyb2-20261016', yards: ['NYB2 Phase 2', 'NYB2'], blocks: ['*'], offMap: true, vins: NYB2_LOST_LOCATION_20261016, label: `ชุดที่ระบุ ${NYB2_LOST_LOCATION_20261016.length} คันของ NYB2` },
   // รอบ 2 ของชุด 16 ต.ค.: 40 คันที่ยังไม่มีตำแหน่ง — ใส่ตามบรรทัด Location ล่าสุดใน Event แม้บล็อกนั้นผังไม่วาด (anyBlock) · detail = แจ้งเหตุรายคันที่ใส่ไม่ได้
   { key: 'sjwd-restore-recheck-nyb2-20261016', yards: ['NYB2 Phase 2', 'NYB2'], blocks: ['*'], offMap: true, anyBlock: true, detail: true, vins: NYB2_RECHECK_20261016, label: `ชุดตรวจซ้ำ ${NYB2_RECHECK_20261016.length} คันของ NYB2` },
+  // ชุดใหญ่ — สรุปเป็นยอด (ไม่ไล่รายคัน) · ไม่ offMap: รถที่มีช่องในยาร์ดนี้แล้ว (แม้บล็อกนอกผัง) ไม่แตะเลย · ชื่อยาร์ดตามที่แอดมินพิมพ์ด้วย
+  { key: 'sjwd-restore-set-3dtk-20261028', yards: ['3D THUNGKRAT', '3D THUNGKART'], blocks: ['*'], anyBlock: true, backup: true, vins: THUNGKRAT_LOST_LOCATION_20261028, label: `ชุดที่ระบุ ${THUNGKRAT_LOST_LOCATION_20261028.length} คันของ 3D THUNGKRAT` },
 ]
 
 /** ครั้งล่าสุดที่รายงานเวอร์ชันแอป (ทั้งแอปใช้ร่วม ไม่ผูกกับรอบ render) */
@@ -401,7 +405,7 @@ export default function App() {
     }
     const runJob = async (job: (typeof ONE_SHOT_RESTORES)[number]) => {
       try {
-        const res = await useTracking.getState().restorePositionsInBlocks(job.blocks, { offMap: job.offMap, onlyVins: job.vins, anyBlock: job.anyBlock })
+        const res = await useTracking.getState().restorePositionsInBlocks(job.blocks, { offMap: job.offMap, onlyVins: job.vins, anyBlock: job.anyBlock, backupKey: job.backup ? `restore_backup:${job.key}` : undefined })
         // งานเสร็จแล้วจริง (คลาวด์รับแล้ว) — ตั้งธง/แจ้งผลเสมอ แม้ effect ถูกเริ่มใหม่ระหว่างรอ (unitsCloudDone
         // กระพริบตอน catch-up / sites เปลี่ยน) ไม่งั้นรอบถัดไปจะวิ่งซ้ำแล้วแจ้ง "คืน 0 คัน" ทั้งที่คืนไปแล้ว
         try { localStorage.setItem(job.key, String(Date.now())) } catch { /* เครื่องไม่ให้เก็บ — รอบหน้าก็ไม่มีอะไรให้แก้แล้ว */ }
