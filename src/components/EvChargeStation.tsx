@@ -106,6 +106,30 @@ function useEvMonths(): { months: EvMonthSummary[]; ready: boolean } {
   }, [cloud, charges, key, site, thisMonth])
 }
 
+/** คำถามยืนยันในแอป — ปุ่มใหญ่ "ยกเลิก" / "ตกลง" แทนกล่องของเบราว์เซอร์ (ขึ้นชื่อเว็บ "byd-yard-sjwd.pages.dev บอกว่า"
+ *  ปุ่มเล็ก แตะยากบนมือถือ) */
+interface EvAsk { title: string; body: string; color: string; onOk: () => void }
+function EvConfirm({ ask, onClose }: { ask: EvAsk; onClose: () => void }) {
+  return createPortal(
+    <div className="fixed inset-0 z-[200] flex items-center justify-center p-5" style={{ background: 'rgba(15,23,42,0.5)' }} onClick={onClose}>
+      <div className="w-full max-w-sm rounded-2xl p-5 pop" style={{ background: 'var(--panel)' }}
+        onClick={(e) => e.stopPropagation()} role="alertdialog" aria-label={ask.title} data-ev-confirm>
+        <div className="text-[17px] font-bold leading-snug">{ask.title}</div>
+        <div className="text-[13.5px] mt-1.5" style={{ color: 'var(--muted)' }}>{ask.body}</div>
+        <div className="grid grid-cols-2 gap-2.5 mt-5">
+          <button onClick={onClose} data-ev-confirm-cancel className="py-3.5 rounded-xl text-[15px] font-bold transition active:scale-[.98]"
+            style={{ border: '1.5px solid var(--line-strong)', color: 'var(--text)', touchAction: 'manipulation' }}>
+            ยกเลิก
+          </button>
+          <button onClick={() => { onClose(); ask.onOk() }} data-ev-confirm-ok className="py-3.5 rounded-xl text-[15px] font-bold transition active:scale-[.98]"
+            style={{ background: ask.color, color: '#fff', touchAction: 'manipulation' }}>
+            ตกลง
+          </button>
+        </div>
+      </div>
+    </div>, document.body)
+}
+
 /** แผ่นเลือกเดือน — แต่ละเดือนบอกยอดชาร์จเสร็จ + เฉลี่ยต่อคัน */
 function EvMonthSheet({ months, value, onPick, onClose }: {
   months: EvMonthSummary[]; value: string; onPick: (ym: string) => void; onClose: () => void
@@ -509,6 +533,7 @@ export function EvChargePanel({ vin, cells, unitModel, unitColor, onClose }: {
   const [remark, setRemark] = useState(open?.remark ?? '')
   const [saving, setSaving] = useState(false)
   const [viewPhotos, setViewPhotos] = useState<string[] | null>(null)
+  const [ask, setAsk] = useState<EvAsk | null>(null)
 
   const model = evModelOf(cells, unitModel || open?.model || '')
   const color = (cells['Color'] || unitColor || open?.color || '').trim()
@@ -531,16 +556,23 @@ export function EvChargePanel({ vin, cells, unitModel, unitColor, onClose }: {
 
   const paused = open ? openPause(open) : undefined
   /** หยุดพัก / เริ่มชาร์จต่อ — บันทึกทันที (ไม่ต้องถ่ายรูป) แล้วกลับหน้าสแกน */
-  const togglePause = async () => {
+  const togglePause = () => {
     if (!open || saving) return
+    if (paused) { void applyPause('resume'); return }
     // a mistaken tap stops the clock on a car still plugged in — ask once before pausing
-    if (!paused && !window.confirm(`หยุดพักการชาร์จ ${vin.slice(-6)} ?\n\nเวลาชาร์จจะหยุดนับจนกว่าจะกด "เริ่มชาร์จต่อ"`)) return
+    setAsk({ title: `หยุดพักการชาร์จ ${vin.slice(-6)} ?`, body: 'เวลาชาร์จจะหยุดนับจนกว่าจะกด "เริ่มชาร์จต่อ"', color: EV_PAUSE, onOk: () => void applyPause('pause') })
+  }
+  const applyPause = async (want: 'pause' | 'resume') => {
+    if (!open) return
+    // the list may have refreshed while the question was up — act on the newest copy of the round
+    const base = useEvCharging.getState().charges[open.id] ?? open
+    if ((want === 'pause') === !!openPause(base)) { toast('info', want === 'pause' ? `${vin.slice(-6)} หยุดพักอยู่แล้ว` : `${vin.slice(-6)} กำลังชาร์จอยู่แล้ว`); onClose(); return }
     const by = useYard.getState().currentUser
-    const c = paused ? resumeCharge(open, by) : pauseCharge(open, by)
+    const c = want === 'resume' ? resumeCharge(base, by) : pauseCharge(base, by)
     setSaving(true)
     const landed = useEvCharging.getState().save(c)
     writeCell(c)
-    const ended = paused ? c.pauses?.[c.pauses.length - 1] : undefined
+    const ended = want === 'resume' ? c.pauses?.[c.pauses.length - 1] : undefined
     toast('ok', ended
       ? `ชาร์จต่อ ${vin.slice(-6)} · พักไป ${fmtDuration((ended.until ?? ended.at) - ended.at)}`
       : `หยุดพัก ${vin.slice(-6)} · เวลาชาร์จหยุดเดินจนกว่าจะกดเริ่มชาร์จต่อ`)
@@ -548,13 +580,20 @@ export function EvChargePanel({ vin, cells, unitModel, unitColor, onClose }: {
     if (!(await landed)) toast('err', `EV ${vin.slice(-6)} ยังขึ้นระบบไม่ได้ — เก็บไว้ในเครื่องแล้ว จะส่งให้อัตโนมัติ`)
   }
 
-  const save = async () => {
+  const save = () => {
     if (!canSave || shot.value == null) return
+    if (open && shot.value < (open.beforePct ?? 0)) {
+      setAsk({ title: '% หลังชาร์จน้อยกว่าก่อนชาร์จ', body: `หลังชาร์จ ${shot.value}% · ก่อนชาร์จ ${open.beforePct}% — บันทึกต่อไหม`, color: EV_ACCENT, onOk: () => void commit() })
+      return
+    }
+    void commit()
+  }
+  const commit = async () => {
+    if (shot.value == null) return
     const by = useYard.getState().currentUser
     const at = Date.now()
     let c: EvCharge
     if (open) {
-      if (shot.value < (open.beforePct ?? 0) && !window.confirm(`% หลังชาร์จ (${shot.value}%) น้อยกว่าก่อนชาร์จ (${open.beforePct}%) — บันทึกต่อไหม`)) return
       // finishing during a pause ends the pause at the same moment — the charge time stops where the pause began
       c = { ...resumeCharge(open, by, at), remark: remark.trim(), afterPhoto: shot.photo, afterPct: shot.value, afterAt: at, afterBy: by, updatedAt: at }
     } else {
@@ -672,6 +711,7 @@ export function EvChargePanel({ vin, cells, unitModel, unitColor, onClose }: {
         </div>
       )}
       {viewPhotos && viewPhotos.length > 0 && <PhotoLightbox photos={viewPhotos} index={0} onClose={() => setViewPhotos(null)} />}
+      {ask && <EvConfirm ask={ask} onClose={() => setAsk(null)} />}
     </div>
   )
 }
