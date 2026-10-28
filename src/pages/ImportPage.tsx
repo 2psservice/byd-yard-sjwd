@@ -16,7 +16,7 @@ import { pos, blockKeyOfTag, blockTag, resolveBlockByName } from '../lib/format'
 import { yardLocFull } from '../lib/groupingImport'
 import { parseAccessoryWorkbook, resolveAccessoryItem, STOCK_TAB_LABEL, type AccessoryParseResult } from '../lib/accessoryImport'
 import { parseShuttleWorkbook, type ShuttleParseResult } from '../lib/shuttleImport'
-import { fetchUnitsByVins, isConfigured } from '../lib/db'
+import { fetchTrackingRowsByVins, fetchUnitsByVins, isConfigured } from '../lib/db'
 import { MasterDefectAdmin } from '../components/MasterDefectAdmin'
 import type { Block, Unit } from '../types'
 import { PageHead, cx } from '../components/ui'
@@ -163,6 +163,10 @@ export function ImportPage() {
   const [busy, setBusy] = useState(false)
   const [drag, setDrag] = useState(false)
   const [selectedDate, setSelectedDate] = useState('')
+  // รถของวันที่เลือกที่เครื่องนี้ไม่รู้จัก ต้องถามคลาวด์ก่อนนับว่า "ใหม่" — เครื่องโหลดแถวเฉพาะยาร์ดตัวเอง
+  // (27 ต.ค.: รถ 466 คันที่อยู่ 3D LCB / 3D THUNGKRAT ถูกนับเป็นรถใหม่ที่เครื่อง NYB2 แล้วถูกเขียนทับ)
+  const [cloudCheck, setCloudCheck] = useState<{ date: string; state: 'checking' | 'ok' | 'fail' } | null>(null)
+  const [cloudRetry, setCloudRetry] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
 
   // ── Co Inspection (merge) import ──
@@ -498,9 +502,28 @@ export function ImportPage() {
 
   // rows matching the picked date, split into NEW vs already-in-system (skipped)
   const selRows = useMemo(
-    () => (selectedDate ? siteRows.filter((r) => dateKey(r.cells) === selectedDate) : siteRows),
+    // ต้องเลือกวันที่ Gate In ก่อนเสมอ — เดิมค่าเริ่มต้น "ทั้งหมด" นำเข้าทุกวันที่ในไฟล์ (27 ต.ค. 09:42: 122 คิว / 4,520 คัน ย้อนหลังหลายเดือน)
+    () => (selectedDate ? siteRows.filter((r) => dateKey(r.cells) === selectedDate) : []),
     [siteRows, selectedDate],
   )
+  const selVinsKey = useMemo(() => selRows.map((r) => r.vin).join(','), [selRows])
+  useEffect(() => {
+    if (!selectedDate) { setCloudCheck(null); return }
+    const local = useTracking.getState().rows
+    const missing = selVinsKey ? selVinsKey.split(',').filter((v) => !local[v]) : []
+    if (!isConfigured() || !missing.length) { setCloudCheck({ date: selectedDate, state: 'ok' }); return }
+    let live = true
+    setCloudCheck({ date: selectedDate, state: 'checking' })
+    fetchTrackingRowsByVins(missing)
+      .then((rows) => {
+        // แถวที่คลาวด์มี (ยาร์ดไหนก็ตาม) เข้ามาอยู่ในเครื่อง → ด้านล่างนับเป็น ซ้ำ / กลับเข้ามาใหม่ ตามจริง
+        useTracking.getState().adoptCloudRows(rows)
+        if (live) setCloudCheck({ date: selectedDate, state: 'ok' })
+      })
+      .catch(() => { if (live) setCloudCheck({ date: selectedDate, state: 'fail' }) })
+    return () => { live = false }
+  }, [selectedDate, selVinsKey, cloudRetry])
+  const cloudReady = !!selectedDate && cloudCheck?.date === selectedDate && cloudCheck.state === 'ok'
   // NEW vins only — a VIN already in the system (e.g. already gated-in / In Yard)
   // is skipped: never re-imported and never re-queued, so no duplicate work
   const newRows = useMemo(() => selRows.filter((r) => !existing[r.vin]), [selRows, existing])
@@ -516,6 +539,12 @@ export function ImportPage() {
     [selRows, existing],
   )
   const dupCount = selRows.length - newRows.length - returningRows.length
+  // กลับเข้ามาใหม่ของรถที่แถวปัจจุบันเป็นของยาร์ดอื่น — เปิดรอบใหม่ย้ายรถมายาร์ดนี้ ต้องให้เห็นก่อนกดยืนยัน
+  // (28 ต.ค. 09:31: 264 คันจากแถว NYB2 ที่ถูกเขียนทับ กลายเป็น Pre Gate-in รอบ 2 ที่ 3D LCB)
+  const returningFromOtherYard = useMemo(
+    () => returningRows.filter((r) => { const ex = existing[r.vin]; return !!ex?.site && !!currentSite && ex.site !== currentSite }).length,
+    [returningRows, existing, currentSite],
+  )
   const importCount = newRows.length + returningRows.length
 
   // Rows that will actually END UP in a Gate-in queue — the lot IS the batch the
@@ -547,7 +576,7 @@ export function ImportPage() {
   }, [queueRows])
 
   const confirm = () => {
-    if (!parsed || !importCount) return
+    if (!parsed || !importCount || !cloudReady) return
     // keep the parser's Gate-out detection: a row with a real Gate Out Date is a
     // car that already LEFT — blanket-forcing Pre Gate-in re-imported historical
     // rows as expected arrivals and queued long-departed cars for gate-in.
@@ -685,7 +714,7 @@ export function ImportPage() {
                   <CalendarDays size={15} style={{ color: 'var(--brand)' }} />
                   <span className="text-[13px] font-medium">เลือกวันที่ Gate In</span>
                   <select className="select" style={{ width: 'auto', minWidth: 220 }} value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)}>
-                    <option value="">ทั้งหมด ({siteRows.length.toLocaleString()} คัน)</option>
+                    <option value="">— เลือกวันที่ Gate In —</option>
                     {movingDates.map(([d, n]) => <option key={d} value={d}>{d} ({n.toLocaleString()} คัน)</option>)}
                   </select>
                 </div>
@@ -705,11 +734,14 @@ export function ImportPage() {
               )}
               <div className="flex items-center justify-between gap-2 px-4 py-3 border-t hairline">
                 <span className="text-[12.5px]" style={{ color: 'var(--muted)' }}>
-                  {selectedDate ? <>เฉพาะวันที่ <b style={{ color: 'var(--text)' }}>{selectedDate}</b></> : 'ทุกวันที่ในไฟล์'} · <b style={{ color: 'var(--st-yard)' }}>{newRows.length.toLocaleString()}</b> ใหม่{returningRows.length ? <> · <b style={{ color: 'var(--brand)' }}>{returningRows.length.toLocaleString()}</b> กลับเข้ามาใหม่ (เคย Gate-out)</> : ''}{dupCount ? <> · <b style={{ color: 'var(--st-pending)' }}>{dupCount.toLocaleString()}</b> เดิมในระบบ (ข้าม)</> : ''}
+                  {!selectedDate ? 'เลือกวันที่ Gate In ก่อน จึงจะนำเข้าได้'
+                    : cloudCheck?.state === 'checking' ? 'กำลังตรวจกับระบบว่ารถคันไหนมีอยู่แล้ว…'
+                    : cloudCheck?.state === 'fail' ? <span style={{ color: '#dc2626' }}>สัญญาณไม่ดี — ตรวจกับระบบไม่ได้ ยังนำเข้าไม่ได้ <button className="btn" style={{ padding: '2px 8px' }} onClick={() => setCloudRetry((n) => n + 1)}>ลองใหม่</button></span>
+                    : <>เฉพาะวันที่ <b style={{ color: 'var(--text)' }}>{selectedDate}</b> · </>}{cloudReady && <><b style={{ color: 'var(--st-yard)' }}>{newRows.length.toLocaleString()}</b> ใหม่{returningRows.length ? <> · <b style={{ color: 'var(--brand)' }}>{returningRows.length.toLocaleString()}</b> กลับเข้ามาใหม่ (เคย Gate-out){returningFromOtherYard ? <> — <b style={{ color: '#d97706' }}>{returningFromOtherYard.toLocaleString()}</b> คันแถวปัจจุบันอยู่ยาร์ดอื่น จะย้ายมายาร์ดนี้</> : ''}</> : ''}{dupCount ? <> · <b style={{ color: 'var(--st-pending)' }}>{dupCount.toLocaleString()}</b> เดิมในระบบ (ข้าม)</> : ''}</>}
                 </span>
                 <div className="flex items-center gap-2">
                   <button className="btn" onClick={() => { setParsed(null); setFileName('') }}>ยกเลิก</button>
-                  <button className="btn btn-primary" onClick={confirm} disabled={importCount === 0}><CheckCircle2 size={15} /> ยืนยัน · สร้างคิว Pre Gate-in ({importCount.toLocaleString()})</button>
+                  <button className="btn btn-primary" onClick={confirm} disabled={!cloudReady || importCount === 0}><CheckCircle2 size={15} /> ยืนยัน · สร้างคิว Pre Gate-in ({importCount.toLocaleString()})</button>
                 </div>
               </div>
             </div>

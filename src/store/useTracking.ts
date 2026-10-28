@@ -133,6 +133,45 @@ function pushRows(rows: TrackRow[]): void {
   pushSharedCells(rows)
 }
 
+// แถวจากการนำเข้าไฟล์ที่ยังรอ "เพิ่มเฉพาะถ้าคลาวด์ยังไม่มี" สำเร็จ — syncCloud ต้องไม่ส่งแถวเหล่านี้ด้วย upsert ปกติ
+// (ฉบับในเครื่องเป็นของไฟล์ ถ้าคลาวด์มีรถคันนั้นอยู่แล้ว upsert จะเขียนทับ) แต่ส่งซ้ำทาง pushNewRows แทน
+const pendingInsert = new Map<string, TrackRow>()
+/**
+ * ทางส่งของการนำเข้าไฟล์: "ใหม่" ในเครื่องไม่ได้แปลว่าใหม่ในคลาวด์ — เครื่องโหลดแถวเฉพาะยาร์ดตัวเอง
+ * (27 ต.ค.: นำเข้าที่เครื่อง NYB2 เขียนทับ 466 คันที่อยู่ 3D LCB / 3D THUNGKRAT) จึงเพิ่มแบบไม่ทับ
+ * ผู้เรียกต้อง "ไม่" ใส่แถวเหล่านี้ลงเครื่องเอง — แถวเข้าเครื่อง/IDB เมื่อคลาวด์ตอบแล้วเท่านั้น: VIN ที่เพิ่มได้ = ฉบับไฟล์
+ * VIN ที่คลาวด์มีอยู่แล้ว = ฉบับคลาวด์ · VIN ที่ถูกลบในคลาวด์ = นำเข้าใหม่ได้ตามเดิม
+ * (ฉบับไฟล์ค้างในเครื่องแม้ไม่กี่วินาที ตัวกระทบยอดก็อ่านเป็น Gate-out แล้วปลดช่องในผังได้ — 27 ต.ค. 14:21)
+ */
+function pushNewRows(rows: TrackRow[]): void {
+  if (!rows.length) return
+  for (const r of rows) pendingInsert.set(r.vin, r)
+  pushQueue(rows.map((r) => r.vin), async () => {
+    const inserted = await db.insertTrackingRowsIfAbsent(rows)
+    const skipped = rows.filter((r) => !inserted.has(r.vin))
+    const cloud = skipped.length ? await db.fetchTrackingRowsByVins(skipped.map((r) => r.vin)) : []
+    const byVin = new Map(cloud.map((r) => [r.vin, r] as const))
+    const revive = skipped.filter((r) => { const c = byVin.get(r.vin); return !c || c.deletedAt })
+    if (revive.length) await db.upsertTrackingRows(revive)
+    const written = rows.filter((r) => inserted.has(r.vin) || revive.includes(r))
+    const keep = cloud.filter((c) => !c.deletedAt).map(stripSystemHistory)
+    const land = [...written, ...keep]
+    if (land.length) {
+      useTracking.setState((s) => {
+        const next = { ...s.rows }
+        for (const r of written) if (!next[r.vin]) next[r.vin] = r
+        for (const c of keep) next[c.vin] = c
+        return { rows: next, loaded: true }
+      })
+      seedShared(keep)
+      idbBulkPut(land).catch(() => {})
+    }
+    pushSharedCells(written)
+  })
+    .then(() => { for (const r of rows) pendingInsert.delete(r.vin) })
+    .catch(() => { /* ค้างใน pendingInsert — syncCloud ส่งซ้ำทางเดียวกันนี้ */ })
+}
+
 // ── แยกยาร์ดขั้นที่ 1: เขียนสองทาง — ช่องร่วมต่อคัน (PDI/PM/FINAL/ค่าวัด) ไปตาราง station_checks ──
 // pushRows คือทางเดียวที่ทุกการแก้/นำเข้าไฟล์ผ่าน จึงเทียบที่นี่: ค่าช่องร่วมที่เครื่องนี้รู้ครั้งก่อน
 // (sharedKnown — seed ตอนแถวเข้ามาจาก IDB/คลาวด์) vs ค่าในแถวที่ส่ง → ส่งเฉพาะที่เปลี่ยน
@@ -918,6 +957,8 @@ export const useTracking = create<TrackingState>()(
           // wire) is not ours to write back — pushing it would erase the
           // sender's new audit line for everyone
           if (broadcastOnly.has(lr.vin)) continue
+          // ฉบับไฟล์ที่ยังรอเพิ่มแบบไม่ทับ (pushNewRows) — upsert ตรงนี้คือการเขียนทับแบบ 27 ต.ค.
+          if (pendingInsert.has(lr.vin)) continue
           const cr = cloudByVin.get(lr.vin)
           if (cr?.deletedAt) continue
           if (incremental) {
@@ -968,6 +1009,9 @@ export const useTracking = create<TrackingState>()(
           pushSharedCells(retry)
         }
         if (outgoing.size) pushRows([...outgoing.values()])
+        // การนำเข้าที่ส่งไม่สำเร็จ — ส่งซ้ำแบบเพิ่มเฉพาะที่คลาวด์ยังไม่มี
+        const retryNew = [...pendingInsert.values()].filter(hasVin)
+        if (retryNew.length) pushNewRows(retryNew)
         set({ lastSync: startedAt })
         loadMark('sync-done')
         cloudSyncedOnce = true
@@ -1104,10 +1148,9 @@ export const useTracking = create<TrackingState>()(
           const stamped: TrackRow = { vin: r.vin, cells, updatedAt: now, site: currentSite }
           rows[r.vin] = stamped; added.push(stamped)
         }
-        idbBulkPut(added).catch(() => {})
-        pushRows(added)
+        // แถวใหม่เข้าเครื่องเมื่อคลาวด์ยืนยันแล้วเท่านั้น (pushNewRows)
+        pushNewRows(added)
         set({
-          rows,
           // surface EVERY uploaded column in the Unit List (not just the canonical set)
           columns: mergeImportedColumns(applyOptions(get().columns, res.options), res.headers),
           loaded: true,
@@ -1134,9 +1177,9 @@ export const useTracking = create<TrackingState>()(
           }
           rows[r.vin] = stamped; added.push(stamped)
         }
-        idbBulkPut(added).catch(() => {})
-        pushRows(added)
-        set({ rows, loaded: true })
+        // แถวใหม่เข้าเครื่องเมื่อคลาวด์ยืนยันแล้วเท่านั้น (pushNewRows)
+        pushNewRows(added)
+        set({ loaded: true })
         return { added: added.length, skipped }
       },
 
@@ -1714,6 +1757,7 @@ export const useTracking = create<TrackingState>()(
           return false
         }
         const changed: TrackRow[] = []
+        const fresh = new Set<string>() // VIN ที่เครื่องนี้ไม่มีแถว — สร้างจากไฟล์
         let updated = 0
         let added = 0
         let skipped = 0
@@ -1804,6 +1848,7 @@ export const useTracking = create<TrackingState>()(
             const stamped: TrackRow = { ...r, cells, updatedAt: now, site: siteForRow(cells, sites, currentSite) }
             rows[r.vin] = stamped
             changed.push(stamped)
+            fresh.add(r.vin)
             added++
           }
         }
@@ -1827,6 +1872,7 @@ export const useTracking = create<TrackingState>()(
             const stamped: TrackRow = { vin: r.vin, cells, updatedAt: now, site: currentSite }
             rows[r.vin] = stamped
             changed.push(stamped)
+            fresh.add(r.vin)
             continue
           }
           // แยกยาร์ด แยกงาน: แถวที่รอบสดเป็นของยาร์ดอื่น ไฟล์ของยาร์ดนี้แตะไม่ได้ —
@@ -1852,8 +1898,13 @@ export const useTracking = create<TrackingState>()(
           changed.push(next)
           if (cells['Car Status'] === 'Gate-out') gateOut++
         }
-        idbBulkPut(changed).catch(() => {})
-        pushRows(changed)
+        // แถวที่เครื่องนี้ไม่เคยมี — อาจมีในคลาวด์ (ยาร์ดอื่น) ส่งแบบไม่ทับ และยังไม่ใส่ลงเครื่อง (ดู pushNewRows)
+        const newRows = [...fresh].map((vin) => rows[vin])
+        for (const vin of fresh) delete rows[vin]
+        const edits = changed.filter((r) => !fresh.has(r.vin))
+        idbBulkPut(edits).catch(() => {})
+        pushRows(edits)
+        pushNewRows(newRows)
         set({
           rows,
           columns: applyOptions(get().columns, res.options),
@@ -1992,7 +2043,8 @@ export const useTracking = create<TrackingState>()(
         const row: TrackRow = { vin: v, cells: fullCells, updatedAt: Date.now(), site: siteForRow(fullCells, sites, currentSite) }
         set({ rows: { ...get().rows, [v]: row } })
         idbPut(row).catch(() => {})
-        pushRows([row])
+        // ไม่มีในเครื่อง ≠ ไม่มีในคลาวด์ (รถของยาร์ดอื่น) — เพิ่มแบบไม่ทับ ถ้ามีแล้วเครื่องรับฉบับคลาวด์แทน
+        pushNewRows([row])
         return true
       },
 
