@@ -1000,3 +1000,15 @@ export const THUNGKRAT_LOST_LOCATION_20261028: string[] = [
   'LGXCE4CBXTG040006',
   'LGXCE4CBXTG041656',
 ]
+
+/** 28 ต.ค. 3D LCB: 8 คันจากไฟล์ off-plan ที่แอดมินระบุ — คืนตามบรรทัด Location ล่าสุดใน Event (ตรวจ check digit ครบ ไม่ซ้ำ) */
+export const LCB_LOST_LOCATION_20261028: string[] = [
+  'LC0CE4CB5T4340833',
+  'LC0CE4CB0T4340805',
+  'LC0CE4CB7T4340851',
+  'LC0CE4CB1T4365261',
+  'LC0CE4CB2T4365222',
+  'LC0CE4CB2T4340823',
+  'LC0CE4CB2T4339171',
+  'LC0CE4CBXT4339001',
+]
