@@ -11,7 +11,7 @@ import { onSync, sendSync } from '../lib/syncBus'
 import { useYard } from './useYard'
 import { useTracking } from './useTracking' // one-way: tracking never imports ops
 import { hasLeftGate, deriveCarStatus, isGateOutStamp, gateOutScanMs, GATE_OUT_ORIGIN_SITE_KEY } from '../lib/carStatus'
-import { departedFromSite, rowInSite } from '../lib/siteScope'
+import { departedFromSite, departureFromSite, rowInSite, siteWorksWith } from '../lib/siteScope'
 import { PM_KEYS } from '../lib/trackingColumns'
 import type { TrackRow } from '../lib/excelTracking'
 import { quotaSafeStorage } from '../lib/persistStorage'
@@ -751,7 +751,7 @@ export const useOps = create<OpsState>()(
       dropArrivedFromLot: (id) => {
         const q = get().queues.find((x) => x.id === id)
         if (!q || queueTypeOf(q) !== 'GATEIN') return 0
-        const items = q.items.filter((i) => !gateInArrived(i))
+        const items = q.items.filter((i) => !gateInArrived(i, q))
         const removed = q.items.length - items.length
         if (!removed) return 0
         set((s) => ({ queues: s.queues.map((x) => (x.id === id ? { ...x, items } : x)) }))
@@ -1270,8 +1270,16 @@ export function reconcileGateOuts() {
     // สถานีถามว่า "งานที่สั่งไว้รอบนี้ยังต้องทำอยู่ไหม" การออกจากลานเมื่อรอบ
     // ก่อน (รถเคยไป แล้วกลับมาใหม่ แล้วถูกสั่งงานใหม่) ต้องไม่มาปิดงานรอบนี้
     // goneSince = สถานะ "ออกแล้ว" ในแถวต้องมาจากการยิงออกหลังเวลานี้ด้วย (ไม่มีเวลายิงออก = นับตามเดิม)
+    // ล็อตรับรถของยาร์ด: สถานะ "ออกแล้ว" / "เข้าลานแล้ว" ของแถวที่ยังเป็นของยาร์ดอื่น เกิดที่ยาร์ดนั้น ไม่ใช่ที่ยาร์ดของล็อต
+    // (รถ Rayong ที่ประกาศมา NYB2: Rayong ยิงออก = Pre Gate-out → เดิมล็อต NYB2 ตราว่ามาแล้วออกไปแล้ว)
+    const lotSite = isPreGateInQueue(q) ? q.site : undefined
+    const atLotSite = (vin: string): boolean => {
+      if (!lotSite) return true
+      const r = rows[vin]
+      return !r || siteWorksWith(r, lotSite, sites)
+    }
     const leftYard = (vin: string, since = 0, goneSince = false): boolean => {
-      if (isGone(vin)) {
+      if (isGone(vin) && atLotSite(vin)) {
         const outAt = goneSince ? gateOutScanMs(rows[vin]?.cells ?? {}) : 0
         if (!outAt || outAt >= since) return true
       }
@@ -1313,7 +1321,7 @@ export function reconcileGateOuts() {
         changed = true
         return { ...i, gatedOut: true, done: true, doneAt: i.doneAt ?? Date.now() }
       }
-      if (isPreGateIn && isGatedIn(i.vin) && !i.done) {
+      if (isPreGateIn && isGatedIn(i.vin) && atLotSite(i.vin) && !i.done) {
         changed = true
         return { ...i, done: true, doneAt: i.doneAt ?? Date.now() }
       }
@@ -1612,9 +1620,17 @@ export function useActiveQueues(): WorkQueue[] {
     const leftThisYard = (q: WorkQueue, i: QueueItem) =>
       maybeLeft.has(i.vin) && !!q.site &&
       departedFromSite(rows[i.vin]?.cells ?? {}, q.site, sites, i.addedAt ?? 0)
+    // ล็อตรับรถ: "ออกจากลานแล้ว" ของแถวที่ยังเป็นของยาร์ดอื่น คือ Rayong ยิงออก (รถกำลังมา NYB2) ไม่ใช่ออกจากลานของล็อต
+    // เดิมรถที่ยาร์ดเดิมยิงออกแล้วหายจากล็อตของปลายทาง ล็อตขึ้น 0/2 ทั้งที่มี 3 คัน และประตูยิงรับไม่ได้
+    const goneHere = (q: WorkQueue, vin: string) => {
+      if (!gone.has(vin)) return false
+      if (!isPreGateInQueue(q) || !q.site) return true
+      const r = rows[vin]
+      return !r || siteWorksWith(r, q.site, sites)
+    }
     return queues.map((q) => {
       const drop = (i: QueueItem) =>
-        partIsHistory(q, i) || (!isSequenceQueue(q) && (gone.has(i.vin) || leftThisYard(q, i)))
+        partIsHistory(q, i) || (!isSequenceQueue(q) && (goneHere(q, i.vin) || leftThisYard(q, i)))
       // a delivery run KEEPS its gated-out cars — gate-out is its final stage and
       // its progress must count up 1/17 → 17/17, not shrink
       return q.items.some(drop) ? { ...q, items: q.items.filter((i) => !drop(i)) } : q
@@ -1704,18 +1720,36 @@ export function hasArrived(cells: Record<string, string>): boolean {
  * is the source the Dashboard headline already uses. A VIN with no sheet row
  * falls back to the flag; there is nothing else to read.
  */
-export function gateInArrived(i: QueueItem): boolean {
+export function gateInArrived(i: QueueItem, q?: WorkQueue): boolean {
+  const row = useTracking.getState().rows[i.vin]
+  // แถวยังเป็นของยาร์ดอื่น (รถที่กำลังย้ายมา ยังไม่ผ่านประตูยาร์ดของล็อตนี้) — "In Yard" / "Pre Gate-out" ของแถวนั้น
+  // เป็นสถานะที่ยาร์ดเดิม ไม่ใช่การมาถึงที่นี่ (เดิมล็อต NYB2 นับรถ Rayong 103 คันว่ามาถึงแล้วตั้งแต่สร้างล็อต)
+  // มาถึงที่นี่แล้วจริงก็ต่อเมื่อมีรอยออกจากยาร์ดของล็อตนี้ (มาแล้วและไปต่อแล้ว) — หลังรถเข้าล็อต หรือรอยเก่าที่ล็อตจดไว้แล้ว
+  if (row && q?.site && !siteWorksWith(row, q.site, useYard.getState().sites)) {
+    const left = departureFromSite(row.cells, q.site, useYard.getState().sites)
+    if (left) return left.at >= (i.addedAt ?? 0) - SEQUENCE_DEPARTURE_SLACK_MS || !!i.gatedOut
+    // ไม่มีรอยออกจากยาร์ดของล็อต: ธง gatedOut ที่ล็อตจดไว้ยังเชื่อตามเดิม (ล็อตเก่าที่รอยหายไปต้องไม่เด้งกลับมาค้าง)
+    // ยกเว้นแถวที่ยาร์ดเดิมยิงออกอยู่เอง (Pre Gate-out / Gate-out ของยาร์ดนั้น) — นั่นคือที่มาของธงผิดก่อนแก้ ไม่ใช่การมาถึงที่นี่
+    return !!i.gatedOut && !hasLeftGate(row.cells)
+  }
   // ล็อตจดไว้เองว่ารถ "มาแล้วและออกไปแล้ว" (reconcileGateOuts ตราไว้ตอนเห็นรถออกจากยาร์ดของล็อต) — แถวสดอาจเป็น
   // Pre Gate-in รอบใหม่ของยาร์ดปลายทางที่รถย้ายไป ซึ่งไม่ใช่ "ยังไม่มาถึง" ของล็อตนี้ (หน้า Gate-in ซ่อนรายการแบบนี้อยู่แล้ว
   // ส่วน Dashboard อ่านล็อตดิบ จึงเคยนับค้างเป็น "ยังไม่มาถึง" และล็อตไม่เคยจบ)
   if (i.gatedOut) return true
-  const cells = useTracking.getState().rows[i.vin]?.cells
-  return cells ? hasArrived(cells) : i.done
+  return row ? hasArrived(row.cells) : i.done
+}
+
+/** รถในล็อตรับรถที่แถวยังเป็นของยาร์ดอื่น และยังไม่มาถึงยาร์ดของล็อต — รถที่กำลังย้ายเข้ามา (ยาร์ดเดิมยังไม่ยิงออก
+ *  หรือยิงออกแล้วแต่ยังไม่ถึง) ประตูของยาร์ดนี้ยิงรับได้ และ Dashboard นับเป็นรถรอรับ */
+export function isIncomingLotItem(i: QueueItem, q: WorkQueue): boolean {
+  if (!q.site || !isPreGateInQueue(q)) return false
+  const row = useTracking.getState().rows[i.vin]
+  return !!row && !siteWorksWith(row, q.site, useYard.getState().sites) && !gateInArrived(i, q)
 }
 
 /** The cars of a Pre Gate-in lot still waiting at the gate (same rule). */
 export function gateInPendingItems(q: WorkQueue): QueueItem[] {
-  return q.items.filter((i) => !gateInArrived(i))
+  return q.items.filter((i) => !gateInArrived(i, q))
 }
 
 export function queueProgress(q: WorkQueue) {
@@ -1729,12 +1763,8 @@ export function queueProgress(q: WorkQueue) {
   // finally agree instead of reading 90 above and 177 below.
   // A VIN with no sheet row falls back to the flag — there is nothing to read.
   if (isPreGateInQueue(q)) {
-    const rows = useTracking.getState().rows
-    const done = q.items.reduce((n, i) => {
-      if (i.gatedOut) return n + 1 // ล็อตจดว่ามาแล้วออกไปแล้ว — ดู gateInArrived
-      const cells = rows[i.vin]?.cells
-      return n + (cells ? (hasArrived(cells) ? 1 : 0) : (i.done ? 1 : 0))
-    }, 0)
+    // same rule as gateInArrived, so every board counts a car still at another yard as NOT arrived
+    const done = q.items.reduce((n, i) => n + (gateInArrived(i, q) ? 1 : 0), 0)
     return { total, done, remaining: total - done, pct: total ? Math.round((done / total) * 100) : 0 }
   }
   // count the way the STATION counts (stationProgress): a car is progress the

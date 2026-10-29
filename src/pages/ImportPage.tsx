@@ -538,14 +538,35 @@ export function ImportPage() {
     () => selRows.filter((r) => { const ex = existing[r.vin]; return !!ex && deriveCarStatus(ex.cells) === 'Gate-out' }),
     [selRows, existing],
   )
-  const dupCount = selRows.length - newRows.length - returningRows.length
+  // รถที่ยังอยู่ยาร์ดอื่นและยังไม่ออก (In Yard / Pre Gate-out ที่ Rayong ฯลฯ) = รถที่กำลังย้ายมายาร์ดนี้ ไม่ใช่ข้อมูลซ้ำ
+  // นับรวมเข้าล็อตของยาร์ดนี้ แต่ไม่แตะแถวเลย ยาร์ดเดิมยังเห็นรถของตัวเองครบจนกว่ารถจะออกจริง
+  // ยาร์ดเปลี่ยนตอนประตูยาร์ดนี้ยิงรับ (doTrackingGateIn → transferToYard) — เดิมนับรวมเป็น "ซ้ำในระบบ — ข้าม"
+  // (28 ต.ค.: ไฟล์ NYB2 210 คัน ขึ้นซ้ำ 103 ทั้งที่รถยังไม่เคยเข้า NYB2)
+  const incomingRows = useMemo(
+    () => (currentSite ? selRows.filter((r) => {
+      const ex = existing[r.vin]
+      return !!ex && deriveCarStatus(ex.cells) !== 'Gate-out' && !siteWorksWith(ex, currentSite, sites)
+    }) : []),
+    [selRows, existing, currentSite, sites],
+  )
+  const dupCount = selRows.length - newRows.length - returningRows.length - incomingRows.length
   // กลับเข้ามาใหม่ของรถที่แถวปัจจุบันเป็นของยาร์ดอื่น — เปิดรอบใหม่ย้ายรถมายาร์ดนี้ ต้องให้เห็นก่อนกดยืนยัน
   // (28 ต.ค. 09:31: 264 คันจากแถว NYB2 ที่ถูกเขียนทับ กลายเป็น Pre Gate-in รอบ 2 ที่ 3D LCB)
   const returningFromOtherYard = useMemo(
     () => returningRows.filter((r) => { const ex = existing[r.vin]; return !!ex?.site && !!currentSite && ex.site !== currentSite }).length,
     [returningRows, existing, currentSite],
   )
-  const importCount = newRows.length + returningRows.length
+  const importCount = newRows.length + returningRows.length + incomingRows.length
+  // ยาร์ดเดิมของรถที่กำลังย้ายมา พร้อมจำนวน — โชว์ก่อนกดยืนยัน
+  const incomingFrom = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const r of incomingRows) {
+      const ex = existing[r.vin]
+      const name = sites.find((s) => s.id === ex?.site)?.name || (ex?.cells['Location yard'] ?? '').trim() || '—'
+      m.set(name, (m.get(name) ?? 0) + 1)
+    }
+    return [...m.entries()].sort((a, b) => b[1] - a[1]).map(([n, c]) => `${n} ${c.toLocaleString()}`).join(' · ')
+  }, [incomingRows, existing, sites])
 
   // Rows that will actually END UP in a Gate-in queue — the lot IS the batch the
   // file announces, arrived cars included. A car that had already gated in by
@@ -597,7 +618,8 @@ export function ImportPage() {
     }
     toast('ok', `นำเข้าใหม่ ${newRows.length.toLocaleString()} คัน` +
       (returningRows.length ? ` · กลับเข้ามาใหม่ (เคย Gate-out) ${returningRows.length.toLocaleString()}` : '') +
-      ` · ข้ามซ้ำ (In Yard เดิม) ${dupCount.toLocaleString()} · Pre Gate-in`)
+      (incomingRows.length ? ` · รอรับจากยาร์ดอื่น ${incomingRows.length.toLocaleString()} (${incomingFrom})` : '') +
+      ` · ข้ามซ้ำ (มีในยาร์ดนี้แล้ว) ${dupCount.toLocaleString()} · Pre Gate-in`)
 
     // build a Gate-in work queue per (yard + Gate-in date) from NEW VINs ONLY —
     // a VIN already in the system is skipped (never re-queued) so gated-in cars
@@ -694,9 +716,10 @@ export function ImportPage() {
                 <span className="font-semibold text-[14px] clip">{fileName}</span>
                 <span className="badge ml-auto" style={{ color: 'var(--brand)', background: 'rgba(37,99,235,0.1)' }}>{parsed.headers.length} คอลัมน์</span>
               </div>
-              <div className="grid grid-cols-3 gap-px" style={{ background: 'var(--line)' }}>
-                <SumCell label="นำเข้าใหม่" value={importCount} accent="var(--st-yard)" big />
-                <SumCell label="ซ้ำในระบบ — ข้าม" value={dupCount} accent="var(--st-pending)" />
+              <div className="grid grid-cols-4 gap-px" style={{ background: 'var(--line)' }}>
+                <SumCell label="นำเข้าใหม่" value={newRows.length + returningRows.length} accent="var(--st-yard)" big />
+                <SumCell label="ย้ายมาจากยาร์ดอื่น" value={incomingRows.length} accent="var(--brand)" />
+                <SumCell label="มีในยาร์ดนี้แล้ว — ข้าม" value={dupCount} accent="var(--st-pending)" />
                 <SumCell label="ทั้งหมด (ยาร์ดนี้)" value={siteRows.length} accent="var(--text)" />
               </div>
               <div className="px-4 py-2 border-t hairline text-[11.5px]" style={{ color: 'var(--muted)' }}>
@@ -737,7 +760,7 @@ export function ImportPage() {
                   {!selectedDate ? 'เลือกวันที่ Gate In ก่อน จึงจะนำเข้าได้'
                     : cloudCheck?.state === 'checking' ? 'กำลังตรวจกับระบบว่ารถคันไหนมีอยู่แล้ว…'
                     : cloudCheck?.state === 'fail' ? <span style={{ color: '#dc2626' }}>สัญญาณไม่ดี — ตรวจกับระบบไม่ได้ ยังนำเข้าไม่ได้ <button className="btn" style={{ padding: '2px 8px' }} onClick={() => setCloudRetry((n) => n + 1)}>ลองใหม่</button></span>
-                    : <>เฉพาะวันที่ <b style={{ color: 'var(--text)' }}>{selectedDate}</b> · </>}{cloudReady && <><b style={{ color: 'var(--st-yard)' }}>{newRows.length.toLocaleString()}</b> ใหม่{returningRows.length ? <> · <b style={{ color: 'var(--brand)' }}>{returningRows.length.toLocaleString()}</b> กลับเข้ามาใหม่ (เคย Gate-out){returningFromOtherYard ? <> — <b style={{ color: '#d97706' }}>{returningFromOtherYard.toLocaleString()}</b> คันแถวปัจจุบันอยู่ยาร์ดอื่น จะย้ายมายาร์ดนี้</> : ''}</> : ''}{dupCount ? <> · <b style={{ color: 'var(--st-pending)' }}>{dupCount.toLocaleString()}</b> เดิมในระบบ (ข้าม)</> : ''}</>}
+                    : <>เฉพาะวันที่ <b style={{ color: 'var(--text)' }}>{selectedDate}</b> · </>}{cloudReady && <><b style={{ color: 'var(--st-yard)' }}>{newRows.length.toLocaleString()}</b> ใหม่{returningRows.length ? <> · <b style={{ color: 'var(--brand)' }}>{returningRows.length.toLocaleString()}</b> กลับเข้ามาใหม่ (เคย Gate-out){returningFromOtherYard ? <> — <b style={{ color: '#d97706' }}>{returningFromOtherYard.toLocaleString()}</b> คันแถวปัจจุบันอยู่ยาร์ดอื่น จะย้ายมายาร์ดนี้</> : ''}</> : ''}{incomingRows.length ? <> · <b style={{ color: 'var(--brand)' }}>{incomingRows.length.toLocaleString()}</b> ย้ายมาจากยาร์ดอื่น ({incomingFrom}) ยาร์ดเดิมยังเห็นรถจนกว่าประตูยาร์ดนี้ยิงรับ</> : ''}{dupCount ? <> · <b style={{ color: 'var(--st-pending)' }}>{dupCount.toLocaleString()}</b> มีในยาร์ดนี้แล้ว (ข้าม)</> : ''}</>}
                 </span>
                 <div className="flex items-center gap-2">
                   <button className="btn" onClick={() => { setParsed(null); setFileName('') }}>ยกเลิก</button>

@@ -498,7 +498,9 @@ function EditQueueVinsModal({ q, rows, modelByVin, dismissedRows, onClose }: {
     toast('ok', `เอา ${vin} ออกจากคิวงานแล้ว`)
   }
 
-  const items = [...live.items].sort((a, b) => Number(a.done) - Number(b.done))
+  // ล็อตรับรถ: "Gate-in แล้ว" อ่านจากรถจริง (gateInArrived) เหมือนบอร์ด — ธง done ที่ระบบเคยตราให้รถที่ยังอยู่ยาร์ดอื่นไม่นับ
+  const items = [...live.items].map((i) => (isPreGateInQueue(live) ? { ...i, done: gateInArrived(i, live) } : i))
+    .sort((a, b) => Number(a.done) - Number(b.done))
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center p-4"
       style={{ background: 'rgba(0,0,0,0.32)', backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)' }}
@@ -655,7 +657,7 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
     const queuedVins = new Set<string>()
     for (const q of all) {
       if (!isPreGateInQueue(q) || (q.site && q.site !== currentSite)) continue
-      for (const i of q.items) if (!gateInArrived(i)) queuedVins.add(i.vin)
+      for (const i of q.items) if (!gateInArrived(i, q)) queuedVins.add(i.vin)
     }
     return rows.filter((r) => rowInSite(r, currentSite, useYard.getState().sites)
       && !queuedVins.has(r.vin) && !dismissed[r.vin] && deriveCarStatus(r.cells) === 'Pre Gate-in')
@@ -806,7 +808,7 @@ function PreGateInQueues({ filterDate }: { filterDate: string | null }) {
                     </div>
                   )}
                   {/* every car — pending first, each Gate-in'd car shows when + who */}
-                  {[...q.items].map((i) => ({ ...i, done: gateInArrived(i) }))
+                  {[...q.items].map((i) => ({ ...i, done: gateInArrived(i, q) }))
                     .sort((a, b) => Number(a.done) - Number(b.done)).map((item) => (
                     // right-click (desktop) / long-press (phone) → move this car
                     // to another arrival lot. preventDefault keeps the browser's
