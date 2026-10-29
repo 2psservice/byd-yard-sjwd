@@ -2457,8 +2457,11 @@ function WalkView() {
         // อยู่ก็ตาม (เดิมเงื่อนไข !uHere ทำให้กรณีนี้ขึ้นปุ่ม Confirm ซ้ำได้)
         // รถที่กำลังย้ายมาจากยาร์ดอื่นในล็อตของยาร์ดนี้ — สถานะ In Yard / Pre Gate-out บนแถวเป็นของยาร์ดเดิม
         // ไม่ใช่ "เข้าลานนี้แล้ว" ต้องได้การ์ดรับรถ (ตรวจรุ่น/สี แล้วยิงรับ)
-        const incomingLot = currentSite && !siteWorksWith(trackRow, currentSite, sites) ? incomingLotOf(trackRow.vin) : undefined
-        const fromYard = incomingLot ? rowYardName(trackRow, sites) || 'ยาร์ดอื่น' : ''
+        const foreignRow = !!currentSite && !siteWorksWith(trackRow, currentSite, sites)
+        const incomingLot = foreignRow ? incomingLotOf(trackRow.vin) : undefined
+        // ยาร์ดที่รถกำลังย้ายออกมา = ยาร์ดของแถวตอนนี้ (ยังไม่ย้ายมาที่นี่จนกว่าจะยิงรับ)
+        const fromYard = foreignRow ? rowYardName(trackRow, sites) || 'ยาร์ดอื่น' : ''
+        const hereName = sites.find(s => s.id === currentSite)?.name || 'ยาร์ดนี้'
         const isPre = !!incomingLot || (!scannedInHere(trackRow.cells) && (
           (trackRow.cells['Car Status'] ?? 'Pre Gate-in') === 'Pre Gate-in'
           || !uHere || uHere.status === 'EXPECTED' || uHere.status === 'DEPARTED'
@@ -2483,6 +2486,10 @@ function WalkView() {
         // ยาร์ดเดิมยิงออกแล้ว ≠ รถเคยออกจากลานนี้แล้วกลับมา — ไม่ต้องถามยืนยันกลับเข้าลาน
         const returning = isPre && !incomingLot ? returningGateOut(trackRow.cells, trackRow.history) : null
         const canConfirm = verified && (!returning || returnOk)
+        // รถของยาร์ดอื่นที่ออกจากยาร์ดนั้นแล้ว = ย้ายมาที่นี่ ไม่ใช่ "กลับเข้าลาน" (ลานนี้ไม่เคยยิงมันออก)
+        const returnLine = returning
+          ? [fromYard && `${fromYard} Gate-out แล้ว`, returning.at && `เมื่อ ${fmtGateOutStamp(returning.at)}`, returning.by && `โดย ${returning.by}`].filter(Boolean).join(' ')
+          : ''
         // ── which arrival lot did this car come on? ──
         // The gate scans a VIN and gets a car, but the work is organised by lot
         // ("BIG MOTOR SALE 23 U") — the operator has to know which group the car
@@ -2632,18 +2639,18 @@ function WalkView() {
                       are recorded at the อัพเดท Defect station instead, so the
                       gate is not also a inspection queue. */}
                   {returning && (
-                    <label className="flex items-start gap-2.5 rounded-2xl p-3 text-[12.5px] leading-relaxed cursor-pointer"
+                    <label data-return-box className="flex items-start gap-2.5 rounded-2xl p-3 text-[12.5px] leading-relaxed cursor-pointer"
                       style={{ background: 'rgba(245,158,11,0.12)', color: '#92400e', border: '1px solid rgba(245,158,11,0.35)' }}>
                       <input type="checkbox" checked={returnOk} onChange={(e) => setReturnOk(e.target.checked)}
                         className="mt-0.5 shrink-0" style={{ width: 18, height: 18 }} />
                       <span>
                         <span className="flex items-center gap-1.5 font-bold text-[13px]">
-                          <AlertTriangle size={15} /> รถคันนี้ Gate-out ไปแล้ว
+                          <AlertTriangle size={15} /> {fromYard ? `ย้ายมาจาก ${fromYard}` : 'รถคันนี้ Gate-out ไปแล้ว'}
                         </span>
                         <span className="block">
-                          {returning.at ? `เมื่อ ${fmtGateOutStamp(returning.at)}` : ''}{returning.by ? ` โดย ${returning.by}` : ''} — ตรวจว่ารถอยู่ตรงหน้าจริง (VIN ตรงคัน)
+                          {returnLine ? `${returnLine} · ` : ''}ตรวจว่ารถอยู่ตรงหน้าจริง (VIN ตรงคัน)
                         </span>
-                        <span className="block font-semibold">ติ๊กเพื่อยืนยันว่ารถกลับเข้าลาน</span>
+                        <span className="block font-semibold">{fromYard ? `ติ๊กเพื่อยืนยันรับรถเข้า ${hereName}` : 'ติ๊กเพื่อยืนยันว่ารถกลับเข้าลาน'}</span>
                       </span>
                     </label>
                   )}
@@ -2657,7 +2664,7 @@ function WalkView() {
                     <CheckCircle2 size={20} /> {
                       mismatch.length ? 'Gate-in ไม่ได้ — ข้อมูลไม่ตรง'
                         : !verified ? 'ยืนยันรุ่นและสีก่อน'
-                        : !canConfirm ? 'ติ๊กยืนยันว่ารถกลับเข้าลานก่อน'
+                        : !canConfirm ? (fromYard ? 'ติ๊กยืนยันรับรถก่อน' : 'ติ๊กยืนยันว่ารถกลับเข้าลานก่อน')
                         : 'Confirm Gate in'
                     }
                   </button>
