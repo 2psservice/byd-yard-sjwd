@@ -18,7 +18,7 @@ import { isAtLanePos, planLaneUpdates, recordableDrafts, laneEntryKind } from '.
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { overlayInspection } from '../lib/inspectionStatus'
 import { isDamaged, deriveCarStatus, hasLeftGate, IN_YARD_STATUSES, CAR_STATUS_META, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY, returningGateOut, fmtGateOutStamp, gateScannedThisRound } from '../lib/carStatus'
-import { useOps, useActiveQueues, useSiteQueues, activeProcess, stageOf, isSequenceQueue, isPreGateInQueue, seqStageOf, isQueueComplete, isEmptyQueue, isStationWorkComplete, queueTypeOf, stampStationDate, stationProgress, drivingNow, gateInArrived, gateInPendingItems } from '../store/useOps'
+import { useOps, useActiveQueues, useSiteQueues, activeProcess, stageOf, isSequenceQueue, isPreGateInQueue, seqStageOf, isQueueComplete, isEmptyQueue, isStationWorkComplete, queueTypeOf, stampStationDate, stationProgress, drivingNow, gateInArrived, gateInPendingItems, isIncomingLotItem } from '../store/useOps'
 import type { WorkQueue, QueueItem, QueueType, QueueStage } from '../store/useOps'
 import { CarTopView } from '../components/CarTopView'
 import { LogoMark } from '../components/Logo'
@@ -1932,7 +1932,7 @@ function WalkView() {
   const { gateIn, importUnits, addDamage, updateDamage, markTrailerArrived, toast, currentUser } = useYardPick('gateIn', 'importUnits', 'addDamage', 'updateDamage', 'markTrailerArrived', 'toast', 'currentUser')
   const allTrackingRows = useTrackingRows()
   const { loadFromIdb, updateCell, updateCells, claimPreGateInCandidate, transferToYard } = useTracking()
-  const { toggleDone } = useOps()
+  const { toggleDone, reviveVin } = useOps()
   const { blockWith, modal: gateModal } = useNotGatedIn()
   const queues = useSiteQueues()
   const opsClosed = useOps(s => s.closed) // admin-archived lots leave this board
@@ -1987,7 +1987,7 @@ function WalkView() {
     // all. That is exactly what an admin flipping Car Status back to Pre Gate-in
     // produces, and the station had no way to know the car was waiting.
     const queuedVins = new Set<string>()
-    for (const q of queues) if (isPreGateInQueue(q)) for (const i of q.items) if (!gateInArrived(i)) queuedVins.add(i.vin)
+    for (const q of queues) if (isPreGateInQueue(q)) for (const i of q.items) if (!gateInArrived(i, q)) queuedVins.add(i.vin)
     // …minus the cars the office took off the gate's board by hand ("ไม่ได้มา").
     // The two screens have to agree, or the station keeps asking for a car the
     // admin board already cleared.
@@ -2021,7 +2021,8 @@ function WalkView() {
   const queueCars = useMemo(() => {
     if (!selectedQueue) return [] as { vin: string; model: string; color: string; grouping: string; location: string; done: boolean; ng: boolean; doneAt?: number; doneBy?: string }[]
     // build lookups once — see the equivalent station queueCars for why
-    const rowByVin = new Map(trackingRows.map(r => [r.vin, r]))
+    // ทุกยาร์ด: รถในล็อตที่กำลังย้ายมา แถวยังเป็นของยาร์ดเดิม รุ่น/สีต้องขึ้นด้วย
+    const rowByVin = new Map(allTrackingRows.map(r => [r.vin, r]))
     const unitByVin = new Map(allUnits.map(u => [u.vin, u]))
     return selectedQueue.items.map(i => {
       const row = rowByVin.get(i.vin)
@@ -2035,13 +2036,13 @@ function WalkView() {
         color: row?.cells['Color'] ?? u?.color ?? '—',
         grouping: row?.cells['Grouping  Number'] || '—',
         location: yardLocCode(u) || '—',
-        done: gateInArrived(i),
+        done: gateInArrived(i, selectedQueue),
         ng: ngVins.has(i.vin),
         doneAt: i.doneAt ?? (gitCell ? parseInt(gitCell) || undefined : undefined),
         doneBy: i.doneBy ?? row?.cells['Gate In Inspector'] ?? '',
       }
     }).sort((a, b) => Number(a.done) - Number(b.done)) // ยังไม่สแกน ขึ้นก่อน
-  }, [selectedQueue, trackingRows, allUnits, ngVins])
+  }, [selectedQueue, allTrackingRows, allUnits, ngVins])
 
   const unit = vin ? units.find(u => u.vin === vin) ?? null : null
   // อ่านจากแถวทั้งหมด ไม่ใช่แค่ของยาร์ดนี้ — รถของยาร์ดอื่นที่มาถึงประตูนี้ก็ต้อง
@@ -2178,6 +2179,12 @@ function WalkView() {
     }
     return r && !siteWorksWith(r, currentSite, sites) ? r : undefined
   }
+  /** ล็อตรับรถที่เปิดอยู่ของยาร์ดนี้ ที่รอรถคันนี้ (แถวยังเป็นของยาร์ดอื่น) — ออฟฟิศประกาศไว้แล้วว่ารถย้ายมาที่นี่
+   *  ประตูนี้จึงยิงรับได้ แม้ยาร์ดเดิมยังไม่ได้ยิงออก (ยิงรับ = บันทึก Gate-out ที่ยาร์ดเดิม ณ เวลานี้ ดู doTrackingGateIn) */
+  const incomingLotOf = (v: string): WorkQueue | undefined =>
+    currentSite
+      ? queues.find(q => isPreGateInQueue(q) && q.site === currentSite && !opsClosed[q.id] && q.items.some(i => i.vin === v && isIncomingLotItem(i, q)))
+      : undefined
 
   const onScanRef = useRef<(v: string) => void>(() => {})
   const scanNotFound = useCloudNotFound(onScanRef)
@@ -2187,9 +2194,10 @@ function WalkView() {
     //    แต่ต้องยิง Gate-out จากยาร์ดเดิมมาก่อนจริง ๆ ถึงจะถือว่าเป็นการย้ายยาร์ด
     //    จริง — ถ้าชีตยังบอกว่ารถยิงเข้ายาร์ดเดิมอยู่ (ยังไม่ออก) การสแกนที่นี่คือ
     //    เลือกผิด Site หรือสแกนวินผิดคัน ไม่ใช่รถย้ายมาจริง ห้ามยิงรับ
+    //    ยกเว้นรถที่อยู่ในล็อตรับรถของยาร์ดนี้ (incomingLotOf) — ออฟฟิศประกาศไว้แล้วว่ารถย้ายมาที่นี่
     const foreign = foreignRowOf(v)
     if (foreign) {
-      if (scannedInHere(foreign.cells)) {
+      if (scannedInHere(foreign.cells) && !incomingLotOf(foreign.vin)) {
         blockWith(foreign.vin, foreign.cells['Model name'] ?? foreign.cells['Model'], 'รถอยู่ยาร์ดอื่น', (
           <>รถคันนี้ยังอยู่ที่ <b style={{ color: 'var(--brand)' }}>{rowYardName(foreign, sites) || 'ยาร์ดอื่น'}</b> และยังไม่ได้ Gate-out จากยาร์ดนั้น<br />
           ตรวจสอบว่าเลือก Site ถูกต้อง หรือรถยังไม่ได้ออกจากยาร์ดเดิมจริง</>
@@ -2239,6 +2247,8 @@ function WalkView() {
 
   const doTrackingGateIn = (damages?: DamageInput[]) => {
     if (!trackRow) return
+    // ก่อนย้ายแถว — หลังย้ายรถเป็นของยาร์ดนี้แล้ว จะไม่นับเป็นรถที่กำลังย้ายมาอีก
+    const incomingLot = incomingLotOf(trackRow.vin)
     const now = new Date()
     const d = `${now.getDate().toString().padStart(2, '0')}/${(now.getMonth() + 1).toString().padStart(2, '0')}/${now.getFullYear()}`
     // รถของยาร์ดอื่น: ยิงรับที่นี่ = รถออกจากยาร์ดเดิม (ที่นั่นอ่านเป็น Gate-out
@@ -2290,9 +2300,12 @@ function WalkView() {
     // gate-in must never auto-complete other stations' queues (PDI, PM, Final,
     // Repair, ...), those only complete via their own station's check-in
     queues.forEach(q => {
-      if (isPreGateInQueue(q) && q.items.some(i => i.vin === trackRow.vin && !i.done)) {
-        toggleDone(q.id, trackRow.vin, currentUser)
-      }
+      if (!isPreGateInQueue(q)) return
+      const it = q.items.find(i => i.vin === trackRow.vin)
+      if (!it) return
+      // ล็อตของยาร์ดนี้ที่ระบบเคยตราว่า "มาแล้ว" ตอนรถยังอยู่ยาร์ดอื่น (ไม่มีชื่อคน) — ตราใหม่ด้วยการยิงรับครั้งนี้
+      if (it.done && !it.doneBy && q.id === incomingLot?.id) { reviveVin(q.id, trackRow.vin); toggleDone(q.id, trackRow.vin, currentUser); return }
+      if (!it.done) toggleDone(q.id, trackRow.vin, currentUser)
     })
     setTrackingVin(null)
   }
@@ -2357,8 +2370,8 @@ function WalkView() {
           {gateInQueues.map(q => {
             const total = q.items.length
             // นับจาก "สถานะรถ" ไม่ใช่ธงติ๊ก — กฎเดียวกับกระดานแอดมิน
-            const done  = q.items.filter(gateInArrived).length
-            const ng    = q.items.filter(i => gateInArrived(i) && ngVins.has(i.vin)).length
+            const done  = q.items.filter(i => gateInArrived(i, q)).length
+            const ng    = q.items.filter(i => gateInArrived(i, q) && ngVins.has(i.vin)).length
             const isOpen = q.id === selectedQueueId
             return (
               <div key={q.id} className="panel overflow-hidden">
@@ -2442,10 +2455,14 @@ function WalkView() {
         // ด้านบน) — ถ้าชีตบอกว่ายิงเข้าลานนี้ไปแล้วในรอบนี้ ห้ามโชว์ปุ่ม Confirm
         // ซ้ำอีก ต่อให้ cache หน่วย (uHere) ของเครื่องนี้ยังไม่ทันซิงก์มา/ยังว่าง
         // อยู่ก็ตาม (เดิมเงื่อนไข !uHere ทำให้กรณีนี้ขึ้นปุ่ม Confirm ซ้ำได้)
-        const isPre = !scannedInHere(trackRow.cells) && (
+        // รถที่กำลังย้ายมาจากยาร์ดอื่นในล็อตของยาร์ดนี้ — สถานะ In Yard / Pre Gate-out บนแถวเป็นของยาร์ดเดิม
+        // ไม่ใช่ "เข้าลานนี้แล้ว" ต้องได้การ์ดรับรถ (ตรวจรุ่น/สี แล้วยิงรับ)
+        const incomingLot = currentSite && !siteWorksWith(trackRow, currentSite, sites) ? incomingLotOf(trackRow.vin) : undefined
+        const fromYard = incomingLot ? rowYardName(trackRow, sites) || 'ยาร์ดอื่น' : ''
+        const isPre = !!incomingLot || (!scannedInHere(trackRow.cells) && (
           (trackRow.cells['Car Status'] ?? 'Pre Gate-in') === 'Pre Gate-in'
           || !uHere || uHere.status === 'EXPECTED' || uHere.status === 'DEPARTED'
-        )
+        ))
         const MatchPick = ({ value, onPick, what }: {
           value: 'OK' | 'NG' | null; onPick: (v: 'OK' | 'NG') => void; what: string
         }) => (
@@ -2463,7 +2480,8 @@ function WalkView() {
         )
         const mismatch = [modelOk === 'NG' && 'รุ่นรถ', colorOk === 'NG' && 'สีรถ'].filter(Boolean) as string[]
         const verified = modelOk === 'OK' && colorOk === 'OK'
-        const returning = isPre ? returningGateOut(trackRow.cells, trackRow.history) : null
+        // ยาร์ดเดิมยิงออกแล้ว ≠ รถเคยออกจากลานนี้แล้วกลับมา — ไม่ต้องถามยืนยันกลับเข้าลาน
+        const returning = isPre && !incomingLot ? returningGateOut(trackRow.cells, trackRow.history) : null
         const canConfirm = verified && (!returning || returnOk)
         // ── which arrival lot did this car come on? ──
         // The gate scans a VIN and gets a car, but the work is organised by lot
@@ -2472,14 +2490,14 @@ function WalkView() {
         // still waiting come first; a car with no lot says so, because that is
         // the case the office has to fix.
         const lots = queues.filter(q => isPreGateInQueue(q) && q.items.some(i => i.vin === trackRow.vin))
-        const lotName = (lots.find(q => q.items.some(i => i.vin === trackRow.vin && !gateInArrived(i))) ?? lots[0])?.name ?? null
+        const lotName = (lots.find(q => q.items.some(i => i.vin === trackRow.vin && !gateInArrived(i, q))) ?? lots[0])?.name ?? null
         return (
           <div className="panel overflow-hidden fade-up">
             {/* ── row 1: status badge + VIN ── */}
             <div className="flex items-center gap-2 px-4 pt-4 pb-3">
               <span className="badge text-[11.5px] font-bold px-2.5 py-1"
                 style={{ background: '#facc15', color: '#5b4a00' }}>
-                {trackRow.cells['Car Status'] ?? 'Pre Gate-in'}
+                {incomingLot ? 'Pre Gate-in' : trackRow.cells['Car Status'] ?? 'Pre Gate-in'}
               </span>
               <span className="vin text-[13px] font-bold flex-1 min-w-0 truncate">{trackRow.vin}</span>
             </div>
@@ -2501,6 +2519,15 @@ function WalkView() {
                 </span>
               )}
             </div>
+            {incomingLot && (
+              <div className="mx-4 mb-3 rounded-2xl px-3.5 py-2 text-[12px] leading-relaxed" data-incoming-from={fromYard}
+                style={{ background: 'rgba(8,145,178,0.08)', color: '#0e7490', border: '1px solid rgba(8,145,178,0.22)' }}>
+                ย้ายมาจาก <b>{fromYard}</b>
+                {hasLeftGate(trackRow.cells)
+                  ? <> · {fromYard} Gate-out แล้ว</>
+                  : <> · {fromYard} ยังไม่ได้ยิงออก กด Confirm Gate in แล้วระบบบันทึก Gate-out ที่ {fromYard} เวลานี้ให้ด้วย</>}
+              </div>
+            )}
 
             {/* ── row 2: car image LEFT + info RIGHT ── */}
             <div className="flex gap-3 px-4 pb-3">
@@ -6097,7 +6124,7 @@ export function YardOps() {
     // the uncovered safety net below) even though its own count is skipped —
     // the admin archived it on purpose, same as gateInQueues excludes it.
     const queuedPreGateInVins = new Set<string>()
-    for (const q of queues) if (isPreGateInQueue(q)) for (const i of q.items) if (!gateInArrived(i)) queuedPreGateInVins.add(i.vin)
+    for (const q of queues) if (isPreGateInQueue(q)) for (const i of q.items) if (!gateInArrived(i, q)) queuedPreGateInVins.add(i.vin)
     for (const q of queues) {
       if (isQueueComplete(q)) continue
       if (isSequenceQueue(q)) {

@@ -12,7 +12,7 @@ import { rowsForSite, rowInSite, departedFromSite } from '../lib/siteScope'
 import type { TrackRow } from '../lib/excelTracking'
 import { pct, pos, timeAgo } from '../lib/format'
 import { defectLabel } from '../lib/damageLabel'
-import { useOps, isPreGateInQueue, isQueueComplete, queueProgress, gateInArrived } from '../store/useOps'
+import { useOps, isPreGateInQueue, isQueueComplete, queueProgress, gateInArrived, isIncomingLotItem } from '../store/useOps'
 import { PageHead, ProgressBar, Stat } from '../components/ui'
 import { YardSummary } from '../components/YardSummary'
 import { STATUS_META } from '../lib/format'
@@ -367,12 +367,23 @@ export function Dashboard() {
     // the three cannot disagree. Cars the gate took off the board by hand
     // ("ไม่ได้มา") drop out here too, for the same reason.
     const covered = new Set<string>()
-    for (const q of mine) for (const i of q.items) if (!gateInArrived(i)) covered.add(i.vin)
+    for (const q of mine) for (const i of q.items) if (!gateInArrived(i, q)) covered.add(i.vin)
     const loose = trackingRows.filter(r =>
       !covered.has(r.vin) && !dismissedPreGateIn[r.vin] && deriveCarStatus(r.cells) === 'Pre Gate-in').length
     if (loose) lots.push({ id: '__uncovered', name: '(รอ Gate-in · ยังไม่มีคิวงาน)', arrived: 0, total: loose })
     return lots.sort((a, b) => b.total - a.total)
   }, [opsQueues, opsClosed, currentSite, trackingRows, dismissedPreGateIn])
+  // รถในล็อตรับรถของยาร์ดนี้ที่แถวยังเป็นของยาร์ดอื่น (กำลังย้ายมา ยังไม่ผ่านประตูนี้) — ไม่อยู่ในแถวของยาร์ดนี้
+  // ตัวเลข Pre Gate-in ด้านบนจึงไม่เคยนับ ทั้งที่การ์ดล็อตด้านล่างนับว่ายังไม่มาถึง (NYB2 210: ล็อต 107/210 แต่หัวการ์ดขึ้น 107)
+  const incomingCount = useMemo(() => {
+    if (!currentSite) return 0
+    const vins = new Set<string>()
+    for (const q of opsQueues) {
+      if (!isPreGateInQueue(q) || q.site !== currentSite || opsClosed[q.id]) continue
+      for (const i of q.items) if (!dismissedPreGateIn[i.vin] && isIncomingLotItem(i, q)) vins.add(i.vin)
+    }
+    return vins.size
+  }, [opsQueues, opsClosed, currentSite, dismissedPreGateIn, allTrackingRows, sites]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const events = useMemo(() => {
     type Ev = { ts: number; vin: string; kind: string; text: string; color: string }
@@ -466,9 +477,14 @@ export function Dashboard() {
         <Stat label={t('inYard')} value={<Num n={s.inYard} />} accent="var(--brand)" icon={<Car size={17} />}
           image="/side.png" imageVariant="side"
           onClick={kpiClick(t('inYard'), 'var(--brand)', u => ['GATE_IN','ASSIGNED','PARKED'].includes(u.status), 'inYard')} />
-        <Stat label={t('expected')} value={<Num n={s.expected} />} accent="var(--st-pending)" icon={<Hourglass size={17} />}
+        <Stat label={t('expected')} value={<Num n={s.expected + incomingCount} />} accent="var(--st-pending)" icon={<Hourglass size={17} />}
           sub={<>
             <div>{lang === 'th' ? 'ยังไม่เข้าลาน' : 'not arrived'}</div>
+            {incomingCount > 0 && (
+              <div data-incoming-count={incomingCount}>
+                {lang === 'th' ? `รวมรถรอรับจากยาร์ดอื่น ${incomingCount.toLocaleString()} คัน` : `incl. ${incomingCount.toLocaleString()} from other yards`}
+              </div>
+            )}
             {preGateInLots.length > 0 && (
               <div className="mt-1.5 space-y-0.5">
                 {preGateInLots.slice(0, PRE_GATEIN_LOT_LINES).map(l => (
