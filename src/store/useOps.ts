@@ -99,6 +99,13 @@ export interface WorkQueue {
 
 export const PRESET_QUEUES = ['PM', 'Wash for sale', 'PDI', 'FINAL CHECK'] as const
 
+/** ดึงคิวงานแบบส่วนต่าง (ดู loadFromCloud) — ทั้งชุดทุกเท่านี้ เผื่อการแก้ที่ updated_at คลาด/ตกหล่น */
+export const OPS_FULL_EVERY_MS = 15 * 60_000
+/** ช่วงทับซ้อนของการดึงส่วนต่าง — updated_at มาจากนาฬิกาเครื่องที่เขียน (upsertOpsQueue) */
+export const OPS_DELTA_OVERLAP_MS = 10 * 60_000
+const opsPull: { inFlight: Promise<void> | null; again: boolean; againAuth: boolean; lastFull: number; lastPull: number } =
+  { inFlight: null, again: false, againAuth: false, lastFull: 0, lastPull: 0 }
+
 /** คิวที่เก็บสำเนาในเครื่อง (localStorage) — เฉพาะคิวที่สร้างภายในกี่วัน
  *  26 ต.ค. คิวทั้งระบบ 262 คิว ~3.8MB เกินโควตา Safari (~5MB นับเป็น UTF-16) → บันทึกล้ม ("พื้นที่จัดเก็บในเครื่องเต็ม")
  *  แล้วเครื่องค้างสำเนาเก่าที่เก็บได้ครั้งสุดท้ายไว้ใช้ตอนเปิดแอป · คิวที่เก่ากว่านี้ดึงจากคลาวด์ตอนเปิดแอปเหมือนเดิม */
@@ -987,6 +994,23 @@ export const useOps = create<OpsState>()(
       },
 
       loadFromCloud: async (authoritative = false) => {
+        // รวมคำขอซ้อน: ระหว่างกำลังดึง คำขอใหม่ (สัญญาณ 'ops' รัว ๆ / เปิดจอ / นาฬิกา) ไม่ยิงซ้อน — ดึงอีกรอบเดียวหลังรอบนี้จบ
+        if (opsPull.inFlight) { opsPull.again = true; opsPull.againAuth ||= authoritative; return opsPull.inFlight }
+        opsPull.inFlight = (async () => {
+          try {
+            let auth = authoritative
+            for (;;) {
+              opsPull.again = false; opsPull.againAuth = false
+              await pullQueues(auth)
+              if (!opsPull.again) break
+              auth = opsPull.againAuth
+            }
+          } finally { opsPull.inFlight = null }
+        })()
+        return opsPull.inFlight
+
+        async function pullQueues(authoritative: boolean) {
+        const startedAt = Date.now()
         // closures ride along on every queue refetch — cloud copy wins
         db.fetchAppConfig<Record<string, { at: number; by?: string }>>('ops_closed_queues')
           .then((c) => { if (c && typeof c === 'object') set({ closed: c }) })
@@ -1001,8 +1025,33 @@ export const useOps = create<OpsState>()(
         const tombs = pruneTombstones({ ...get().deleted, ...(remoteTombs && typeof remoteTombs === 'object' ? remoteTombs : {}) })
         set({ deleted: tombs })
 
+        // ส่วนต่าง: ปกติดึงเฉพาะคิวที่แก้หลังรอบก่อน (เผื่อนาฬิกาเครื่องที่เขียน updated_at คลาด OPS_DELTA_OVERLAP_MS)
+        // + คิวที่เครื่องนี้ยังไม่มี · ทั้งชุดเฉพาะรอบแรกหลังเปิดแอป และทุก OPS_FULL_EVERY_MS — เดิมดึงทั้งชุด (~300 KB) ทุกนาที/ทุกสัญญาณ
+        // ทุกเครื่อง = egress ส่วนใหญ่ของระบบ (26 ต.ค. วันละ 3–4 GB)
+        if (opsPull.lastFull && startedAt - opsPull.lastFull < OPS_FULL_EVERY_MS) {
+          const sinceIso = new Date(opsPull.lastPull - OPS_DELTA_OVERLAP_MS).toISOString()
+          const [changed, ids] = await Promise.all([db.fetchOpsQueues({ sinceIso }), db.fetchOpsQueueIds()])
+          if (changed === null || ids === null) return // offline — keep local state, try again next round
+          const have = new Set(get().queues.map((q) => q.id))
+          const got = new Set(changed.map((q) => q.id))
+          const unseen = ids.filter((id) => !have.has(id) && !got.has(id) && !tombs[id])
+          const extra = unseen.length ? await db.fetchOpsQueues({ ids: unseen }) : []
+          if (extra === null) return
+          const fresh = applyPending(sanitizeQueues([...changed, ...extra]))
+          for (const q of fresh) if (tombs[q.id]) db.deleteOpsQueue(q.id).catch((e) => console.error('[db] re-delete', e))
+          const freshById = new Map(fresh.filter((q) => !tombs[q.id]).map((q) => [q.id, q]))
+          const live = new Set(ids)
+          const kept = get().queues.filter((q) => live.has(q.id) && !tombs[q.id]).map((q) => freshById.get(q.id) ?? q)
+          const keptIds = new Set(kept.map((q) => q.id))
+          const added = [...freshById.values()].filter((q) => !keptIds.has(q.id))
+          set({ queues: [...kept, ...added].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0)) })
+          opsPull.lastPull = startedAt
+          return
+        }
+
         const fetched = await db.fetchOpsQueues()
         if (fetched === null) return // table missing / offline — keep local state
+        opsPull.lastFull = opsPull.lastPull = startedAt
         // unconfirmed local writes win over the cloud copy — see pendingPush
         const all = applyPending(sanitizeQueues(fetched))
         const cloud = all.filter((q) => !tombs[q.id])
@@ -1022,6 +1071,7 @@ export const useOps = create<OpsState>()(
           // must not abort the rest (or reject this pull)
           if (local.length) await Promise.all(local.map((q) => db.upsertOpsQueue(q).catch((e) => console.error('[db] seed queue', e))))
           if (local.length !== get().queues.length) set({ queues: local })
+        }
         }
       },
     }),

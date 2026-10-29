@@ -1111,11 +1111,23 @@ function rowToQueue(r: any): WorkQueue {
 }
 
 /** null = fetch failed (table missing / offline) — caller keeps local state. */
-export async function fetchOpsQueues(): Promise<WorkQueue[] | null> {
+/** คิวงาน — ทั้งหมด หรือเฉพาะที่แก้หลัง `sinceIso` / เฉพาะ id ที่ระบุ (ดึงส่วนต่าง ลด egress: ทั้งชุด ~300 KB ต่อครั้ง) */
+export async function fetchOpsQueues(opts: { sinceIso?: string; ids?: string[] } = {}): Promise<WorkQueue[] | null> {
   if (!isConfigured()) return null
-  const { data, error } = await supabase.from('ops_queues').select('*').order('created_at', { ascending: true })
+  let q = supabase.from('ops_queues').select('*')
+  if (opts.sinceIso) q = q.gt('updated_at', opts.sinceIso)
+  if (opts.ids) q = q.in('id', opts.ids)
+  const { data, error } = await q.order('created_at', { ascending: true })
   if (error) { console.error('[db] fetchOpsQueues', error); return null }
   return (data ?? []).map(rowToQueue)
+}
+
+/** id ของคิวทั้งหมดในคลาวด์ (เบามาก) — ใช้หาคิวที่ถูกลบ/คิวที่เครื่องนี้ยังไม่มี ตอนดึงส่วนต่าง */
+export async function fetchOpsQueueIds(): Promise<string[] | null> {
+  if (!isConfigured()) return null
+  const { data, error } = await supabase.from('ops_queues').select('id')
+  if (error) { console.error('[db] fetchOpsQueueIds', error); return null }
+  return (data ?? []).map((r: { id: string }) => r.id)
 }
 
 export async function upsertOpsQueue(q: WorkQueue): Promise<void> {
@@ -1700,14 +1712,32 @@ function rowToVisit(r: any): Visit {
 }
 
 /** null = fetch failed (table not created yet / offline) — caller keeps local state. */
-export async function fetchVisits(): Promise<Visit[] | null> {
+/** แถวรอบ — ทั้งหมด หรือเฉพาะที่แก้หลัง `sinceIso` / เฉพาะ id ที่ระบุ (ทั้งตาราง ~1 MB ต่อครั้ง) */
+export async function fetchVisits(opts: { sinceIso?: string; ids?: string[] } = {}): Promise<Visit[] | null> {
   if (!isConfigured()) return null
   const out: Visit[] = []
   const PAGE = 1000
   for (let from = 0; ; from += PAGE) {
-    const { data, error } = await supabase.from('visits').select('*').order('id').range(from, from + PAGE - 1)
+    let q = supabase.from('visits').select('*')
+    if (opts.sinceIso) q = q.gt('updated_at', opts.sinceIso)
+    if (opts.ids) q = q.in('id', opts.ids)
+    const { data, error } = await q.order('id').range(from, from + PAGE - 1)
     if (error) { console.error('[db] fetchVisits', error); return null }
     for (const r of data ?? []) out.push(rowToVisit(r))
+    if (!data || data.length < PAGE) break
+  }
+  return out
+}
+
+/** id ของแถวรอบทั้งหมดในคลาวด์ (เบา) — ใช้หาแถวที่ถูกลบ/แถวที่เครื่องนี้ยังไม่มี ตอนดึงส่วนต่าง */
+export async function fetchVisitIds(): Promise<string[] | null> {
+  if (!isConfigured()) return null
+  const out: string[] = []
+  const PAGE = 1000
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase.from('visits').select('id').order('id').range(from, from + PAGE - 1)
+    if (error) { console.error('[db] fetchVisitIds', error); return null }
+    for (const r of (data ?? []) as { id: string }[]) out.push(r.id)
     if (!data || data.length < PAGE) break
   }
   return out
