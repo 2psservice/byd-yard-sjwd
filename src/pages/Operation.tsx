@@ -14,7 +14,9 @@ import { useTrackingRows } from '../store/useTracking'
 import { useYard, useUnits } from '../store/useYard'
 import { yardLocCode, byYardLocation } from '../lib/groupingImport'
 import { DayPicker, dayKeyOf } from './Grouping'
-import { PageHead, cx } from '../components/ui'
+import { PageHead, Segmented, cx } from '../components/ui'
+import { OpsMonitor } from '../components/OpsMonitor'
+import { TYPE_BADGE } from '../lib/opsMonitor'
 
 /** Which DAY a work queue belongs to — the day it was created. */
 const queueDayKey = (q: WorkQueue) => dayKeyOf(new Date(q.createdAt || Date.now()))
@@ -45,7 +47,13 @@ const TYPE_WRITEBACK: Record<QueueType, string> = {
 
 // arrival lots (created by import, worked at the gate) don't belong on this board
 
+type OpTab = 'monitor' | 'queues'
+const TAB_KEY = 'sjwd-operation-tab'
+
 export function Operation() {
+  // แท็บ "มอนิเตอร์หน้างาน" (ดูงานสด) กับ "คิวงาน" (สร้าง / จัดการคิว) — จำแท็บล่าสุดไว้ในเครื่อง
+  const [tab, setTabState] = useState<OpTab>(() => { try { return localStorage.getItem(TAB_KEY) === 'queues' ? 'queues' : 'monitor' } catch { return 'monitor' } })
+  const setTab = (t: OpTab) => { setTabState(t); try { localStorage.setItem(TAB_KEY, t) } catch { /* private mode */ } }
   const all = useActiveQueues() // gated-out cars filtered out of every queue view
   const allRows = useTrackingRows() // Pre Gate-in progress reads the cars' status
   const { createTypedQueue } = useOps()
@@ -103,14 +111,19 @@ export function Operation() {
     toast('ok', `สร้างคิวงาน "${name}"`)
   }
 
-  const openQueue = openId ? queues.find((q) => q.id === openId) ?? null : null
+  // ทุกคิวของยาร์ดนี้ — มอนิเตอร์เปิดคิวที่ปิดงานไปแล้ววันนี้ได้ด้วย (ไม่อยู่ในรายการของวันที่เลือก)
+  const openQueue = openId ? allQueues.find((q) => q.id === openId) ?? null : null
 
   return (
     <div className="w-full">
       <PageHead
         title={<span className="flex items-center gap-2"><ClipboardList size={20} style={{ color: 'var(--brand)' }} /> Operation · คิวงาน</span>}
-        sub={<span className="flex items-center gap-1.5">สร้างคิวงาน PDI / PM / FINAL CHECK หรืองานพิเศษ · บันทึกเสร็จแล้วข้อมูลเข้า Overview{siteName && <><span style={{ color: 'var(--line-strong)' }}>·</span><MapPin size={12} style={{ color: 'var(--brand)' }} /><b style={{ color: 'var(--brand)' }}>{siteName}</b></>}</span>}
+        sub={<span className="flex items-center gap-1.5">{tab === 'monitor' ? 'งานของสถานีแบบสด ตามที่หน้างานกดบันทึก' : 'สร้างคิวงาน PDI / PM / FINAL CHECK หรืองานพิเศษ · บันทึกเสร็จแล้วข้อมูลเข้า Overview'}{siteName && <><span style={{ color: 'var(--line-strong)' }}>·</span><MapPin size={12} style={{ color: 'var(--brand)' }} /><b style={{ color: 'var(--brand)' }}>{siteName}</b></>}</span>}
+        right={<Segmented<OpTab> value={tab} onChange={setTab} options={[{ value: 'monitor', label: 'มอนิเตอร์หน้างาน' }, { value: 'queues', label: 'คิวงาน' }]} />}
       />
+
+      {tab === 'monitor' && <OpsMonitor onOpenQueue={setOpenId} />}
+      {tab === 'queues' && <>
 
       {/* totals */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
@@ -184,22 +197,13 @@ export function Operation() {
           </div>
         </div>
       )}
+      </>}
 
       {openQueue && <QueueDetail q={openQueue} onClose={() => setOpenId(null)} />}
     </div>
   )
 }
 
-const TYPE_BADGE: Record<QueueType, { th: string; color: string; bg: string }> = {
-  PM: { th: 'PM', color: '#c2680b', bg: 'rgba(194,104,11,0.12)' },
-  PDI: { th: 'PDI', color: '#7c3aed', bg: 'rgba(124,58,237,0.12)' },
-  FINAL: { th: 'FINAL CHECK', color: '#0891b2', bg: 'rgba(8,145,178,0.12)' },
-  REPAIR: { th: 'ช่าง (ซ่อม)', color: '#c2680b', bg: 'rgba(194,104,11,0.12)' },
-  WASH: { th: 'Wash', color: '#2563eb', bg: 'rgba(37,99,235,0.12)' },
-  SPECIAL: { th: 'งานพิเศษ', color: '#64748b', bg: 'rgba(100,116,139,0.12)' },
-  // arrival lots never reach this board (filtered out) — mapped so the record stays total
-  GATEIN: { th: 'Pre Gate-in', color: '#1e40af', bg: 'rgba(37,99,235,0.12)' },
-}
 
 function Stat({ label, value, accent, icon }: { label: string; value: number; accent: string; icon: React.ReactNode }) {
   return (
