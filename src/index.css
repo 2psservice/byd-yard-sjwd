@@ -1,5 +1,16 @@
 @import 'tailwindcss';
 
+/* ---------- hover นุ่มทุกจุดที่กดได้ ----------
+   อยู่ใน @layer base: คลาส transition-* ของ Tailwind และคลาสของแอปเอง (.btn .nav-item .slot …) ยังชนะเสมอ
+   เปลี่ยนเฉพาะสี / พื้น / ขอบ / เงา / ความจาง — ไม่แตะ transform (ปุ่มที่ยุบตอนกด ผังลาน ลากวาง ยังตอบทันที) */
+@layer base {
+  :where(button, a, summary, label, select, input, textarea, tr, [role='button'], [role='tab'], .panel, .badge, .cursor-pointer) {
+    transition-property: color, background-color, border-color, box-shadow, opacity, text-decoration-color, fill, stroke;
+    transition-duration: 0.2s;
+    transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+}
+
 /* ============================================================
    SJWD YARD CONTROL — design system  ·  APPLE / iOS theme
    System colours, SF-style type, squircle radii, soft materials.
@@ -17,6 +28,8 @@
   --raised: #ffffff;
   --hover: rgba(0, 0, 0, 0.04);
   --glass: rgba(255, 255, 255, 0.72);
+
+  --ease-soft: cubic-bezier(0.22, 1, 0.36, 1);
 
   /* separators */
   --line: #e5e5ea;
@@ -132,7 +145,9 @@ input, textarea, select, [contenteditable='true'] {
   font-weight: 600; font-size: 14px; letter-spacing: -0.01em;
   border: 1px solid var(--line);
   color: var(--text); background: var(--panel);
-  cursor: pointer; transition: background 0.15s ease, opacity 0.15s ease, transform 0.08s ease; white-space: nowrap;
+  cursor: pointer; white-space: nowrap;
+  transition: background-color 0.2s var(--ease-soft), color 0.2s var(--ease-soft), border-color 0.2s var(--ease-soft),
+    box-shadow 0.2s var(--ease-soft), opacity 0.15s ease, transform 0.08s ease;
   -webkit-font-smoothing: antialiased;
 }
 .btn:hover { background: var(--chip); }
@@ -205,6 +220,13 @@ input, textarea, select, [contenteditable='true'] {
 .pivot-grid td:nth-last-child(2) { border-right-color: var(--line-strong); }
 
 /* ---------- animations (iOS spring-ish) ---------- */
+/* ---------- เปลี่ยนหน้า: จางเข้านุ่ม ๆ ----------
+   opacity อย่างเดียว ไม่ขยับตำแหน่ง (transform บนตัวครอบหน้าทำให้หน้าต่าง position:fixed ในหน้าเพี้ยน)
+   fill-mode backwards — จบแล้วไม่ค้างเป็น stacking context ไม่งั้นแถบหัวเว็บทับหน้าต่าง popup ในหน้า */
+@keyframes pageIn { from { opacity: 0; } to { opacity: 1; } }
+.page-in { animation: pageIn 0.26s cubic-bezier(0.22, 1, 0.36, 1) backwards; }
+@media (prefers-reduced-motion: reduce) { .page-in { animation: none; } }
+
 @keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 .fade-up { animation: fadeUp 0.45s cubic-bezier(0.22, 1, 0.36, 1) both; }
 @keyframes pop { 0% { transform: scale(0.94); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
@@ -334,6 +356,7 @@ kbd.k { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10.5p
 }
 .grow.odd { background: #fafafb; }
 .grow:hover { background: rgba(0, 122, 255, 0.06); }
+.grow, .ghcell { transition: background-color 0.14s var(--ease-soft), color 0.14s var(--ease-soft); }
 .grow.sel { background: rgba(0, 122, 255, 0.12); }
 .grow.sel:hover { background: rgba(0, 122, 255, 0.16); }
 .gcell {

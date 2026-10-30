@@ -607,7 +607,8 @@ export default function App() {
   return (
     <>
       <Layout>
-        <Suspense fallback={<LogoLoaderOverlay label="กำลังโหลดหน้า" />}>{pages[view]}</Suspense>
+        {/* key = หน้า: เปลี่ยนเมนูแล้วหน้าใหม่จางเข้า (.page-in) */}
+        <Suspense fallback={<LogoLoaderOverlay label="กำลังโหลดหน้า" />}><div key={view} className="page-in">{pages[view]}</div></Suspense>
       </Layout>
       {/* หน้า loading ของยาร์ดที่เลือก — รอแถวชีต + รถในผังของยาร์ดครบก่อนเปิดตัวเลข */}
       <SiteLoadGate mode="overlay" />
