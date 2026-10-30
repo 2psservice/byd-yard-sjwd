@@ -1763,6 +1763,35 @@ export async function upsertVisits(visits: Visit[]): Promise<boolean> {
   return true
 }
 
+/**
+ * แถวรอบที่เครื่องนี้สร้าง (ปิดรอบ / ตัวแปลงย้อนหลัง) — เพิ่มเฉพาะ id ที่คลาวด์ยังไม่มี (ON CONFLICT DO NOTHING)
+ * แถวที่มีอยู่แล้วคือบันทึกจริงของรอบนั้น ห้ามทับ · 29–30 ต.ค. iPhone ที่สำเนาในเครื่องว่างสร้างใหม่ทั้ง ~1,400 แถว
+ * จาก __trips แล้ว upsert ทับ — แถวของรถที่ __trips ถูกนำเข้าทับ (27 ต.ค.) เสียข้อมูล
+ * คืน id ที่เพิ่มจริง · null = เขียนไม่ได้ (ตารางยังไม่มี / ล้มครบ 3 ครั้ง)
+ */
+export async function insertVisitsIfAbsent(visits: Visit[]): Promise<Set<string> | null> {
+  const inserted = new Set<string>()
+  if (!isConfigured() || !visits.length) return inserted
+  const rows = visits.map(visitToRow)
+  for (let i = 0; i < rows.length; i += 200) {
+    const chunk = rows.slice(i, i + 200)
+    let landed = false
+    for (let attempt = 0; attempt < 3 && !landed; attempt++) {
+      const { data, error } = await supabase.from('visits')
+        .upsert(chunk, { onConflict: 'id', ignoreDuplicates: true }).select('id')
+      if (!error) {
+        for (const r of (data ?? []) as { id: string }[]) inserted.add(String(r.id))
+        landed = true; break
+      }
+      if (isMissingColumn(error)) { console.warn('[db] insertVisitsIfAbsent: visits table missing?', error); return null }
+      console.error('[db] insertVisitsIfAbsent', error)
+      await sleep(400 * (attempt + 1))
+    }
+    if (!landed) return null
+  }
+  return inserted
+}
+
 /** true = landed · false = failed (caller keeps a tombstone-free local delete; the next load re-pulls the cloud copy) */
 export async function deleteVisits(ids: string[]): Promise<boolean> {
   if (!isConfigured() || !ids.length) return true

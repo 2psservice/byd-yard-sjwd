@@ -35,13 +35,19 @@ interface VisitsState {
 
 /** VIN ที่ push ขึ้นคลาวด์ไม่สำเร็จ — ลองใหม่ตอนโหลดครั้งถัดไป */
 const pending = new Set<string>()
+/** ส่วนหนึ่งของ pending: แถวรอบที่เครื่องนี้สร้าง (ไม่ใช่การแก้) — ลองใหม่แบบเพิ่มเฉพาะที่คลาวด์ยังไม่มี */
+const pendingNew = new Set<string>()
 
 /** ดึงแถวรอบแบบส่วนต่าง (ดู load) — ทั้งตารางรอบแรกหลังเปิดแอป และทุกเท่านี้ · ทับซ้อนเผื่อนาฬิกาเครื่องที่เขียน updated_at คลาด */
 export const VISITS_FULL_EVERY_MS = 30 * 60_000
 export const VISITS_DELTA_OVERLAP_MS = 10 * 60_000
 const visitsPull = { lastFull: 0, lastPull: 0 }
 
-async function push(visits: Visit[], set: (p: Partial<VisitsState>) => void): Promise<void> {
+type Set_ = (p: Partial<VisitsState>) => void
+type Get_ = () => VisitsState
+
+/** การแก้ของแอดมิน (bulkUpdate) — เขียนทับแถวในคลาวด์ */
+async function push(visits: Visit[], set: Set_): Promise<void> {
   if (!visits.length) return
   const ok = await db.upsertVisits(visits)
   if (ok) {
@@ -52,6 +58,36 @@ async function push(visits: Visit[], set: (p: Partial<VisitsState>) => void): Pr
     for (const v of visits) pending.add(v.id)
     set({ cloudMissing: true })
   }
+}
+
+/**
+ * แถวรอบที่เครื่องนี้สร้าง — เพิ่มเฉพาะที่คลาวด์ยังไม่มี · id ที่คลาวด์มีแล้ว = รับฉบับคลาวด์มาแทนฉบับในเครื่อง
+ * (ไม่งั้นฉบับในเครื่องที่ updatedAt ใหม่กว่าจะค้าง แล้วการแก้ครั้งถัดไปส่งขึ้นไปทับ)
+ */
+async function pushNew(visits: Visit[], set: Set_, get: Get_): Promise<void> {
+  if (!visits.length) return
+  const inserted = await db.insertVisitsIfAbsent(visits)
+  if (!inserted) {
+    for (const v of visits) { pending.add(v.id); pendingNew.add(v.id) }
+    set({ cloudMissing: true })
+    return
+  }
+  for (const v of visits) { pending.delete(v.id); pendingNew.delete(v.id) }
+  set({ cloudMissing: false })
+  if (inserted.size) sendSync('visits')
+  const skipped = visits.filter((v) => !inserted.has(v.id)).map((v) => v.id)
+  if (!skipped.length) return
+  const cloud: Visit[] = []
+  for (let i = 0; i < skipped.length; i += 200) {
+    const got = await db.fetchVisits({ ids: skipped.slice(i, i + 200) })
+    if (!got) return // offline — การดึงทั้งตารางรอบถัดไปไม่ได้แก้ให้ (ฉบับในเครื่องใหม่กว่า) แต่ไม่มีอะไรถูกส่งทับ
+    cloud.push(...got)
+  }
+  if (!cloud.length) return
+  const merged = { ...get().visits }
+  for (const v of cloud) merged[v.id] = v
+  set({ visits: merged })
+  idbPutVisits(cloud).catch(() => {})
 }
 
 export const useVisits = create<VisitsState>()((set, get) => ({
@@ -106,7 +142,10 @@ export const useVisits = create<VisitsState>()((set, get) => ({
     if (fresher.length) idbPutVisits(fresher).catch(() => {})
     if (dropped.length) idbDeleteVisits(dropped).catch(() => {})
     const retry = Object.values(merged).filter((v) => pending.has(v.id))
-    if (retry.length) void push(retry, set)
+    if (retry.length) {
+      void pushNew(retry.filter((v) => pendingNew.has(v.id)), set, get)
+      void push(retry.filter((v) => !pendingNew.has(v.id)), set)
+    }
   },
 
   add: (incoming) => {
@@ -125,7 +164,7 @@ export const useVisits = create<VisitsState>()((set, get) => ({
     if (!changed.length) return
     set({ visits })
     idbPutVisits(changed).catch(() => {})
-    void push(changed, set)
+    void pushNew(changed, set, get)
   },
 
   bulkUpdate: (ids, key, value) => {
@@ -145,7 +184,9 @@ export const useVisits = create<VisitsState>()((set, get) => ({
     if (!changed.length) return
     set({ visits })
     idbPutVisits(changed).catch(() => {})
-    void push(changed, set)
+    // แถวที่ยังส่งขึ้นไม่สำเร็จตั้งแต่ตอนสร้าง → ยังต้องเพิ่มแบบไม่ทับ (ถ้าคลาวด์มีแล้ว ฉบับคลาวด์ชนะ)
+    void pushNew(changed.filter((v) => pendingNew.has(v.id)), set, get)
+    void push(changed.filter((v) => !pendingNew.has(v.id)), set)
   },
 
   remove: (ids) => {

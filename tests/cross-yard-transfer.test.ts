@@ -16,7 +16,7 @@ async function setup() {
   }))
   vi.doMock('../src/lib/db', async (orig) => ({
     ...(await orig<object>()), isConfigured: () => true,
-    upsertVisits: async () => {}, upsertTrackingRows: async () => {}, bulkUpsert: async () => {}, deleteTrackingRows: async () => {},
+    upsertVisits: async () => {}, insertVisitsIfAbsent: async (vs: any[]) => new Set(vs.map((v) => v.id)), upsertTrackingRows: async () => {}, bulkUpsert: async () => {}, deleteTrackingRows: async () => {},
     fetchTrackingRows: async () => [], countTrackingRows: async () => 0,
   }))
   const { useTracking } = await import('../src/store/useTracking')
@@ -78,7 +78,7 @@ describe('realtime broadcast ต้องพาป้ายไซต์ไปพ
     }))
     vi.doMock('../src/lib/db', async (orig) => ({
       ...(await orig<object>()), isConfigured: () => true,
-      upsertVisits: async () => {}, upsertTrackingRows: async () => {}, bulkUpsert: async () => {}, deleteTrackingRows: async () => {},
+      upsertVisits: async () => {}, insertVisitsIfAbsent: async (vs: any[]) => new Set(vs.map((v) => v.id)), upsertTrackingRows: async () => {}, bulkUpsert: async () => {}, deleteTrackingRows: async () => {},
     }))
     const { useTracking } = await import('../src/store/useTracking')
     const { useYard } = await import('../src/store/useYard')
@@ -127,7 +127,7 @@ describe('Gate-out ข้ามยาร์ดต้องเป็นการ�
     }))
     vi.doMock('../src/lib/db', async (orig) => ({
       ...(await orig<object>()), isConfigured: () => true,
-      upsertVisits: async () => {}, bulkUpsert: async () => {}, deleteTrackingRows: async () => {},
+      upsertVisits: async () => {}, insertVisitsIfAbsent: async (vs: any[]) => new Set(vs.map((v) => v.id)), bulkUpsert: async () => {}, deleteTrackingRows: async () => {},
       upsertTrackingRows: async (rows: any[]) => { pushed.push(rows.map((r) => JSON.parse(JSON.stringify(r)))) },
     }))
     const { useTracking } = await import('../src/store/useTracking')

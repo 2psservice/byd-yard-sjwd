@@ -115,7 +115,7 @@ describe('visits: ดึงส่วนต่าง', () => {
         return cloud
       },
       fetchVisitIds: async () => cloud.map((x) => x.id),
-      upsertVisits: async () => true,
+      upsertVisits: async () => true, insertVisitsIfAbsent: async (vs: any[]) => new Set(vs.map((v) => v.id)),
     }))
     const { useVisits, VISITS_DELTA_OVERLAP_MS } = await import('../src/store/useVisits')
     await useVisits.getState().load()
