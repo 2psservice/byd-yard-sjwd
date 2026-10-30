@@ -7,7 +7,7 @@
   :where(button, a, summary, label, select, input, textarea, tr, [role='button'], [role='tab'], .panel, .badge, .cursor-pointer) {
     transition-property: color, background-color, border-color, box-shadow, opacity, text-decoration-color, fill, stroke;
     transition-duration: 0.2s;
-    transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+    transition-timing-function: var(--ease-soft);
   }
 }
 
@@ -29,7 +29,8 @@
   --hover: rgba(0, 0, 0, 0.04);
   --glass: rgba(255, 255, 255, 0.72);
 
-  --ease-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  /* เส้นโค้งมาตรฐานแบบ Material: เริ่มเร็วแล้วค่อย ๆ ชะลอ — ทุก transition / animation ของแอปใช้ตัวนี้ */
+  --ease-soft: cubic-bezier(0.4, 0, 0.2, 1);
 
   /* separators */
   --line: #e5e5ea;
@@ -224,13 +225,18 @@ input, textarea, select, [contenteditable='true'] {
    opacity อย่างเดียว ไม่ขยับตำแหน่ง (transform บนตัวครอบหน้าทำให้หน้าต่าง position:fixed ในหน้าเพี้ยน)
    fill-mode backwards — จบแล้วไม่ค้างเป็น stacking context ไม่งั้นแถบหัวเว็บทับหน้าต่าง popup ในหน้า */
 @keyframes pageIn { from { opacity: 0; } to { opacity: 1; } }
-.page-in { animation: pageIn 0.26s cubic-bezier(0.22, 1, 0.36, 1) backwards; }
+.page-in { animation: pageIn 0.26s var(--ease-soft) backwards; }
 @media (prefers-reduced-motion: reduce) { .page-in { animation: none; } }
 
+/* ---------- คลื่นตอนกดปุ่ม (lib/ripple.ts) ---------- */
+.ripple-host { position: absolute; inset: 0; margin: 0 !important; overflow: hidden; border-radius: inherit; pointer-events: none; }
+.ripple { position: absolute; border-radius: 50%; background: currentColor; pointer-events: none; transform: scale(0); opacity: 0.22; animation: ripple 0.6s var(--ease-soft) forwards; }
+@keyframes ripple { to { transform: scale(1); opacity: 0; } }
+
 @keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
-.fade-up { animation: fadeUp 0.45s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.fade-up { animation: fadeUp 0.45s var(--ease-soft) both; }
 @keyframes pop { 0% { transform: scale(0.94); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
-.pop { animation: pop 0.24s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.pop { animation: pop 0.24s var(--ease-soft) both; }
 @keyframes scan { 0% { top: 8%; opacity: 0; } 10% { opacity: 1; } 90% { opacity: 1; } 100% { top: 92%; opacity: 0; } }
 .scanline { position: absolute; left: 6%; right: 6%; height: 2px; background: linear-gradient(90deg, transparent, var(--brand), transparent); box-shadow: 0 0 12px 2px var(--brand-glow); animation: scan 1.6s ease-in-out infinite; }
 @keyframes pulseDot { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
@@ -325,7 +331,7 @@ input, textarea, select, [contenteditable='true'] {
 
 /* progress (iOS bar) */
 .track { height: 6px; border-radius: 99px; background: rgba(120, 120, 128, 0.2); overflow: hidden; }
-.fill { height: 100%; border-radius: 99px; background: var(--brand); transition: width 0.6s cubic-bezier(0.22,1,0.36,1); }
+.fill { height: 100%; border-radius: 99px; background: var(--brand); transition: width 0.6s var(--ease-soft); }
 
 /* sidebar nav (iPadOS sidebar) */
 .nav-item {
@@ -384,7 +390,7 @@ kbd.k { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10.5p
   background: rgba(255, 255, 255, 0.985); backdrop-filter: blur(22px) saturate(180%); -webkit-backdrop-filter: blur(22px) saturate(180%);
   border: 0.5px solid rgba(0, 0, 0, 0.16); border-radius: 14px;
   box-shadow: 0 24px 64px -10px rgba(0, 0, 0, 0.52), 0 0 0 0.5px rgba(0,0,0,0.06);
-  padding: 5px; font-family: var(--grid-font); animation: pop 0.16s cubic-bezier(0.22,1,0.36,1) both;
+  padding: 5px; font-family: var(--grid-font); animation: pop 0.16s var(--ease-soft) both;
 }
 .ctx-head {
   display: flex; align-items: center; gap: 8px; padding: 7px 9px; color: var(--text);
