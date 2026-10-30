@@ -10,6 +10,7 @@ describe('chunk reload', () => {
     expect(isChunkLoadError(new TypeError('Importing a module script failed.'))).toBe(true)
     expect(isChunkLoadError(new TypeError('error loading dynamically imported module'))).toBe(true)
     expect(isChunkLoadError(new Error('Unable to preload CSS for /assets/a.css'))).toBe(true)
+    expect(isChunkLoadError(new TypeError("'text/html' is not a valid JavaScript MIME type."))).toBe(true)
     expect(isChunkLoadError(new Error('Cannot read properties of undefined'))).toBe(false)
   })
 
