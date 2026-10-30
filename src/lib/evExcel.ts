@@ -152,7 +152,10 @@ const NUM = '#,##0'
 /** ความกว้างคอลัมน์ของไฟล์ต้นแบบเป็นหน่วยของ Tahoma 11 (ฟอนต์ตั้งต้นของไฟล์ ตัวเลขกว้าง 8px)
  *  แต่ exceljs ตั้งต้นที่ Calibri 11 (7px) — แปลงให้กว้างเท่าของจริง */
 const tw = (w: number) => Math.round((w * 8) / 7 * 100) / 100
-const colPx = (w: number) => w * 8 + 5
+/** ความกว้างช่องจริงบนจอ (px) ของคอลัมน์ที่ตั้งด้วย tw(w) — สูตรของ Excel: trunc(width × 7 + 0.49) (Calibri 11 = ตัวเลขกว้าง 7px) */
+const cellPx = (w: number) => Math.trunc(7 * tw(w) + 0.49)
+/** px → EMU (หน่วยตำแหน่งรูปในไฟล์ xlsx) */
+const EMU = 9525
 
 /** exceljs เขียน Date เป็น UTC — วันที่ล้วนต้องเป็นเที่ยงคืน UTC ของวันนั้น ไม่งั้น Excel แสดงเลื่อนวัน */
 const dayCell = (key: string) => { const [y, m, d] = key.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d)) }
@@ -166,16 +169,41 @@ function put(cell: any, value: unknown, s: { font?: object; fill?: string; borde
   if (s.numFmt) cell.numFmt = s.numFmt
 }
 
-/** ขนาดรูปจริง — ไว้ย่อให้พอดีกรอบโดยไม่บิดสัดส่วน (null = โหลดรูปไม่ได้ ใช้กรอบเต็ม) */
-function imageSize(src: string): Promise<{ w: number; h: number } | null> {
-  return new Promise((resolve) => {
-    if (typeof Image === 'undefined') return resolve(null)
-    const img = new Image()
-    const t = setTimeout(() => resolve(null), 8000)
-    img.onload = () => { clearTimeout(t); resolve(img.naturalWidth && img.naturalHeight ? { w: img.naturalWidth, h: img.naturalHeight } : null) }
-    img.onerror = () => { clearTimeout(t); resolve(null) }
-    img.src = src
-  })
+/** ส่วนของรูปที่เอามาเต็มช่อง (ตัดขอบที่ล้นออกเท่ากันสองข้าง ไม่บิดสัดส่วน) — aspect = กว้าง ÷ สูง ของช่อง */
+export function coverCrop(w: number, h: number, aspect: number): { sx: number; sy: number; sw: number; sh: number } {
+  if (w / h > aspect) { const sw = Math.round(h * aspect); return { sx: Math.round((w - sw) / 2), sy: 0, sw, sh: h } }
+  const sh = Math.round(w / aspect)
+  return { sx: 0, sy: Math.round((h - sh) / 2), sw: w, sh }
+}
+
+/** รูปที่ตัดให้สัดส่วนเท่าช่องแล้ว → image id ในไฟล์ (ด้านยาวไม่เกิน 1600px) · เบราว์เซอร์ที่ตัดรูปไม่ได้ใช้รูปเดิม (ยืดเต็มช่อง) */
+function coverImageId(wb: any, src: string, aspect: number, cache: Map<string, Promise<number | null>>): Promise<number | null> {
+  const key = `${src}|cover`
+  let p = cache.get(key)
+  if (!p) {
+    p = (async () => {
+      try {
+        if (typeof createImageBitmap !== 'function' || typeof document === 'undefined') throw new Error('no canvas')
+        const blob = await (await fetch(src)).blob()
+        const bmp = await createImageBitmap(blob)
+        const { sx, sy, sw, sh } = coverCrop(bmp.width, bmp.height, aspect)
+        const k = Math.min(1, 1600 / Math.max(sw, sh))
+        const cv = document.createElement('canvas')
+        cv.width = Math.round(sw * k); cv.height = Math.round(sh * k)
+        const g = cv.getContext('2d')
+        if (!g) throw new Error('no canvas')
+        g.drawImage(bmp, sx, sy, sw, sh, 0, 0, cv.width, cv.height)
+        bmp.close?.()
+        const base64 = cv.toDataURL('image/jpeg', 0.88).split(',')[1]
+        if (!base64) throw new Error('empty')
+        return wb.addImage({ base64, extension: 'jpeg' }) as number
+      } catch {
+        return photoImageId(wb, src, cache)
+      }
+    })()
+    cache.set(key, p)
+  }
+  return p
 }
 
 export interface EvPlanExport {
@@ -335,6 +363,7 @@ export async function buildEvPlanWorkbook(x: EvPlanExport): Promise<any> {
     pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
   })
   const SW = [5, 22, 10, 12, 22, 22, 13, 22, 22, 13, 10]
+  const ROW_PT = 220.05
   ss.columns = SW.map((w) => ({ width: tw(w), style: { font: { name: TAHOMA, size: 11 } } }))
   ss.mergeCells('A1:K1')
   ss.getRow(1).height = 25.95
@@ -364,29 +393,28 @@ export async function buildEvPlanWorkbook(x: EvPlanExport): Promise<any> {
       null, null, done ? socText(c.afterPct, c.afterAt) : 'กำลังชาร์จ',
       diff,
     ])
-    row.height = 220.05
+    row.height = ROW_PT
     for (let k = 1; k <= 11; k++) put(row.getCell(k), undefined, { font: { name: TAHOMA, size: 11, bold: k === 7 || k === 10 || k === 11 }, border: box, align: { ...CENTER, wrapText: true } })
     row.getCell(4).numFmt = 'dd/mm/yyyy'
     row.getCell(11).numFmt = '+0%'
-    // รูป VIN หลังชาร์จ: สถานีถ่ายรูปเลขวินครั้งเดียวตอนเริ่ม ช่องนี้จึงว่าง
-    ;([[c.vinPhoto, 4], [c.beforePhoto, 5], [c.afterPhoto, 8]] as const).forEach(([src, col]) => {
+    // รูป VIN หลังชาร์จ: สถานีถ่ายรูปเลขวินครั้งเดียวตอนเริ่ม → ใช้รูปเดียวกับก่อนชาร์จ (เฉพาะรอบที่ชาร์จเสร็จแล้ว)
+    ;([[c.vinPhoto, 4], [c.beforePhoto, 5], [done ? c.vinPhoto : '', 7], [c.afterPhoto, 8]] as const).forEach(([src, col]) => {
       if (src) places.push({ src, col, row: row.number - 1 })
     })
   })
-  // กรอบรูปเท่าไฟล์ต้นแบบ 157×280 px · ย่อตามสัดส่วนจริง · วางกลางช่อง
-  const BOX_W = 157, BOX_H = 280
-  const rowPx = 220.05 * 96 / 72
-  const loaded = await Promise.all(places.map((pl) => photoImageId(wb, pl.src, cache)
-    .then(async (id) => (id == null ? null : { ...pl, id, size: await imageSize(pl.src) }))))
+  // รูปเต็มช่อง เว้นขอบ 3px ให้เห็นเส้นตาราง · ตัดรูปให้สัดส่วนเท่าช่องก่อน จึงไม่บิด
+  // ตำแหน่งเป็น EMU ตรง ๆ — ตำแหน่งแบบเศษของช่องใน exceljs คิดความกว้างช่องผิดหน่วย รูปเลยชิดซ้ายเหลือที่ว่างด้านขวา
+  const PAD = 3
+  const rowPx = Math.round(ROW_PT * 96 / 72)
+  const loaded = await Promise.all(places.map((pl) => {
+    const w = cellPx(SW[pl.col]) - PAD * 2, h = rowPx - PAD * 2
+    return coverImageId(wb, pl.src, w / h, cache).then((id) => (id == null ? null : { ...pl, id, w, h }))
+  }))
   for (const pl of loaded) {
     if (!pl) continue
-    const { id, size } = pl
-    const k = size ? Math.min(BOX_W / size.w, BOX_H / size.h) : 1
-    const w = Math.round((size?.w ?? BOX_W) * k), h = Math.round((size?.h ?? BOX_H) * k)
-    const cw = colPx(SW[pl.col])
-    ss.addImage(id, {
-      tl: { col: pl.col + Math.max(0, (cw - w) / 2) / cw, row: pl.row + Math.max(0, (rowPx - h) / 2) / rowPx },
-      ext: { width: w, height: h },
+    ss.addImage(pl.id, {
+      tl: { nativeCol: pl.col, nativeColOff: PAD * EMU, nativeRow: pl.row, nativeRowOff: PAD * EMU },
+      ext: { width: pl.w, height: pl.h },
       editAs: 'oneCell',
     })
   }

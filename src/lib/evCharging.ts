@@ -91,6 +91,48 @@ export function resumeCharge(c: EvCharge, by: string, at = Date.now()): EvCharge
 export const hoursOf = (ms: number) => Math.round((ms / 3_600_000) * 100) / 100
 
 const p2 = (n: number) => String(n).padStart(2, '0')
+
+/** ms → ค่าของ <input type="datetime-local"> ("2026-10-30T09:48") เวลาเครื่อง */
+export function toLocalInput(ms: number): string {
+  if (!ms) return ''
+  const d = new Date(ms)
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}T${p2(d.getHours())}:${p2(d.getMinutes())}`
+}
+/** ค่าของ datetime-local → ms (NaN = ว่าง / อ่านไม่ได้) */
+export function fromLocalInput(s: string): number {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(s.trim())
+  return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime() : NaN
+}
+
+/**
+ * แอดมินแก้วันที่ / เวลาเริ่มและเวลาเสร็จของรอบชาร์จ (ช่องเป็นรายนาที)
+ * นาทีที่ไม่ได้แก้คงค่าเดิมทั้งวินาที · เวลาเสร็จแก้ได้เฉพาะรอบที่จบแล้ว (การจบรอบต้องมีรูป + % หลังชาร์จจากสถานี)
+ * ช่วงหยุดพักต้องยังอยู่ระหว่างเริ่มกับเสร็จ ไม่งั้นเวลาชาร์จติดลบ
+ */
+export function editChargeTimes(
+  c: EvCharge, beforeAt: number, afterAt: number, now = Date.now(),
+): { ok: EvCharge; changed: boolean } | { error: string } {
+  const sameMinute = (a: number, b: number) => Math.floor(a / 60_000) === Math.floor(b / 60_000)
+  const start = Number.isFinite(beforeAt) && sameMinute(beforeAt, c.beforeAt) ? c.beforeAt : beforeAt
+  const done = !isCharging(c)
+  const end = !done ? 0 : Number.isFinite(afterAt) && sameMinute(afterAt, c.afterAt) ? c.afterAt : afterAt
+  const stamp = (ms: number) => `${fmtEvDate(ms)} ${fmtEvTime(ms)}`
+  if (!Number.isFinite(start) || start <= 0) return { error: 'ใส่วันที่และเวลาเริ่มชาร์จ' }
+  if (start > now + 60_000) return { error: 'เวลาเริ่มชาร์จอยู่ในอนาคต' }
+  if (done) {
+    if (!Number.isFinite(end) || end <= 0) return { error: 'ใส่วันที่และเวลาชาร์จเสร็จ' }
+    if (end > now + 60_000) return { error: 'เวลาชาร์จเสร็จอยู่ในอนาคต' }
+    if (end <= start) return { error: 'เวลาชาร์จเสร็จต้องหลังเวลาเริ่มชาร์จ' }
+  }
+  const pauses = c.pauses ?? []
+  if (pauses.length && start > pauses[0].at) return { error: `เวลาเริ่มต้องไม่หลังการหยุดพักครั้งแรก (${stamp(pauses[0].at)})` }
+  if (done && pauses.length) {
+    const last = Math.max(...pauses.map((p) => p.until || p.at))
+    if (end < last) return { error: `เวลาเสร็จต้องไม่ก่อนการหยุดพัก / ชาร์จต่อครั้งล่าสุด (${stamp(last)})` }
+  }
+  const changed = start !== c.beforeAt || end !== c.afterAt
+  return { ok: changed ? { ...c, beforeAt: start, afterAt: end, updatedAt: now } : c, changed }
+}
 /** ms → "3:45 ชม." */
 export function fmtDuration(ms: number): string {
   const mins = Math.round(ms / 60_000)
