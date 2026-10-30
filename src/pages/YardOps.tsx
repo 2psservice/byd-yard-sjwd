@@ -31,7 +31,7 @@ import { partLabel, defectLabel, partBilingual, defectBilingual, openDefectsFirs
 import { candidates } from '../lib/parkingEngine'
 import { slotToLatLng } from '../lib/geo'
 import { cx, PhotoLightbox } from '../components/ui'
-import { rowInSite, rowsForSite, siteWorksWith, deliveryDestinationSite, siteIdForLocation, rowYardName } from '../lib/siteScope'
+import { rowInSite, rowsForSite, siteWorksWith, deliveryDestinationSite, siteIdForLocation, rowYardName, departedFromSite } from '../lib/siteScope'
 import { compressImage } from '../lib/photo'
 import StationSheet from '../components/StationSheet'
 import StockAccessoryCheck from '../components/StockAccessoryCheck'
@@ -4408,10 +4408,44 @@ function GateOutView() {
   // ── DN (grouping) scan → every car on that Delivery Note ──────────────────
   // The DN's Trip No barcode carries the grouping number, so one scan of the
   // printed sheet lists the whole run and the gate ticks off what actually left.
+  // แผนของ DN นี้ (รายการในคิวส่งรถที่ยังเปิดของยาร์ดนี้ ที่ group ตรง) — ใบ DN ที่พิมพ์จากหน้า Grouping
+  // พิมพ์ตามแผนนี้ รถทุกคันบนกระดาษจึงต้องขึ้นที่สถานีด้วย ไม่ว่าแถวรถจะเป็นของยาร์ดไหน
+  // (30 ต.ค.: DN SJWD261029-071 กระดาษ 7 คัน สถานีขึ้น 4 — คันที่แถวยังเป็นของยาร์ดอื่นถูกซ่อนไปเฉย ๆ)
+  const allRows = useTracking(s => s.rows)
+  const dnPlan = useMemo(() => {
+    const m = new Map<string, QueueItem>()
+    if (!dn) return m
+    for (const q of queues) {
+      if (!isSequenceQueue(q) || seqClosed[q.id]) continue
+      for (const i of q.items) if (normGroup(i.group) === dn && !m.has(i.vin)) m.set(i.vin, i)
+    }
+    return m
+  }, [dn, queues, seqClosed])
   const dnCars = useMemo(() => {
     if (!dn) return []
-    return trackingRows
-      .filter(r => rowGroupFast(r, seqGroupIndex) === dn)
+    const here = trackingRows.filter(r => rowGroupFast(r, seqGroupIndex) === dn)
+    const siteVins = new Set(trackingRows.map(r => r.vin))
+    // รถในแผนที่แถวไม่ได้เป็นของยาร์ดนี้ — ขึ้นในรายการพร้อมเหตุผล ยิงออกจากที่นี่ไม่ได้จนกว่าจะ Gate-in ที่นี่
+    // (แถวของยาร์ดนี้ที่เลข Grouping เป็นของกลุ่มอื่นไม่นับ — ตัวซิงก์คิวย้ายรถตามเลขในชีต และด่านผิด Grouping ยังกันไว้)
+    const away = [...dnPlan.entries()].filter(([vin]) => !siteVins.has(vin)).map(([vin, item]) => {
+      const fr = allRows[vin]
+      const gone = !!item.gatedOut || (!!fr && departedFromSite(fr.cells, currentSite, sites))
+      const yard = fr ? rowYardName(fr, sites) || 'ยาร์ดอื่น' : ''
+      // ช่องตำแหน่งบอกชื่อยาร์ดของแถวอยู่แล้ว ป้ายจึงสั้นพอสำหรับจอมือถือ
+      const reason = gone ? '' : fr ? 'ยังไม่ Gate-in ที่นี่' : 'ไม่พบข้อมูลรถ'
+      return {
+        vin,
+        model: fr?.cells['Model name'] || fr?.cells['Model'] || item.model || '—',
+        color: fr?.cells['Color'] || item.color || '—',
+        location: yard || '—',
+        // ออกจากยาร์ดนี้ไปแล้ว = Gate-out ของยาร์ดนี้ (สถานะในแถวตอนนี้เป็นของยาร์ดปลายทาง)
+        status: gone ? 'Gate-out' : (fr?.cells['Car Status'] ?? '').trim() || '—',
+        gone,
+        ready: false,
+        reason,
+      }
+    })
+    return here
       .map(r => {
         const u = units.find(x => x.vin === r.vin)
         const status = (r.cells['Car Status'] ?? '').trim()
@@ -4433,8 +4467,9 @@ function GateOutView() {
           reason,
         }
       })
+      .concat(away)
       .sort((a, b) => byYardLocation(a.location, b.location))
-  }, [dn, trackingRows, units, seqGroupIndex, runOfGroup])
+  }, [dn, trackingRows, units, seqGroupIndex, runOfGroup, dnPlan, allRows, currentSite, sites])
 
   // dnCars can only .filter() rows that already exist HERE — a car whose queue
   // item carries this DN's group but whose tracking row never synced to this
@@ -4444,7 +4479,8 @@ function GateOutView() {
   // single-VIN scan — dnCars re-filters itself once the row lands.
   useEffect(() => {
     if (!dn || !isConfigured()) return
-    const known = new Set(trackingRows.map(r => r.vin))
+    // แถวที่เครื่องนี้มีอยู่แล้ว (ยาร์ดไหนก็ได้) ไม่ต้องดึงซ้ำ — รถในแผนที่แถวเป็นของยาร์ดอื่นขึ้นในรายการจากแถวนั้น
+    const known = new Set(Object.keys(useTracking.getState().rows))
     for (const q of queues) {
       if (!isSequenceQueue(q)) continue
       for (const i of q.items) {
@@ -4465,6 +4501,7 @@ function GateOutView() {
     const g = normGroup(raw)
     if (!g) return
     const n = trackingRows.filter(r => rowGroupFast(r, seqGroupIndex) === g).length
+      + queues.reduce((k, q) => k + (isSequenceQueue(q) && !seqClosed[q.id] ? q.items.filter(i => normGroup(i.group) === g).length : 0), 0)
     if (!n) { toast('err', `ไม่พบ DN / เลข Grouping: ${raw}`); return }
     setVin(null); setDn(g); setSessionOut([])
   }
@@ -4493,7 +4530,18 @@ function GateOutView() {
       if (hits.length === 1) r = hits[0]
       else if (hits.length > 1) { toast('err', `พบ ${hits.length} คัน — พิมพ์ให้ยาวขึ้น`); return }
     }
-    if (!r) { scanNotFound(v); return }
+    if (!r) {
+      // รถที่ DN นี้วางแผนไว้ แต่แถวยังเป็นของยาร์ดอื่น — บอกตรง ๆ ว่าต้อง Gate-in ที่นี่ก่อน
+      const planned = [...dnPlan.keys()].find(x => x === v || (v.length <= 8 && x.endsWith(v)))
+      const fr = planned ? allRows[planned] : undefined
+      if (planned && fr) {
+        blockWith(planned, fr.cells['Model name'] ?? fr.cells['Model'] ?? '', 'รถยังไม่ Gate-in ที่ยาร์ดนี้',
+          <>รถคันนี้อยู่ใน DN <b style={{ color: 'var(--brand)' }}>{dn}</b> แต่ข้อมูลรถยังเป็นของ <b style={{ color: 'var(--brand)' }}>{rowYardName(fr, sites) || 'ยาร์ดอื่น'}</b><br />
+            ให้ยิง Gate-in ที่สถานี Gate-in ของยาร์ดนี้ก่อน แล้วจึงยิง Gate-out</>)
+        return
+      }
+      scanNotFound(v); return
+    }
     // the whole point of scanning at the car: a car whose grouping is not THIS
     // DN must never slip into the load — stop it with a popup, not a quiet toast
     if (rowGroup(r, queues) !== dn) {
