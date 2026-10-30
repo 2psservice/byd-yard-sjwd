@@ -19,6 +19,7 @@ import '@fontsource/jetbrains-mono/500.css'
 import '@fontsource/jetbrains-mono/700.css'
 import App from './App'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { installRipple } from './lib/ripple'
 import { escapeInAppBrowser } from './lib/inAppBrowser'
 import { reloadForChunkError } from './lib/chunkReload'
 import { markAutoUpdate, readLastAutoUpdate, shouldAutoUpdate, shouldAutoUpdateOnLogin, shouldAutoUpdateOnResume, trackInteraction } from './lib/autoUpdate'
@@ -141,6 +142,9 @@ function showUpdateBanner(auto = false) {
     void applyUpdate(btn)
   }
 }
+
+// คลื่นตอนกดปุ่มทั้งแอป (lib/ripple.ts)
+installRipple()
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

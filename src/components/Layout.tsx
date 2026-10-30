@@ -4,7 +4,7 @@ import {
 } from 'lucide-react'
 import { BuildStamp } from './BuildStamp'
 import { createPortal } from 'react-dom'
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { useYard } from '../store/useYard'
 import { useTrackingRows, useTracking } from '../store/useTracking'
 import { deriveCarStatus, IN_YARD_STATUSES } from '../lib/carStatus'
@@ -152,31 +152,29 @@ export function Layout({ children }: { children: ReactNode }) {
 
   const go = (v: View) => { setView(v); setMobileNav(false) }
 
+  // ยุบ / ขยาย: ข้อความกับชื่อแอปอยู่ตลอด แค่จางเข้าออกตามความกว้างของแถบ — ไอคอนกับโลโก้อยู่ที่เดิม ไม่กระโดด
+  // (เดิมสลับจัดกลางกับชิดซ้าย และข้อความโผล่ / หายทันที) ระยะซ้ายคงที่ ไอคอนจึงอยู่กลางแถบ 64px พอดีตอนยุบ
+  const fadeText = (expanded: boolean): CSSProperties => ({ opacity: expanded ? 1 : 0, transition: 'opacity 0.3s var(--ease-soft)' })
   const renderSidebar = (expanded: boolean) => (
-    <aside className="flex flex-col gap-1 p-3 h-full w-full overflow-hidden">
-      <div className={cx('flex items-center gap-2.5 py-3 mb-2', expanded ? 'px-2' : 'justify-center')}>
+    <aside className="flex flex-col gap-1 p-3 h-full w-full overflow-hidden" data-rail-expanded={expanded || undefined}>
+      <div className="flex items-center gap-2.5 py-3 mb-2" style={{ paddingLeft: 2 }}>
         <LogoMark size={36} />
-        {expanded && (
-          <div className="min-w-0">
-            <div className="display font-bold text-[15px] leading-none whitespace-nowrap">{t('appName')}</div>
-            <div className="text-[11px] mt-0.5 whitespace-nowrap" style={{ color: 'var(--muted)' }}>{t('appSub')}</div>
-          </div>
-        )}
+        <div className="min-w-0" style={fadeText(expanded)} aria-hidden={!expanded}>
+          <div className="display font-bold text-[15px] leading-none whitespace-nowrap">{t('appName')}</div>
+          <div className="text-[11px] mt-0.5 whitespace-nowrap" style={{ color: 'var(--muted)' }}>{t('appSub')}</div>
+        </div>
       </div>
       {NAV.map((n) => (
-        <div key={n.view} className={cx('nav-item', view === n.view && 'active', !expanded && 'justify-center')}
+        <div key={n.view} className={cx('nav-item', view === n.view && 'active')}
           onClick={() => go(n.view)} title={!expanded ? t(n.view) : undefined} data-nav={n.view}
-          style={{
-            ...(!expanded ? { paddingLeft: 0, paddingRight: 0 } : {}),
-            // a colored menu keeps its own color in every state, and its active tint follows it
-            ...(n.color ? { color: n.text ?? n.color, ...(view === n.view ? { background: `${n.color}24` } : {}) } : {}),
-          }}>
+          // a colored menu keeps its own color in every state, and its active tint follows it
+          style={n.color ? { color: n.text ?? n.color, ...(view === n.view ? { background: `${n.color}24` } : {}) } : undefined}>
           <span className="shrink-0 flex" style={n.color ? { color: n.color } : undefined}>{n.icon}</span>
-          {expanded && <span className="whitespace-nowrap">{t(n.view)}</span>}
+          <span className="whitespace-nowrap" style={fadeText(expanded)}>{t(n.view)}</span>
         </div>
       ))}
-      <div className={cx('mt-auto py-3 text-[11px] whitespace-nowrap', expanded ? 'px-2' : 'text-center')} style={{ color: 'var(--faint)' }}>
-        {expanded ? 'v1.0 · 2PS Service' : 'v1.0'}
+      <div className="mt-auto py-3 text-[11px] whitespace-nowrap" style={{ color: 'var(--faint)', paddingLeft: 9 }}>
+        v1.0<span style={fadeText(expanded)}> · 2PS Service</span>
       </div>
     </aside>
   )
@@ -194,7 +192,7 @@ export function Layout({ children }: { children: ReactNode }) {
             style={{
               width: railHover ? FULL : RAIL, zIndex: 50,
               background: 'var(--glass)', backdropFilter: 'blur(22px) saturate(180%)', WebkitBackdropFilter: 'blur(22px) saturate(180%)',
-              transition: 'width 0.18s cubic-bezier(0.22,1,0.36,1)',
+              transition: 'width 0.3s var(--ease-soft), box-shadow 0.3s var(--ease-soft)',
               boxShadow: railHover ? '0 12px 40px -10px rgba(0,0,0,0.18)' : 'none',
             }}
           >
