@@ -18,7 +18,7 @@ async function setup(cloudRows: Row[], insertDelayMs = 0) {
   }))
   vi.doMock('../src/lib/db', async (orig) => ({
     ...(await orig<object>()), isConfigured: () => true,
-    upsertVisits: async () => {}, bulkUpsert: async () => {}, deleteTrackingRows: async () => {}, upsertStationChecks: async () => {},
+    upsertVisits: async () => {}, insertVisitsIfAbsent: async (vs: any[]) => new Set(vs.map((v) => v.id)), bulkUpsert: async () => {}, deleteTrackingRows: async () => {}, upsertStationChecks: async () => {},
     upsertTrackingRows: async (rows: Row[]) => { for (const r of rows) { upserted.push(r.vin); cloud.set(r.vin, JSON.parse(JSON.stringify(r))) } },
     // ON CONFLICT DO NOTHING — แถวที่มีอยู่แล้ว (รวมแถวที่ถูกลบ) ไม่ถูกแตะ
     insertTrackingRowsIfAbsent: async (rows: Row[]) => {

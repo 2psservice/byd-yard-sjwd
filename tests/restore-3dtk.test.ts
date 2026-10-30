@@ -32,7 +32,7 @@ async function setup(opts: { backupFails?: boolean } = {}) {
     ...(await orig<object>()), isConfigured: () => true,
     countTrackingRows: async () => null,
     fetchTrackingRows: async () => Object.values(rows).map((r) => JSON.parse(JSON.stringify(r))),
-    upsertTrackingRows: async () => {}, upsertVisits: async () => {}, bulkUpsert: async () => {}, deleteTrackingRows: async () => {}, upsertStationChecks: async () => {},
+    upsertTrackingRows: async () => {}, upsertVisits: async () => {}, insertVisitsIfAbsent: async (vs: any[]) => new Set(vs.map((v) => v.id)), bulkUpsert: async () => {}, deleteTrackingRows: async () => {}, upsertStationChecks: async () => {},
     fetchUnitsByVins: async (vins: string[]) => vins.map((v) => cloudUnits.get(v)).filter(Boolean),
     upsertUnitsStrict: async (us: U[]) => { writes.push(us); for (const u of us) cloudUnits.set(u.vin as string, u) },
     saveAppConfig: async (id: string, value: unknown) => {

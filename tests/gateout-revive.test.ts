@@ -17,7 +17,7 @@ async function setup() {
   }))
   vi.doMock('../src/lib/db', async (orig) => ({
     ...(await orig<object>()), isConfigured: () => true,
-    upsertVisits: async () => {}, upsertTrackingRows: async () => {}, bulkUpsert: async () => {}, deleteTrackingRows: async () => {},
+    upsertVisits: async () => {}, insertVisitsIfAbsent: async (vs: any[]) => new Set(vs.map((v) => v.id)), upsertTrackingRows: async () => {}, bulkUpsert: async () => {}, deleteTrackingRows: async () => {},
     fetchTrackingRows: async () => [], countTrackingRows: async () => 0, upsertQueue: async () => {}, upsertQueues: async () => {},
   }))
   const { useTracking } = await import('../src/store/useTracking')

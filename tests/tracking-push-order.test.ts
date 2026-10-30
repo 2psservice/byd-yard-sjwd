@@ -18,7 +18,7 @@ describe('ส่งแถวติดตามของรถคันเดี�
     }))
     vi.doMock('../src/lib/db', async (orig) => ({
       ...(await orig<object>()), isConfigured: () => true,
-      upsertVisits: async () => {}, bulkUpsert: async () => {}, deleteTrackingRows: async () => {}, upsertStationChecks: async () => {},
+      upsertVisits: async () => {}, insertVisitsIfAbsent: async (vs: any[]) => new Set(vs.map((v) => v.id)), bulkUpsert: async () => {}, deleteTrackingRows: async () => {}, upsertStationChecks: async () => {},
       upsertTrackingRows: async (rows: any[]) => {
         const snap = rows.map((r) => JSON.parse(JSON.stringify(r)))
         const delay = ++call === 1 ? 50 : 0 // ครั้งแรกช้า (สัญญาณหน้าลาน)
