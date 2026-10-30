@@ -46,7 +46,9 @@ function irData(r: TrackRow, siteName?: string, destOf?: DestOf) {
     model: cell(r, 'Model name', 'Model'),
     color: cell(r, 'Color'),
     engMotor: [cell(r, 'Engine No.', 'Model Code'), cell(r, 'Front Motor no.', 'Rear Motor no.')].filter(Boolean).join(' '),
-    yard: cell(r, 'Location yard', 'storage Yard') || siteName || '',
+    // Delivery From = ยาร์ดที่ส่งรถออก = Site งานที่กำลังพิมพ์ — ช่อง Location yard ของรถมาจากไฟล์นำเข้า
+    // เชื่อไม่ได้ (รถขายของ NYB ที่ช่องยังเป็น "Rayone yard" พิมพ์ออกมาว่าส่งจาก Rayong) ใช้ช่องนี้เฉพาะตอนไม่ได้เลือก Site
+    yard: (siteName || '').trim() || cell(r, 'Location yard', 'storage Yard'),
     dealer: destination(r, destOf),
   }
 }

@@ -13,6 +13,20 @@ const mono: MeasureText = (s) => s.length * 4.2
 /** top (pt) of every horizontal table line on the first DN sheet */
 const hLines = (html: string) => [...html.matchAll(/class="dnl" style="left:10\.00pt;top:([\d.]+)pt;width:574\.28pt/g)].map((m) => Number(m[1]))
 
+describe('IR: Delivery From = Site งานที่พิมพ์', () => {
+  it('ช่อง Location yard ของรถเป็นยาร์ดอื่น (Rayone yard) → พิมพ์ชื่อ Site ที่กำลังพิมพ์', () => {
+    const r = row('LGXCE4CB4TG041586', { 'Location yard': 'Rayone yard' })
+    for (const html of [buildIrHtml([r], 'NYB2 Phase 2'), buildIrPaperHtml([r], 'NYB2 Phase 2')]) {
+      expect(html).toContain('>NYB2 Phase 2<')
+      expect(html).not.toContain('Rayone yard')
+    }
+  })
+  it('ไม่ได้เลือก Site → ใช้ช่อง Location yard ของรถตามเดิม', () => {
+    const r = row('LGXCE4CB4TG041586', { 'Location yard': 'Rayone yard' })
+    expect(buildIrPaperHtml([r], '')).toContain('>Rayone yard<')
+  })
+})
+
 describe('ปลายทางบนใบ IR / DN', () => {
   it('ช่อง Dealer Location ของรถว่าง → ใช้ปลายทางที่หน้า Grouping แสดง (กระดาษ IR, IR, DN)', () => {
     const r = row('LC0DF4CD1T0256227')
