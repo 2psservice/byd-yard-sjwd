@@ -9,7 +9,8 @@
 export const CHUNK_RELOAD_KEY = 'sjwd-chunk-reload-at'
 export const CHUNK_RELOAD_WINDOW_MS = 30_000
 
-const CHUNK_ERROR_RE = /Failed to fetch dynamically imported module|Importing a module script failed|error loading dynamically imported module|Unable to preload CSS/i
+// "is not a valid JavaScript MIME type" = Safari ขอไฟล์หน้าของ build เก่าที่ไม่มีแล้ว เซิร์ฟเวอร์ตอบ index.html แทน (30 ต.ค. 21:46 iPhone หลัง deploy)
+const CHUNK_ERROR_RE = /Failed to fetch dynamically imported module|Importing a module script failed|error loading dynamically imported module|Unable to preload CSS|is not a valid JavaScript MIME type/i
 
 /** ข้อผิดพลาดนี้มาจากโหลดไฟล์หน้าไม่ได้ (ไม่ใช่บั๊กในหน้า) */
 export function isChunkLoadError(err: unknown): boolean {
