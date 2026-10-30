@@ -6201,7 +6201,7 @@ export function YardOps() {
 
       {/* role picker */}
       {!role && (
-        <div className="space-y-3">
+        <div className="space-y-3 page-in">
           <div className="text-[11px] font-bold uppercase tracking-wider mb-3" style={{ color: 'var(--muted)' }}>
             เลือกตำแหน่งงาน
           </div>
@@ -6245,7 +6245,8 @@ export function YardOps() {
         </div>
       )}
 
-      {/* role views */}
+      {/* role views — เข้าสถานีแล้วจางเข้า (.page-in) */}
+      {role && <div key={role} className="page-in">
       {role === 'walk'       && <WalkView />}
       {role === 'gateout'    && <GateOutView />}
       {role === 'updatedmg'  && <UpdateDamageView />}
@@ -6259,6 +6260,7 @@ export function YardOps() {
       {role === 'mechanic'   && <MechanicView types={['REPAIR']} accent="#c2680b" stationLabel="ช่าง (Mechanic)" emptyLabel="ยังไม่มีคิวงานซ่อม" />}
       {role === 'special'    && <MechanicView types={['SPECIAL']} accent="#9333ea" stationLabel="งานพิเศษ" emptyLabel="ยังไม่มีคิวงานพิเศษ" okNgMode />}
       {role === 'ev'         && <EvView />}
+      </div>}
     </div>
   )
 }
