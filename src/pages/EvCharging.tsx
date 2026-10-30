@@ -5,11 +5,12 @@
  * เลือกรุ่น / วันละกี่คัน / วันเริ่มแผน ก่อนดาวน์โหลด — ดู lib/evExcel.ts
  */
 import { useEffect, useMemo, useState } from 'react'
-import { BatteryCharging, Download, Search } from 'lucide-react'
+import { BatteryCharging, Download, Pencil, Search } from 'lucide-react'
 import { useYard } from '../store/useYard'
 import { useEvCharging } from '../store/useEvCharging'
-import { useTrackingRows } from '../store/useTracking'
-import { chargeMs, dailySummary, evModelOf, isCharging, openPause, pausedMs, fmtDayKey, fmtDuration, fmtEvDate, fmtEvTime, fmtPct, type EvCharge } from '../lib/evCharging'
+import { useTracking, useTrackingRows } from '../store/useTracking'
+import * as db from '../lib/db'
+import { chargeMs, dailySummary, editChargeTimes, evCellText, evModelOf, EV_CELL, fromLocalInput, isCharging, openPause, pausedMs, toLocalInput, fmtDayKey, fmtDuration, fmtEvDate, fmtEvTime, fmtPct, type EvCharge } from '../lib/evCharging'
 import { buildEvPlan, evPlanCars, exportEvPlanExcel } from '../lib/evExcel'
 import { dateKey } from '../lib/dayKey'
 import { rowInSite } from '../lib/siteScope'
@@ -142,8 +143,89 @@ function EvPlanDialog({ site, ranged, from, onClose }: { site: string | null; ra
   )
 }
 
+/** แอดมินแก้วันที่ / เวลาเริ่มและเสร็จของรอบชาร์จ — เวลาชาร์จ สรุปรายวัน และ Excel คำนวณใหม่จากเวลาที่แก้
+ *  เวลาเดิมเก็บไว้ใน app_config "ev_time_edit:<รอบ>:<เวลาแก้>" ก่อนบันทึกทุกครั้ง (ย้อนดู / คืนค่าได้) */
+function EvTimeDialog({ c, onClose }: { c: EvCharge; onClose: () => void }) {
+  const toast = useYard((s) => s.toast)
+  const by = useYard((s) => s.currentUser)
+  const [start, setStart] = useState(() => toLocalInput(c.beforeAt))
+  const [end, setEnd] = useState(() => toLocalInput(c.afterAt))
+  const [busy, setBusy] = useState(false)
+  // รอบนี้ถูกบันทึกใหม่ระหว่างเปิดหน้าต่าง (สถานีบันทึกหลังชาร์จ / หยุดพัก / เครื่องอื่นแก้) — ห้ามบันทึกทับด้วยสำเนาเก่า
+  const live = useEvCharging((s) => s.charges[c.id])
+  const stale = !!live && live.updatedAt !== c.updatedAt
+  const done = !isCharging(c)
+  const res = editChargeTimes(c, fromLocalInput(start), fromLocalInput(end))
+  const err = 'error' in res ? res.error : ''
+  const next = 'ok' in res ? res.ok : null
+  const changed = 'ok' in res && res.changed
+  const maxNow = toLocalInput(Date.now())
+
+  const save = async () => {
+    if (!next || !changed || busy || stale) return
+    setBusy(true)
+    try {
+      if (db.isConfigured()) {
+        await db.saveAppConfig(`ev_time_edit:${c.id}:${next.updatedAt}`, {
+          id: c.id, vin: c.vin, by, at: next.updatedAt,
+          from: { beforeAt: c.beforeAt, afterAt: c.afterAt }, to: { beforeAt: next.beforeAt, afterAt: next.afterAt },
+        })
+      }
+      const cloud = await useEvCharging.getState().save(next)
+      // ช่อง EV Charging ในชีตของรถยังเป็นข้อความของรอบนี้ → เขียนใหม่ตามเวลาที่แก้ (รอบใหม่กว่าที่เขียนทับไปแล้วไม่แตะ)
+      const row = useTracking.getState().rows[c.vin]
+      if (row && row.cells[EV_CELL] === evCellText(c)) useTracking.getState().updateCells(c.vin, { [EV_CELL]: evCellText(next) })
+      toast(cloud ? 'ok' : 'info', cloud ? `แก้เวลา ${c.vin} แล้ว` : `แก้เวลา ${c.vin} แล้ว · ยังไม่ขึ้นระบบ จะส่งให้เองเมื่อเชื่อมต่อได้`)
+      onClose()
+    } catch (e: any) {
+      toast('err', `บันทึกไม่สำเร็จ: ${e?.message || e}`)
+    } finally { setBusy(false) }
+  }
+
+  const label = 'text-[12px] font-bold uppercase tracking-wider mb-1.5'
+  const input = 'px-3 py-2 rounded-xl tabular font-bold outline-none'
+  return (
+    <Modal open onClose={onClose} title="แก้วันที่ / เวลาชาร์จ"
+      footer={<>
+        <button className="btn px-3 py-2 text-[13px]" onClick={onClose}>ยกเลิก</button>
+        <button className="btn btn-primary px-3 py-2 text-[13px]" onClick={save} disabled={busy || !changed || !!err || stale} data-ev-time-save>
+          {busy ? 'กำลังบันทึก…' : 'บันทึก'}
+        </button>
+      </>}>
+      <div className="grid gap-4 text-[13px]" data-ev-time-dialog={c.vin}>
+        <div>
+          <div className="mono font-bold">{c.vin}</div>
+          <div style={{ color: 'var(--muted)' }}>{[c.model, c.color].filter(Boolean).join(' · ')}</div>
+        </div>
+        <div className="flex flex-wrap gap-4">
+          <label className="grid">
+            <span className={label} style={{ color: 'var(--muted)' }}>เริ่มชาร์จ</span>
+            <input type="datetime-local" value={start} max={maxNow} onChange={(e) => setStart(e.target.value)} data-ev-time-start
+              className={input} style={{ background: 'var(--chip)' }} />
+          </label>
+          <label className="grid">
+            <span className={label} style={{ color: 'var(--muted)' }}>ชาร์จเสร็จ</span>
+            {done
+              ? <input type="datetime-local" value={end} max={maxNow} onChange={(e) => setEnd(e.target.value)} data-ev-time-end
+                  className={input} style={{ background: 'var(--chip)' }} />
+              : <span className="px-3 py-2 rounded-xl font-semibold" style={{ background: 'var(--chip)', color: ACCENT }}>ยังชาร์จอยู่</span>}
+          </label>
+        </div>
+        <div className="rounded-xl px-3 py-2.5" style={{ background: 'var(--chip)' }} data-ev-time-preview>
+          {next && done ? <>เวลาชาร์จ <b>{fmtDuration(chargeMs(next))}</b></> : next ? 'เวลาเสร็จแก้ได้หลังสถานีบันทึกหลังชาร์จ' : '—'}
+          {(c.pauses?.length ?? 0) > 0 && <span style={{ color: EV_PAUSE }}> · หยุดพัก {c.pauses!.length} ครั้ง ไม่นับเป็นเวลาชาร์จ</span>}
+        </div>
+        {err && <div className="text-[12.5px] font-semibold" style={{ color: 'var(--st-damage)' }} data-ev-time-error>{err}</div>}
+        {stale && <div className="text-[12.5px] font-semibold" style={{ color: 'var(--st-damage)' }} data-ev-time-stale>รอบนี้เพิ่งถูกบันทึกใหม่ระหว่างที่เปิดหน้าต่างนี้ ปิดแล้วเปิดใหม่อีกครั้งเพื่อแก้จากข้อมูลล่าสุด</div>}
+      </div>
+    </Modal>
+  )
+}
+
 export function EvCharging() {
   const site = useYard((s) => s.currentSite)
+  const isAdmin = useYard((s) => s.appUsers.find((u) => u.id === s.loggedInUserId)?.role === 'admin')
+  const [editing, setEditing] = useState<EvCharge | null>(null)
   const charges = useEvCharging((s) => s.charges)
   const cloudMissing = useEvCharging((s) => s.cloudMissing)
   const pausesMissing = useEvCharging((s) => s.pausesMissing)
@@ -303,7 +385,15 @@ export function EvCharging() {
                         </div>
                       )}
                     </td>
-                    <td className="px-2 py-2 text-center whitespace-nowrap">{fmtEvDate(c.beforeAt)}</td>
+                    <td className="px-2 py-2 text-center whitespace-nowrap">
+                      {fmtEvDate(c.beforeAt)}
+                      {isAdmin && (
+                        <button className="ml-1.5 align-middle opacity-50 hover:opacity-100" onClick={() => setEditing(c)} data-ev-edit-time={c.vin}
+                          title="แก้วันที่ / เวลา" aria-label={`แก้วันที่ เวลา ${c.vin}`} style={{ color: 'var(--brand)' }}>
+                          <Pencil size={13} />
+                        </button>
+                      )}
+                    </td>
                     <td className="px-2 py-2 text-center">{fmtEvTime(c.beforeAt)}</td>
                     <td className="px-2 py-2 text-center whitespace-nowrap">{c.afterAt ? `${fmtEvDate(c.afterAt) !== fmtEvDate(c.beforeAt) ? fmtEvDate(c.afterAt) + ' ' : ''}${fmtEvTime(c.afterAt)}` : '—'}</td>
                     <td className="px-2 py-2 text-center">{c.remark || '—'}</td>
@@ -318,6 +408,7 @@ export function EvCharging() {
         </div>
       </div>
       {view && <PhotoLightbox photos={view.photos} index={view.i} onClose={() => setView(null)} />}
+      {editing && <EvTimeDialog c={editing} onClose={() => setEditing(null)} />}
       {planOpen && <EvPlanDialog site={site ?? null} ranged={ranged} from={from} onClose={() => setPlanOpen(false)} />}
     </div>
   )

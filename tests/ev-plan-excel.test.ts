@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { evChargeId, type EvCharge } from '../src/lib/evCharging'
-import { buildEvPlan, buildEvPlanWorkbook, evPlanCars, evPlanFilename, modelVariant, type EvPlanCar } from '../src/lib/evExcel'
+import { buildEvPlan, buildEvPlanWorkbook, coverCrop, evPlanCars, evPlanFilename, modelVariant, type EvPlanCar } from '../src/lib/evExcel'
 
 /** Export Excel ของ EV Charging ตามไฟล์ "Plan ชาร์จแบต M6 - 69 คัน - 60Rai" ที่หน้างานส่ง BYD (3 ชีต) */
 
@@ -53,6 +53,16 @@ describe('แผนชาร์จแบต: Plan / Actual รายวัน', 
     expect(m.actual.slice(1).every((n) => n === 0)).toBe(true)
   })
 
+  it('ตัดรูปให้เต็มช่องไม่บิดสัดส่วน: รูปแนวตั้ง 9:16 ใส่ช่อง 170×287 ตัดบนล่างเท่ากัน · รูปกว้างกว่าช่องตัดซ้ายขวา', () => {
+    const a = 170 / 287
+    const c = coverCrop(900, 1600, a)
+    expect(c.sx).toBe(0); expect(c.sw).toBe(900)
+    expect(c.sh).toBe(Math.round(900 / a)); expect(c.sy).toBe(Math.round((1600 - c.sh) / 2))
+    const w = coverCrop(1200, 1600, a)
+    expect(w.sy).toBe(0); expect(w.sh).toBe(1600)
+    expect(w.sw).toBe(Math.round(1600 * a)); expect(w.sx).toBe(Math.round((1200 - w.sw) / 2))
+  })
+
   it('รถชาร์จสองรอบนับ Actual ครั้งเดียว · รถที่ออกจากลานแล้วแต่ชาร์จในช่วงยังอยู่ในแผน · ชาร์จก่อนวันเริ่มแผนขยายคอลัมน์', () => {
     const rows = [{ vin: 'A', model: 'M6', modelName: '', color: '', from: '' }]
     const charges = [ev('A', at(10, 20, 8), at(10, 20, 12), 10, 80), ev('A', at(10, 22, 8), at(10, 22, 12), 50, 80), ev('GONE', at(10, 21, 9), at(10, 21, 15), 20, 70)]
@@ -68,8 +78,6 @@ describe('แผนชาร์จแบต: Plan / Actual รายวัน', 
 
 describe('ไฟล์ Excel 3 ชีตตามต้นแบบ', () => {
   it('ชื่อชีต · หัวตาราง · merge · สูตร · สี · รูปฝัง', async () => {
-    // jsdom ไม่โหลดรูป — จำลองขนาดรูปถ่ายแนวตั้ง 9:16
-    vi.stubGlobal('Image', class { naturalWidth = 900; naturalHeight = 1600; onload: any; onerror: any; set src(_: string) { setTimeout(() => this.onload?.()) } })
     const { charges, cars } = fixture()
     const x = { siteName: '60 Rai', siteCode: '60 RAI', perDay: 4, start: '2026-10-23', cars, charges }
     expect(evPlanFilename(x)).toBe('Plan ชาร์จแบต M6 - 69 คัน - 60Rai.xlsx')
@@ -134,8 +142,16 @@ describe('ไฟล์ Excel 3 ชีตตามต้นแบบ', () => {
     expect(s3.getCell('D4').numFmt).toBe('dd/mm/yyyy')
     expect(s3.getRow(4).height).toBeCloseTo(220.05)
     const imgs = s3.getImages()
-    expect(imgs).toHaveLength(9) // รูป VIN + หน้าปัดก่อน + หน้าปัดหลัง ต่อคัน
-    expect(new Set(imgs.map((im: any) => Math.floor(im.range.tl.nativeCol)))).toEqual(new Set([4, 5, 8]))
-    expect(imgs[0].range.ext).toMatchObject({ width: 157, height: 279 })
+    expect(imgs).toHaveLength(12) // รูป VIN + หน้าปัดก่อน + รูป VIN หลังชาร์จ (รูปเดียวกัน) + หน้าปัดหลัง ต่อคัน
+    expect(new Set(imgs.map((im: any) => Math.floor(im.range.tl.nativeCol)))).toEqual(new Set([4, 5, 7, 8]))
+    // รูป VIN หลังชาร์จ = รูปเดียวกับก่อนชาร์จ (image id เดียวกัน)
+    const at = (col: number, row: number) => imgs.find((im: any) => im.range.tl.nativeCol === col && im.range.tl.nativeRow === row)
+    expect(at(7, 3).imageId).toBe(at(4, 3).imageId)
+    // เต็มช่อง: ช่องกว้าง 176px × สูง 293px เว้นขอบ 3px รอบด้าน
+    for (const im of imgs) {
+      expect(im.range.ext).toMatchObject({ width: 170, height: 287 })
+      expect(im.range.tl.nativeColOff).toBe(3 * 9525)
+      expect(im.range.tl.nativeRowOff).toBe(3 * 9525)
+    }
   })
 })
