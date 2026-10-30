@@ -1185,7 +1185,7 @@ function GridFooter({ sel, shown, total, lastImport }: { sel: Set<string>; shown
 
 // ============================ B/L NO. (Grouping) view ============================
 function GroupingView({ rows, visCols, sel, setSel, sortKey, sortDir, toggleSort, optionsFor }: GridProps) {
-  // yard name for the IR "Delivery Form" field, when a row has no Location-yard cell
+  // yard name for the IR "Delivery From" field — the site being printed from wins over the row's Location-yard cell (see dnir irData)
   const grpSites = useYard((s) => s.sites)
   const grpSite = useYard((s) => s.currentSite)
   const siteName = grpSites.find((x) => x.id === grpSite)?.name ?? ''
