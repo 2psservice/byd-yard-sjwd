@@ -227,6 +227,28 @@ input, textarea, select, [contenteditable='true'] {
 @keyframes pageIn { from { opacity: 0; } to { opacity: 1; } }
 .page-in { animation: pageIn 0.26s var(--ease-soft) backwards; }
 @media (prefers-reduced-motion: reduce) { .page-in { animation: none; } }
+/* หน้าเดิมจางออกก่อนสลับ (lib/pageSwitch · PAGE_OUT_MS) */
+.page-out { opacity: 0; pointer-events: none; transition: opacity 0.15s var(--ease-soft); }
+
+/* ---------- แถบโหลดเส้นบางบนสุดตอนเปลี่ยนหน้า (components/NavProgress) ---------- */
+.nav-progress {
+  position: fixed; top: 0; left: 0; height: 2.5px; width: 0; z-index: 9999; pointer-events: none; opacity: 0;
+  background: var(--brand); box-shadow: 0 0 8px var(--brand-glow); border-radius: 0 2px 2px 0;
+}
+.nav-progress-run { opacity: 1; width: 82%; transition: width 0.7s var(--ease-soft), opacity 0.1s linear; }
+.nav-progress-done { opacity: 0; width: 100%; transition: width 0.15s var(--ease-soft), opacity 0.45s ease 0.15s; }
+@media (prefers-reduced-motion: reduce) { .nav-progress { display: none; } }
+
+/* ---------- หน้าต่าง popup ตอนเปิด (เฉพาะคอมที่ใช้เมาส์) ----------
+   ฉากหลังเต็มจอ (.fixed.inset-0) ที่มีตัวหน้าต่างเป็นลูกโดยตรง: ฉากหลังค่อย ๆ มืดพร้อมเบลอ
+   ตัวหน้าต่าง (.pop) ขยายจาก 90% พร้อมจางเข้า — ครอบทุก popup ของแอปจากที่เดียว ไม่ต้องแก้ทีละหน้าต่าง
+   มือถือ / แท็บเล็ตคงแบบเดิม (เบลอที่เคลื่อนไหวหนักเครื่อง) */
+@keyframes overlayIn { from { opacity: 0; backdrop-filter: blur(0); -webkit-backdrop-filter: blur(0); } }
+@keyframes dialogIn { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: none; } }
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  .fixed.inset-0:has(> .pop, > .fade-up) { animation: overlayIn 0.25s var(--ease-soft) backwards; }
+  .fixed.inset-0 > .pop { animation: dialogIn 0.26s var(--ease-soft) both; }
+}
 
 /* ---------- คลื่นตอนกดปุ่ม (lib/ripple.ts) ---------- */
 .ripple-host { position: absolute; inset: 0; margin: 0 !important; overflow: hidden; border-radius: inherit; pointer-events: none; }

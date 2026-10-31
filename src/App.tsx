@@ -3,6 +3,8 @@ import { Layout } from './components/Layout'
 import { LoginScreen } from './components/LoginScreen'
 import { LogoLoaderOverlay } from './components/LogoLoader'
 import { Toaster } from './components/ui'
+import { NavProgress } from './components/NavProgress'
+import { usePageSwitch } from './lib/pageSwitch'
 import { SelectSiteModal } from './components/SelectSiteModal'
 import { OpsShell } from './components/OpsShell'
 import { SiteLoadGate } from './components/SiteLoadGate'
@@ -49,6 +51,25 @@ const PdiBoard = lazy(() => import('./pages/PdiBoard').then((m) => ({ default: m
 const Damages = lazy(() => import('./pages/Damages').then((m) => ({ default: m.Damages })))
 const Grouping = lazy(() => import('./pages/Grouping').then((m) => ({ default: m.Grouping })))
 const Settings = lazy(() => import('./pages/Settings').then((m) => ({ default: m.Settings })))
+
+// โหลดไฟล์ของหน้าล่วงหน้าตอนหน้าเดิมกำลังจางออก (lib/pageSwitch) — import เดียวกับ lazy ด้านบน
+// โมดูลถูกเก็บไว้ครั้งเดียว พอ lazy ขอจริงก็ได้ทันที ไม่ต้องขึ้นโลโก้โหลดเต็มจอ
+const PAGE_CHUNKS: Partial<Record<View, () => Promise<unknown>>> = {
+  dashboard: () => import('./pages/Dashboard'), import: () => import('./pages/ImportPage'),
+  trailers: () => import('./pages/Report'), report: () => import('./pages/Report'), report2ps: () => import('./pages/Report2ps'),
+  gatein: () => import('./pages/GateIn'), driver: () => import('./pages/Driver'), yard: () => import('./pages/YardPlan'),
+  units: () => import('./pages/Units'), rules: () => import('./pages/Rules'), yardops: () => import('./pages/YardOps'),
+  tracking: () => import('./pages/Tracking'), operation: () => import('./pages/Operation'), pm: () => import('./pages/PmPlan'),
+  ev: () => import('./pages/EvCharging'), pdi: () => import('./pages/PdiBoard'), damages: () => import('./pages/Damages'),
+  grouping: () => import('./pages/Grouping'), settings: () => import('./pages/Settings'),
+}
+const prefetchPage = (v: View) => { PAGE_CHUNKS[v]?.().catch(() => {}) }
+
+/** บอกตัวสลับหน้าว่าหน้าใหม่ขึ้นจอแล้ว — อยู่ใน Suspense เดียวกับหน้า จึงทำงานหลังไฟล์ของหน้าโหลดเสร็จเท่านั้น */
+function PageReady({ onReady }: { onReady: () => void }) {
+  useEffect(() => { onReady() }, [onReady])
+  return null
+}
 
 // same local calendar day? (device-local time — matches how the yard works shifts)
 const sameDay = (a: number, b: number) => new Date(a).toDateString() === new Date(b).toDateString()
@@ -105,6 +126,8 @@ export default function App() {
   // data tables, unusable on a handset — so the gate is the device, not the role
   const opsOnly = isOpsOnlyRole(me?.role) || isPhone
   const view = useYard((s) => s.view)
+  // หน้าที่แสดงจริง: หน้าเดิมจางออกก่อนแล้วค่อยสลับ (lib/pageSwitch) — เมนูซ้ายยังเปลี่ยนทันทีตาม view
+  const page = usePageSwitch(view, prefetchPage)
   const ensureUnitSites = useYard((s) => s.ensureUnitSites)
   const runPendingSiteCleanup = useYard((s) => s.runPendingSiteCleanup)
   const sites = useYard((s) => s.sites)
@@ -608,9 +631,15 @@ export default function App() {
 
   return (
     <>
-      <Layout>
-        {/* key = หน้า: เปลี่ยนเมนูแล้วหน้าใหม่จางเข้า (.page-in) */}
-        <Suspense fallback={<LogoLoaderOverlay label="กำลังโหลดหน้า" />}><div key={view} className="page-in">{pages[view]}</div></Suspense>
+      <NavProgress busy={page.busy} />
+      <Layout pageView={page.shown}>
+        {/* key = หน้าที่แสดง: หน้าเดิมจางออก (.page-out) แล้วหน้าใหม่จางเข้า (.page-in) */}
+        <Suspense fallback={<LogoLoaderOverlay label="กำลังโหลดหน้า" />}>
+          <div key={page.shown} className={page.leaving ? 'page-in page-out' : 'page-in'}>
+            {pages[page.shown]}
+            <PageReady onReady={page.onReady} />
+          </div>
+        </Suspense>
       </Layout>
       {/* หน้า loading ของยาร์ดที่เลือก — รอแถวชีต + รถในผังของยาร์ดครบก่อนเปิดตัวเลข */}
       <SiteLoadGate mode="overlay" />

@@ -119,7 +119,9 @@ function UserMenu({ onGoSettings }: { onGoSettings: () => void }) {
   )
 }
 
-export function Layout({ children }: { children: ReactNode }) {
+/** pageView = หน้าที่กำลังแสดงจริง (App เลื่อนการสลับไว้ตอนหน้าเดิมจางออก) — ระยะขอบของเนื้อหาตามหน้านั้น
+ *  ไม่ใช่ตามเมนูที่เพิ่งกด ไม่งั้นหน้าเดิมขยับระหว่างจางออก */
+export function Layout({ children, pageView }: { children: ReactNode; pageView?: View }) {
   const { lang, view, setView, planMode, setPlanMode, setLang, currentUser, sites, currentSite, openSiteModal, unitsRealtimeConnected } = useYard()
   const siteName = sites.find((s) => s.id === currentSite)?.name ?? null
   const trackingRows = useTrackingRows()
@@ -264,7 +266,7 @@ export function Layout({ children }: { children: ReactNode }) {
 
         {/* the Unit List is a full-height data grid — give it the padding back
             as table rows (several extra VINs per screen) */}
-        <main className={cx('flex-1 overflow-auto', view === 'units' ? 'p-2' : 'p-4 md:p-6')} style={{ background: 'var(--app-bg)' }}>{children}</main>
+        <main className={cx('flex-1 overflow-auto', (pageView ?? view) === 'units' ? 'p-2' : 'p-4 md:p-6')} style={{ background: 'var(--app-bg)' }}>{children}</main>
 
         {/* bottom status bar (TOS chrome) */}
         <footer className="flex items-center gap-4 px-4 h-7 border-t hairline shrink-0 text-[11.5px]" style={{ background: 'var(--glass)', backdropFilter: 'blur(22px) saturate(180%)', WebkitBackdropFilter: 'blur(22px) saturate(180%)', color: 'var(--muted)' }}>
