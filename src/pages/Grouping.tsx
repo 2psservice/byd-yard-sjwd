@@ -10,7 +10,7 @@ import { parseGroupingWorkbook, siteGroupingConfig, yardLocCode, LAST_LOCATION_K
 import { printGrouping, printFindCar, exportGroupingXlsx, exportFindCarXlsx, printRowFor, type GroupPrintRow, type GroupPrintMeta } from '../lib/groupingPrint'
 import { printIr, printDn, printIrPaper } from '../lib/dnir'
 import { markPrinted, printedAt, printedValue, PRINTED_KEYS } from '../lib/printMarks'
-import { usePinnedHead } from '../lib/pinnedHead'
+import { useStickyBar } from '../lib/stickyBar'
 import type { TrackRow } from '../lib/excelTracking'
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
@@ -516,10 +516,10 @@ export function Grouping() {
   }
   const total = sheetRows?.length ?? 0
 
-  // the print / Excel bar and the yellow column header stay on screen while scrolling a long plan
+  // the print / Excel bar stays on screen while scrolling a long plan (the yellow header scrolls away)
   const barRef = useRef<HTMLDivElement>(null)
   const tableRef = useRef<HTMLTableElement>(null)
-  usePinnedHead(barRef, tableRef, !!sheetMeta && total > 0)
+  useStickyBar(barRef, tableRef, !!sheetMeta && total > 0)
 
   return (
     <div className="w-full">
