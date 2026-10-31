@@ -14,6 +14,10 @@
 // embedding photos as data-URLs exactly as before — nothing breaks.
 
 interface Env {
+  // ตรวจว่าผู้อัปโหลดล็อกอินอยู่ (RPC sjwd_session_ok — supabase-photo-upload-session.sql)
+  // ตั้งใน Cloudflare Pages → Settings → Variables · ยังไม่ตั้ง = ไม่ตรวจ (เหมือนเดิม)
+  SUPABASE_URL?: string
+  SUPABASE_ANON_KEY?: string
   PHOTOS?: {
     put(key: string, value: ArrayBuffer, opts?: { httpMetadata?: { contentType?: string } }): Promise<unknown>
     get(key: string): Promise<{ body: ReadableStream; httpEtag?: string; httpMetadata?: { contentType?: string } } | null>
@@ -22,10 +26,34 @@ interface Env {
 type Ctx = { request: Request; env: Env; params: { path?: string | string[] } }
 
 const MAX_BYTES = 2 * 1024 * 1024 // photos arrive pre-compressed at ~100-300 KB
+
+// โทเค็นที่ตรวจผ่านแล้ว จำไว้สั้น ๆ ต่อ isolate — ถ่ายรูปรัว ๆ ไม่ต้องถามฐานข้อมูลทุกรูป
+const OK_TTL_MS = 5 * 60_000
+const okTokens = new Map<string, number>()
+
+async function sessionOk(env: Env, token: string): Promise<boolean> {
+  const at = okTokens.get(token)
+  if (at && Date.now() - at < OK_TTL_MS) return true
+  const res = await fetch(`${env.SUPABASE_URL!.replace(/\/$/, '')}/rest/v1/rpc/sjwd_session_ok`, {
+    method: 'POST',
+    headers: { apikey: env.SUPABASE_ANON_KEY!, authorization: `Bearer ${env.SUPABASE_ANON_KEY}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ p_token: token }),
+  })
+  if (!res.ok) throw new Error(`session check ${res.status}`)
+  const ok = (await res.json()) === true
+  if (ok) okTokens.set(token, Date.now())
+  return ok
+}
 const TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
 
 export const onRequestPost = async ({ request, env }: Ctx): Promise<Response> => {
   if (!env.PHOTOS) return new Response('R2 not configured', { status: 501 })
+  if (env.SUPABASE_URL && env.SUPABASE_ANON_KEY) {
+    const token = request.headers.get('x-sjwd-token') || ''
+    let ok = false
+    try { ok = !!token && await sessionOk(env, token) } catch { return new Response('session check failed', { status: 503 }) }
+    if (!ok) return new Response('login required', { status: 401 })
+  }
   const ct = (request.headers.get('content-type') || '').split(';')[0].trim()
   if (!TYPES.has(ct)) return new Response('unsupported type', { status: 415 })
   const buf = await request.arrayBuffer()

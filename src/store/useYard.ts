@@ -22,6 +22,7 @@ import { blockKeyOfTag, pos as posCode } from '../lib/format'
 import { clearPlacementInFlight, laneFromCloud, markPlacementInFlight } from '../lib/laneCloud'
 import type { DbDamage, DbUnit } from '../lib/database.types'
 import type { RealtimeChannel } from '@supabase/supabase-js'
+import { setPhotoSessionToken } from '../lib/photoStore'
 
 export interface Toast { id: number; kind: 'ok' | 'err' | 'info'; msg: string }
 let tid = 0
@@ -2582,6 +2583,9 @@ export const useYard = create<YardState>()(
     },
   ),
 )
+
+// อัปโหลดรูปแนบโทเค็นเซสชันของผู้ที่ล็อกอิน (functions/api/photos ตรวจ)
+setPhotoSessionToken(() => useYard.getState().sessionToken)
 
 // ── units → IndexedDB write-through (yard-plan boot cache) ──────────────────
 // localStorage caps at ~5 MB and fails SILENTLY past it — with ~2,000 cars +
