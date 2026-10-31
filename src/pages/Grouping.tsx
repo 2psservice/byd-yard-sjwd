@@ -10,6 +10,7 @@ import { parseGroupingWorkbook, siteGroupingConfig, yardLocCode, LAST_LOCATION_K
 import { printGrouping, printFindCar, exportGroupingXlsx, exportFindCarXlsx, printRowFor, type GroupPrintRow, type GroupPrintMeta } from '../lib/groupingPrint'
 import { printIr, printDn, printIrPaper } from '../lib/dnir'
 import { markPrinted, printedAt, printedValue, PRINTED_KEYS } from '../lib/printMarks'
+import { usePinnedHead } from '../lib/pinnedHead'
 import type { TrackRow } from '../lib/excelTracking'
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
@@ -515,6 +516,11 @@ export function Grouping() {
   }
   const total = sheetRows?.length ?? 0
 
+  // the print / Excel bar and the yellow column header stay on screen while scrolling a long plan
+  const barRef = useRef<HTMLDivElement>(null)
+  const tableRef = useRef<HTMLTableElement>(null)
+  usePinnedHead(barRef, tableRef, !!sheetMeta && total > 0)
+
   return (
     <div className="w-full">
       <PageHead
@@ -586,7 +592,7 @@ export function Grouping() {
       ) : (
         /* the plan as a document: header (what / where / status), one toolbar for every print and
            export, then the sheet. Printed papers keep the yellow Excel look — only the screen changes. */
-        <section className="panel overflow-hidden" data-grouping-doc>
+        <section className="panel overflow-clip" data-grouping-doc>
           <div className="px-5 pt-4 pb-3.5 flex items-start gap-4 flex-wrap">
             <div className="min-w-0 flex-1">
               <div className="gdoc-eyebrow">ใบ Grouping to Dealer</div>
@@ -621,7 +627,7 @@ export function Grouping() {
 
           {/* every print and export of this plan, grouped by what it makes. DN / IR print the ticked
               cars (a row, a grouping, or everything) — nothing ticked prints the whole sheet. */}
-          <div className="gdoc-bar">
+          <div className="gdoc-bar" ref={barRef} data-grouping-bar>
             <div className="gdoc-grp">
               <span className="gdoc-lbl">พิมพ์</span>
               <div className="seg">
@@ -670,7 +676,7 @@ export function Grouping() {
           </div>
 
           <div className="overflow-x-auto">
-            <table className="gtable">
+            <table className="gtable" ref={tableRef}>
               <thead>
                 <tr>
                   <th className="c" style={{ width: 36 }} title="ติ๊กทั้งหมด / ล้างทั้งหมด — คันที่ติ๊กคือคันที่ปุ่ม DN / IR จะพิมพ์">
