@@ -143,6 +143,8 @@ export default function App() {
   const unitsCloudDone = useYard((s) => s.unitsCloudDone)
   const openSiteModal = useYard((s) => s.openSiteModal)
   const trackingLoaded = useTracking((s) => s.loaded)
+  // แถวรอบในเครื่อง + คลาวด์รอบแรกครบแล้ว — ตัวแปลงย้อนหลัง (__trips → visits) รอสิ่งนี้
+  const visitsReady = useVisits((s) => s.loaded && (s.cloudReady || !isConfigured()))
   const loadFromIdb = useTracking((s) => s.loadFromIdb)
   const subscribeTracking = useTracking((s) => s.subscribeRealtime)
   const unsubscribeTracking = useTracking((s) => s.unsubscribeRealtime)
@@ -256,9 +258,9 @@ export default function App() {
   useEffect(() => { loadFromIdb(); useYard.getState().loadUnitsFromIdb(); useVisits.getState().load().catch(() => {}) }, [loadFromIdb])
   // แยกยาร์ด แยกงาน ขั้นที่ 1: รอบที่ปิดไปแล้วซึ่งยังซ่อนอยู่ในก้อน __trips ของแถวสด
   // → สร้างเป็นแถวรอบจริงของยาร์ดต้นทาง (ทำซ้ำได้ ไม่สร้างซ้ำ) — รันหลังแถวสดโหลดแล้ว
-  // และรันซ้ำหลังซิงก์คลาวด์ครั้งแรก เผื่อแถวที่เพิ่งมาถึง
+  // และรันซ้ำหลังซิงก์คลาวด์ครั้งแรก เผื่อแถวที่เพิ่งมาถึง · รอแถวรอบโหลดครบก่อน (ดู useVisits.migrateFromTrips)
   useEffect(() => {
-    if (!trackingLoaded) return
+    if (!trackingLoaded || !visitsReady) return
     const run = () => {
       const rows = Object.values(useTracking.getState().rows)
       const sites = useYard.getState().sites
@@ -269,7 +271,7 @@ export default function App() {
     run()
     const t = setTimeout(run, 30_000)
     return () => clearTimeout(t)
-  }, [trackingLoaded])
+  }, [trackingLoaded, visitsReady])
 
   // ── a gated-out car must not keep holding a parking slot ──────────────────
   // Cars leave through several paths (ops-scan + 09:30 flush, Co-Inspection

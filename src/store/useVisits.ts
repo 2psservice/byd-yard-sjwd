@@ -19,6 +19,8 @@ const MAX_HISTORY = 100
 interface VisitsState {
   visits: Record<string, Visit>
   loaded: boolean
+  /** ดึงแถวรอบทั้งตารางจากคลาวด์ครบแล้วอย่างน้อยหนึ่งรอบในเซสชันนี้ — ตัวแปลงย้อนหลังรอสิ่งนี้ (ดู migrateFromTrips) */
+  cloudReady: boolean
   /** ตาราง visits ในคลาวด์ยังไม่มี / เขียนไม่ได้ — รอบที่ปิดเห็นเฉพาะเครื่องนี้ */
   cloudMissing: boolean
   /** โหลดจากเครื่อง แล้วดึงจากคลาวด์ทับ (ใหม่กว่าชนะ) */
@@ -93,6 +95,7 @@ async function pushNew(visits: Visit[], set: Set_, get: Get_): Promise<void> {
 export const useVisits = create<VisitsState>()((set, get) => ({
   visits: {},
   loaded: false,
+  cloudReady: false,
   cloudMissing: false,
 
   load: async () => {
@@ -138,7 +141,7 @@ export const useVisits = create<VisitsState>()((set, get) => ({
     // ก้อน __trips ที่ยังอยู่ในแถวสด จึงไม่หาย
     const dropped: string[] = []
     for (const id of Object.keys(merged)) if (!cloudIds.has(id) && !pending.has(id)) { delete merged[id]; dropped.push(id) }
-    set({ visits: merged, cloudMissing: false })
+    set({ visits: merged, cloudMissing: false, cloudReady: true })
     if (fresher.length) idbPutVisits(fresher).catch(() => {})
     if (dropped.length) idbDeleteVisits(dropped).catch(() => {})
     const retry = Object.values(merged).filter((v) => pending.has(v.id))
@@ -200,6 +203,10 @@ export const useVisits = create<VisitsState>()((set, get) => ({
   },
 
   migrateFromTrips: (rows, sites) => {
+    // รอสำเนาในเครื่อง + คลาวด์รอบแรกให้ครบก่อน — เดิมเริ่มทันทีที่แถวรถโหลดเสร็จ ถ้าแถวรอบยังโหลดไม่เสร็จ
+    // ก็เห็นว่า "ไม่มีสักแถว" แล้วสร้างใหม่ ~1,400 แถว: ก่อน #655 เขียนทับคลาวด์ (visits เสีย 29–30 ต.ค.)
+    // หลัง #655 ไม่ทับแล้วแต่ยังส่งขึ้น/ดึงกลับ ~1 MB ช่วง "Loading 99%" — เครื่องสเปกต่ำกล้องเปิดไม่ขึ้น (31 ต.ค. 08:05)
+    if (!get().loaded || (db.isConfigured() && !get().cloudReady)) return 0
     const have = (id: string) => !!get().visits[id]
     const created: Visit[] = []
     for (const r of rows) for (const v of missingVisitsOf(r, have, sites)) created.push(v)
