@@ -289,7 +289,7 @@ export function Grouping() {
       siteLabel: siteLabel(siteName), date: todayLong(), totalUnits: sheetRows.length,
       groupCount: count.size, locPrefix: siteGroupingConfig(siteName).prefix,
     }
-    return { id: q.id, name: q.name, rows: sheetRows, meta: m }
+    return { id: q.id, name: q.name, day: queueDay(q), rows: sheetRows, meta: m }
   }, [rows, queues, currentSite, rowByVin, anyRowByVin, unitByVin, siteName, viewQueueId, dayFilter])
 
   // admin's Lane load edits (grouping code → lane), shown live in the sheet and
@@ -503,80 +503,33 @@ export function Grouping() {
     }
   }
 
+  // ── document header strip (display only): title, site / date / size, sequence + print status ──
+  const docTitle = (usingQueue ? queueSheet!.name : seqName.trim()) || (sheetMeta
+    ? `${sheetMeta.siteLabel} - Grouping to Dealer ( ${sheetMeta.totalUnits} Units / ${sheetMeta.groupCount} Group) Date ${sheetMeta.date}` : '')
+  const docDay = usingQueue ? queueSheet!.day.split('-').reverse().join('/') : sheetMeta?.date ?? ''
+  let printedDn = 0, printedIr = 0
+  for (const r of sheetRows ?? []) {
+    const c = printedCells(r.vin)
+    if (printedAt(c, 'dn', r.grouping) != null) printedDn++
+    if (printedAt(c, 'ir', r.grouping) != null) printedIr++
+  }
+  const total = sheetRows?.length ?? 0
+
   return (
     <div className="w-full">
       <PageHead
-        title={<span className="flex items-center gap-2"><Layers size={20} style={{ color: 'var(--brand)' }} /> Grouping</span>}
-        sub={`นำเข้าแผน Grouping ต่อ Site · ใส่เลข Grouping ให้รถอัตโนมัติ · พิมพ์ใบ Grouping / ใบหารถ${siteName ? ` — ${siteName}` : ''}`}
+        title={<span className="flex items-center gap-2"><Layers size={20} style={{ color: 'var(--brand)' }} /> Grouping to Dealer</span>}
+        sub={`แผนส่งมอบรถให้ดีลเลอร์ · นำเข้าไฟล์ Excel แล้วระบบใส่เลข Grouping ให้รถ · พิมพ์เอกสารส่งมอบ${siteName ? ` · ${siteName}` : ''}`}
         right={
           <div className="flex items-center gap-2 flex-wrap">
+            <DayPicker days={dayCounts} value={dayFilter} onChange={pickDay} />
             <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={onFile} />
             <button className="btn btn-primary" disabled={busy} onClick={() => fileRef.current?.click()}>
-              {busy ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />} 1 · อัปโหลด Excel Grouping
+              {busy ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />} อัปโหลด Excel Grouping
             </button>
-            <button className="btn" disabled={!canPrint} onClick={() => sheetRows && sheetMeta && printGrouping(sheetRows, sheetMeta)}>
-              <Printer size={15} /> 2 · พิมพ์ Grouping
-            </button>
-            <button className="btn" disabled={!canPrint} onClick={() => sheetRows && sheetMeta && printFindCar(sheetRows, sheetMeta)}>
-              <MapPin size={15} /> 3 · พิมพ์ใบหารถ
-            </button>
-            {hasLaneEdits && (
-              <button className="btn" onClick={saveLaneLoads}
-                style={{ background: '#2563eb', color: '#fff', borderColor: 'transparent' }}>
-                <Save size={15} /> บันทึก Lane load
-              </button>
-            )}
-            <button className="btn" disabled={!canPrint || fromQueue} onClick={doCreateSequence}
-              title={fromQueue ? 'คิวงานของแผนนี้ถูกสร้างไว้แล้ว — จัดการได้ที่รายการคิวด้านล่าง' : undefined}
-              style={canPrint && !fromQueue ? { background: '#16a34a', color: '#fff', borderColor: 'transparent' } : undefined}>
-              <ListChecks size={15} /> Create Sequence
-            </button>
-            <button className="btn" disabled={!canPrint} onClick={() => setEditingVins((v) => !v)}
-              title="แก้ไขรายชื่อรถในกลุ่ม — กดแล้วจะมีปุ่ม − แดงหน้าทุกแถว สำหรับเอารถออกจาก Grouping"
-              style={editingVins ? { background: '#dc2626', color: '#fff', borderColor: 'transparent' } : undefined}>
-              {editingVins ? <><X size={15} /> เสร็จสิ้น</> : <><Pencil size={15} /> แก้ไขรายชื่อรถ</>}
-            </button>
-            <DayPicker days={dayCounts} value={dayFilter} onChange={pickDay} />
           </div>
         }
       />
-
-      {/* DN / IR manifests + Excel exports of the current plan. DN / IR print
-          the ticked cars (tick a row, a grouping, or everything in the table
-          header) — nothing ticked prints the whole sheet. */}
-      {canPrint && (
-        <div className="flex items-center gap-2 flex-wrap mb-3">
-          {selVins.size > 0 && (
-            <span className="badge" style={{ background: 'var(--brand-soft,#eef4ff)', color: 'var(--brand)' }}>
-              เลือก {selVins.size} คัน
-              <button className="ml-1" style={{ color: 'var(--brand)' }} title="ล้างที่เลือก" onClick={() => setSelVins(new Set())}>
-                <X size={12} />
-              </button>
-            </span>
-          )}
-          <button className="btn" onClick={() => printDoc('dn')} disabled={!printTrackRows.length}
-            title="พิมพ์ใบส่งมอบรถ (Delivery Note) — 1 ใบ ต่อ 1 Grouping · พิมพ์เฉพาะคันที่ติ๊ก (ไม่ติ๊ก = ทั้งใบ)">
-            <FileText size={15} /> พิมพ์ DN ({printCount})
-          </button>
-          <button className="btn" onClick={() => printDoc('ir')} disabled={!printTrackRows.length}
-            title="พิมพ์ใบตรวจรถ (Inspector Report) เต็มฟอร์ม — 1 หน้า ต่อ 1 คัน ลงกระดาษเปล่า · พิมพ์เฉพาะคันที่ติ๊ก (ไม่ติ๊ก = ทั้งใบ)">
-            <Printer size={15} /> พิมพ์ IR ({printCount})
-          </button>
-          <button className="btn" onClick={() => printDoc('irp')} disabled={!printTrackRows.length}
-            title="พิมพ์เฉพาะข้อมูลลงบนกระดาษฟอร์ม IR ที่พิมพ์ไว้ล่วงหน้า (ตรงตำแหน่ง AMS 100%) · พิมพ์เฉพาะคันที่ติ๊ก (ไม่ติ๊ก = ทั้งใบ)">
-            <Printer size={15} /> พิมพ์กระดาษ IR ({printCount})
-          </button>
-          <span aria-hidden style={{ width: 1, height: 22, background: 'var(--line-strong)' }} />
-          <button className="btn" onClick={() => sheetRows && sheetMeta && doExport(() => exportGroupingXlsx(sheetRows, sheetMeta))}
-            style={{ color: '#16a34a' }} title="ดาวน์โหลดใบ Grouping เป็นไฟล์ Excel (.xlsx)">
-            <FileSpreadsheet size={15} /> Excel ใบ Grouping
-          </button>
-          <button className="btn" onClick={() => sheetRows && sheetMeta && doExport(() => exportFindCarXlsx(sheetRows, sheetMeta))}
-            style={{ color: '#16a34a' }} title="ดาวน์โหลดใบหารถเป็นไฟล์ Excel (.xlsx) เรียงตามตำแหน่งในลาน">
-            <FileSpreadsheet size={15} /> Excel ใบหารถ
-          </button>
-        </div>
-      )}
 
       {/* the read came up short of what the sheet says it holds */}
       {shortRead && (
@@ -631,74 +584,146 @@ export function Grouping() {
           </div>
         </div>
       ) : (
-        /* on-screen replica of the printed Grouping-to-Dealer sheet — same
-           columns, yellow header, merged group cells; Lane load is editable */
-        <div className="panel overflow-hidden" style={{ background: '#fff' }}>
-          <div className="px-4 pt-3 pb-1 text-center font-bold text-[13.5px]" style={{ color: '#111' }}>
-            {(seqName.trim() || queueSheet?.name) ??
-              `${sheetMeta.siteLabel} - Grouping to Dealer ( ${sheetMeta.totalUnits} Units / ${sheetMeta.groupCount} Group) Date ${sheetMeta.date}`}
-          </div>
-          {fromQueue && (
-            <div className="text-center text-[11.5px] pb-1" style={{ color: 'var(--muted)' }}>
-              แสดงจากคิวงานล่าสุด — แก้ Lane load แล้วกด <b style={{ color: '#2563eb' }}>บันทึก Lane load</b> หน้างานจะเห็นทันที
+        /* the plan as a document: header (what / where / status), one toolbar for every print and
+           export, then the sheet. Printed papers keep the yellow Excel look — only the screen changes. */
+        <section className="panel overflow-hidden" data-grouping-doc>
+          <div className="px-5 pt-4 pb-3.5 flex items-start gap-4 flex-wrap">
+            <div className="min-w-0 flex-1">
+              <div className="gdoc-eyebrow">ใบ Grouping to Dealer</div>
+              <h2 className="text-[16px] font-bold leading-snug mt-1" style={{ color: 'var(--text)', textWrap: 'balance' }}>{docTitle}</h2>
+              <div className="gdoc-meta mt-2.5">
+                <span><i>Site</i><b>{siteName || '—'}</b></span>
+                <span><i>วันที่</i><b className="tabular">{docDay || '—'}</b></span>
+                <span><i>จำนวน</i><b className="tabular">{total} คัน · {sheetMeta.groupCount} กลุ่ม</b></span>
+                <span data-printed-dn={printedDn}><i>พิมพ์ DN</i><b className="tabular" style={printedDn === total ? { color: '#16a34a' } : undefined}>{printedDn}/{total}</b></span>
+                <span data-printed-ir={printedIr}><i>พิมพ์ IR</i><b className="tabular" style={printedIr === total ? { color: '#16a34a' } : undefined}>{printedIr}/{total}</b></span>
+              </div>
             </div>
-          )}
-          <div className="overflow-x-auto p-3">
-            <table style={{ width: '100%', borderCollapse: 'collapse', color: '#111' }} className="text-[12px]">
+            <div className="flex items-center gap-2 shrink-0">
+              <button className="btn" onClick={() => setEditingVins((v) => !v)}
+                title="แก้ไขรายชื่อรถในกลุ่ม — กดแล้วจะมีปุ่ม − แดงหน้าทุกแถว สำหรับเอารถออกจาก Grouping"
+                style={editingVins ? { background: '#dc2626', color: '#fff', borderColor: 'transparent' } : undefined}>
+                {editingVins ? <><X size={15} /> เสร็จสิ้น</> : <><Pencil size={15} /> แก้ไขรายชื่อรถ</>}
+              </button>
+              {fromQueue ? (
+                <span className="gdoc-state ok" data-seq-state="created"
+                  title="คิวงานของแผนนี้ถูกสร้างไว้แล้ว — จัดการได้ที่รายการคิวด้านล่าง">
+                  <CheckCircle2 size={15} /> สร้างคิวงานแล้ว
+                </span>
+              ) : (
+                <button className="btn" onClick={doCreateSequence} data-seq-state="new"
+                  style={{ background: '#16a34a', color: '#fff', borderColor: 'transparent' }}>
+                  <ListChecks size={15} /> Create Sequence
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* every print and export of this plan, grouped by what it makes. DN / IR print the ticked
+              cars (a row, a grouping, or everything) — nothing ticked prints the whole sheet. */}
+          <div className="gdoc-bar">
+            <div className="gdoc-grp">
+              <span className="gdoc-lbl">พิมพ์</span>
+              <div className="seg">
+                <button onClick={() => printGrouping(sheetRows, sheetMeta)} title="พิมพ์ใบ Grouping to Dealer ทั้งใบ">
+                  <Printer size={14} /> ใบ Grouping
+                </button>
+                <button onClick={() => printFindCar(sheetRows, sheetMeta)} title="พิมพ์ใบหารถ เรียงตามตำแหน่งในลาน">
+                  <MapPin size={14} /> ใบหารถ
+                </button>
+                <button onClick={() => printDoc('dn')} disabled={!printTrackRows.length}
+                  title="พิมพ์ใบส่งมอบรถ (Delivery Note) — 1 ใบ ต่อ 1 Grouping · พิมพ์เฉพาะคันที่ติ๊ก (ไม่ติ๊ก = ทั้งใบ)">
+                  <FileText size={14} /> DN <span className="seg-n">{printCount}</span>
+                </button>
+                <button onClick={() => printDoc('ir')} disabled={!printTrackRows.length}
+                  title="พิมพ์ใบตรวจรถ (Inspector Report) เต็มฟอร์ม — 1 หน้า ต่อ 1 คัน ลงกระดาษเปล่า · พิมพ์เฉพาะคันที่ติ๊ก (ไม่ติ๊ก = ทั้งใบ)">
+                  <FileText size={14} /> IR <span className="seg-n">{printCount}</span>
+                </button>
+                <button onClick={() => printDoc('irp')} disabled={!printTrackRows.length}
+                  title="พิมพ์เฉพาะข้อมูลลงบนกระดาษฟอร์ม IR ที่พิมพ์ไว้ล่วงหน้า (ตรงตำแหน่ง AMS 100%) · พิมพ์เฉพาะคันที่ติ๊ก (ไม่ติ๊ก = ทั้งใบ)">
+                  <FileText size={14} /> กระดาษ IR <span className="seg-n">{printCount}</span>
+                </button>
+              </div>
+            </div>
+            <div className="gdoc-grp">
+              <span className="gdoc-lbl">Excel</span>
+              <div className="seg">
+                <button onClick={() => doExport(() => exportGroupingXlsx(sheetRows, sheetMeta))} title="ดาวน์โหลดใบ Grouping เป็นไฟล์ Excel (.xlsx)">
+                  <FileSpreadsheet size={14} style={{ color: '#16a34a' }} /> ใบ Grouping
+                </button>
+                <button onClick={() => doExport(() => exportFindCarXlsx(sheetRows, sheetMeta))} title="ดาวน์โหลดใบหารถเป็นไฟล์ Excel (.xlsx) เรียงตามตำแหน่งในลาน">
+                  <FileSpreadsheet size={14} style={{ color: '#16a34a' }} /> ใบหารถ
+                </button>
+              </div>
+            </div>
+            <div className="ml-auto flex items-center gap-2">
+              {selVins.size > 0 && (
+                <span className="badge" style={{ background: 'var(--brand-soft)', color: 'var(--brand)', padding: '4px 6px 4px 10px' }}>
+                  เลือก {selVins.size} คัน
+                  <button className="gdoc-x" title="ล้างที่เลือก" onClick={() => setSelVins(new Set())}><X size={12} /></button>
+                </span>
+              )}
+              {hasLaneEdits && (
+                <button className="btn btn-primary" onClick={saveLaneLoads}><Save size={15} /> บันทึก Lane load</button>
+              )}
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="gtable">
               <thead>
                 <tr>
-                  <th style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 5px', textAlign: 'center' }}
-                    title="ติ๊กทั้งหมด / ล้างทั้งหมด — คันที่ติ๊กคือคันที่ปุ่ม พิมพ์ DN / IR จะพิมพ์">
-                    <input type="checkbox" checked={allSelected} onChange={toggleAll} style={{ width: 14, height: 14, cursor: 'pointer' }} />
+                  <th className="c" style={{ width: 36 }} title="ติ๊กทั้งหมด / ล้างทั้งหมด — คันที่ติ๊กคือคันที่ปุ่ม DN / IR จะพิมพ์">
+                    <input type="checkbox" checked={allSelected} onChange={toggleAll} aria-label="เลือกทั้งหมด" />
                   </th>
-                  {editingVins && (
-                    <th style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 5px', textAlign: 'center', fontSize: 11, color: '#111' }}
-                      title="กด − เพื่อเอารถออกจาก Grouping">เอาออก</th>
-                  )}
-                  {['No', 'Vin', 'Model', 'Color', 'Delivery Location', 'Groupping Number', 'Grouping (Unit)', 'Location', 'Lane load', 'วันที่ในการเข้ารับ', 'หมายเหตุ', 'พิมพ์แล้ว'].map((h) => (
-                    <th key={h} className="whitespace-nowrap"
-                      style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 6px', fontWeight: 700, fontSize: 11, color: '#111', textAlign: 'center' }}>
-                      {h}
-                    </th>
-                  ))}
+                  {editingVins && <th className="c" title="กด − เพื่อเอารถออกจาก Grouping">เอาออก</th>}
+                  <th className="c">No</th>
+                  <th>VIN</th>
+                  <th>Model</th>
+                  <th>Color</th>
+                  <th>Delivery Location</th>
+                  <th>Grouping No.</th>
+                  <th className="c">Grouping (Unit)</th>
+                  <th className="c">Location</th>
+                  <th className="c">Lane load</th>
+                  <th className="c">วันที่ในการเข้ารับ</th>
+                  <th>หมายเหตุ</th>
+                  <th className="c">พิมพ์แล้ว</th>
                 </tr>
               </thead>
               <tbody>
                 {renderRows.map(({ r, n, first, span, alt }) => {
-                  const td = (extra?: React.CSSProperties): React.CSSProperties =>
-                    ({ border: '1px solid #000', padding: '3px 6px', background: alt ? '#ffff00' : '#fff', ...extra })
                   const on = selVins.has(r.vin)
+                  const cls = [alt ? 'alt' : '', first && n > 1 ? 'gstart' : '', on ? 'sel' : ''].filter(Boolean).join(' ') || undefined
                   return (
-                    <tr key={r.vin} style={on ? { outline: '2px solid #2563eb55', outlineOffset: -2 } : undefined}>
-                      <td style={td({ textAlign: 'center', padding: '3px 5px' })}>
-                        <input type="checkbox" checked={on} onChange={() => toggleVin(r.vin)} style={{ width: 14, height: 14, cursor: 'pointer' }} />
+                    <tr key={r.vin} className={cls}>
+                      <td className="c">
+                        <input type="checkbox" checked={on} onChange={() => toggleVin(r.vin)} aria-label={`เลือก ${r.vin}`} />
                       </td>
                       {editingVins && (
-                        <td style={td({ textAlign: 'center', padding: '2px 4px' })}>
-                          <button onClick={() => removeFromGroup(r)} title={`เอา ${r.vin} ออกจาก Grouping ${r.grouping}`}
-                            style={{ width: 20, height: 20, borderRadius: 999, background: '#dc2626', color: '#fff',
-                              border: 0, cursor: 'pointer', fontWeight: 900, fontSize: 15, lineHeight: '18px' }}>−</button>
+                        <td className="c">
+                          <button onClick={() => removeFromGroup(r)} title={`เอา ${r.vin} ออกจาก Grouping ${r.grouping}`} className="gdoc-rm">−</button>
                         </td>
                       )}
-                      <td style={td({ textAlign: 'center' })} className="tabular">{n}</td>
-                      <td style={td()} className="vin whitespace-nowrap font-semibold">{r.vin}</td>
-                      <td style={td({ textAlign: 'center' })} className="whitespace-nowrap">{r.model}</td>
-                      <td style={td({ textAlign: 'center' })} className="whitespace-nowrap">{r.color}</td>
-                      <td style={td({ maxWidth: 240 })} className="clip" title={r.deliveryLocation}>{r.deliveryLocation}</td>
-                      <td style={td({ textAlign: 'center' })} className="tabular whitespace-nowrap">{r.grouping}</td>
+                      <td className="c tabular" style={{ color: 'var(--muted)' }}>{n}</td>
+                      <td className="vin whitespace-nowrap font-semibold">{r.vin}</td>
+                      <td className="whitespace-nowrap">{r.model}</td>
+                      <td className="whitespace-nowrap">{r.color}</td>
+                      <td className="clip" style={{ maxWidth: 260 }} title={r.deliveryLocation}>{r.deliveryLocation}</td>
+                      <td className="tabular whitespace-nowrap">{r.grouping}</td>
                       {first && (
-                        <td rowSpan={span} style={td({ textAlign: 'center', fontWeight: 700 })} className="tabular">
-                          <label className="flex flex-col items-center gap-1" style={{ cursor: 'pointer' }}
+                        <td rowSpan={span} className="c span">
+                          <label className="inline-flex flex-col items-center gap-1" style={{ cursor: 'pointer' }}
                             title="ติ๊กทั้ง Grouping นี้เพื่อพิมพ์ DN / IR เฉพาะกลุ่ม">
-                            <span>{span}</span>
-                            <input type="checkbox"
+                            <b className="tabular text-[13px]">{span}</b>
+                            <input type="checkbox" data-group-check={r.grouping}
                               checked={(sheetRows ?? []).filter((x) => x.grouping === r.grouping).every((x) => selVins.has(x.vin))}
-                              onChange={() => toggleGroup(r.grouping)} style={{ width: 14, height: 14, cursor: 'pointer' }} />
+                              onChange={() => toggleGroup(r.grouping)} aria-label={`เลือกทั้งกลุ่ม ${r.grouping}`} />
                           </label>
                         </td>
                       )}
-                      <td style={td({ textAlign: 'center', color: r.yardLocation ? '#111' : '#d97706', fontWeight: 600 })} className="tabular whitespace-nowrap">
-                        {r.yardLocation || 'ไม่พบ'}
+                      <td className="c whitespace-nowrap">
+                        {r.yardLocation ? <span className="gloc">{r.yardLocation}</span> : <span className="gmiss">ไม่พบ</span>}
                       </td>
                       {first && (() => {
                         const note = laneNote(r.grouping)
@@ -706,25 +731,21 @@ export function Grouping() {
                         // lanes typed before who / when was kept carry no name — say nothing rather than guess
                         const tip = [note, st ? `แก้ Lane load โดย ${st.by} · ${clock(st.at)}` : ''].filter(Boolean).join('\n') || undefined
                         return (
-                          <td rowSpan={span} style={td({ textAlign: 'center', padding: 2 })}>
+                          <td rowSpan={span} className="c span">
                             <input
                               value={r.laneLoad}
                               onChange={(e) => setLaneEdits((p) => ({ ...p, [r.grouping]: e.target.value.toUpperCase() }))}
                               title={tip} aria-label={`Lane load ${r.grouping}`}
                               data-lane={r.grouping} data-lane-warn={note ? '1' : undefined} data-lane-by={st?.by}
-                              className="tabular"
-                              style={{ width: 52, textAlign: 'center', fontWeight: 700, fontSize: 12.5, color: note ? '#c2410c' : '#2563eb',
-                                border: `1.5px solid ${note ? '#f97316' : '#2563eb55'}`, borderRadius: 6, padding: '3px 2px', background: note ? '#ffedd5' : '#fff' }}
+                              className={`glane tabular${note ? ' warn' : ''}`}
                             />
                           </td>
                         )
                       })()}
                       {first && (
-                        <td rowSpan={span} style={td({ textAlign: 'center' })} className="tabular whitespace-nowrap">
-                          {r.receiveDate || sheetMeta.date}
-                        </td>
+                        <td rowSpan={span} className="c span tabular whitespace-nowrap">{r.receiveDate || sheetMeta.date}</td>
                       )}
-                      <td style={td({ minWidth: 60 })}>{r.remark}</td>
+                      <td style={{ minWidth: 70 }}>{r.remark}</td>
                       {(() => {
                         // ✓ once this car's DN / IR has been printed for THIS grouping
                         const cells = printedCells(r.vin)
@@ -732,14 +753,11 @@ export function Grouping() {
                         const done = [dn != null ? 'DN' : '', ir != null ? 'IR' : ''].filter(Boolean)
                         const tip = [dn != null ? `DN ${dn}` : '', ir != null ? `IR ${ir}` : ''].filter(Boolean).join(' · ')
                         return (
-                          <td style={td({ textAlign: 'center', minWidth: 58, padding: '2px 4px' })} data-printed={done.join(',')}
+                          <td className="c whitespace-nowrap" data-printed={done.join(',')}
                             title={tip ? `พิมพ์แล้ว: ${tip}` : 'ยังไม่ได้พิมพ์ DN / IR'}>
-                            {done.length > 0 && (
-                              <span className="inline-flex flex-col items-center" style={{ color: '#16a34a', lineHeight: 1 }}>
-                                <Check size={18} strokeWidth={3.2} />
-                                <span style={{ fontSize: 10, fontWeight: 800 }}>{done.join(' · ')}</span>
-                              </span>
-                            )}
+                            <span className="inline-flex gap-1">
+                              {done.map((d) => <span key={d} className="gdone"><Check size={11} strokeWidth={3.2} /> {d}</span>)}
+                            </span>
                           </td>
                         )
                       })()}
@@ -749,16 +767,19 @@ export function Grouping() {
               </tbody>
               <tfoot>
                 <tr>
-                  <td colSpan={editingVins ? 8 : 7} style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 6px', fontWeight: 700, textAlign: 'center' }}>Total</td>
-                  <td style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 6px', fontWeight: 700, textAlign: 'center' }} className="tabular">{sheetMeta.totalUnits}</td>
-                  <td style={{ background: '#ffff00', border: '1px solid #000', padding: '4px 6px', fontWeight: 700, textAlign: 'center' }}>Cars.</td>
-                  <td colSpan={4} style={{ background: '#ffff00', border: '1px solid #000' }} />
+                  <td colSpan={editingVins ? 8 : 7}>รวม</td>
+                  <td className="c tabular">{sheetMeta.totalUnits} คัน</td>
+                  <td colSpan={5} style={{ fontWeight: 600 }}>{sheetMeta.groupCount} กลุ่ม</td>
                 </tr>
               </tfoot>
             </table>
-            <div className="text-center text-[11.5px] mt-1.5" style={{ color: '#111' }}>( {sheetMeta.groupCount} Group )</div>
           </div>
-        </div>
+          {fromQueue && (
+            <div className="px-5 py-2.5 text-[11.5px] border-t hairline" style={{ color: 'var(--muted)' }}>
+              แก้ Lane load ในตารางแล้วกด <b style={{ color: 'var(--brand)' }}>บันทึก Lane load</b> หน้างานจะเห็น lane ใหม่ทันที
+            </div>
+          )}
+        </section>
       )}
 
       {/* delivery runs already created — persists across visits (the imported
@@ -931,6 +952,9 @@ function SeqQueueManager({ viewingId, dayFilter, onView }: {
                   <div className="text-[11.5px] mt-0.5" style={{ color: 'var(--muted)' }}>
                     <b style={{ color: 'var(--text)' }}>{done}/{total}</b> คัน · เหลือ <b style={{ color: '#d97706' }}>{total - done}</b>
                     {viewing && <b className="ml-1.5" style={{ color: 'var(--brand)' }}>· กำลังแสดงในใบด้านบน</b>}
+                  </div>
+                  <div className="mt-1.5 h-1 rounded-full overflow-hidden" style={{ background: 'var(--chip)', maxWidth: 280 }} aria-hidden>
+                    <div className="h-full rounded-full" style={{ width: `${total ? (done / total) * 100 : 0}%`, background: done === total ? 'var(--st-yard)' : 'var(--brand)' }} />
                   </div>
                 </div>
               </button>
