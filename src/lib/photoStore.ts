@@ -11,6 +11,10 @@
 const UPLOAD_URL = '/api/photos/upload'
 const TIMEOUT_MS = 15_000
 
+// โทเค็นเซสชันของผู้ที่ล็อกอิน — useYard ตั้งตัวอ่านให้ (ไฟล์นี้ไม่ import store เพื่อไม่ให้วนกัน)
+let sessionToken: () => string | null = () => null
+export function setPhotoSessionToken(get: () => string | null): void { sessionToken = get }
+
 export async function storePhoto(dataUrl: string): Promise<string> {
   // already a URL (re-edit of an uploaded photo) → nothing to do
   if (!dataUrl.startsWith('data:')) return dataUrl
@@ -21,10 +25,11 @@ export async function storePhoto(dataUrl: string): Promise<string> {
     const res = await fetch(UPLOAD_URL, {
       method: 'POST',
       body: blob,
-      headers: { 'content-type': blob.type || 'image/jpeg' },
+      headers: { 'content-type': blob.type || 'image/jpeg', ...(sessionToken() ? { 'x-sjwd-token': sessionToken()! } : {}) },
       signal: ctrl.signal,
     })
     clearTimeout(timer)
+    if (res.status === 401) console.warn('[photo] upload needs login — keeping local copy')
     if (!res.ok) return dataUrl // 501 = R2 not set up yet, 4xx/5xx = keep local copy
     const { url } = (await res.json()) as { url?: string }
     return url || dataUrl
