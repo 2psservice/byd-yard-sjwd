@@ -485,9 +485,17 @@ export function attachPendingPlacement(
  * ตำแหน่งที่ยิงใหม่กว่า (ภายในไม่กี่นาทีนี้) และสำเนาที่มาถึงยังมีตำแหน่ง แต่
  * ประทับเวลาเก่ากว่า → เก็บตำแหน่งของเรา รับส่วนอื่นของสำเนาตามปกติ
  * สำเนาที่ "ไม่มีตำแหน่ง" (Gate-out / ย้ายยาร์ด / รีเซ็ต) รับเสมอ — นั่นคือรถออกจริง
+ * ยกเว้น EXPECTED ของยาร์ดเดียวกัน: คือสำเนาก่อน Gate-in ที่ดึงมาก่อนเราจอด (ไม่มีทางปกติไหนเขียน
+ * รถที่จอดแล้วกลับเป็น EXPECTED ที่ยาร์ดเดิม — ตัวกันในฐานข้อมูลก็ปฏิเสธ) 31 ต.ค. ช่วง "Loading 99%"
+ * หน้าที่ดึงค้างมาถึงหลัง Gate-in แล้วลบช่อง WCL ในเครื่อง → Gate-in คันถัดไปได้ช่องเดิมซ้ำ (WCL ซ้อน 6 ช่อง)
  */
 const PLACEMENT_PROTECT_MS = 10 * 60_000
 export function keepNewerPlacement(local: Unit | undefined, incoming: Unit): Unit {
+  if (local?.block && local.parkedAt && !incoming.block && incoming.status === 'EXPECTED' && local.status === 'PARKED'
+    && incoming.site === local.site && Date.now() - local.parkedAt <= PLACEMENT_PROTECT_MS) {
+    return { ...incoming, block: local.block, row: local.row, slot: local.slot, parkedAt: local.parkedAt, status: local.status,
+      gateInAt: local.gateInAt ?? incoming.gateInAt, gateInBy: local.gateInBy ?? incoming.gateInBy, inspected: local.inspected || incoming.inspected }
+  }
   if (!local?.block || !local.parkedAt || !incoming.block) return incoming
   if (Date.now() - local.parkedAt > PLACEMENT_PROTECT_MS) return incoming
   if ((incoming.parkedAt ?? 0) >= local.parkedAt) return incoming
