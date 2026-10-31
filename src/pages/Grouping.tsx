@@ -769,7 +769,7 @@ export function Grouping() {
                 <tr>
                   <td colSpan={editingVins ? 8 : 7}>รวม</td>
                   <td className="c tabular">{sheetMeta.totalUnits} คัน</td>
-                  <td colSpan={5} style={{ fontWeight: 500, color: 'var(--muted)' }}>{sheetMeta.groupCount} กลุ่ม</td>
+                  <td colSpan={5} style={{ fontWeight: 600 }}>{sheetMeta.groupCount} กลุ่ม</td>
                 </tr>
               </tfoot>
             </table>
