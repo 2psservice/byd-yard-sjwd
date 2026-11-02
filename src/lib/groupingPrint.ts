@@ -71,60 +71,50 @@ tr.grp-alt td { background: #ffff00; }
 .note { text-align: center; font-size: 9px; margin-top: 4px; }
 `
 /**
- * Find-car sheet: few columns on a PORTRAIT page, originally typeset 1:1
- * against the approved printout (Plan PM 20 RAI) — every number below was
- * measured out of that PDF's content stream, not guessed:
+ * ใบหารถ (Find-car sheet): portrait A4, typeset to match the FIS sheet the yard already prints
+ * ("Rayong - Grouping to Dealer ( 180 Units / 29 Groups) Date 02 November 2026", Excel → PDF).
+ * Every number below was measured out of that PDF (pdftotext boxes + the ruled lines at 144 dpi,
+ * text widths checked against Carlito, Calibri's metric twin):
  *
- *   page     A4 portrait 595.2 × 841.68 pt, content 13.44 … 577.56 (564.12 wide)
- *   title    19.32 pt, band 35.76 pt tall
- *   header   10.56 pt on the yellow band, 42.96 pt tall
- *   row      31.20 pt tall (baselines 729.94 · 698.74 · 667.51 … = 31.2 apart)
- *   Vin      14.16 pt   ·   No 17.64 pt (the number the driver reads first)
+ *   font     Calibri — data and title 11.6 pt (title bold), header 9.8 pt bold
+ *   bands    title 25.5 pt · header 23.5 pt (yellow #FFFF00) · rows 19.44 pt
+ *   columns  No 38.5 · Vin 120 · Model 76.5 · Color 66 · Location 98.5 · Lane load 76.5 · หมายเหตุ 120.5
+ *   colour   Vin and Lane load cells: blue #0000FF text on light yellow #FFFFCC; the rest black on white
+ *   every page repeats the title + header (Excel print titles) — here both live in <thead>
  *
- * That 1:1 scale only fit 23 rows per A4 portrait page (816.68pt of content
- * height between the 12.5pt top/bottom margins, minus the title band's own
- * height AND its margin-bottom, minus the header band, ÷ 31.2pt row height)
- * — a lot of paper for a 60-70 car lot. Scaled every dimension down together
- * (title/header/row/font/margins all by the same ~×0.785, so the sheet keeps
- * the same proportions, just smaller) to fit 30 rows on one page instead: 28
- * (title) + 3 (title margin) + 33.7 (header) + 30×24.5 (rows) = 799.7pt,
- * comfortably inside the 816.68pt available — verified against an actual
- * rendered PDF, not just this arithmetic.
- *
- * That height math still let the printer's OWN font substitution (Aptos is
- * rarely installed outside this dev box — the actual print/PDF driver falls
- * back further down the font stack than whatever rendered the sizing here)
- * squeeze a 31st row onto page 1 before overflowing, i.e. natural page-break
- * placement isn't safe to rely on across environments. `tr:nth-child(30n)`
- * below forces the break explicitly every 30 rows regardless of the actual
- * rendered row height, so the page always splits 30/30/…/remainder no matter
- * what fonts the printing machine actually has.
+ * Calibri ships with Windows; Carlito (same metrics) / Tahoma stand in elsewhere, and Thai
+ * (หมายเหตุ) falls to Tahoma like Excel does. 38 rows per page fit A4 with ~20 pt to spare:
+ * 25.5 + 23.5 + 38 × 19.44 = 787.7 pt of the 816.9 pt between the margins — and the break is
+ * forced every 38 rows so a printer's own font substitution can never squeeze in a 39th.
  */
-const CSS_PORTRAIT = CSS.replace('A4 landscape', 'A4 portrait')
-  .replace('margin: 8mm', 'margin: 12.5pt 15pt') + `
-body, th, td { font-family: 'Aptos Narrow','Aptos','Arial Narrow','Sarabun','Noto Sans Thai',Tahoma,sans-serif; }
-.title { font-size: 15.2pt; height: 28pt; line-height: 28pt; margin: 0 0 3pt; }
-th { font-size: 8.3pt; height: 33.7pt; padding: 1.6pt 4.7pt;
-  font-family: 'Aptos SemiBold','Aptos','Sarabun','Noto Sans Thai',Tahoma,sans-serif; }
-td { font-size: 11.1pt; height: 24.5pt; padding: 0 4.7pt; }
-/* exactly 30 rows per printed page, regardless of actual rendered row height */
-tbody tr:nth-child(30n) { page-break-after: always; break-after: page; }
-/* the row number is read first, from a walking distance — biggest type on the sheet */
-td.no { font-size: 13.8pt; font-weight: 600;
-  font-family: 'Aptos SemiBold','Aptos','Sarabun','Noto Sans Thai',Tahoma,sans-serif; }
-/* bold + centered like the No column beside it, instead of plain left-aligned text */
-td.vin { font-family: 'Aptos Narrow','Aptos','Arial Narrow','Consolas',monospace; font-size: 11.1pt; letter-spacing: 0;
-  text-align: center; font-weight: 600; }
-/* Lane load reads at a glance same as the header band — filled the whole column, not just bold text */
-td.lane { background: #ffff00; font-weight: 700; }
-.note { font-size: 11.1pt; }
+const FIND_ROWS_PER_PAGE = 38
+const CSS_PORTRAIT = `
+@page { size: A4 portrait; margin: 12.5pt 12pt; }
+* { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+body { margin: 0; color: #000; font-family: Calibri, Carlito, Tahoma, 'Leelawadee UI', 'Noto Sans Thai', sans-serif; }
+table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+th, td { border: 0.75pt solid #000; padding: 0 3pt; vertical-align: middle; text-align: center;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+thead tr.ttl th { border: 0; background: #fff; height: 25.5pt; font-size: 11.6pt; font-weight: 700; }
+thead tr.hd th { background: #ffff00; height: 23.5pt; font-size: 9.8pt; font-weight: 700; }
+td { height: 19.44pt; font-size: 11.6pt; font-weight: 400; }
+td.vin, td.lane { background: #ffffcc; color: #0000ff; }
+td.rm { text-align: left; }
+tbody tr:nth-child(${FIND_ROWS_PER_PAGE}n) { page-break-after: always; break-after: page; }
 `
+/** column widths (pt, from the FIS sheet) as percentages of the table */
+const findCols = (w: number[]): string => {
+  const sum = w.reduce((a, b) => a + b, 0)
+  return `<colgroup>${w.map((x) => `<col style="width:${((x / sum) * 100).toFixed(2)}%">`).join('')}</colgroup>`
+}
+const FIND_COLS_LANE = [38.5, 120, 76.5, 66, 98.5, 76.5, 120.5]
+const FIND_COLS = [38.5, 120, 76.5, 66, 98.5, 197] // ใบหารถ without Lane load: หมายเหตุ takes its width
 
 const htmlDoc = (title: string, body: string, css: string): string =>
   `<!doctype html><html lang="th"><head><meta charset="utf-8"><title>${esc(title)}</title><style>${css}</style></head><body>${body}</body></html>`
 
 const titleLine = (m: GroupPrintMeta): string =>
-  `${esc(m.siteLabel)} - Grouping to Dealer ( ${m.totalUnits} Units / ${m.groupCount} Group) Date ${esc(m.date)}`
+  `${esc(m.siteLabel)} - Grouping to Dealer ( ${m.totalUnits} Units / ${m.groupCount} ${m.groupCount === 1 ? 'Group' : 'Groups'}) Date ${esc(m.date)}`
 
 /** ordered list of groups (grouping number → its rows), in first-seen order */
 function groupRows(rows: GroupPrintRow[]): { grouping: string; rows: GroupPrintRow[] }[] {
@@ -186,22 +176,24 @@ export function buildFindCarHtml(rows: GroupPrintRow[], meta: GroupPrintMeta): s
   // unprefixed for sorting and for the landscape dealer sheet
   const locOf = (l: string) => (l && meta.locPrefix ? `${meta.locPrefix}-${l}` : l)
   const body = sorted.map((r, i) => `<tr>
-    <td class="c no">${i + 1}</td>
+    <td>${i + 1}</td>
     <td class="vin">${esc(r.vin)}</td>
-    <td class="c">${esc(r.model)}</td>
-    <td class="c">${esc(r.color)}</td>
-    <td class="c"><b>${esc(locOf(r.yardLocation) || '—')}</b></td>
-    <td class="c lane">${esc(r.laneLoad)}</td>
-    <td>${esc(r.remark)}</td>
+    <td>${esc(r.model)}</td>
+    <td>${esc(r.color)}</td>
+    <td>${esc(locOf(r.yardLocation) || '—')}</td>
+    <td class="lane">${esc(r.laneLoad)}</td>
+    <td class="rm">${esc(r.remark)}</td>
   </tr>`).join('')
 
-  const table = `<table>
-    <thead><tr>
-      <th>No</th><th>Vin</th><th>Model</th><th>Color</th><th>Location</th><th>Lane load</th><th>หมายเหตุ</th>
-    </tr></thead>
+  // title + header sit in <thead> so every printed page repeats both, like the FIS sheet
+  const table = `<table>${findCols(FIND_COLS_LANE)}
+    <thead>
+      <tr class="ttl"><th colspan="7">${titleLine(meta)}</th></tr>
+      <tr class="hd"><th>No</th><th>Vin</th><th>Model</th><th>Color</th><th>Location</th><th>Lane load</th><th>หมายเหตุ</th></tr>
+    </thead>
     <tbody>${body}</tbody>
   </table>`
-  return htmlDoc(`หารถ ${titleLine(meta)}`, `<div class="title">${titleLine(meta)}</div>${table}`, CSS_PORTRAIT)
+  return htmlDoc(`หารถ ${titleLine(meta)}`, table, CSS_PORTRAIT)
 }
 
 // ── "ใบหารถ" (car-finding list) — arbitrary VIN set, no grouping/lane ────────
@@ -236,31 +228,73 @@ const findListTitle = (count: number, date: string): string =>
  *  screen. It used to re-sort by yard location here, which silently threw that
  *  choice away. Callers that want the walk-the-yard order pass rows already
  *  sorted with byYardLocation (which is still the screen's default). */
-function findListTableHtml(rows: FindListRow[]): string {
+function findListTableHtml(rows: FindListRow[], title: string): string {
   const body = rows.map((r, i) => `<tr>
-    <td class="c no">${i + 1}</td>
+    <td>${i + 1}</td>
     <td class="vin">${esc(r.vin)}</td>
-    <td class="c">${esc(r.model)}</td>
-    <td class="c">${esc(r.color)}</td>
-    <td class="c"><b>${esc(findLocationText(r) || '—')}</b></td>
-    <td>${esc(r.remark)}</td>
+    <td>${esc(r.model)}</td>
+    <td>${esc(r.color)}</td>
+    <td>${esc(findLocationText(r) || '—')}</td>
+    <td class="rm">${esc(r.remark)}</td>
   </tr>`).join('')
-  return `<table>
-    <thead><tr>
-      <th>No</th><th>Vin</th><th>Model</th><th>Color</th><th>Location</th><th>หมายเหตุ</th>
-    </tr></thead>
+  return `<table>${findCols(FIND_COLS)}
+    <thead>
+      <tr class="ttl"><th colspan="6">${esc(title)}</th></tr>
+      <tr class="hd"><th>No</th><th>Vin</th><th>Model</th><th>Color</th><th>Location</th><th>หมายเหตุ</th></tr>
+    </thead>
     <tbody>${body}</tbody>
   </table>`
 }
 
 export function buildFindListHtml(rows: FindListRow[], date: string): string {
   const title = findListTitle(rows.length, date)
-  return htmlDoc(title, `<div class="title">${esc(title)}</div>${findListTableHtml(rows)}`, CSS_PORTRAIT)
+  return htmlDoc(title, findListTableHtml(rows, title), CSS_PORTRAIT)
 }
 
 export const printFindList = (rows: FindListRow[], date: string): void => {
   // "ใบหารถ 15 คัน 31 AUG26.pdf" — a folder of saved sheets says what each one is
   if (rows.length) printHtml(buildFindListHtml(rows, date), `ใบหารถ ${rows.length} คัน ${fileStamp(date)}`)
+}
+
+/** ใบหารถ .xlsx in the FIS sheet's style (see CSS_PORTRAIT): Calibri 11, bold 9.5 header on yellow,
+ *  Vin / Lane load blue on light yellow, title + header repeated on every printed page.
+ *  Widths are the FIS columns in Excel character units. */
+function styleFindSheet(ws: any, title: string, headers: string[], widths: number[], blueCols: number[], leftCols: number[]): {
+  addRow: (values: unknown[]) => void
+} {
+  const font = { name: 'Calibri', size: 11 }
+  ws.columns = widths.map((w) => ({ width: w, style: { font } }))
+  const titleRow = ws.addRow([title])
+  ws.mergeCells(1, 1, 1, headers.length)
+  titleRow.height = 24
+  titleRow.getCell(1).font = { ...font, bold: true }
+  titleRow.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' }
+  const thin = { style: 'thin', color: { argb: 'FF000000' } }
+  const border = { top: thin, left: thin, bottom: thin, right: thin }
+  const hr = ws.addRow(headers)
+  hr.height = 22
+  hr.eachCell((c: any) => {
+    c.font = { name: 'Calibri', size: 9.5, bold: true }
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF00' } }
+    c.alignment = { horizontal: 'center', vertical: 'middle' }
+    c.border = border
+  })
+  ws.pageSetup = { paperSize: 9, orientation: 'portrait', fitToPage: true, fitToWidth: 1, fitToHeight: 0,
+    printTitlesRow: '1:2', margins: { left: 0.17, right: 0.17, top: 0.17, bottom: 0.17, header: 0, footer: 0 } }
+  return {
+    addRow: (values) => {
+      const row = ws.addRow(values)
+      row.height = 18.3
+      row.eachCell({ includeEmpty: true }, (c: any, col: number) => {
+        c.border = border
+        c.alignment = { horizontal: leftCols.includes(col) ? 'left' : 'center', vertical: 'middle' }
+        if (blueCols.includes(col)) {
+          c.font = { ...font, color: { argb: 'FF0000FF' } }
+          c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFCC' } }
+        }
+      })
+    },
+  }
 }
 
 /** Export the ใบหารถ list as a styled .xlsx (yellow header like the master sheets). */
@@ -271,37 +305,10 @@ export async function exportFindListXlsx(rows: FindListRow[], date: string): Pro
   wb.creator = 'SJWD Yard Control'
   const ws = wb.addWorksheet('ใบหารถ', { views: [{ state: 'frozen', ySplit: 2 }] })
 
-  const headers = ['No', 'Vin', 'Model', 'Color', 'Location', 'หมายเหตุ']
-  const widths = [6, 22, 14, 12, 14, 24]
-  ws.columns = widths.map((w) => ({ width: w, style: { font: { name: 'Tahoma', size: 10 } } }))
-
-  // title row (merged across all columns)
-  const titleRow = ws.addRow([findListTitle(rows.length, date)])
-  ws.mergeCells(1, 1, 1, headers.length)
-  titleRow.height = 22
-  titleRow.getCell(1).font = { name: 'Tahoma', size: 12, bold: true }
-  titleRow.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' }
-
-  const thin = { style: 'thin', color: { argb: 'FF000000' } }
-  const border = { top: thin, left: thin, bottom: thin, right: thin }
-  const hr = ws.addRow(headers)
-  hr.height = 18
-  hr.eachCell((c: any) => {
-    c.font = { name: 'Tahoma', size: 10, bold: true }
-    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF00' } } // เหลืองเหมือนไฟล์ต้นฉบับ
-    c.alignment = { horizontal: 'center', vertical: 'middle' }
-    c.border = border
-  })
-
+  const sheet = styleFindSheet(ws, findListTitle(rows.length, date),
+    ['No', 'Vin', 'Model', 'Color', 'Location', 'หมายเหตุ'], [6.9, 21.5, 13.7, 11.8, 17.7, 35.3], [2], [6])
   // given order wins — same reason as findListTableHtml above
-  rows.forEach((r, i) => {
-    const row = ws.addRow([i + 1, r.vin, r.model, r.color, findLocationText(r) || '—', r.remark])
-    row.height = 16
-    row.eachCell((c: any, col: number) => {
-      c.border = border
-      c.alignment = { horizontal: col === 6 ? 'left' : 'center', vertical: 'middle' }
-    })
-  })
+  rows.forEach((r, i) => sheet.addRow([i + 1, r.vin, r.model, r.color, findLocationText(r) || '—', r.remark]))
 
   const stamp = new Date().toISOString().slice(0, 10)
   const buf = await wb.xlsx.writeBuffer()
@@ -404,38 +411,11 @@ export async function exportFindCarXlsx(rows: GroupPrintRow[], meta: GroupPrintM
   wb.creator = 'SJWD Yard Control'
   const ws = wb.addWorksheet('ใบหารถ', { views: [{ state: 'frozen', ySplit: 2 }] })
 
-  const headers = ['No', 'Vin', 'Model', 'Color', 'Location', 'Lane load', 'หมายเหตุ']
-  const widths = [6, 22, 14, 12, 14, 11, 24]
-  ws.columns = widths.map((w) => ({ width: w, style: { font: { name: 'Tahoma', size: 10 } } }))
-
-  const titleRow = ws.addRow([`หารถ ${titleLine(meta)}`])
-  ws.mergeCells(1, 1, 1, headers.length)
-  titleRow.height = 22
-  titleRow.getCell(1).font = { name: 'Tahoma', size: 12, bold: true }
-  titleRow.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' }
-
-  const thin = { style: 'thin', color: { argb: 'FF000000' } }
-  const border = { top: thin, left: thin, bottom: thin, right: thin }
-  const hr = ws.addRow(headers)
-  hr.height = 18
-  hr.eachCell((c: any) => {
-    c.font = { name: 'Tahoma', size: 10, bold: true }
-    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF00' } }
-    c.alignment = { horizontal: 'center', vertical: 'middle' }
-    c.border = border
-  })
-
+  const sheet = styleFindSheet(ws, titleLine(meta),
+    ['No', 'Vin', 'Model', 'Color', 'Location', 'Lane load', 'หมายเหตุ'], [6.9, 21.5, 13.7, 11.8, 17.7, 13.7, 21.6], [2, 6], [7])
   const sorted = [...rows].sort((a, b) => byYardLocation(a.yardLocation, b.yardLocation))
   const locOf = (l: string) => (l && meta.locPrefix ? `${meta.locPrefix}-${l}` : l)
-  sorted.forEach((r, i) => {
-    const row = ws.addRow([i + 1, r.vin, r.model, r.color, locOf(r.yardLocation) || '—', r.laneLoad, r.remark])
-    row.height = 16
-    row.eachCell({ includeEmpty: true }, (c: any, col: number) => {
-      c.border = border
-      c.alignment = { horizontal: col === 7 ? 'left' : 'center', vertical: 'middle' }
-      if (col === 5 || col === 6) c.font = { name: 'Tahoma', size: 10, bold: true }
-    })
-  })
+  sorted.forEach((r, i) => sheet.addRow([i + 1, r.vin, r.model, r.color, locOf(r.yardLocation) || '—', r.laneLoad, r.remark]))
 
   const stamp = new Date().toISOString().slice(0, 10)
   await downloadXlsx(wb, `SJWD-ใบหารถ-${meta.siteLabel}-${rows.length}คัน-${stamp}.xlsx`)
