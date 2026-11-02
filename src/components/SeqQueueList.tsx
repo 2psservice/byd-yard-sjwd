@@ -25,8 +25,10 @@ const SEQ_STAGE_META: Record<string, { label: string; c: string; bg: string }> =
  * the gate-out overview reads them as "รอจ่าย" (pending dispatch) rather than the
  * driver-facing "รอย้าย" (pending move to wash).
  */
-export function SeqQueuePicker({ queues, units, trackingRows, queuedLabel }: {
+export function SeqQueuePicker({ queues, units, trackingRows, queuedLabel, closed }: {
   queues: WorkQueue[]; units: Unit[]; trackingRows: TrackRow[]; queuedLabel?: string
+  /** runs the admin archived (Operation / Dashboard) — the Gate-out history view still lists them, tagged */
+  closed?: Record<string, unknown>
 }) {
   const [openId, setOpenId] = useState<string | null>(null)
   // a car counts as gated-out by its LIVE status — so cars gated out any way
@@ -82,16 +84,20 @@ export function SeqQueuePicker({ queues, units, trackingRows, queuedLabel }: {
         const total = q.items.length
         const done = q.items.reduce((n, i) => n + (isGone(i, q) || i.done ? 1 : 0), 0)
         const isOpen = openId === q.id
+        // a finished run stays on the list (Gate-out history) — its count turns green, every car greys out
+        const complete = total > 0 && done === total
         return (
-          <div key={q.id} className="panel overflow-hidden">
+          <div key={q.id} className="panel overflow-hidden" data-seq-run={q.id} data-seq-complete={complete ? '1' : undefined}>
             <button className="w-full px-4 py-3 flex items-center gap-3 text-left" onClick={() => setOpenId(isOpen ? null : q.id)}>
               <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: 'var(--brand-soft,#eef4ff)', color: 'var(--brand)' }}>
                 <ListChecks size={17} />
               </div>
               <div className="min-w-0 flex-1">
                 <div className="font-bold text-[12.5px]" style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{q.name}</div>
-                <div className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
-                  <b style={{ color: 'var(--text)' }}>{done}/{total}</b> คัน · เหลือ <b style={{ color: '#d97706' }}>{total - done}</b>
+                <div className="text-[11px] mt-0.5 flex items-center gap-1.5 flex-wrap" style={{ color: 'var(--muted)' }}>
+                  <span><b className="tabular" style={{ color: complete ? '#16a34a' : 'var(--text)' }}>{done}/{total}</b> คัน{!complete && <> · เหลือ <b style={{ color: '#d97706' }}>{total - done}</b></>}</span>
+                  {complete && <span className="badge" style={{ background: 'rgba(22,163,74,0.12)', color: '#16a34a', fontSize: 10 }}>ออกครบแล้ว</span>}
+                  {closed?.[q.id] != null && <span className="badge" style={{ background: 'var(--chip)', color: 'var(--muted)', fontSize: 10 }}>เก็บแล้ว</span>}
                 </div>
               </div>
               <ChevronLeft size={16} style={{ color: 'var(--muted)', transform: isOpen ? 'rotate(90deg)' : 'rotate(-90deg)', transition: 'transform .15s' }} />
@@ -102,7 +108,8 @@ export function SeqQueuePicker({ queues, units, trackingRows, queuedLabel }: {
                   const meta = SEQ_STAGE_META[c.stage] ?? SEQ_STAGE_META.queued
                   const label = c.stage === 'queued' && queuedLabel ? queuedLabel : meta.label
                   return (
-                    <div key={c.vin} className="px-4 py-2.5 flex items-center gap-3" style={c.done ? { opacity: 0.5 } : undefined}>
+                    <div key={c.vin} className="px-4 py-2.5 flex items-center gap-3" data-seq-car={c.vin} data-seq-car-done={c.done ? '1' : undefined}
+                      style={c.done ? { opacity: 0.55, background: 'var(--chip)' } : undefined}>
                       <div className="min-w-0 flex-1">
                         <div className="vin text-[12.5px] font-bold clip">{c.vin}</div>
                         <div className="text-[11px] mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5" style={{ color: 'var(--muted)' }}>
