@@ -22,3 +22,51 @@ export function laneDuplicates(laneOf: Map<string, string>): LaneDup[] {
   return [...by.values()].filter((e) => e.groups.length > 1)
     .sort((a, b) => a.lane.localeCompare(b.lane, undefined, { numeric: true }))
 }
+
+// ── อัปโหลดไฟล์ Grouping ใหม่: กลุ่มที่เคยแก้ Lane load ไว้ ใช้ lane ที่แก้ล่าสุด ──────────────
+
+/** lane ของกลุ่มหนึ่ง + ใคร / เมื่อไหร่ที่แก้ (ไม่มี = lane ที่ระบบตั้งให้) */
+export interface LaneMemo { lane: string; by?: string; at?: number }
+
+const groupKey = (g: string | undefined): string => (g ?? '').trim().toUpperCase()
+
+/** lane ที่แก้ด้วยมือล่าสุดของแต่ละกลุ่ม จากทุกคิวงานส่งมอบที่ส่งมา (รอบที่ระบบตั้ง lane เองไม่นับ) */
+export function lastEditedLanes(
+  runs: { items: { group?: string; laneLoad?: string; laneBy?: string; laneAt?: number }[] }[],
+  groups: Iterable<string>,
+): Map<string, LaneMemo> {
+  const want = new Set([...groups].map(groupKey).filter(Boolean))
+  const out = new Map<string, LaneMemo>()
+  for (const run of runs) {
+    for (const it of run.items) {
+      const g = groupKey(it.group)
+      const lane = (it.laneLoad ?? '').trim()
+      if (!g || !want.has(g) || !lane || !it.laneBy || !it.laneAt) continue
+      const had = out.get(g)
+      if (!had || it.laneAt > (had.at ?? 0)) out.set(g, { lane, by: it.laneBy, at: it.laneAt })
+    }
+  }
+  return out
+}
+
+/**
+ * Lane ของไฟล์ที่เพิ่งอัปโหลด (กลุ่มเรียงตามลำดับในไฟล์):
+ *   · กลุ่มที่เคยแก้ lane ไว้ → lane ที่แก้ล่าสุด (พร้อมชื่อคนแก้ / เวลา)
+ *   · กลุ่มอื่น → O + ลำดับในไฟล์เหมือนเดิม (กลุ่มที่ 3 = O3) ถ้า lane นั้นมีกลุ่มที่แก้ไว้ใช้อยู่แล้ว
+ *     ใช้เลข O ที่ว่างตัวแรกแทน ไม่ให้ซ้ำกัน
+ */
+export function assignLanes(order: string[], kept: Map<string, LaneMemo>): Map<string, LaneMemo> {
+  const out = new Map<string, LaneMemo>()
+  const used = new Set<string>()
+  for (const g of order) { const k = kept.get(groupKey(g)); if (k) { out.set(g, k); used.add(laneKey(k.lane)) } }
+  let next = 1
+  const free = () => { while (used.has(`O${next}`)) next++; return `O${next}` }
+  order.forEach((g, i) => {
+    if (out.has(g)) return
+    const own = `O${i + 1}`
+    const lane = used.has(own) ? free() : own
+    used.add(lane)
+    out.set(g, { lane })
+  })
+  return out
+}
