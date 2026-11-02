@@ -12,6 +12,7 @@
 import type { TrackRow } from './excelTracking'
 import { code128Svg } from './dnir'
 import { borrowDocTitle, fileStamp } from './printDoc'
+import { labelModel } from './modelName'
 
 // ── QR encoder — byte mode, error-correction L, no dependencies ──────────────
 // A 17-character VIN fills a version-1 (21×21) symbol at level L exactly —
@@ -249,23 +250,7 @@ const FIT_SCRIPT = `<script>(function(){try{
   });
 }catch(err){}})();<\/script>`
 
-/** A cell by its header whatever the spelling — "Sub-Model", "Sub Model", "SubModel" all read the same. */
-const cellByHeader = (cells: Record<string, string>, header: string): string => {
-  const want = header.toLowerCase().replace(/[^a-z0-9]/g, '')
-  for (const [k, v] of Object.entries(cells)) if (k.toLowerCase().replace(/[^a-z0-9]/g, '') === want && (v ?? '').trim()) return v.trim()
-  return ''
-}
-
-/**
- * The sticker's "Vehicle Model" — the full model with its trim, e.g. "BYD ATTO 1 PREMIUM", not the bare
- * "ATTO 1": the VIN LIST MASTER file carries it in "Sub-Model", the Co file in "Model name"; a car known
- * only by "Model" still prints that. The brand leads like the rest of the yard's paperwork.
- */
-export function labelModel(cells: Record<string, string>): string {
-  const v = (cellByHeader(cells, 'Sub-Model') || cells['Model name'] || cells['Model'] || '').trim()
-  if (!v) return '—'
-  return /^byd\b/i.test(v) ? v : `BYD ${v}`
-}
+export { labelModel } from './modelName'
 
 function labelSection(r: TrackRow): string {
   const c = r.cells

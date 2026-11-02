@@ -7,6 +7,7 @@
  */
 import type { TrackRow } from './excelTracking'
 import { borrowDocTitle, fileStamp } from './printDoc'
+import { labelModel } from './modelName'
 
 const esc = (s: string) => (s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 const cell = (r: TrackRow, ...keys: string[]): string => {
@@ -43,7 +44,8 @@ const destination = (r: TrackRow, destOf?: DestOf): string => (destOf?.(r.vin, r
 /** The values one IR sheet carries, shared by both print styles. */
 function irData(r: TrackRow, siteName?: string, destOf?: DestOf) {
   return {
-    model: cell(r, 'Model name', 'Model'),
+    // the full model with its trim from Sub-Model ("BYD DOLPHIN (490KM-EXT)"), same as the Vehicle Label
+    model: ((m) => (m === '—' ? '' : m))(labelModel(r.cells)),
     color: cell(r, 'Color'),
     engMotor: [cell(r, 'Engine No.', 'Model Code'), cell(r, 'Front Motor no.', 'Rear Motor no.')].filter(Boolean).join(' '),
     // Delivery From = ยาร์ดที่ส่งรถออก = Site งานที่กำลังพิมพ์ — ช่อง Location yard ของรถมาจากไฟล์นำเข้า
@@ -74,11 +76,15 @@ function irSheetHtml(r: TrackRow, siteName?: string, destOf?: DestOf): string {
 }
 
 // ── IR "paper" overlay — data only, printed onto pre-printed IR forms (Letter) ──
-function irPaperSheetHtml(r: TrackRow, siteName?: string, destOf?: DestOf): string {
+/** the paper form's Model box ends where Color starts (x 130) — a long Sub-Model is set smaller to stay inside */
+const IRP_MODEL_MAX = 112
+function irPaperSheetHtml(r: TrackRow, siteName?: string, destOf?: DestOf, measure: MeasureText = roughMeasure): string {
   const d = irData(r, siteName, destOf)
   const P = (x: number, y: number, val: string) => irField('irpf', x, y, 12, val)
+  const w = d.model ? measure(d.model) : 0
+  const modelSize = w > IRP_MODEL_MAX ? Math.max(8, Math.floor((12 * IRP_MODEL_MAX / w) * 2) / 2) : 12
   return `<section class="irp-sheet">
-    ${P(15, 113, d.model)}
+    ${irField('irpf', 15, 113, modelSize, d.model)}
     ${P(130, 113, d.color)}
     ${P(198, 113, r.vin)}
     ${P(293, 113, d.engMotor)}
@@ -436,8 +442,8 @@ export const buildDnHtml = (rows: TrackRow[], groupOf?: (vin: string) => string,
   return htmlDoc(`DN — ${byGroup.size} Grouping · ${rows.length} VIN`, sheets.join(''))
 }
 /** IR paper overlay (data only) — to print onto pre-printed IR forms. */
-export const buildIrPaperHtml = (rows: TrackRow[], siteName?: string, destOf?: DestOf): string =>
-  htmlDoc(`IR paper — ${rows.length} VIN`, rows.map((r) => irPaperSheetHtml(r, siteName, destOf)).join(''), CSS_IRP)
+export const buildIrPaperHtml = (rows: TrackRow[], siteName?: string, destOf?: DestOf, measure: MeasureText = roughMeasure): string =>
+  htmlDoc(`IR paper — ${rows.length} VIN`, rows.map((r) => irPaperSheetHtml(r, siteName, destOf, measure)).join(''), CSS_IRP)
 
 /** The two TH Sarabun faces as data: URLs — fetched ONCE per session (served
  *  from the PWA precache when available) and swapped into the print document's
@@ -540,5 +546,7 @@ export const printDn = (rows: TrackRow[], groupOf?: (vin: string) => string, des
 }
 /** Print the IR paper overlay (data only) onto pre-printed IR forms. */
 export const printIrPaper = (rows: TrackRow[], siteName?: string, destOf?: DestOf): void => {
-  if (rows.length) printHtml(buildIrPaperHtml(rows, siteName, destOf), `กระดาษ IR ${rows.length} คัน ${fileStamp()}`)
+  if (!rows.length) return
+  // measured in the form's own TH Sarabun New so a long Sub-Model is set just small enough to fit its box
+  void fontMeasure().then((measure) => printHtml(buildIrPaperHtml(rows, siteName, destOf, measure), `กระดาษ IR ${rows.length} คัน ${fileStamp()}`))
 }
