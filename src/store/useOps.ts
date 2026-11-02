@@ -15,6 +15,7 @@ import { departedFromSite, departureFromSite, rowInSite, siteWorksWith } from '.
 import { PM_KEYS } from '../lib/trackingColumns'
 import type { TrackRow } from '../lib/excelTracking'
 import { quotaSafeStorage } from '../lib/persistStorage'
+import { seqPlanKey, mergeSeqItems } from '../lib/seqPlan'
 
 /** Process stage of one vehicle within a station queue (PDI / PM / Wash …).
  *  queued → (driver delivers) at-station → (staff records) checked → (driver returns) done. */
@@ -880,32 +881,27 @@ export const useOps = create<OpsState>()(
             if (it.color) row.color = it.color
             return row
           })
-        const existing = get().queues.find((q) => (q.name ?? '').toLowerCase() === n.toLowerCase())
-        if (existing) {
-          // re-uploading the same sequence: replace its items, keep the id.
-          // The MANIFEST is what the new sheet redefines — the day's work is
-          // not. A car this run already sent out stays sent: carry its own
-          // progress over by VIN, or a corrected sheet dropped mid-run resets
-          // the board to 0 and every car already gone reads as still waiting.
-          const was = new Map(existing.items.map((i) => [i.vin, i]))
-          const merged = rows.map((it) => {
-            const p = was.get(it.vin)
-            // addedAt เดิมด้วย — การออกจากลานนับเฉพาะหลังรถเข้าคิว (ดู itemLeftYard)
-            // อัปโหลดซ้ำแล้วเวลาเข้าคิวเลื่อนมาเป็นตอนนี้ = รถที่ออกไปก่อนหน้าค้างเป็น "รอ"
-            if (!p) return it
-            // a hand-set lane the new sheet keeps unchanged keeps its who / when too
-            const lane = !it.laneBy && p.laneBy && p.laneLoad === it.laneLoad ? { laneBy: p.laneBy, laneAt: p.laneAt } : {}
-            // print marks name their grouping, so one from an old group never reads as printed for the new one
-            return { ...it, ...lane, printed: p.printed, addedAt: p.addedAt ?? it.addedAt, done: p.done, gatedOut: p.gatedOut, doneAt: p.doneAt, doneBy: p.doneBy, stage: p.stage,
-              atWashAt: p.atWashAt, atLaneAt: p.atLaneAt, deliveredBy: p.deliveredBy, returnedBy: p.returnedBy, returnedAt: p.returnedAt }
-          })
+        // the run(s) this upload belongs to: the same name, or the same yard's plan for the same day
+        // (a newer file of that plan carries more cars, so its title — the run's name — changes)
+        const matches = seqRunsFor(get().queues, n, site)
+        if (matches.length) {
+          // one run per plan: the run with the most cars already sent carries on (its id stays, so the
+          // field's stations keep working it); every car keeps its own progress from whichever run had
+          // it; any other run of the same plan folds into it and is removed
+          const doneOf = (q: WorkQueue) => q.items.filter((i) => i.done || i.gatedOut).length
+          const exact = (q: WorkQueue) => (q.name ?? '').toLowerCase() === n.toLowerCase()
+          // ties: the exact-name run, then the OLDEST (the run the field started on)
+          const target = [...matches].sort((a, b) => doneOf(b) - doneOf(a) || Number(exact(b)) - Number(exact(a)) || a.createdAt - b.createdAt)[0]
+          const merged = mergeSeqItems(rows, [target.items, ...matches.filter((q) => q.id !== target.id).map((q) => q.items)])
           // Clear any leftover `type` too — a name collision with an old
           // arrival lot (same shipment, uploaded once as Pre Gate-in and
           // once as Grouping to Dealer) must not leave this delivery run
           // still reading as a GATEIN lot on the Dashboard (see isPreGateInQueue).
-          set((s) => ({ queues: s.queues.map((q) => (q.id === existing.id ? { ...q, kind: 'sequence', type: undefined, items: merged, createdBy: by, createdAt: now } : q)) }))
-          pushQueue(get, existing.id)
-          return existing.id
+          set((s) => ({ queues: s.queues.map((q) => (q.id === target.id
+            ? { ...q, name: n, site: q.site ?? site, kind: 'sequence', type: undefined, items: merged, createdBy: by, createdAt: now } : q)) }))
+          pushQueue(get, target.id)
+          for (const q of matches) if (q.id !== target.id) get().removeQueue(q.id)
+          return target.id
         }
         const id = `q${++qid}${Date.now()}`
         set((s) => ({ queues: [...s.queues, { id, name: n, createdAt: now, createdBy: by, items: rows, site, kind: 'sequence' }] }))
@@ -1732,6 +1728,16 @@ export const isPreGateInQueue = (q: WorkQueue): boolean => !isSequenceQueue(q) &
 // "ไม่ใช่คิวส่งรถ" และฟังก์ชันนี้ถูกเรียกต่อรายการในลูป (isPreGateInQueue / reconcile / selector) — โปรไฟล์หน้าแรกหลัง login:
 // self time ~430ms (9.7%) ตัวเดียว
 const sequenceQueueMemo = new WeakMap<QueueItem[], boolean>()
+/** Delivery runs a Grouping upload named `name` joins: the run with that exact name (any kind, as
+ *  before), plus every delivery run of the same yard whose title names the same plan (same yard label,
+ *  same plan date — see seqPlanKey). Empty = the upload starts a new run. */
+export function seqRunsFor(queues: WorkQueue[], name: string, site: string | undefined): WorkQueue[] {
+  const n = name.trim().toLowerCase()
+  const key = seqPlanKey(name)
+  return queues.filter((q) => (q.name ?? '').trim().toLowerCase() === n
+    || (!!key && isSequenceQueue(q) && (!site || !q.site || q.site === site) && seqPlanKey(q.name ?? '') === key))
+}
+
 export const isSequenceQueue = (q: WorkQueue): boolean => {
   if (q.kind === 'sequence') return true
   let hit = sequenceQueueMemo.get(q.items)

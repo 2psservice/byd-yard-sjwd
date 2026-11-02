@@ -3,7 +3,7 @@ import { Layers, Upload, Printer, MapPin, Loader2, FileSpreadsheet, CheckCircle2
 import { useYard, useUnits } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { rowsForSite } from '../lib/siteScope'
-import { useOps, isSequenceQueue, type WorkQueue } from '../store/useOps'
+import { useOps, isSequenceQueue, seqRunsFor, type WorkQueue } from '../store/useOps'
 import { PageHead, Modal } from '../components/ui'
 import { clock } from '../lib/format'
 import { parseGroupingWorkbook, siteGroupingConfig, yardLocCode, LAST_LOCATION_KEY } from '../lib/groupingImport'
@@ -369,9 +369,11 @@ export function Grouping() {
   // the run บันทึก Lane load writes to: the one on screen, or (fresh import) the run
   // Create Sequence would overwrite, same name. No run yet = the lanes stay on this sheet
   // and travel with Create Sequence.
-  const laneRunId = usingQueue
-    ? queueSheet!.id
-    : queues.find((q) => isSequenceQueue(q) && (q.name ?? '').trim().toLowerCase() === seqName.trim().toLowerCase())?.id
+  // a fresh upload of a plan that already has a run (same yard + plan date) joins that run — see seqRunsFor
+  const joinRuns = useMemo(() => (usingQueue || !seqName.trim() ? [] : seqRunsFor(queues, seqName, currentSite ?? undefined)), [usingQueue, seqName, queues, currentSite])
+  const sentOf = (q: WorkQueue) => q.items.filter((i) => i.done || i.gatedOut).length
+  const joinRun = [...joinRuns].sort((a, b) => sentOf(b) - sentOf(a) || a.createdAt - b.createdAt)[0]
+  const laneRunId = usingQueue ? queueSheet!.id : joinRun?.id
 
   // ── pick what DN / IR print: single VINs, whole groupings, or everything ──
   const [selVins, setSelVins] = useState<Set<string>>(new Set())
@@ -525,9 +527,14 @@ export function Grouping() {
         return { vin: r.vin, laneLoad: r.laneLoad, laneBy: typed ? currentUser || undefined : r.laneBy, laneAt: typed ? at : r.laneAt,
           dest: r.deliveryLocation, group: r.grouping, remark: r.remark, model: r.model, color: r.color }
       })
+      const joined = seqRunsFor(useOps.getState().queues, name, currentSite ?? undefined).length
       const id = createSequence(name, currentUser, items)
       if (!id) { toast('err', 'สร้างลำดับงานไม่สำเร็จ — ชื่อคิวว่าง'); return }
-      toast('ok', `สร้างลำดับงาน "${name}" · ${items.length} คัน — ไปที่ Operation / Yard Ops ได้เลย`)
+      const run = useOps.getState().queues.find((q) => q.id === id)
+      const sent = run ? run.items.filter((i) => i.done || i.gatedOut).length : 0
+      toast('ok', joined
+        ? `อัปเดตคิวงานเดิม "${name}" · ${run?.items.length ?? items.length} คัน · ออกไปแล้ว ${sent} คัน${joined > 1 ? ` · รวม ${joined} คิวเป็นคิวเดียว` : ''}`
+        : `สร้างลำดับงาน "${name}" · ${items.length} คัน — ไปที่ Operation / Yard Ops ได้เลย`, 6000)
       setView('operation')
     } catch (e) {
       // an old queue with broken data used to throw HERE, eating the click with
@@ -652,9 +659,10 @@ export function Grouping() {
                   <CheckCircle2 size={15} /> สร้างคิวงานแล้ว
                 </span>
               ) : (
-                <button className="btn" onClick={doCreateSequence} data-seq-state="new"
+                <button className="btn" onClick={doCreateSequence} data-seq-state={joinRun ? 'join' : 'new'}
+                  title={joinRun ? `ต่อเข้าคิวงานเดิม "${joinRun.name}" (ออกไปแล้ว ${sentOf(joinRun)} คัน) ไม่สร้างคิวใหม่${joinRuns.length > 1 ? ` · รวม ${joinRuns.length} คิวของแผนนี้เป็นคิวเดียว` : ''}` : undefined}
                   style={{ background: '#16a34a', color: '#fff', borderColor: 'transparent' }}>
-                  <ListChecks size={15} /> Create Sequence
+                  <ListChecks size={15} /> {joinRun ? 'Update Sequence' : 'Create Sequence'}
                 </button>
               )}
             </div>
