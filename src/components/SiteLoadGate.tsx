@@ -17,7 +17,7 @@ import { loadMark } from '../lib/loadMarks'
 import { useEffect, useMemo, useState } from 'react'
 import { useTracking } from '../store/useTracking'
 import { useYard } from '../store/useYard'
-import { LogoLoader } from './LogoLoader'
+import { BootScreen } from './LogoLoader'
 import { isConfigured } from '../lib/db'
 
 const STALL_MS = 8_000   // ไม่มีแถวใหม่มาเลยนานเท่านี้ → ถือว่าค้าง เปิดหน้าไปก่อน
@@ -72,17 +72,7 @@ export function SiteLoadGate({ mode }: { mode: 'overlay' | 'banner' }) {
   void unitsHere
 
   if (mode === 'overlay' && stillWaiting) {
-    return (
-      <div className="logo-loader-overlay" data-testid="site-load-gate">
-        <LogoLoader width={230} />
-        <div style={{ width: 260 }}>
-          <div className="track"><div className={`fill${unknownTotal ? ' animate-pulse' : ''}`} style={{ width: unknownTotal ? '40%' : `${pct}%` }} /></div>
-        </div>
-        <div className="text-[13px] font-semibold tabular" style={{ color: '#6b7a99', letterSpacing: 0.4 }}>
-          {loadingLabel}
-        </div>
-      </div>
-    )
+    return <BootScreen testId="site-load-gate" pct={unknownTotal ? null : pct} label={loadingLabel} />
   }
 
   // แถบเล็ก: มือถือ (ไม่บล็อก) · หรือจอแอดมินหลังปล่อยหน้าเปิดทั้งที่ยังโหลดไม่ครบ
