@@ -15,19 +15,28 @@ export function LogoLoader({ width = 200, className = '' }: { width?: number; cl
 }
 
 /**
- * หน้า Loading แบบ macOS: พื้นขาวล้วน โลโก้นิ่งกลางจอ แถบความคืบหน้าเส้นบางใต้โลโก้ ตัวหนังสือเล็กสีเทา
- * pct = ตัวเลขจริง (เช่นโหลดแถวของยาร์ด) · ไม่ส่ง = ยังไม่รู้ว่าเหลือเท่าไร แถบค่อย ๆ ขยับเอง (ไม่เกิน ~25%
- * เพื่อให้ต่อกับหน้าโหลดยาร์ดที่มีตัวเลขจริงได้โดยแถบไม่ถอยหลังมาก)
+ * หน้า Loading แบบ macOS: พื้นขาวล้วน โลโก้ 2PS วิ่งเข้ามาทีละตัว แถบความคืบหน้าเส้นบางใต้โลโก้ ตัวหนังสือเล็กสีเทา
+ * แอปใช้หน้านี้ "หน้าเดียว" ตั้งแต่เปิดจนพร้อม (App BootGate) — ตัวเดิมค้างอยู่ทุกช่วง แถบจึงเดินต่อเนื่อง
+ *   pct  = ความคืบหน้ารวม 0–100 ที่รู้แน่ · ไม่ส่ง = ยังไม่รู้ แถบค่อย ๆ เดินเองไปไม่เกิน cap
+ *   แถบไม่ถอยหลังเด็ดขาด (ช่วงถัดไปรายงานน้อยกว่าที่เดินมาแล้ว แถบก็รอจนเลยค่าเดิม)
+ *   showPct = ต่อท้ายตัวหนังสือด้วยเปอร์เซ็นต์ของแถบ ("Loading 64%")
  */
-export function BootScreen({ pct, label, testId }: { pct?: number | null; label?: string; testId?: string }) {
-  const known = pct != null
+export function BootScreen({ pct, cap = 30, label, showPct, leaving, testId }: {
+  pct?: number | null; cap?: number; label?: string; showPct?: boolean; leaving?: boolean; testId?: string
+}) {
+  const [shown, setShown] = useState(2)
+  useEffect(() => {
+    if (pct != null) { setShown((s) => Math.max(s, Math.min(100, pct))); return }
+    const iv = setInterval(() => setShown((s) => (s >= cap ? s : Math.min(cap, s + Math.max(0.4, (cap - s) * 0.08)))), 250)
+    return () => clearInterval(iv)
+  }, [pct, cap])
   return (
-    <div className="boot-screen" data-testid={testId} role="status" aria-live="polite">
+    <div className={leaving ? 'boot-screen boot-leaving' : 'boot-screen'} data-testid={testId} role="status" aria-live="polite" data-boot-progress={Math.round(shown)}>
       <BootLogo />
       <div className="boot-bar" aria-hidden="true">
-        <div className={known ? 'boot-fill' : 'boot-fill boot-creep'} style={known ? { width: `${Math.max(2, Math.min(100, pct!))}%` } : undefined} />
+        <div className="boot-fill" style={{ width: `${shown}%` }} />
       </div>
-      {label && <div className="boot-label">{label}</div>}
+      {label && <div className="boot-label">{showPct ? `${label} ${Math.round(shown)}%` : label}</div>}
     </div>
   )
 }

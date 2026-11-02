@@ -1,13 +1,13 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { Layout } from './components/Layout'
 import { LoginScreen } from './components/LoginScreen'
-import { LogoLoaderOverlay } from './components/LogoLoader'
+import { BootScreen } from './components/LogoLoader'
 import { Toaster } from './components/ui'
 import { NavProgress } from './components/NavProgress'
 import { usePageSwitch } from './lib/pageSwitch'
 import { SelectSiteModal } from './components/SelectSiteModal'
 import { OpsShell } from './components/OpsShell'
-import { SiteLoadGate } from './components/SiteLoadGate'
+import { SiteLoadGate, useSiteLoad } from './components/SiteLoadGate'
 import { useYard, useMe, isOpsOnlyRole, checkUnitsMode, reloadForUnitsMode } from './store/useYard'
 import { useTrackingRows, useTracking, cloudSyncedThisSession } from './store/useTracking'
 import { isConfigured } from './lib/supabase'
@@ -600,9 +600,49 @@ export default function App() {
     settings: <Settings />,
   }
 
+  // ── ONE loading screen from app start until the first page shows its real numbers ──
+  // It used to be three: the boot loader, a faint page loader while the page's code arrived, then the
+  // yard loader — "หน้า loading โหลด 2 รอบ". The same BootScreen now stays mounted (key "boot", first
+  // child of every branch below) through every phase, so the 2PS intro plays once with the bar and the
+  // bar only moves forward:
+  //   ระบบ (roster) → ข้อมูล (local data) → ยาร์ด (this yard's rows + cars, real %) → หน้าแรกขึ้นจริง
+  const siteLoad = useSiteLoad()
+  const [firstPageReady, setFirstPageReady] = useState(false)
+  const pageOnReady = page.onReady
+  const onPageReady = useCallback(() => { pageOnReady(); setFirstPageReady(true) }, [pageOnReady])
+  const loggedIn = !!loggedInUserId && !!me && me.active
+  const boot: { pct: number | null; cap: number; label: string; showPct?: boolean; testId?: string } | null =
+    !usersReady ? { pct: null, cap: 20, label: 'กำลังเตรียมระบบ' }
+    : !loggedIn ? null
+    : booting || !trackingLoaded ? { pct: null, cap: 32, label: 'กำลังโหลดข้อมูล' }
+    : !opsOnly && siteLoad.stillWaiting
+      ? (siteLoad.unknownTotal
+        ? { pct: null, cap: 70, label: siteLoad.loadingLabel, testId: 'site-load-gate' }
+        : { pct: 32 + siteLoad.pct * 0.63, cap: 0, label: 'Loading', showPct: true, testId: 'site-load-gate' })
+    : !firstPageReady ? { pct: 96, cap: 0, label: 'กำลังเปิดหน้า' }
+    : null
+  // finish: fill the bar, then fade the screen out (not a hard cut to the page).
+  // Decided DURING render, not in an effect: an effect runs after a commit with no screen at all,
+  // which unmounted the loading screen for a frame and mounted a fresh one to fade out.
+  const [leaving, setLeaving] = useState(false)
+  const [bootShown, setBootShown] = useState(!!boot)
+  if (bootShown !== !!boot) {
+    setBootShown(!!boot)
+    setLeaving(!boot && loggedIn)
+  }
+  useEffect(() => {
+    if (!leaving) return
+    const t = setTimeout(() => setLeaving(false), 450)
+    return () => clearTimeout(t)
+  }, [leaving])
+  const bootScreen = boot || leaving
+    ? <BootScreen key="boot" pct={boot ? boot.pct : 100} cap={boot?.cap} label={boot ? boot.label : 'Loading'}
+        showPct={boot ? boot.showPct : true} leaving={!boot} testId={boot?.testId} />
+    : null
+
   // brand loader while the shared login roster loads — must resolve before
   // the login form can trust its "invalid username/password" verdict
-  if (!usersReady) return <><LogoLoaderOverlay label="กำลังเตรียมระบบ" /><Toaster /></>
+  if (!usersReady) return <>{bootScreen}<Toaster /></>
 
   // fail-CLOSED: a session whose account no longer resolves (deleted from the
   // roster) or is deactivated goes back to login. It used to fall through with
@@ -612,15 +652,17 @@ export default function App() {
 
   // brand loader while the boot animation plays or yard data is still loading
   if (booting || !trackingLoaded)
-    return <><LogoLoaderOverlay label="กำลังโหลดข้อมูล" /><Toaster /></>
+    return <>{bootScreen}<Toaster /></>
 
   // field roles (driver / walk-around / PM / mechanic) — and ANY account on a
   // phone — live in Yard Ops only: no sidebar, no admin pages
   if (opsOnly)
     return (
       <>
+        {bootScreen}
         <OpsShell>
-          <Suspense fallback={<LogoLoaderOverlay label="กำลังโหลดหน้า" />}><YardOps /></Suspense>
+          {/* the boot screen covers the first load; later there is nothing to wait for here */}
+          <Suspense fallback={null}><YardOps /><PageReady onReady={onPageReady} /></Suspense>
         </OpsShell>
         <SiteLoadGate mode="banner" />
         <SelectSiteModal />
@@ -631,13 +673,15 @@ export default function App() {
 
   return (
     <>
+      {bootScreen}
       <NavProgress busy={page.busy} />
       <Layout pageView={page.shown}>
-        {/* key = หน้าที่แสดง: หน้าเดิมจางออก (.page-out) แล้วหน้าใหม่จางเข้า (.page-in) */}
-        <Suspense fallback={<LogoLoaderOverlay label="กำลังโหลดหน้า" />}>
+        {/* key = หน้าที่แสดง: หน้าเดิมจางออก (.page-out) แล้วหน้าใหม่จางเข้า (.page-in)
+            fallback ว่าง: เปิดแอปครั้งแรกมีหน้า Loading บังอยู่แล้ว · เปลี่ยนหน้ามีแถบโหลดบนสุด (NavProgress) */}
+        <Suspense fallback={null}>
           <div key={page.shown} className={page.leaving ? 'page-in page-out' : 'page-in'}>
             {pages[page.shown]}
-            <PageReady onReady={page.onReady} />
+            <PageReady onReady={onPageReady} />
           </div>
         </Suspense>
       </Layout>

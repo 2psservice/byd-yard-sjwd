@@ -380,14 +380,14 @@ input, textarea, select, [contenteditable='true'] {
 @keyframes blRise  { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
 .boot-bar { width: 220px; height: 5px; margin-top: 64px; border-radius: 3px; background: rgba(0, 0, 0, 0.12); overflow: hidden; }
 .boot-fill { height: 100%; border-radius: 3px; background: #007aff; transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1); }
-.boot-fill.boot-creep { width: 2%; animation: bootCreep 14s cubic-bezier(0.1, 0.6, 0.2, 1) forwards; }
+/* หน้า Loading ปิดตัว: แถบเต็มแล้วจางออก */
+.boot-screen.boot-leaving { opacity: 0; transition: opacity 0.3s ease; pointer-events: none; }
 .boot-label {
   margin-top: 14px; font-size: 12px; font-weight: 400; line-height: 1.4; letter-spacing: 0;
   color: #86868b; font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased;
 }
 @keyframes bootIn { from { opacity: 0; } to { opacity: 1; } }
-@keyframes bootCreep { from { width: 2%; } to { width: 25%; } }
-@media (prefers-reduced-motion: reduce) { .boot-screen { animation: none; } .boot-fill.boot-creep { animation: none; width: 12%; } .boot-logo-intro .bl-piece { animation: none; opacity: 1; } .boot-logo-intro .bl-full { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .boot-screen { animation: none; } .boot-logo-intro .bl-piece { animation: none; opacity: 1; } .boot-logo-intro .bl-full { animation: none; } }
 
 /* progress (iOS bar) */
 .track { height: 6px; border-radius: 99px; background: rgba(120, 120, 128, 0.2); overflow: hidden; }
