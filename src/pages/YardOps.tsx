@@ -11,8 +11,10 @@ import {
   CheckCircle2, XCircle, AlertTriangle, Navigation, Clock,
   User, RefreshCw, Plus, Trash2,
   ArrowRight, Zap, Hand, X, Camera, Pencil, Gauge, Route, Crosshair,
-  LogOut, MapPin, ClipboardList, ListChecks, Copy, Check, Images, Sparkles, Download, BatteryCharging,
+  LogOut, MapPin, ClipboardList, ListChecks, Copy, Check, Images, Sparkles, Download, BatteryCharging, CalendarDays,
 } from 'lucide-react'
+import { dateKey as dayKeyOf } from '../lib/dayKey'
+import { seqPlanDay } from '../lib/seqPlan'
 import { useYard, useUnits, useTrips, useBlocks, attachPendingDamages, type PlacementResult } from '../store/useYard'
 import { isAtLanePos, planLaneUpdates, recordableDrafts, laneEntryKind } from '../lib/laneRebuild'
 import { useTracking, useTrackingRows } from '../store/useTracking'
@@ -4357,7 +4359,7 @@ function MechanicView({ types, accent, stationLabel, emptyLabel, okNgMode = fals
 }
 
 // ── Gate-out view ────────────────────────────────────────────────────────────
-function GateOutView() {
+function GateOutView({ day }: { day: string }) {
   const trackingRows = useSiteRows()
   const units = useSiteUnits()
   const queues = useSiteQueues()
@@ -4378,9 +4380,18 @@ function GateOutView() {
 
   useEffect(() => { loadFromIdb() }, [loadFromIdb])
 
-  // รันที่ถูกเก็บเข้าคลังแล้วต้องหายไปจากสถานี Gate-out ด้วย
   const seqClosed = useOps(s => s.closed)
-  const seqQueues = useMemo(() => queues.filter(q => isSequenceQueue(q) && !isEmptyQueue(q) && !isQueueComplete(q) && !seqClosed[q.id]), [queues, seqClosed])
+  // the run list follows the date picked in the station header: every delivery run planned for that
+  // day stays listed — finished (gated-out cars grey) or archived alike — so the gate can look back.
+  // On today, runs still unfinished from earlier days sit behind a button (current work, not history)
+  const seqAll = useMemo(() => queues.filter(q => isSequenceQueue(q) && !isEmptyQueue(q)), [queues])
+  const seqQueues = useMemo(() => seqAll.filter(q => seqPlanDay(q.name, q.createdAt) === day)
+    .sort((a, b) => Number(isQueueComplete(a)) - Number(isQueueComplete(b)) || b.createdAt - a.createdAt), [seqAll, day])
+  const isToday = day === dayKeyOf(new Date())
+  const seqCarried = useMemo(() => (isToday
+    ? seqAll.filter(q => seqPlanDay(q.name, q.createdAt) < day && !isQueueComplete(q) && !seqClosed[q.id]).sort((a, b) => b.createdAt - a.createdAt)
+    : []), [seqAll, isToday, day, seqClosed])
+  const [showCarried, setShowCarried] = useState(false)
   const row = vin ? (trackingRows.find(r => r.vin === vin) ?? null) : null
   const seqHit = useMemo(() => findSeqItem(vin, queues), [vin, queues])
   // for bulk DN matching below — see buildSeqGroupIndex
@@ -4839,9 +4850,30 @@ function GateOutView() {
         </>
       )}
 
-      {/* delivery-sequence runs — see remaining cars to gate-out (before scanning) */}
+      {/* delivery-sequence runs of the day picked in the header — finished ones stay (cars grey) */}
       {!row && !dn && (
-        <SeqQueuePicker queues={seqQueues} units={units} trackingRows={trackingRows} />
+        <div className="space-y-2.5" data-gateout-day={day}>
+          <div className="flex items-center gap-2 px-1 pt-1 text-[11px] font-bold uppercase tracking-wider" style={{ color: 'var(--muted)' }}>
+            <CalendarDays size={12} /> คิวงานส่งมอบ {day.split('-').reverse().join('/')} · {seqQueues.length} คิว
+          </div>
+          {seqQueues.length
+            ? <SeqQueuePicker queues={seqQueues} units={units} trackingRows={trackingRows} closed={seqClosed} />
+            : <div className="panel p-4 text-center text-[12.5px]" style={{ color: 'var(--faint)' }} data-gateout-empty>ไม่มีคิวงานส่งมอบของวันนี้ · เลือกวันอื่นที่ช่องวันที่ด้านบน</div>}
+          {seqCarried.length > 0 && (showCarried ? (
+            <>
+              <div className="flex items-center gap-2 px-1 pt-2 text-[11px] font-bold uppercase tracking-wider" style={{ color: '#d97706' }}>
+                ยังไม่ครบ จากวันก่อน · {seqCarried.length} คิว
+                <button className="ml-auto normal-case font-semibold" style={{ color: 'var(--brand)' }} onClick={() => setShowCarried(false)}>ซ่อน</button>
+              </div>
+              <SeqQueuePicker queues={seqCarried} units={units} trackingRows={trackingRows} />
+            </>
+          ) : (
+            <button className="w-full panel px-4 py-2.5 text-[12.5px] font-semibold text-left flex items-center gap-2" style={{ color: '#d97706' }}
+              onClick={() => setShowCarried(true)} data-gateout-carried={seqCarried.length}>
+              <Clock size={14} /> คิวที่ยังไม่ครบ จากวันก่อน {seqCarried.length} คิว · แตะเพื่อดู
+            </button>
+          ))}
+        </div>
       )}
 
       {row && (
@@ -6216,6 +6248,8 @@ export function YardOps() {
   }, [queues, trackingRows, dismissedPreGateIn, closedQueues, evOpen])
 
   const activeRole = ROLES.find(r => r.key === role)
+  // Gate-out station: which day's delivery runs it lists (today unless the gate looks back)
+  const [gateOutDay, setGateOutDay] = useState(() => dayKeyOf(new Date()))
 
   return (
     <div className="max-w-md mx-auto pb-10">
@@ -6239,8 +6273,17 @@ export function YardOps() {
             {activeRole ? activeRole.desc : `Mobile Station · ${currentUser}`}
           </div>
         </div>
+        {/* Gate-out: the day whose delivery runs the station lists — pick an earlier one to look back */}
+        {role === 'gateout' && (
+          <label className="ml-auto flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 rounded-xl shrink-0" style={{ background: 'var(--chip)' }}>
+            <CalendarDays size={14} style={{ color: 'var(--muted)' }} />
+            <input type="date" value={gateOutDay} max={dayKeyOf(new Date())} aria-label="วันที่ของคิวงาน Gate-out" data-gateout-date
+              onChange={(e) => setGateOutDay(e.target.value || dayKeyOf(new Date()))}
+              className="bg-transparent outline-none text-[12.5px] font-bold tabular" style={{ color: 'var(--brand)', width: 118 }} />
+          </label>
+        )}
         {activeRole && (
-          <div className="ml-auto w-9 h-9 rounded-xl flex items-center justify-center"
+          <div className={`${role === 'gateout' ? '' : 'ml-auto '}w-9 h-9 rounded-xl flex items-center justify-center shrink-0`}
             style={{ background: activeRole.color + '18', color: activeRole.color }}>
             {activeRole.icon && <span style={{ transform: 'scale(0.7)' }}>{activeRole.icon}</span>}
           </div>
@@ -6296,7 +6339,7 @@ export function YardOps() {
       {/* role views — เข้าสถานีแล้วจางเข้า (.page-in) */}
       {role && <div key={role} className="page-in">
       {role === 'walk'       && <WalkView />}
-      {role === 'gateout'    && <GateOutView />}
+      {role === 'gateout'    && <GateOutView day={gateOutDay} />}
       {role === 'updatedmg'  && <UpdateDamageView />}
       {role === 'walkcheck'  && <UpdateDamageView accent="#0d9488" stationName="Walk Around Check" source="walkcheck" recentKey="walkcheck" richCard showStockCheck />}
       {role === 'driver'     && <DriverView />}

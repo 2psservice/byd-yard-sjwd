@@ -12,6 +12,7 @@ import { printIr, printDn, printIrPaper } from '../lib/dnir'
 import { markPrinted, printedAt, printedValue, PRINTED_KEYS } from '../lib/printMarks'
 import { useStickyBar } from '../lib/stickyBar'
 import { laneKey, laneDuplicates, lastEditedLanes, assignLanes } from '../lib/laneLoad'
+import { seqPlanDay } from '../lib/seqPlan'
 import { recordGroupingUpload, loadGroupingUploads, localGroupingUploads, type GroupingUpload } from '../lib/groupingUploads'
 import type { TrackRow } from '../lib/excelTracking'
 
@@ -32,14 +33,7 @@ export const dayKeyOf = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 /** Which DAY a delivery run belongs to — the "Date 07 August 2026" in its
  *  name (the plan's own date), falling back to the day it was created. */
-function queueDay(q: WorkQueue): string {
-  const m = /Date\s+(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/i.exec(q.name ?? '')
-  if (m) {
-    const mi = MONTHS.findIndex((x) => x.toLowerCase() === m[2].toLowerCase())
-    if (mi >= 0) return `${m[3]}-${String(mi + 1).padStart(2, '0')}-${m[1].padStart(2, '0')}`
-  }
-  return dayKeyOf(new Date(q.createdAt))
-}
+const queueDay = (q: WorkQueue): string => seqPlanDay(q.name, q.createdAt)
 
 export function Grouping() {
   const currentSite = useYard((s) => s.currentSite)
