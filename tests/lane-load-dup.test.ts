@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { laneDuplicates, laneKey, shortGroup } from '../src/lib/laneLoad'
+import { laneDuplicates, laneKey } from '../src/lib/laneLoad'
 
 describe('laneKey', () => {
   it('treats case, spaces and leading zeros as the same lane', () => {
@@ -24,13 +24,5 @@ describe('laneDuplicates', () => {
   })
   it('a blank lane is never a duplicate, and unique lanes give nothing', () => {
     expect(laneDuplicates(new Map([['A', ''], ['B', ''], ['C', 'O1'], ['D', 'O2']]))).toEqual([])
-  })
-})
-
-describe('shortGroup', () => {
-  it('keeps the part after the last dash', () => {
-    expect(shortGroup('SJWD261029-080')).toBe('080')
-    expect(shortGroup('ATL260803-12')).toBe('12')
-    expect(shortGroup('G7')).toBe('G7')
   })
 })

@@ -22,9 +22,3 @@ export function laneDuplicates(laneOf: Map<string, string>): LaneDup[] {
   return [...by.values()].filter((e) => e.groups.length > 1)
     .sort((a, b) => a.lane.localeCompare(b.lane, undefined, { numeric: true }))
 }
-
-/** เลข Grouping แบบสั้นไว้แสดงใต้ช่อง lane: "SJWD261029-080" → "080" */
-export const shortGroup = (g: string): string => {
-  const i = g.lastIndexOf('-')
-  return i >= 0 && i < g.length - 1 ? g.slice(i + 1) : g
-}

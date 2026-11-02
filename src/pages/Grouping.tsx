@@ -11,7 +11,7 @@ import { printGrouping, printFindCar, exportGroupingXlsx, exportFindCarXlsx, pri
 import { printIr, printDn, printIrPaper } from '../lib/dnir'
 import { markPrinted, printedAt, printedValue, PRINTED_KEYS } from '../lib/printMarks'
 import { useStickyBar } from '../lib/stickyBar'
-import { laneKey, laneDuplicates, shortGroup } from '../lib/laneLoad'
+import { laneKey, laneDuplicates } from '../lib/laneLoad'
 import type { TrackRow } from '../lib/excelTracking'
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
@@ -778,7 +778,9 @@ export function Grouping() {
                               className={`glane tabular${note ? ' warn' : ''}`}
                             />
                             {shared.length > 0 && (
-                              <div className="glane-note" title={`ซ้ำกับ ${shared.join(', ')}`}>ซ้ำกับ {shared.map(shortGroup).join(', ')}</div>
+                              <div className="glane-note" title={`Lane load ${laneCheck.laneOf.get(r.grouping)} ใช้ซ้ำกับกลุ่ม ${shared.join(', ')}`}>
+                                ซ้ำกับกลุ่ม{shared.map((g) => <div key={g} className="tabular">{g}</div>)}
+                              </div>
                             )}
                           </td>
                         )
