@@ -11,6 +11,7 @@ import { printGrouping, printFindCar, exportGroupingXlsx, exportFindCarXlsx, pri
 import { printIr, printDn, printIrPaper } from '../lib/dnir'
 import { markPrinted, printedAt, printedValue, PRINTED_KEYS } from '../lib/printMarks'
 import { useStickyBar } from '../lib/stickyBar'
+import { laneKey, laneDuplicates, shortGroup } from '../lib/laneLoad'
 import type { TrackRow } from '../lib/excelTracking'
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
@@ -321,12 +322,31 @@ export function Grouping() {
       const st = stamp.get(r.grouping)
       if (r.laneBy && (!st || (r.laneAt ?? 0) > st.at)) stamp.set(r.grouping, { by: r.laneBy, at: r.laneAt ?? 0 })
     }
+    // "O01" and "O1" are the same lane (laneKey)
     const groupsOf = new Map<string, string[]>()
-    for (const [g, l] of laneOf) if (l) groupsOf.set(l, [...(groupsOf.get(l) ?? []), g])
-    const sharedWith = (g: string) => (groupsOf.get(laneOf.get(g) ?? '') ?? []).filter((x) => x !== g)
+    for (const [g, l] of laneOf) { const k = laneKey(l); if (k) groupsOf.set(k, [...(groupsOf.get(k) ?? []), g]) }
+    const sharedWith = (g: string) => (groupsOf.get(laneKey(laneOf.get(g) ?? '')) ?? []).filter((x) => x !== g)
     const odd = (g: string) => { const l = laneOf.get(g) ?? ''; return !!l && !/^O\d+$/.test(l) }
-    return { laneOf, stamp, sharedWith, odd }
+    return { laneOf, stamp, sharedWith, odd, dups: laneDuplicates(laneOf) }
   }, [sheetRows])
+  // the alert in the print bar jumps to each duplicated lane box in turn
+  const dupJump = useRef(0)
+  const jumpToLaneDup = () => {
+    const gs = laneCheck.dups.flatMap((d) => d.groups)
+    if (!gs.length) return
+    const g = gs[dupJump.current++ % gs.length]
+    const el = document.querySelector<HTMLInputElement>(`input[data-lane="${CSS.escape(g)}"]`)
+    if (!el) return
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    el.focus({ preventScroll: true })
+    el.select()
+  }
+  /** typed a lane another group already has → say so right away (the box also stays orange) */
+  const onLaneBlur = (g: string) => {
+    if (laneEdits[g] == null) return
+    const shared = laneCheck.sharedWith(g)
+    if (shared.length) toast('err', `Lane load ${laneCheck.laneOf.get(g)} ซ้ำกับกลุ่ม ${shared.join(', ')}`, 6000)
+  }
   const laneNote = (g: string): string => {
     const l = laneCheck.laneOf.get(g) ?? ''
     const notes: string[] = []
@@ -482,6 +502,8 @@ export function Grouping() {
     if (!sheetRows || !sheetRows.length) return
     // never a silent return — a click on the green button must always answer
     const name = seqName.trim() || queueSheet?.name || `${siteLabel(siteName)} - Grouping to Dealer ( ${sheetRows.length} Units ) ${todayLong()}`
+    if (laneCheck.dups.length && !window.confirm(
+      `Lane load ซ้ำ\n\n${laneCheck.dups.map((d) => `${d.lane} · ${d.groups.join(', ')}`).join('\n')}\n\nยืนยันสร้างคิวงานตามนี้?`)) return
     try {
       // the grouping code travels with the item: the run keeps following it, so a
       // car whose number is cleared later drops out and a car stamped with it joins
@@ -663,6 +685,13 @@ export function Grouping() {
               </div>
             </div>
             <div className="ml-auto flex items-center gap-2">
+              {laneCheck.dups.length > 0 && (
+                <button className="gdoc-warn" onClick={jumpToLaneDup} data-lane-dup-alert={laneCheck.dups.length}
+                  title={`Lane load ซ้ำ — กดเพื่อไปที่ช่องที่ซ้ำ\n${laneCheck.dups.map((d) => `${d.lane} · ${d.groups.join(', ')}`).join('\n')}`}>
+                  <AlertTriangle size={14} /> Lane load ซ้ำ {laneCheck.dups.slice(0, 3).map((d) => d.lane).join(', ')}
+                  {laneCheck.dups.length > 3 ? ` +${laneCheck.dups.length - 3}` : ''}
+                </button>
+              )}
               {selVins.size > 0 && (
                 <span className="badge" style={{ background: 'var(--brand-soft)', color: 'var(--brand)', padding: '4px 6px 4px 10px' }}>
                   เลือก {selVins.size} คัน
@@ -733,6 +762,7 @@ export function Grouping() {
                       </td>
                       {first && (() => {
                         const note = laneNote(r.grouping)
+                        const shared = laneCheck.sharedWith(r.grouping)
                         const st = laneCheck.stamp.get(r.grouping)
                         // lanes typed before who / when was kept carry no name — say nothing rather than guess
                         const tip = [note, st ? `แก้ Lane load โดย ${st.by} · ${clock(st.at)}` : ''].filter(Boolean).join('\n') || undefined
@@ -741,10 +771,15 @@ export function Grouping() {
                             <input
                               value={r.laneLoad}
                               onChange={(e) => setLaneEdits((p) => ({ ...p, [r.grouping]: e.target.value.toUpperCase() }))}
+                              onBlur={() => onLaneBlur(r.grouping)}
                               title={tip} aria-label={`Lane load ${r.grouping}`}
                               data-lane={r.grouping} data-lane-warn={note ? '1' : undefined} data-lane-by={st?.by}
+                              data-lane-dup={shared.length ? '1' : undefined}
                               className={`glane tabular${note ? ' warn' : ''}`}
                             />
+                            {shared.length > 0 && (
+                              <div className="glane-note" title={`ซ้ำกับ ${shared.join(', ')}`}>ซ้ำกับ {shared.map(shortGroup).join(', ')}</div>
+                            )}
                           </td>
                         )
                       })()}
