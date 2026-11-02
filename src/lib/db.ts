@@ -1041,6 +1041,14 @@ export async function fetchAppConfig<T = unknown>(id: string): Promise<T | null>
   if (error) { if (error.code !== '42P01') console.error('[db] fetchAppConfig', error); return null } // 42P01 = table not migrated
   return (data?.value ?? null) as T | null
 }
+/** Config rows whose id starts with `prefix`, newest id first (ids ending in a ms timestamp sort by time). */
+export async function fetchAppConfigPrefix<T = unknown>(prefix: string, limit = 200): Promise<{ id: string; value: T }[] | null> {
+  if (!isConfigured()) return null
+  const { data, error } = await supabase.from('app_config').select('id, value').like('id', `${prefix}%`)
+    .order('id', { ascending: false }).limit(limit)
+  if (error) { if (error.code !== '42P01') console.error('[db] fetchAppConfigPrefix', error); return null }
+  return (data ?? []) as { id: string; value: T }[]
+}
 /** Upsert a shared config blob (admin action). Throws so the caller can toast. */
 export async function saveAppConfig(id: string, value: unknown): Promise<void> {
   if (!isConfigured()) throw new Error('cloud not configured')

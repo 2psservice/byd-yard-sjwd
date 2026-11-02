@@ -1,17 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Layers, Upload, Printer, MapPin, Loader2, FileSpreadsheet, CheckCircle2, AlertTriangle, ListChecks, X, Save, FileText, Pencil, CalendarDays, ChevronLeft, ChevronRight, Check } from 'lucide-react'
+import { Layers, Upload, Printer, MapPin, Loader2, FileSpreadsheet, CheckCircle2, AlertTriangle, ListChecks, X, Save, FileText, Pencil, CalendarDays, ChevronLeft, ChevronRight, Check, History } from 'lucide-react'
 import { useYard, useUnits } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { rowsForSite } from '../lib/siteScope'
 import { useOps, isSequenceQueue, type WorkQueue } from '../store/useOps'
-import { PageHead } from '../components/ui'
+import { PageHead, Modal } from '../components/ui'
 import { clock } from '../lib/format'
 import { parseGroupingWorkbook, siteGroupingConfig, yardLocCode, LAST_LOCATION_KEY } from '../lib/groupingImport'
 import { printGrouping, printFindCar, exportGroupingXlsx, exportFindCarXlsx, printRowFor, type GroupPrintRow, type GroupPrintMeta } from '../lib/groupingPrint'
 import { printIr, printDn, printIrPaper } from '../lib/dnir'
 import { markPrinted, printedAt, printedValue, PRINTED_KEYS } from '../lib/printMarks'
 import { useStickyBar } from '../lib/stickyBar'
-import { laneKey, laneDuplicates } from '../lib/laneLoad'
+import { laneKey, laneDuplicates, lastEditedLanes, assignLanes } from '../lib/laneLoad'
+import { recordGroupingUpload, loadGroupingUploads, localGroupingUploads, type GroupingUpload } from '../lib/groupingUploads'
 import type { TrackRow } from '../lib/excelTracking'
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
@@ -99,7 +100,12 @@ export function Grouping() {
         if (!order.includes(r.grouping)) order.push(r.grouping)
         unitCount.set(r.grouping, (unitCount.get(r.grouping) ?? 0) + 1)
       }
-      const laneOf = new Map(order.map((g, i) => [g, `O${i + 1}`]))
+      // a group whose Lane load was edited by hand keeps the lane from its latest edit (any delivery run of
+      // this yard); the rest are numbered O1, O2 … by their place in the file, skipping lanes already kept
+      const runsHere = useOps.getState().queues.filter((q) => isSequenceQueue(q) && (!currentSite || !q.site || q.site === currentSite))
+      const lanes = assignLanes(order, lastEditedLanes(runsHere, order))
+      const laneOf = new Map([...lanes].map(([g, m]) => [g, m.lane]))
+      const keptLanes = [...lanes.values()].filter((m) => m.by).length
 
       let found = 0, notFound = 0, placed = 0
       const printRows: GroupPrintRow[] = res.rows.map((r, i) => {
@@ -118,7 +124,8 @@ export function Grouping() {
           model: r.model || known?.['Model'] || known?.['Model name'] || u?.modelName || '',
           color: r.color || known?.['Color'] || u?.color || '',
           deliveryLocation: r.deliveryLocation, grouping: r.grouping, groupUnit: unitCount.get(r.grouping) ?? 0,
-          yardLocation: loc, laneLoad: laneOf.get(r.grouping) ?? '', receiveDate: r.receiveDate || res.headerDate,
+          yardLocation: loc, laneLoad: laneOf.get(r.grouping) ?? '', laneBy: lanes.get(r.grouping)?.by, laneAt: lanes.get(r.grouping)?.at,
+          receiveDate: r.receiveDate || res.headerDate,
           remark: r.remark,
         }
       })
@@ -201,7 +208,11 @@ export function Grouping() {
         : null)
       if (short) toast('err', `อ่านได้ ${printRows.length} คัน แต่หัวไฟล์ระบุ ${res.titleUnits} คัน — ดูรายละเอียดด้านล่าง`)
       else toast('ok', `นำเข้า ${printRows.length} คัน · ${order.length} group · ใส่เลข grouping ${assigned} คัน`
+        + (keptLanes ? ` · ใช้ Lane load ที่แก้ไว้ ${keptLanes} กลุ่ม` : '')
         + (clearVins.length ? ` · ล้างเลข grouping เดิม ${clearVins.length} คัน (หลุดจากกลุ่มในไฟล์นี้)` : ''))
+      // upload history (who / which file / when) — never blocks the import
+      void recordGroupingUpload({ at: Date.now(), by: currentUser || '', file: file.name, site: currentSite, sheet: res.sheetName,
+        units: printRows.length, groups: order.length, keptLanes, title: res.title.trim() })
     } catch (err) {
       console.error('[grouping] import', err)
       toast('err', (err as Error)?.message ?? 'อ่านไฟล์ไม่สำเร็จ')
@@ -538,6 +549,8 @@ export function Grouping() {
   }
   const total = sheetRows?.length ?? 0
 
+  const [historyOpen, setHistoryOpen] = useState(false)
+
   // the print / Excel bar stays on screen while scrolling a long plan (the yellow header scrolls away)
   const barRef = useRef<HTMLDivElement>(null)
   const tableRef = useRef<HTMLTableElement>(null)
@@ -681,6 +694,14 @@ export function Grouping() {
                 </button>
                 <button onClick={() => doExport(() => exportFindCarXlsx(sheetRows, sheetMeta))} title="ดาวน์โหลดใบหารถเป็นไฟล์ Excel (.xlsx) เรียงตามตำแหน่งในลาน">
                   <FileSpreadsheet size={14} style={{ color: '#16a34a' }} /> ใบหารถ
+                </button>
+              </div>
+            </div>
+            <div className="gdoc-grp">
+              <span className="gdoc-lbl">ประวัติ</span>
+              <div className="seg">
+                <button onClick={() => setHistoryOpen(true)} data-upload-history title="ใครอัปโหลดไฟล์ Excel Grouping ชื่ออะไร เมื่อไหร่">
+                  <History size={14} /> ประวัติอัปโหลด
                 </button>
               </div>
             </div>
@@ -829,9 +850,68 @@ export function Grouping() {
           table above is session-only, but the QUEUES live in the store/cloud),
           with add / remove VIN and cancel-run controls. Clicking a run loads
           ITS grouping into the sheet above (prints/exports follow). */}
+      {historyOpen && currentSite && <UploadHistory site={currentSite} siteName={siteName} onClose={() => setHistoryOpen(false)} />}
+
       <SeqQueueManager viewingId={usingQueue ? queueSheet!.id : null} dayFilter={dayFilter}
         onView={(id) => { setViewQueueId(id); window.scrollTo({ top: 0, behavior: 'smooth' }) }} />
     </div>
+  )
+}
+
+/** "02/11/2026 14:35" */
+const fmtUploadAt = (ms: number): string => {
+  const d = new Date(ms), p2 = (n: number) => String(n).padStart(2, '0')
+  return `${p2(d.getDate())}/${p2(d.getMonth() + 1)}/${d.getFullYear()} ${p2(d.getHours())}:${p2(d.getMinutes())}`
+}
+
+/** ประวัติอัปโหลดไฟล์ Excel Grouping ของยาร์ดนี้: วันที่เวลา · ผู้อัปโหลด · ชื่อไฟล์ · ชีต · จำนวน */
+function UploadHistory({ site, siteName, onClose }: { site: string; siteName: string; onClose: () => void }) {
+  // this device's uploads show at once; the yard's full list from the cloud fills in when it arrives
+  const [list, setList] = useState<GroupingUpload[]>(() => localGroupingUploads(site))
+  const [loading, setLoading] = useState(true)
+  useEffect(() => {
+    let live = true
+    loadGroupingUploads(site).then((l) => { if (live) setList(l) }).catch(() => {}).finally(() => { if (live) setLoading(false) })
+    return () => { live = false }
+  }, [site])
+  return (
+    <Modal open onClose={onClose} wide title={<span className="flex items-center gap-2"><History size={18} /> ประวัติอัปโหลด Excel Grouping{siteName ? ` · ${siteName}` : ''}</span>}>
+      <div data-upload-history-list>
+        {loading && (
+          <div className="pb-2 text-[12px]" style={{ color: 'var(--muted)' }}><Loader2 size={13} className="inline animate-spin mr-1.5" /> กำลังโหลดประวัติจากระบบ…</div>
+        )}
+        {list.length === 0 ? (
+          !loading && <div className="py-8 text-center text-[13px]" style={{ color: 'var(--faint)' }}>ยังไม่มีประวัติอัปโหลดของยาร์ดนี้</div>
+        ) : (
+          <div className="overflow-auto" style={{ maxHeight: '60vh' }}>
+            <table className="w-full text-[12.5px]">
+              <thead>
+                <tr style={{ color: 'var(--muted)' }} className="text-left">
+                  <th className="py-2 pr-3 font-semibold whitespace-nowrap">วันที่ เวลา</th>
+                  <th className="py-2 pr-3 font-semibold">ผู้อัปโหลด</th>
+                  <th className="py-2 pr-3 font-semibold">ชื่อไฟล์</th>
+                  <th className="py-2 pr-3 font-semibold">ชีต</th>
+                  <th className="py-2 pr-3 font-semibold text-right whitespace-nowrap">คัน · กลุ่ม</th>
+                  <th className="py-2 font-semibold whitespace-nowrap">Lane load ที่แก้ไว้</th>
+                </tr>
+              </thead>
+              <tbody>
+                {list.map((u) => (
+                  <tr key={`${u.at}|${u.file}`} className="border-t hairline" data-upload-row>
+                    <td className="py-2 pr-3 tabular whitespace-nowrap">{fmtUploadAt(u.at)}</td>
+                    <td className="py-2 pr-3 font-semibold">{u.by || '—'}</td>
+                    <td className="py-2 pr-3" style={{ wordBreak: 'break-word' }} title={u.title || undefined}>{u.file}</td>
+                    <td className="py-2 pr-3 whitespace-nowrap" style={{ color: 'var(--muted)' }}>{u.sheet}</td>
+                    <td className="py-2 pr-3 text-right tabular whitespace-nowrap">{u.units} · {u.groups}</td>
+                    <td className="py-2 tabular whitespace-nowrap" style={{ color: u.keptLanes ? 'var(--brand)' : 'var(--faint)' }}>{u.keptLanes ? `ใช้ของเดิม ${u.keptLanes} กลุ่ม` : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </Modal>
   )
 }
 
