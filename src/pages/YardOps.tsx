@@ -24,7 +24,6 @@ import { isDamaged, deriveCarStatus, hasLeftGate, IN_YARD_STATUSES, CAR_STATUS_M
 import { useOps, useActiveQueues, useSiteQueues, activeProcess, itemPendingIn, stageOf, isSequenceQueue, isPreGateInQueue, seqStageOf, isQueueComplete, isEmptyQueue, isStationWorkComplete, queueTypeOf, stampStationDate, stationProgress, drivingNow, gateInArrived, gateInPendingItems, isIncomingLotItem } from '../store/useOps'
 import type { WorkQueue, QueueItem, QueueType, QueueStage } from '../store/useOps'
 import { CarTopView } from '../components/CarTopView'
-import { LogoMark } from '../components/Logo'
 import { DrivingScreen } from '../components/DrivingScreen'
 import { LiveTrackingMap } from '../components/LiveTrackingMap'
 import { ALL_ZONES, zoneLabel } from '../components/CarDiagramMultiView'
@@ -6400,17 +6399,25 @@ export function YardOps() {
   return (
     <div className="max-w-md mx-auto pb-10">
 
+      {/* home: iPhone-style large title — today's date above, the account's initial on the right */}
+      {!role && (
+        <div className="ios-home-head">
+          <div className="ios-home-date">{new Date().toLocaleDateString('th-TH', { weekday: 'long', day: 'numeric', month: 'long' })}</div>
+          <div className="flex items-end justify-between gap-3">
+            <h1 className="ios-large-title">Yard Ops</h1>
+            <span className="ios-avatar" aria-hidden="true">{(currentUser || '?').slice(0, 1).toUpperCase()}</span>
+          </div>
+          <div className="ios-home-sub">Mobile Station · {currentUser}</div>
+        </div>
+      )}
+
       {/* header */}
-      <div className="flex items-center gap-3 mb-5">
-        {role ? (
-          <button onClick={() => setRole(null)}
-            className="w-9 h-9 rounded-xl flex items-center justify-center transition-all hover:bg-[var(--chip)]"
-            style={{ border: '1px solid var(--line)' }}>
-            <ChevronLeft size={18} />
-          </button>
-        ) : (
-          <LogoMark size={36} />
-        )}
+      {role && <div className="flex items-center gap-3 mb-5">
+        <button onClick={() => setRole(null)}
+          className="w-9 h-9 rounded-xl flex items-center justify-center transition-all hover:bg-[var(--chip)]"
+          style={{ border: '1px solid var(--line)' }}>
+          <ChevronLeft size={18} />
+        </button>
         <div>
           <div className="display text-[19px] font-bold leading-tight">
             {activeRole ? activeRole.th : 'Yard Ops'}
@@ -6434,49 +6441,35 @@ export function YardOps() {
             {activeRole.icon && <span style={{ transform: 'scale(0.7)' }}>{activeRole.icon}</span>}
           </div>
         )}
-      </div>
+      </div>}
 
-      {/* role picker */}
+      {/* role picker — iPhone home screen: an app icon per station, label under it, red badge = work waiting */}
       {!role && (
-        <div className="space-y-3 page-in">
-          <div className="text-[11px] font-bold uppercase tracking-wider mb-3" style={{ color: 'var(--muted)' }}>
-            เลือกตำแหน่งงาน
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            {ROLES.map(r => (
-              <button
-                key={r.key}
-                onClick={() => setRole(r.key)}
-                className="panel p-5 text-left flex flex-col gap-3 transition-all hover:shadow-md active:scale-95 relative"
-                style={{ touchAction: 'manipulation' }}
-              >
-                {/* pending-work badge — iOS-style red count, top-right of the tile */}
-                {(menuBadges[r.key] ?? 0) > 0 && (
-                  <span className="absolute flex items-center justify-center font-bold text-white tabular"
-                    style={{ top: 10, right: 10, minWidth: 24, height: 24, borderRadius: 12, padding: '0 7px',
-                      fontSize: 12.5, background: '#ef4444', boxShadow: '0 2px 8px -2px rgba(239,68,68,0.6)' }}>
-                    {menuBadges[r.key]! > 999 ? '999+' : menuBadges[r.key]}
+        <div className="page-in">
+          <div className="ios-home-grid" aria-label="เลือกตำแหน่งงาน">
+            {ROLES.map((r, i) => {
+              const n = menuBadges[r.key] ?? 0
+              return (
+                <button key={r.key} onClick={() => setRole(r.key)} className="ios-app"
+                  title={`${r.th} · ${r.desc}`} aria-label={`${r.th} · ${r.desc}${n > 0 ? ` · ค้าง ${n}` : ''}`}
+                  style={{ '--app-c': r.color, '--i': i } as React.CSSProperties}>
+                  <span className="ios-app-icon">
+                    {r.icon}
+                    {n > 0 && <span className="ios-badge tabular">{n > 999 ? '999+' : n}</span>}
                   </span>
-                )}
-                <div className="w-14 h-14 rounded-2xl flex items-center justify-center"
-                  style={{ background: r.color + '18', color: r.color }}>
-                  {r.icon}
-                </div>
-                <div>
-                  <div className="font-bold text-[15px] leading-tight">{r.th}</div>
-                  <div className="text-[11.5px] mt-1" style={{ color: 'var(--muted)' }}>{r.desc}</div>
-                </div>
-              </button>
-            ))}
+                  <span className="ios-app-label">{r.th}</span>
+                </button>
+              )
+            })}
           </div>
 
-          {/* status strip */}
-          <div className="panel p-4 mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
-            <div className="flex items-center gap-1.5 text-[12px] font-medium"
-              style={{ color: 'var(--st-yard)' }}>
-              <span className="live">●</span> Live
+          {/* status — quiet footer, like the small print under an iOS list */}
+          <div className="ios-home-foot">
+            <div className="flex items-center justify-center gap-1.5">
+              <span className="live" style={{ color: 'var(--st-yard)' }}>●</span>
+              <span style={{ color: 'var(--st-yard)', fontWeight: 600 }}>Live</span>
+              <span>· SJWD Yard Control · {currentUser}</span>
             </div>
-            <div className="text-[12px]" style={{ color: 'var(--muted)' }}>SJWD Yard Control · {currentUser}</div>
             <BuildStamp className="w-full" />
           </div>
         </div>
