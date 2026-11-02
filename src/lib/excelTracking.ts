@@ -96,6 +96,17 @@ const norm = (s: string) => String(s).trim().toLowerCase().replace(/[\s._\-#]/g,
 // real VINs never contain I, O or Q (ISO 3779) — the letter test rejects
 // generated placeholder codes ("QAQANYB2000001") sitting in template rows
 const isVin = (s: string) => /^[A-Z0-9]{11,20}$/.test(s) && !/[IOQ]/.test(s)
+/** The VIN column under any of its spellings — "Vin", "Vin no.", "VIN No", "Vin Number" (files from
+ *  different senders name it differently; they all import the same way) */
+export const isVinHeader = (h: unknown): boolean => {
+  const n = norm(String(h ?? ''))
+  return n === 'vin' || n === 'vinno' || n === 'vinnumber'
+}
+/** index of the VIN column: a plain "Vin" wins when a sheet carries both */
+const vinColumn = (headers: string[]): number => {
+  const exact = headers.findIndex((h) => norm(h) === 'vin')
+  return exact >= 0 ? exact : headers.findIndex(isVinHeader)
+}
 
 /** Parse a Defect-Yard / Defect-Factory sheet into defect records (by VIN). */
 function parseDefectSheet(XLSX: any, ws: any, source: 'yard' | 'factory' | 'whale'): { rows: DefectRow[]; headers: string[] } {
@@ -104,7 +115,7 @@ function parseDefectSheet(XLSX: any, ws: any, source: 'yard' | 'factory' | 'whal
   if (!aoa.length) return { rows: [], headers: [] }
   const headers = (aoa[0] as any[]).map((h) => String(h).trim())
   const idxOf = (name: string) => headers.findIndex((h) => norm(h) === norm(name))
-  const vinIdx = headers.findIndex((h) => norm(h) === 'vin')
+  const vinIdx = vinColumn(headers)
   if (vinIdx < 0) return { rows: [], headers }
   const col = (row: any[], name: string) => { const i = idxOf(name); return i >= 0 ? String(row[i] ?? '').trim() : '' }
   // header names vary per sheet / file version → try each candidate until one has a value
@@ -157,10 +168,16 @@ export async function parseTrackingWorkbook(file: File): Promise<ParseResult> {
   const wb = XLSX.read(buf, { type: 'array' })
 
   // "Tracking Status" sheet, else a "tracking" sheet, else the first sheet that
-  // actually has a "Vin" column (so Yard-to-Yard transfer files import too).
-  const headerOf = (n: string): string[] => {
-    const a = XLSX.utils.sheet_to_json<string[]>(wb.Sheets[n], { header: 1, defval: '', blankrows: false })
-    return ((a[0] as any[] | undefined) ?? []).map((h) => norm(String(h)))
+  // actually has a "Vin" / "Vin no." column (so Yard-to-Yard transfer files import too).
+  // The header is the first of the top rows carrying a VIN column — a title row above it is fine.
+  const HEADER_SCAN = 8
+  const headerRowOf = (aoa: any[][]): number => {
+    for (let i = 0; i < Math.min(aoa.length, HEADER_SCAN); i++) if ((aoa[i] ?? []).some(isVinHeader)) return i
+    return 0
+  }
+  const hasVinHeader = (n: string): boolean => {
+    const a = XLSX.utils.sheet_to_json<any[]>(wb.Sheets[n], { header: 1, defval: '', blankrows: false }) as any[][]
+    return a.slice(0, HEADER_SCAN).some((row) => (row ?? []).some(isVinHeader))
   }
   // defect sheets (Co Inspection) — parsed regardless of the tracking sheet
   const yardWs = wb.SheetNames.find((n) => norm(n).includes('defectyard'))
@@ -182,20 +199,23 @@ export async function parseTrackingWorkbook(file: File): Promise<ParseResult> {
   const sheetName =
     wb.SheetNames.find((n) => n.trim() === TARGET_SHEET) ||
     wb.SheetNames.find((n) => norm(n).includes('trackingstatus')) ||
-    wb.SheetNames.find((n) => headerOf(n).includes('vin'))
+    wb.SheetNames.find((n) => hasVinHeader(n))
   if (!sheetName) {
     // a Co Inspection file may carry only defect sheets — still valid
     if (defects.length) return { rows: [], headers: [], total: 0, inYard: 0, gatedOut: 0, gateOutRows: [], options: {}, defects, defectSheets }
-    throw new Error(`ไม่พบคอลัมน์ "Vin" ในไฟล์ (sheets: ${wb.SheetNames.join(', ')})`)
+    throw new Error(`ไม่พบคอลัมน์ "Vin" หรือ "Vin no." ในไฟล์ (sheets: ${wb.SheetNames.join(', ')})`)
   }
 
   const ws = wb.Sheets[sheetName]
   const aoa = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1, defval: '', raw: false, blankrows: false })
   if (!aoa.length) throw new Error(`sheet "${sheetName}" ว่างเปล่า`)
 
-  const headers = (aoa[0] as any[]).map((h) => String(h).trim())
-  const vinIdx = headers.findIndex((h) => norm(h) === 'vin')
-  if (vinIdx < 0) throw new Error('ไม่พบคอลัมน์ "Vin" ใน sheet')
+  const hIdx = headerRowOf(aoa as any[][])
+  const headers = (aoa[hIdx] as any[]).map((h) => String(h).trim())
+  const vinIdx = vinColumn(headers)
+  if (vinIdx < 0) throw new Error('ไม่พบคอลัมน์ "Vin" หรือ "Vin no." ใน sheet')
+  // "Vin no." is the same column as the sheet's own "Vin" — keep one name, no stray duplicate column
+  headers[vinIdx] = 'Vin'
   // gate-out is decided by "Gate Out time stamp" (authoritative), NOT "Stock of Status"
   const gotsIdx = headers.findIndex((h) => norm(h) === norm('Gate Out time stamp'))
 
@@ -204,7 +224,7 @@ export async function parseTrackingWorkbook(file: File): Promise<ParseResult> {
   const optSets: Record<string, Set<string>> = {}
   let total = 0
 
-  for (let r = 1; r < aoa.length; r++) {
+  for (let r = hIdx + 1; r < aoa.length; r++) {
     const row = aoa[r] as any[]
     const vin = String(row[vinIdx] ?? '').replace(/\s+/g, '').toUpperCase()
     if (!isVin(vin)) continue
@@ -321,7 +341,7 @@ export function parseVinListInventory(XLSX: any, wb: any, yards: YardName[] = []
     let hIdx = -1
     for (let i = 0; i < Math.min(aoa.length, 8); i++) {
       const row = aoa[i] || []
-      const hasVin = row.some((c) => { const n = norm(String(c)); return n === 'vinno' || n === 'vin' })
+      const hasVin = row.some(isVinHeader)
       if (hasVin && row.some((c) => norm(String(c)) === 'gateindate')) { hIdx = i; break }
       if (hIdx < 0 && hasVin) hIdx = i // fallback: first row carrying a Vin column
     }
@@ -332,7 +352,7 @@ export function parseVinListInventory(XLSX: any, wb: any, yards: YardName[] = []
     // the canonical column instead of becoming a stray duplicate
     const headers = (aoa[hIdx] as any[]).map((h) => String(h).replace(/\s+/g, ' ').trim())
     const nh = headers.map((h) => norm(h))
-    const vinCols = nh.map((h, i) => (h === 'vinno' || h === 'vin' ? i : -1)).filter((i) => i >= 0)
+    const vinCols = headers.map((h, i) => (isVinHeader(h) ? i : -1)).filter((i) => i >= 0)
     const gateInIdx = nh.indexOf('gateindate')
     const gateOutIdx = nh.indexOf('gateoutdate')
     for (const h of headers) if (h) headerSet.add(h)
