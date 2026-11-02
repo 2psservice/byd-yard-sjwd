@@ -38,13 +38,20 @@ function Thumb({ src, pct, onOpen, label }: { src: string; pct?: number | null; 
 }
 
 /** ก่อนดาวน์โหลด: เลือกรุ่นที่อยู่ในแผน · วันละกี่คัน · วันเริ่มแผน (ค่าเริ่มต้น = วันที่เริ่มชาร์จคันแรกในช่วง) */
-function EvPlanDialog({ site, ranged, from, onClose }: { site: string | null; ranged: EvCharge[]; from: string; onClose: () => void }) {
+function EvPlanDialog({ site, ranged: shown, from, to, onClose }: { site: string | null; ranged: EvCharge[]; from: string; to: string; onClose: () => void }) {
   const sites = useYard((s) => s.sites)
   const units = useYard((s) => s.units)
   const toast = useYard((s) => s.toast)
   const rows = useTrackingRows()
   const siteObj = sites.find((x) => x.id === site)
   const siteName = siteObj?.name ?? ''
+  // the file holds only the picked dates: rounds STARTED in the range — the page also lists a car
+  // still on the charger from before the range (current work), the Excel does not
+  const range = useMemo(() => ({ from, to }), [from, to])
+  const ranged = useMemo(() => {
+    const lo = dayStart(from), hi = dayStart(to) + 86_400_000
+    return shown.filter((c) => c.beforeAt >= lo && c.beforeAt < hi)
+  }, [shown, from, to])
 
   const yardCars = useMemo(() => rows
     .filter((r) => rowInSite(r, site, sites) && IN_YARD_STATUSES.has(deriveCarStatus(r.cells)))
@@ -79,14 +86,15 @@ function EvPlanDialog({ site, ranged, from, onClose }: { site: string | null; ra
   const charges = useMemo(() => ranged.filter((c) => vins.has(c.vin)), [ranged, vins])
   const autoStart = charges.length ? dateKey(new Date(Math.min(...charges.map((c) => c.beforeAt)))) : from
   const startKey = start || autoStart
-  const plan = useMemo(() => buildEvPlan(cars, charges, perDay, startKey), [cars, charges, perDay, startKey])
+  const plan = useMemo(() => buildEvPlan(cars, charges, perDay, startKey, range), [cars, charges, perDay, startKey, range])
+  const chargedCars = new Set(charges.map((c) => c.vin)).size
   const doneCars = new Set(charges.filter((c) => !isCharging(c)).map((c) => c.vin)).size
 
   const download = async () => {
     setBusy(true)
     try {
       const located = evPlanCars(sel, yardCars, ranged, locOf)
-      await exportEvPlanExcel({ siteName, siteCode: siteObj?.code ?? '', perDay, start: startKey, cars: located, charges })
+      await exportEvPlanExcel({ siteName, siteCode: siteObj?.code ?? '', perDay, start: startKey, cars: located, charges, range })
       onClose()
     } catch (e: any) {
       toast('err', e?.message || 'สร้างไฟล์ไม่สำเร็จ')
@@ -99,7 +107,7 @@ function EvPlanDialog({ site, ranged, from, onClose }: { site: string | null; ra
     <Modal open onClose={onClose} title="Export Excel · แผนชาร์จแบต"
       footer={<>
         <button className="btn px-3 py-2 text-[13px]" onClick={onClose}>ยกเลิก</button>
-        <button className="btn btn-primary px-3 py-2 text-[13px]" onClick={download} disabled={busy || !cars.length} data-ev-plan-download>
+        <button className="btn btn-primary px-3 py-2 text-[13px]" onClick={download} disabled={busy || !cars.length || !chargedCars} data-ev-plan-download>
           <Download size={14} /> {busy ? 'กำลังสร้างไฟล์…' : 'ดาวน์โหลด Excel'}
         </button>
       </>}>
@@ -133,10 +141,13 @@ function EvPlanDialog({ site, ranged, from, onClose }: { site: string | null; ra
           </label>
         </div>
         <div className="rounded-xl px-3 py-2.5" style={{ background: 'var(--chip)' }} data-ev-plan-summary>
-          {cars.length
-            ? <>แผน <b>{cars.length}</b> คัน · {plan.days.length} วัน ({fmtDayKey(plan.days[0])} – {fmtDayKey(plan.days[plan.days.length - 1])}) · ชาร์จเสร็จแล้ว <b style={{ color: ACCENT }}>{doneCars}</b> คัน</>
-            : 'เลือกรุ่นอย่างน้อย 1 รุ่น'}
-          <div className="text-[12px] mt-1" style={{ color: 'var(--muted)' }}>ไฟล์มี 3 ชีต: Plan / Actual รายวัน · รายชื่อรถตามแผน · รูปก่อน-หลังชาร์จ</div>
+          <div data-ev-plan-range>ช่วงวันที่ <b>{fmtDayKey(from)}{to !== from ? ` – ${fmtDayKey(to)}` : ''}</b> ({plan.days.length} วัน)</div>
+          {!cars.length
+            ? 'เลือกรุ่นอย่างน้อย 1 รุ่น'
+            : chargedCars
+              ? <>ชาร์จในช่วงนี้ <b>{chargedCars}</b> คัน · เสร็จแล้ว <b style={{ color: ACCENT }}>{doneCars}</b> คัน · แผนทั้งหมด {cars.length} คัน</>
+              : <span style={{ color: 'var(--st-damage)' }}>ไม่มีรถรุ่นที่เลือกชาร์จในช่วงวันที่นี้ — เปลี่ยนช่วงวันที่ที่หน้า EV Charging</span>}
+          <div className="text-[12px] mt-1" style={{ color: 'var(--muted)' }}>ไฟล์มี 3 ชีต เฉพาะช่วงวันที่ที่เลือก: Plan / Actual รายวัน · รายชื่อรถที่ชาร์จ · รูปก่อน-หลังชาร์จ</div>
         </div>
       </div>
     </Modal>
@@ -409,7 +420,7 @@ export function EvCharging() {
       </div>
       {view && <PhotoLightbox photos={view.photos} index={view.i} onClose={() => setView(null)} />}
       {editing && <EvTimeDialog c={editing} onClose={() => setEditing(null)} />}
-      {planOpen && <EvPlanDialog site={site ?? null} ranged={ranged} from={from} onClose={() => setPlanOpen(false)} />}
+      {planOpen && <EvPlanDialog site={site ?? null} ranged={ranged} from={from} to={to} onClose={() => setPlanOpen(false)} />}
     </div>
   )
 }

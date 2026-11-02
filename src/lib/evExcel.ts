@@ -5,6 +5,8 @@
  *   3. รูปชาร์จแบต               — รูปเลขวิน + รูปหน้าปัด ก่อน/หลัง · %SOC / เวลา · ผลต่าง
  * แผน = รถรุ่นที่เลือกในยาร์ดนี้ (+ รถรุ่นนั้นที่ชาร์จในช่วงแต่ออกจากลานไปแล้ว) · วันละ N คันนับจากวันเริ่มแผน
  * Actual = รถที่ชาร์จเสร็จ นับคันละครั้ง (รอบแรกที่เสร็จในช่วง) ตามวันที่เริ่มชาร์จ
+ * ช่วงวันที่ (range) จากหน้า EV Charging: ทั้งไฟล์มีแค่ช่วงนั้น — ชีต 1 มีคอลัมน์เฉพาะวันในช่วง · ชีต 2 และ 3
+ * มีเฉพาะรถ / รอบที่เริ่มชาร์จในช่วง (รอบที่ค้างชาร์จมาจากก่อนช่วงไม่ติดมา)
  */
 import { fmtEvTime, isCharging, type EvCharge } from './evCharging'
 import { addDays, dateKey } from './dayKey'
@@ -79,9 +81,13 @@ export function evPlanCars(
   return [...byVin.values()].sort((a, b) => byYardLocation(a.location, b.location) || a.vin.localeCompare(b.vin))
 }
 
+/** ช่วงวันที่ที่เลือกในหน้า EV Charging (yyyy-mm-dd ทั้งสองฝั่ง รวมวันสุดท้าย) */
+export interface EvRange { from: string; to: string }
+
 /** ตาราง Plan / Actual รายวันต่อรุ่น — คอลัมน์วันเริ่มที่วันเริ่มแผน (หรือวันที่ชาร์จจริงวันแรกถ้าก่อนกว่า)
- *  ไปจนถึงวันสุดท้ายของแผนหรือวันสุดท้ายที่ชาร์จจริง แล้วแต่อันไหนหลังกว่า */
-export function buildEvPlan(cars: EvPlanCar[], charges: EvCharge[], perDay: number, start: string): EvPlan {
+ *  ไปจนถึงวันสุดท้ายของแผนหรือวันสุดท้ายที่ชาร์จจริง แล้วแต่อันไหนหลังกว่า
+ *  มี range = คอลัมน์คือวันในช่วงพอดี · แผนยังนับจากวันเริ่มแผน (วันละ N คัน) แต่โชว์เฉพาะวันที่อยู่ในช่วง */
+export function buildEvPlan(cars: EvPlanCar[], charges: EvCharge[], perDay: number, start: string, range?: EvRange): EvPlan {
   const rate = Math.max(1, Math.floor(perDay) || 1)
   const order: string[] = []
   const carsOf = new Map<string, EvPlanCar[]>()
@@ -96,7 +102,8 @@ export function buildEvPlan(cars: EvPlanCar[], charges: EvCharge[], perDay: numb
   const longest = Math.max(0, ...order.map((m) => Math.ceil(carsOf.get(m)!.length / rate)))
   let first = start
   let last = longest ? addDays(start, longest - 1) : start
-  if (doneDays.length) {
+  if (range) { first = range.from; last = range.to }
+  else if (doneDays.length) {
     if (doneDays[0] < first) first = doneDays[0]
     if (doneDays[doneDays.length - 1] > last) last = doneDays[doneDays.length - 1]
   }
@@ -108,7 +115,16 @@ export function buildEvPlan(cars: EvPlanCar[], charges: EvCharge[], perDay: numb
     const list = carsOf.get(model)!
     const plan = days.map(() => 0)
     let left = list.length
-    for (let i = at.get(start) ?? 0; i < days.length && left > 0; i++) { plan[i] = Math.min(rate, left); left -= plan[i] }
+    if (range) {
+      // the plan runs day by day from its start; only the days inside the range show
+      for (let d = start; d <= last && left > 0; d = addDays(d, 1)) {
+        const n = Math.min(rate, left); left -= n
+        const i = at.get(d)
+        if (i != null) plan[i] = n
+      }
+    } else {
+      for (let i = at.get(start) ?? 0; i < days.length && left > 0; i++) { plan[i] = Math.min(rate, left); left -= plan[i] }
+    }
     const actual = days.map(() => 0)
     for (const c of done) {
       if (modelOfVin.get(c.vin) !== model) continue
@@ -214,19 +230,41 @@ export interface EvPlanExport {
   cars: EvPlanCar[]
   /** รอบชาร์จในช่วงที่เลือก (รุ่นที่อยู่ในแผน) */
   charges: EvCharge[]
+  /** ช่วงวันที่ที่เลือก — มีแล้วทั้งไฟล์มีแค่ช่วงนี้ (ดูหัวไฟล์) */
+  range?: EvRange
 }
 
-export function evPlanFilename(x: Pick<EvPlanExport, 'siteName' | 'cars'>): string {
+/** "2026-11-01" → "01-11-26" (ชื่อไฟล์ใช้ / ไม่ได้) */
+const fileDay = (key: string) => `${key.slice(8, 10)}-${key.slice(5, 7)}-${key.slice(2, 4)}`
+
+/** รอบที่เริ่มชาร์จในช่วง (วันที่ตามเวลาเครื่อง) · ไม่มีช่วง = ทุกรอบที่ส่งมา */
+export const evChargesInRange = (charges: EvCharge[], range?: EvRange): EvCharge[] => {
+  if (!range) return charges
+  return charges.filter((c) => { const d = dateKey(new Date(c.beforeAt)); return d >= range.from && d <= range.to })
+}
+
+/** รถที่อยู่ในชีต 2: มีช่วงวันที่ = เฉพาะคันที่มีรอบชาร์จในช่วง · ไม่มี = รถทั้งแผน */
+export const evListedCars = (x: Pick<EvPlanExport, 'cars' | 'charges' | 'range'>): EvPlanCar[] => {
+  if (!x.range) return x.cars
+  const charged = new Set(evChargesInRange(x.charges, x.range).map((c) => c.vin))
+  return x.cars.filter((c) => charged.has(c.vin))
+}
+
+export function evPlanFilename(x: Pick<EvPlanExport, 'siteName' | 'cars'> & Partial<Pick<EvPlanExport, 'charges' | 'range'>>): string {
   const models = [...new Set(x.cars.map((c) => modelShort(c.model)))].join('+') || 'EV'
-  return `Plan ชาร์จแบต ${models} - ${x.cars.length} คัน - ${x.siteName.replace(/\s+/g, '')}.xlsx`
+  const listed = x.range ? evListedCars({ cars: x.cars, charges: x.charges ?? [], range: x.range }) : x.cars
+  const span = x.range ? ` - ${fileDay(x.range.from)}${x.range.to !== x.range.from ? ` ถึง ${fileDay(x.range.to)}` : ''}` : ''
+  return `Plan ชาร์จแบต ${models} - ${listed.length} คัน - ${x.siteName.replace(/\s+/g, '')}${span}.xlsx`
 }
 
-export async function buildEvPlanWorkbook(x: EvPlanExport): Promise<any> {
+export async function buildEvPlanWorkbook(input: EvPlanExport): Promise<any> {
+  // a range keeps every sheet to the rounds started inside it
+  const x: EvPlanExport = { ...input, charges: evChargesInRange(input.charges, input.range) }
   const XJS: any = await import('exceljs')
   const ExcelJS = XJS.default ?? XJS
   const wb = new ExcelJS.Workbook()
   wb.creator = 'SJWD Yard Control'
-  const plan = buildEvPlan(x.cars, x.charges, x.perDay, x.start)
+  const plan = buildEvPlan(x.cars, x.charges, x.perDay, x.start, x.range)
   const shorts = [...new Set(plan.models.map((m) => modelShort(m.model)))].join(', ') || 'EV'
   const sheetSafe = (s: string) => s.replace(/[\\/*?:[\]]/g, ' ').slice(0, 31)
 
@@ -331,15 +369,16 @@ export async function buildEvPlanWorkbook(x: EvPlanExport): Promise<any> {
     const prev = latest.get(c.vin)
     if (!prev || !isCharging(c) || isCharging(prev)) latest.set(c.vin, c) // รอบที่เสร็จล่าสุดชนะรอบที่ยังชาร์จอยู่
   }
-  const ps = wb.addWorksheet(sheetSafe(`Plan ${x.cars.length}`), { views: [{ state: 'frozen', ySplit: 2 }] })
+  const listed = evListedCars(x)
+  const ps = wb.addWorksheet(sheetSafe(`Plan ${listed.length}`), { views: [{ state: 'frozen', ySplit: 2 }] })
   ps.columns = [6, 22, 14, 12, 14, 12, 11, 11, 24].map((w) => ({ width: tw(w), style: { font: { name: TAHOMA, size: 10 } } }))
   ps.mergeCells('A1:I1')
   ps.getRow(1).height = 22.05
-  put(ps.getCell('A1'), `Plan monitor %soc BYD Model ${shorts} จำนวน ${x.cars.length}`, { font: { name: TAHOMA, size: 12, bold: true }, align: CENTER })
+  put(ps.getCell('A1'), `Plan monitor %soc BYD Model ${shorts} จำนวน ${listed.length}`, { font: { name: TAHOMA, size: 12, bold: true }, align: CENTER })
   const ph = ps.addRow(['No', 'Vin', 'Model', 'Color', 'Location', 'Date', 'ก่อนชาร์จ', 'หลังชาร์จ', 'หมายเหตุ'])
   ph.height = 18
   ph.eachCell((cell: any) => put(cell, undefined, { font: { name: TAHOMA, size: 10, bold: true }, fill: YELLOW, border: box, align: CENTER }))
-  x.cars.forEach((car, i) => {
+  listed.forEach((car, i) => {
     const c = latest.get(car.vin)
     const from = c?.from || car.from
     const row = ps.addRow([
