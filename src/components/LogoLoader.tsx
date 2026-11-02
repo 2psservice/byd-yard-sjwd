@@ -52,11 +52,13 @@ let logoIntroPlayed = false
 function BootLogo() {
   const [intro] = useState(() => !logoIntroPlayed)
   useEffect(() => { logoIntroPlayed = true }, [])
+  // the clipped pieces leave a hairline seam where they meet — once assembled, the whole image takes over
   return (
     <div className={intro ? 'boot-logo boot-logo-intro' : 'boot-logo'} role="img" aria-label="2PS Services">
-      {LOGO_PIECES.map((p) => (
+      {intro && LOGO_PIECES.map((p) => (
         <img key={p.key} className={`bl-piece bl-${p.key}`} src={LOGO_SRC} alt="" draggable={false} style={{ clipPath: p.clip, WebkitClipPath: p.clip }} />
       ))}
+      <img className="bl-piece bl-full" src={LOGO_SRC} alt="" draggable={false} />
     </div>
   )
 }
