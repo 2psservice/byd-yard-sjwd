@@ -351,6 +351,27 @@ input, textarea, select, [contenteditable='true'] {
   background: currentColor; animation: pulseDot 1s ease-in-out infinite;
 }
 
+/* ---------- หน้า Loading แบบ macOS (components/LogoLoader BootScreen) ----------
+   พื้นขาวล้วน · โลโก้นิ่ง · แถบเส้นบาง 5px กว้าง 220px สีเทาเข้มบนรางเทาอ่อน · ตัวหนังสือระบบ (SF บน Mac) 12px สีเทา */
+.boot-screen {
+  position: fixed; inset: 0; z-index: 9998;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding-bottom: 6vh; background: #ffffff;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', 'IBM Plex Sans Thai', system-ui, sans-serif;
+  animation: bootIn 0.35s ease both;
+}
+.boot-logo { width: 190px; height: auto; display: block; -webkit-user-drag: none; user-select: none; pointer-events: none; }
+.boot-bar { width: 220px; height: 5px; margin-top: 64px; border-radius: 3px; background: rgba(0, 0, 0, 0.12); overflow: hidden; }
+.boot-fill { height: 100%; border-radius: 3px; background: #1d1d1f; transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1); }
+.boot-fill.boot-creep { width: 2%; animation: bootCreep 14s cubic-bezier(0.1, 0.6, 0.2, 1) forwards; }
+.boot-label {
+  margin-top: 14px; font-size: 12px; font-weight: 400; line-height: 1.4; letter-spacing: 0;
+  color: #86868b; font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased;
+}
+@keyframes bootIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes bootCreep { from { width: 2%; } to { width: 25%; } }
+@media (prefers-reduced-motion: reduce) { .boot-screen { animation: none; } .boot-fill.boot-creep { animation: none; width: 12%; } }
+
 /* progress (iOS bar) */
 .track { height: 6px; border-radius: 99px; background: rgba(120, 120, 128, 0.2); overflow: hidden; }
 .fill { height: 100%; border-radius: 99px; background: var(--brand); transition: width 0.6s var(--ease-soft); }
