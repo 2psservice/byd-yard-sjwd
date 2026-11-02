@@ -11,6 +11,8 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <link rel="icon" type="image/png" href="/pwa-192.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!-- the loading screen's logo — fetched alongside the JS so the 2PS intro never starts on a blank image -->
+    <link rel="preload" as="image" href="/2ps-logo.png" />
     <!-- fonts are self-hosted (@fontsource, imported in src/main.tsx) — the old
          Google Fonts stylesheet was RENDER-BLOCKING: on slow/filtered yard
          networks the whole app sat on a white screen for 10s+ waiting for it -->
