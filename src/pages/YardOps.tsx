@@ -6393,19 +6393,21 @@ export function YardOps() {
   }, [queues, trackingRows, dismissedPreGateIn, closedQueues, evOpen])
 
   const activeRole = ROLES.find(r => r.key === role)
+  const homeSiteName = useYard((s) => s.sites.find((x) => x.id === s.currentSite)?.name ?? '')
   // Gate-out station: which day's delivery runs it lists (today unless the gate looks back)
   const [gateOutDay, setGateOutDay] = useState(() => dayKeyOf(new Date()))
 
   return (
-    <div className="max-w-md mx-auto pb-10">
+    // ios-home: the iOS 27 home screen — its wallpaper paints the whole page behind it (see index.css)
+    <div className={role ? 'max-w-md mx-auto pb-10' : 'max-w-md mx-auto pb-10 ios-home'}>
 
-      {/* home: iPhone-style large title — today's date above, the account's initial on the right */}
+      {/* home: iOS large title — today's date above, the account's initial in a glass circle on the right */}
       {!role && (
         <div className="ios-home-head">
           <div className="ios-home-date">{new Date().toLocaleDateString('th-TH', { weekday: 'long', day: 'numeric', month: 'long' })}</div>
           <div className="flex items-end justify-between gap-3">
             <h1 className="ios-large-title">Yard Ops</h1>
-            <span className="ios-avatar" aria-hidden="true">{(currentUser || '?').slice(0, 1).toUpperCase()}</span>
+            <span className="ios-avatar ios-glass" aria-hidden="true">{(currentUser || '?').slice(0, 1).toUpperCase()}</span>
           </div>
           <div className="ios-home-sub">Mobile Station · {currentUser}</div>
         </div>
@@ -6463,14 +6465,12 @@ export function YardOps() {
             })}
           </div>
 
-          {/* status — quiet footer, like the small print under an iOS list */}
-          <div className="ios-home-foot">
-            <div className="flex items-center justify-center gap-1.5">
-              <span className="live" style={{ color: 'var(--st-yard)' }}>●</span>
-              <span style={{ color: 'var(--st-yard)', fontWeight: 600 }}>Live</span>
-              <span>· SJWD Yard Control · {currentUser}</span>
-            </div>
-            <BuildStamp className="w-full" />
+          {/* status — a glass widget: this yard, live, who's signed in, which build */}
+          <div className="ios-widget ios-glass">
+            <div className="ios-widget-live"><span className="live">●</span> Live</div>
+            <div className="ios-widget-title">{homeSiteName || 'SJWD Yard Control'}</div>
+            <div className="ios-widget-sub">SJWD Yard Control · {currentUser}</div>
+            <BuildStamp className="w-full mt-1" />
           </div>
         </div>
       )}
