@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildList, buildTimeMatrix, type ReportCtx } from '../src/lib/opsReport'
+import { buildList, buildTimeMatrix, periodLabel, type ReportCtx } from '../src/lib/opsReport'
 
 /**
  * ตาราง PM รายเบรก (P1–P5): รถที่สถานีบันทึกแต่รายการคิวถูกปิดจากวันที่ในชีต (ไม่มี checkedAt)
@@ -54,5 +54,22 @@ describe('ตาราง PM: รถที่ไม่มี checkedAt ลงเ
   it('ตาราง PM (รายชื่อ) แสดงเวลาที่สถานีบันทึก · ไม่มีเวลาแสดงแค่วันที่', () => {
     const dates = Object.fromEntries(buildList(ctx(), 'pm').map((r) => [r.vin, r.date]))
     expect(dates).toEqual({ A: '26/10/2026 15:24', B: '26/10/2026 09:15', C: '26/10/2026 13:02', D: '26/10/2026', E: '26/10/2026' })
+  })
+
+  it('คอลัมน์ P1-P5 ในรายชื่อ: ช่วงตามเวลาที่บันทึก ตรงกับตาราง PM · ไม่มีเวลาเว้นว่าง', () => {
+    const list = buildList(ctx(), 'pm')
+    const periods = Object.fromEntries(list.map((r) => [r.vin, r.period]))
+    expect(periods).toEqual({ A: 'P4', B: 'P1', C: 'P3', D: '', E: '' })
+    // the list's periods add up to exactly what the P1–P5 table counts
+    const m = buildTimeMatrix(ctx(), 'pmtime')
+    const perP = [1, 2, 3, 4, 5].map((n) => list.filter((r) => r.period === `P${n}`).length)
+    expect(perP).toEqual(m.ok.map((n, i) => n + m.ng[i]))
+  })
+
+  it('ขอบของแต่ละช่วงตามตารางเบรก', () => {
+    const p = (h: number, m: number) => periodLabel(new Date(2026, 9, 26, h, m).getTime())
+    expect([p(8, 30), p(10, 5), p(10, 6), p(12, 30), p(12, 31), p(15, 5), p(15, 6), p(17, 45), p(17, 46), p(23, 0)])
+      .toEqual(['P1', 'P1', 'P2', 'P2', 'P3', 'P3', 'P4', 'P4', 'P5', 'P5'])
+    expect(periodLabel(undefined)).toBe('')
   })
 })

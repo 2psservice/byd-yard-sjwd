@@ -242,11 +242,14 @@ export function StationTables({ ctx, tab, kind }: { ctx: ReportCtx; tab: Station
           <div className="overflow-x-auto max-h-[65vh] overflow-y-auto">
             <table className="w-full text-[12.5px]">
               <thead><tr className="border-b hairline" style={{ background: 'var(--chip)', color: 'var(--muted)' }}>
-                {['No.', 'Vin', 'Model Name', 'Model', 'Color', 'Date', 'LOT M-D-lot', 'Remark'].map((h) => <th key={h} className={th}>{h}</th>)}
+                {['No.', 'Vin', 'Model Name', 'Model', 'Color', 'Date', 'P1-P5', 'LOT M-D-lot', 'Remark'].map((h) => (
+                  <th key={h} className={cx(th, h === 'P1-P5' && 'text-center')} style={h === 'P1-P5' ? { color: '#2563eb' } : undefined}
+                    title={h === 'P1-P5' ? TIME_PERIODS.map((t, i) => `P${i + 1} ${t}`).join(' · ') : undefined}>{h}</th>
+                ))}
               </tr></thead>
               <tbody className="divide-y" style={{ borderColor: 'var(--line)' }}>
                 {listRows.length === 0 && (
-                  <tr><td colSpan={8} className="text-center py-8" style={{ color: 'var(--faint)' }}>— ยังไม่มีรถที่บันทึก {kind} ในวันนี้ —</td></tr>
+                  <tr><td colSpan={9} className="text-center py-8" style={{ color: 'var(--faint)' }}>— ยังไม่มีรถที่บันทึก {kind} ในวันนี้ —</td></tr>
                 )}
                 {listRows.map((r) => (
                   <tr key={`${r.no}-${r.vin}`}>
@@ -256,6 +259,8 @@ export function StationTables({ ctx, tab, kind }: { ctx: ReportCtx; tab: Station
                     <td className={td}>{r.model}</td>
                     <td className={td}>{r.color}</td>
                     <td className={cx(td, 'tabular')}>{r.date}</td>
+                    {/* the shift period of that time — same clock as the P1–P5 table, blank when only a date is known */}
+                    <td className={cx(td, 'text-center font-bold')} data-period={r.period || undefined} style={{ color: '#2563eb' }}>{r.period}</td>
                     <td className={cx(td, 'tabular')}>{r.lot}</td>
                     <td className={td} style={r.remark === 'NG' ? { color: '#dc2626', fontWeight: 700 } : undefined}>{r.remark}</td>
                   </tr>
