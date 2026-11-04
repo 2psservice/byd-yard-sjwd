@@ -17,7 +17,7 @@ import { useOps, repairMissingStationDates } from './store/useOps'
 import { useVisits } from './store/useVisits'
 import { startSyncBus, stopSyncBus } from './lib/syncBus'
 import { startKeyboardGuard } from './lib/keyboardGuard'
-import { deriveCarStatus } from './lib/carStatus'
+import { deriveCarStatus, gateOutPredatesArrival } from './lib/carStatus'
 import { yardLocCode, LAST_LOCATION_KEY } from './lib/groupingImport'
 import { matchModel } from './lib/sampleData'
 import { isPhone } from './lib/device'
@@ -342,7 +342,8 @@ export default function App() {
         // กฎ "ปล่อยช่องจอดคืน" ใช้กับรถที่กินช่องอยู่เท่านั้น — รถที่ไม่มีช่อง
         // ก็ไม่มีอะไรให้ปล่อย
         const positioned = u.block != null || u.row != null || u.slot != null
-        if (positioned && deriveCarStatus(r.cells) === 'Gate-out') gone.push(vin)
+        // Gate-out ที่เกิดก่อนรถ Gate-in รอบนี้ = แถวรถในเครื่องเป็นสำเนาเก่าของรถที่กลับเข้ามาแล้ว ไม่ปล่อยช่อง
+        if (positioned && deriveCarStatus(r.cells) === 'Gate-out' && !gateOutPredatesArrival(r.cells, u.gateInAt)) gone.push(vin)
       }
       // snapshot each car's last slot before it is cleared — this path (unlike
       // the ops-scan gate-out) never ran doGateOut, so it never got its own

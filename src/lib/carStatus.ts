@@ -160,6 +160,23 @@ export function gateOutScanMs(c: Record<string, string>): number {
 }
 
 /**
+ * แถวรถในเครื่องบอก Gate-out แต่ "Gate-out นั้นเกิดก่อนที่รถจะ Gate-in เข้ามารอบนี้" (arrivedAt = เวลา Gate-in ของแถวในผัง)
+ * = สำเนาแถวรถเก่าของรถที่ออกไปแล้วกลับเข้ามาใหม่ ไม่ใช่การออกครั้งใหม่ — ตัวเก็บกวาดห้ามปล่อยช่อง
+ * (28 ต.ค. …018828: Gate-in 08:04 ยิง F1001 แล้ว 11:31 เครื่องที่ถือแถวรถเก่า "Gate-out" ปล่อยช่องขึ้นคลาวด์ทั้งที่รถจอดอยู่)
+ * ไม่รู้เวลา Gate-out หรือไม่รู้เวลา Gate-in = false (ปล่อยตามเดิม)
+ */
+export function gateOutPredatesArrival(c: Record<string, string>, arrivedAt: number | undefined): boolean {
+  if (!arrivedAt) return false
+  let out = gateOutScanMs(c)
+  if (!out) {
+    // ไฟล์นำเข้าเขียนเป็นวันที่ล้วน "YYYY-MM-DD" (เช่น Gate Out time stamp 2026-05-20)
+    const m = (c['Gate Out time stamp'] || c['Gate Out Date'] || '').match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)
+    if (m) out = new Date(+m[1], +m[2] - 1, +m[3], 23, 59).getTime()
+  }
+  return out > 0 && out < arrivedAt
+}
+
+/**
  * A Pre-Gate-out car (ops-scan gate-out) is finalised as a real Gate-out at the
  * first 09:30 AFTER it was scanned out — the daily "flush". Before that flush it
  * is still on-site; confirming Preload in the meantime keeps it (as 'Preload').

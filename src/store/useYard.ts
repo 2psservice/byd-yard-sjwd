@@ -555,6 +555,18 @@ function retryDepartedWrite(get: () => { units: Record<string, Unit> }, vins: st
   }, Math.min(15_000 * 1.5 ** (attempt - 1), 60_000))
 }
 
+/** เขียน Gate-in ขึ้นคลาวด์ไม่สำเร็จ → ลองใหม่ (หน่วงเพิ่มขึ้น สูงสุด 10 ครั้ง ~8 นาที) — เดิม gateIn เขียนครั้งเดียวแล้วเงียบ
+ *  29 ต.ค. เช้า (ฐานข้อมูลช้า) รถ 2 คันยิง Gate-in แล้วแถวรถเป็น In Yard แต่ไม่มีแถวในผังเลย ยิงตำแหน่งไม่ได้ (ไม่มีทะเบียนรถด้วย)
+ *  ลองใหม่จากสำเนาในเครื่องปัจจุบัน เฉพาะเมื่อยังเป็น Gate-in ครั้งเดียวกัน (เวลา Gate-in เดิม) — ถูก Gate-in ใหม่/ลบไปแล้ว = หยุด */
+function retryGateInWrite(get: () => { units: Record<string, Unit> }, vin: string, gateInAt: number | undefined, attempt = 1) {
+  if (attempt > 10) return
+  setTimeout(async () => {
+    const u = get().units[vin]
+    if (!u || u.gateInAt !== gateInAt) return
+    try { await db.upsertUnitsStrict([u]) } catch (e) { console.error('[db] gateIn retry', attempt, e); retryGateInWrite(get, vin, gateInAt, attempt + 1) }
+  }, Math.min(15_000 * 1.5 ** (attempt - 1), 60_000))
+}
+
 let pendingPlacementsFlushing = false
 function scheduleFlushPendingPlacements(get: () => { flushPendingPlacements: () => Promise<void>; pendingPlacements: Record<string, unknown> }, delay = 15_000) {
   if (pendingPlacementsTimer) clearTimeout(pendingPlacementsTimer)
@@ -1064,7 +1076,11 @@ export const useYard = create<YardState>()(
             gateInBy: arriving ? s.currentUser : (u.gateInBy ?? s.currentUser),
             inspected: true, site: s.currentSite ?? u.site,
           }
-          db.upsertUnit(updated).catch((e) => console.error('[db] gateIn', e))
+          db.upsertUnit(updated).catch((e) => {
+            console.error('[db] gateIn', e)
+            get().toast('err', `Gate-in ${vin.slice(-6)} ยังไม่ขึ้นระบบ (สัญญาณไม่ดี?) — กำลังลองใหม่อัตโนมัติ อย่าเพิ่งปิดแอป`)
+            retryGateInWrite(get, vin, updated.gateInAt)
+          })
           return { units: { ...s.units, [vin]: updated } }
         }),
 
