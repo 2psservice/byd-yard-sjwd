@@ -37,6 +37,10 @@ export const REPORT_MENUS: ReportMenu[] = [
 export interface ListRow {
   no: number; vin: string; modelName: string; model: string; color: string
   date: string; lot: string; remark: string
+  /** 'P1'…'P5' — the shift period the station recorded the car in, by the same clock and the same
+   *  break schedule the P1–P5 table counts with, so a car's row and the table always agree.
+   *  '' when there is no recorded time (a sheet date alone) — the table leaves those out of the periods too. */
+  period: string
 }
 export interface DefectRowOut {
   no: number; vin: string; position: string; defect: string; date: string
@@ -155,7 +159,7 @@ function lotMap(ctx: ReportCtx): Map<string, string> {
   return m
 }
 
-function toListRow(no: number, vin: string, ctx: ReportCtx, lots: Map<string, string>, opts?: { date?: string; lot?: string; remark?: string }): ListRow {
+function toListRow(no: number, vin: string, ctx: ReportCtx, lots: Map<string, string>, opts?: { date?: string; lot?: string; remark?: string; period?: string }): ListRow {
   const c = rowMap(ctx).get(vin)?.cells ?? {}
   return {
     no, vin,
@@ -165,8 +169,12 @@ function toListRow(no: number, vin: string, ctx: ReportCtx, lots: Map<string, st
     date: opts?.date ?? fmtDay(ctx.day),
     lot: opts?.lot ?? (c['LOT'] || lots.get(vin) || ''),
     remark: opts?.remark ?? '',
+    period: opts?.period ?? '',
   }
 }
+
+/** 'P1'…'P5' for a recorded time, '' without one. */
+export const periodLabel = (ts?: number) => (ts === undefined ? '' : `P${periodOf(ts) + 1}`)
 
 const itemTs = (i: QueueItem) => i.checkedAt ?? i.doneAt
 const itemOnDay = (i: QueueItem, day: string) => { const t = itemTs(i); return t != null && dayKeyOfTs(t) === day }
@@ -275,7 +283,7 @@ function stationDone(ctx: ReportCtx, type: 'PDI' | 'FINAL' | 'PM'): StationDone[
 export function buildList(ctx: ReportCtx, id: string): ListRow[] {
   const lots = lotMap(ctx)
   const out: ListRow[] = []
-  const push = (vin: string, opts?: { date?: string; lot?: string; remark?: string }) =>
+  const push = (vin: string, opts?: { date?: string; lot?: string; remark?: string; period?: string }) =>
     out.push(toListRow(out.length + 1, vin, ctx, lots, opts))
 
   if (id === 'gatein') {
@@ -325,6 +333,7 @@ export function buildList(ctx: ReportCtx, id: string): ListRow[] {
     for (const d of stationDone(ctx, type))
       push(d.vin, {
         date: d.clock ? fmtTime(d.clock) : fmtDay(ctx.day),
+        period: periodLabel(d.clock),
         remark: d.result === 'NG' ? 'NG' : '',
         ...(id === 'pdi' || id === 'pm' ? { lot: d.lot ?? '' } : {}),
       })
@@ -530,16 +539,23 @@ function sheetWriters(wb: any) {
   const fill = (argb: string) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb } })
   const font = { name: 'Tahoma', size: 10 }
 
-  const addListSheet = (name: string, rows: ListRow[], lotHeader = 'LOT\nM-D-lot') => {
+  /** `period`: add the P1–P5 column after Date (the station boards' own workbook). The operation
+   *  report leaves it off — its sheets follow the office's Report_operation form column for column. */
+  const addListSheet = (name: string, rows: ListRow[], lotHeader = 'LOT\nM-D-lot', opts?: { period?: boolean }) => {
     const ws = wb.addWorksheet(name)
-    ws.columns = [{ width: 6 }, { width: 21 }, { width: 30 }, { width: 13 }, { width: 12 }, { width: 17 }, { width: 15 }, { width: 16 }]
+    const withP = !!opts?.period
+    const last = withP ? 9 : 8
+    ws.columns = [{ width: 6 }, { width: 21 }, { width: 30 }, { width: 13 }, { width: 12 }, { width: 17 },
+      ...(withP ? [{ width: 8 }] : []), { width: 15 }, { width: 16 }]
     const r1 = ws.addRow(['Total', rows.length])
     r1.font = { ...font, bold: true }
-    const hr = ws.addRow(['No.', 'Vin', 'Model Name', 'Model', 'Color', 'Date', lotHeader, 'Remark'])
+    const hr = ws.addRow(['No.', 'Vin', 'Model Name', 'Model', 'Color', 'Date', ...(withP ? ['P1-P5'] : []), lotHeader, 'Remark'])
     hr.eachCell((cell: any) => { cell.font = { ...font, bold: true }; cell.border = border; cell.fill = fill('FFD9D9D9'); cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true } })
+    if (withP) hr.getCell(7).font = { ...font, bold: true, color: { argb: 'FF0000FF' } } // blue, as on the P1–P5 sheet
     for (const r of rows) {
-      const row = ws.addRow([r.no, r.vin, r.modelName, r.model, r.color, r.date, r.lot, r.remark])
-      row.eachCell({ includeEmpty: true }, (cell: any, col: number) => { if (col <= 8) { cell.font = font; cell.border = border } })
+      const row = ws.addRow([r.no, r.vin, r.modelName, r.model, r.color, r.date, ...(withP ? [r.period] : []), r.lot, r.remark])
+      row.eachCell({ includeEmpty: true }, (cell: any, col: number) => { if (col <= last) { cell.font = font; cell.border = border } })
+      if (withP) { const pc = row.getCell(7); pc.alignment = { horizontal: 'center' }; pc.font = { ...font, bold: true } }
     }
   }
   const addDefectSheet = (name: string, rows: DefectRowOut[]) => {
@@ -626,6 +642,7 @@ export async function exportOpsReport(ctx: ReportCtx) {
  * 13-sheet workbook and with the 8-column defect summary. The yard sends a
  * station's day on its own, so it gets its own file: the list, the full
  * 13-column defect sheet the office's form uses, and the P1–P5 shift table.
+ * Its list carries a P1–P5 column so each car shows which period of the day it was done in.
  */
 export async function exportStationReport(ctx: ReportCtx, kind: 'PDI' | 'PM') {
   const XJS: any = await import('exceljs')
@@ -635,7 +652,7 @@ export async function exportStationReport(ctx: ReportCtx, kind: 'PDI' | 'PM') {
   const { addListSheet, addWideDefectSheet, addTimeSheet } = sheetWriters(wb)
   const id = kind === 'PDI' ? 'pdi' : 'pm'
 
-  addListSheet(`${kind}(${ctx.siteLabel})`.slice(0, 31), buildListRange(ctx, id))
+  addListSheet(`${kind}(${ctx.siteLabel})`.slice(0, 31), buildListRange(ctx, id), undefined, { period: true })
   addWideDefectSheet(`${kind}(Defect)`, buildDefectsRange(ctx, `${id}defect` as 'pdidefect' | 'pmdefect'))
   addTimeSheet(`ตาราง ${kind}`, buildTimeMatrixRange(ctx, `${id}time` as 'pditime' | 'pmtime'))
 
