@@ -7,10 +7,32 @@
  * framed rather than rebuilt. It shares this origin's browser storage only under its own `rpl_*`
  * keys, which never meet the yard app's `sjwd-*` ones. A new version of the file is a new deploy:
  * replace public/repair/index.html.
+ *
+ * On every load (the repair app reloads itself on sign-out) the frame links it to the yard's own
+ * defects — see lib/repairBridge: SJWD's live defects feed its defect search, and a repair saved
+ * there closes the matching SJWD defect.
  */
 import { useLayoutEffect, useRef, useState } from 'react'
+import { useYard } from '../store/useYard'
+import { useTracking } from '../store/useTracking'
+import { attachRepairBridge } from '../lib/repairBridge'
 
 export const REPAIR_APP_URL = '/repair/index.html'
+
+/** Hand the framed repair app the yard's defects and take its repairs back (same origin). */
+function linkYard(frame: HTMLIFrameElement) {
+  let win: Window | null = null
+  try { win = frame.contentWindow } catch { return }
+  if (!win) return
+  const linked = attachRepairBridge(win, {
+    units: () => useYard.getState().units,
+    rows: () => useTracking.getState().rows,
+    siteName: (id) => useYard.getState().sites.find((x) => x.id === id)?.name ?? '',
+    updateDamage: (vin, id, patch) => useYard.getState().updateDamage(vin, id, patch),
+    onWriteBack: (n) => useYard.getState().toast('ok', `อัปเดตสถานะ Defect ใน SJWD จากงานซ่อมแล้ว ${n} จุด`),
+  })
+  if (!linked.defects || !linked.writeBack) console.warn('[repair] link to SJWD defects', linked)
+}
 
 export function RepairAppFrame() {
   const box = useRef<HTMLDivElement>(null)
@@ -30,7 +52,7 @@ export function RepairAppFrame() {
     <div ref={box} className="repair-frame" data-repair-frame
       style={{ height: `calc(100dvh - ${top}px - env(safe-area-inset-bottom, 0px) - 10px)` }}>
       {!loaded && <div className="repair-frame-wait">กำลังเปิดระบบงานซ่อม…</div>}
-      <iframe src={REPAIR_APP_URL} title="งานซ่อม + รูป" onLoad={() => setLoaded(true)}
+      <iframe src={REPAIR_APP_URL} title="งานซ่อม + รูป" onLoad={(e) => { setLoaded(true); linkYard(e.currentTarget) }}
         allow="camera; microphone; clipboard-read; clipboard-write; fullscreen" />
     </div>
   )
