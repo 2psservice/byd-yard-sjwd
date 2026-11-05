@@ -852,7 +852,7 @@ export function Grouping() {
           table above is session-only, but the QUEUES live in the store/cloud),
           with add / remove VIN and cancel-run controls. Clicking a run loads
           ITS grouping into the sheet above (prints/exports follow). */}
-      {historyOpen && currentSite && <UploadHistory site={currentSite} siteName={siteName} onClose={() => setHistoryOpen(false)} />}
+      {historyOpen && currentSite && <UploadHistory site={currentSite} siteName={siteName} day={dayFilter} onClose={() => setHistoryOpen(false)} />}
 
       <SeqQueueManager viewingId={usingQueue ? queueSheet!.id : null} dayFilter={dayFilter}
         onView={(id) => { setViewQueueId(id); window.scrollTo({ top: 0, behavior: 'smooth' }) }} />
@@ -866,24 +866,35 @@ const fmtUploadAt = (ms: number): string => {
   return `${p2(d.getDate())}/${p2(d.getMonth() + 1)}/${d.getFullYear()} ${p2(d.getHours())}:${p2(d.getMinutes())}`
 }
 
-/** ประวัติอัปโหลดไฟล์ Excel Grouping ของยาร์ดนี้: วันที่เวลา · ผู้อัปโหลด · ชื่อไฟล์ · ชีต · จำนวน */
-function UploadHistory({ site, siteName, onClose }: { site: string; siteName: string; onClose: () => void }) {
+/** The plan day an upload belongs to — the file's own "Date 4 November 2026", else the day it was
+ *  uploaded. The SAME rule puts a delivery run on the calendar (queueDay), so the history of a day
+ *  and the runs of that day are always the same files. */
+const uploadDay = (u: GroupingUpload): string => seqPlanDay(u.title, u.at)
+
+/** ประวัติอัปโหลดไฟล์ Excel Grouping ของยาร์ดนี้: วันที่เวลา · ผู้อัปโหลด · ชื่อไฟล์ · ชีต · จำนวน
+ *  เฉพาะวันที่เลือกในปฏิทินด้านบน ("แสดงทุกวัน" = ทุกวัน) */
+function UploadHistory({ site, siteName, day, onClose }: { site: string; siteName: string; day: string | 'all'; onClose: () => void }) {
   // this device's uploads show at once; the yard's full list from the cloud fills in when it arrives
-  const [list, setList] = useState<GroupingUpload[]>(() => localGroupingUploads(site))
+  const [all, setAll] = useState<GroupingUpload[]>(() => localGroupingUploads(site))
   const [loading, setLoading] = useState(true)
   useEffect(() => {
     let live = true
-    loadGroupingUploads(site).then((l) => { if (live) setList(l) }).catch(() => {}).finally(() => { if (live) setLoading(false) })
+    loadGroupingUploads(site).then((l) => { if (live) setAll(l) }).catch(() => {}).finally(() => { if (live) setLoading(false) })
     return () => { live = false }
   }, [site])
+  const list = useMemo(() => (day === 'all' ? all : all.filter((u) => uploadDay(u) === day)), [all, day])
+  const otherDays = all.length - list.length
+  const dayLabel = day === 'all' ? 'ทุกวัน' : day.split('-').reverse().join('/')
   return (
-    <Modal open onClose={onClose} wide title={<span className="flex items-center gap-2"><History size={18} /> ประวัติอัปโหลด Excel Grouping{siteName ? ` · ${siteName}` : ''}</span>}>
-      <div data-upload-history-list>
+    <Modal open onClose={onClose} wide title={<span className="flex items-center gap-2"><History size={18} /> ประวัติอัปโหลด Excel Grouping{siteName ? ` · ${siteName}` : ''} · {dayLabel}</span>}>
+      <div data-upload-history-list data-upload-history-day={day}>
         {loading && (
           <div className="pb-2 text-[12px]" style={{ color: 'var(--muted)' }}><Loader2 size={13} className="inline animate-spin mr-1.5" /> กำลังโหลดประวัติจากระบบ…</div>
         )}
         {list.length === 0 ? (
-          !loading && <div className="py-8 text-center text-[13px]" style={{ color: 'var(--faint)' }}>ยังไม่มีประวัติอัปโหลดของยาร์ดนี้</div>
+          !loading && <div className="py-8 text-center text-[13px]" style={{ color: 'var(--faint)' }}>
+            {day === 'all' ? 'ยังไม่มีประวัติอัปโหลดของยาร์ดนี้' : `ยังไม่มีประวัติอัปโหลดของวันที่ ${dayLabel}`}
+          </div>
         ) : (
           <div className="overflow-auto" style={{ maxHeight: '60vh' }}>
             <table className="w-full text-[12.5px]">
@@ -910,6 +921,11 @@ function UploadHistory({ site, siteName, onClose }: { site: string; siteName: st
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+        {day !== 'all' && otherDays > 0 && (
+          <div className="pt-2 text-[11.5px]" style={{ color: 'var(--faint)' }} data-upload-history-others={otherDays}>
+            อีก {otherDays} รายการเป็นของวันอื่น · เลือกวันในปฏิทินด้านบน หรือ "แสดงทุกวัน" เพื่อดู
           </div>
         )}
       </div>
