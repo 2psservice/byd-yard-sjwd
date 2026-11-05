@@ -4,6 +4,7 @@
  */
 import { useEffect, useRef, useState, useMemo, useCallback, memo } from 'react'
 import { BuildStamp } from '../components/BuildStamp'
+import { RepairAppFrame } from '../components/RepairAppFrame'
 import { useShallow } from 'zustand/react/shallow'
 import { createPortal } from 'react-dom'
 import {
@@ -6487,7 +6488,8 @@ export function YardOps() {
       {role === 'pm'         && <PdiView types={['PM']} accent="#2563eb" title="PM" />}
       {role === 'fc'         && <PdiView types={['FINAL']} accent="#059669" title="FINAL CHECK" />}
       {role === 'check'      && <CheckView />}
-      {role === 'mechanic'   && <MechanicView types={['REPAIR']} accent="#c2680b" stationLabel="ช่าง (Mechanic)" emptyLabel="ยังไม่มีคิวงานซ่อม" />}
+      {/* ช่าง: the yard's repair app (งานซ่อม + รูป) — its own file, framed, see RepairAppFrame */}
+      {role === 'mechanic'   && <RepairAppFrame />}
       {role === 'special'    && <MechanicView types={['SPECIAL']} accent="#9333ea" stationLabel="งานพิเศษ" emptyLabel="ยังไม่มีคิวงานพิเศษ" okNgMode />}
       {role === 'ev'         && <EvView />}
       </div>}
