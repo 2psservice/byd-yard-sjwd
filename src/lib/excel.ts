@@ -48,13 +48,18 @@ export function csvSafe(s: string): string {
   return /^[=+\-@\t\r]/.test(s) && !/^[+-]?\d+(\.\d+)?$/.test(s) ? `'${s}` : s
 }
 
-export function exportCsv(filename: string, headers: string[], rows: (string | number)[][]) {
-  const esc = (v: any) => {
+/** The text of every CSV the app writes: a BOM first (so Excel reads Thai as UTF-8), formula-guarded
+ *  cells, quoted only where a comma, quote or line break needs it. */
+export function csvText(headers: string[], rows: unknown[][]): string {
+  const esc = (v: unknown) => {
     const s = csvSafe(String(v ?? ''))
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
   }
-  const csv = [headers.map(esc).join(','), ...rows.map((r) => r.map(esc).join(','))].join('\n')
-  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' })
+  return '﻿' + [headers.map(esc).join(','), ...rows.map((r) => r.map(esc).join(','))].join('\n')
+}
+
+export function exportCsv(filename: string, headers: string[], rows: (string | number)[][]) {
+  const blob = new Blob([csvText(headers, rows)], { type: 'text/csv;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url

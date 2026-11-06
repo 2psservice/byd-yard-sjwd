@@ -5,7 +5,7 @@
  */
 import { SELECT_DATA_KEYS } from './trackingColumns'
 import { isGateOutStamp } from './carStatus'
-import { csvSafe } from './excel'
+import { csvText } from './excel'
 
 /** One field-level edit, logged by updateCell/bulkUpdate — covers every
  *  station's cell writes (Gate-in, Driver, PDI/PM/FC, Gate-out, Relocation)
@@ -433,15 +433,14 @@ export async function parseImportWorkbook(file: File, yards: YardName[] = []): P
   return parseTrackingWorkbook(file)
 }
 
+/** The Unit List's CSV text: one column per visible grid column, headed by its label. */
+export function trackRowsCsvText(columns: { key: string; label: string }[], rows: TrackRow[]): string {
+  return csvText(columns.map((c) => c.label), rows.map((r) => columns.map((c) => r.cells[c.key] ?? '')))
+}
+
 /** Export the current grid (visible columns) to CSV. */
 export function rowsToCsv(filename: string, columns: { key: string; label: string }[], rows: TrackRow[]) {
-  const esc = (v: any) => {
-    const s = csvSafe(String(v ?? ''))
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-  }
-  const head = columns.map((c) => esc(c.label)).join(',')
-  const body = rows.map((r) => columns.map((c) => esc(r.cells[c.key] ?? '')).join(',')).join('\n')
-  const blob = new Blob(['﻿' + head + '\n' + body], { type: 'text/csv;charset=utf-8' })
+  const blob = new Blob([trackRowsCsvText(columns, rows)], { type: 'text/csv;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url

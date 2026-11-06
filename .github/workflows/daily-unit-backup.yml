@@ -1,0 +1,65 @@
+name: Daily Unit backup (email)
+
+# Every night at 00:05 Thai time: the Unit List CSV of every yard, zipped and e-mailed.
+# 17:05 UTC = 00:05 Asia/Bangkok. Five past, not on the hour: GitHub's scheduler is busiest at :00
+# and can delay or drop runs queued then. A run can still start a few minutes late.
+#
+# Needs repository secrets (Settings → Secrets and variables → Actions):
+#   VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY  already there for the deploy (read-only use here)
+#   MAIL_SERVER, MAIL_PORT, MAIL_USERNAME, MAIL_PASSWORD, MAIL_TO  the sending account and recipients
+#
+# The repository is public, so this run's log is public too: the scripts print counts only, and the
+# files are never uploaded as workflow artifacts. They go to the e-mail and nowhere else.
+on:
+  schedule:
+    - cron: '5 17 * * *'
+  workflow_dispatch: {} # "Run workflow" on the Actions tab sends one now
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-unit-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TZ: Asia/Bangkok
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # the script imports the app's own src/lib code; the defines stand in for what Vite injects
+      - name: Build the backup script
+        run: >-
+          npx esbuild scripts/daily-unit-csv.ts --bundle --platform=node --format=esm --target=node20
+          '--define:import.meta.env={}' --define:__BUILD_AT__=0
+          --outfile=.unit-backup/run.mjs --log-level=warning
+
+      - name: Export every yard's Unit list
+        run: node .unit-backup/run.mjs .unit-backup/out
+        env:
+          SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+
+      - name: Email the files
+        run: python3 scripts/send-unit-backup.py .unit-backup/out
+        env:
+          MAIL_SERVER: ${{ secrets.MAIL_SERVER }}
+          MAIL_PORT: ${{ secrets.MAIL_PORT }}
+          MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}

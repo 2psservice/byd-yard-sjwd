@@ -3,6 +3,7 @@ node_modules/
 
 # ── Build output ──
 dist/
+.unit-backup/
 dist-ssr/
 *.local
 
