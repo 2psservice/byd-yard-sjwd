@@ -16,6 +16,7 @@ import { PM_KEYS } from '../lib/trackingColumns'
 import type { TrackRow } from '../lib/excelTracking'
 import { quotaSafeStorage } from '../lib/persistStorage'
 import { seqPlanKey, mergeSeqItems } from '../lib/seqPlan'
+import { groupNo, destPurpose, runGroupPurpose } from '../lib/groupRuns'
 
 /** Process stage of one vehicle within a station queue (PDI / PM / Wash …).
  *  queued → (driver delivers) at-station → (staff records) checked → (driver returns) done. */
@@ -1288,6 +1289,21 @@ export function reconcileGateOuts() {
   // joins exactly one sequence.
   const groupsOfRun = new Map<string, Set<string>>()
   const runOfGroup = new Map<string, string>()
+  const sites = useYard.getState().sites
+  // One number, two kinds of work (lib/groupRuns): a yard's dealer plan and its move to another yard
+  // can carry the SAME code. In a yard where open runs give a code different purposes, the code alone
+  // cannot say which run a car is for, so the sync never auto-adds a car on it (the upload already put
+  // each car in its own run). A car one of those runs wrongly took in (the IN step below did, before
+  // this rule) leaves it only on explicit evidence: the run of the other purpose holds the car too,
+  // AND the car's own row names that purpose (its Delivery Location).
+  const purposeCache = new Map<string, string | null>()
+  const purposeOf = (q: WorkQueue, g: string): string | null => {
+    const k = `${q.id}|${g}`
+    if (!purposeCache.has(k)) purposeCache.set(k, runGroupPurpose(q.items, g, sites))
+    return purposeCache.get(k) ?? null
+  }
+  const purposesAt = new Map<string, Set<string>>()   // `${site}|${code}` → purposes open runs give it
+  const holders = new Map<string, { run: string; site: string; purpose: string | null }[]>() // vin → open items
   for (const q of queues) {
     if (!isSequenceQueue(q)) continue
     const gs = new Set<string>()
@@ -1296,10 +1312,32 @@ export function reconcileGateOuts() {
       if (!g) continue
       gs.add(g)
       if (!runOfGroup.has(g)) runOfGroup.set(g, q.id)
+      if (!i.done && !i.gatedOut) {
+        const l = holders.get(i.vin) ?? []
+        l.push({ run: q.id, site: q.site ?? '', purpose: purposeOf(q, g) })
+        holders.set(i.vin, l)
+      }
     }
     groupsOfRun.set(q.id, gs)
+    for (const g of gs) {
+      const p = purposeOf(q, g)
+      if (p === null) continue
+      const k = `${q.site ?? ''}|${groupNo(g)}`
+      const set = purposesAt.get(k) ?? new Set<string>()
+      set.add(p)
+      purposesAt.set(k, set)
+    }
   }
-  const sites = useYard.getState().sites
+  const mixedAt = (site: string | undefined, g: string) => (purposesAt.get(`${site ?? ''}|${groupNo(g)}`)?.size ?? 0) > 1
+  /** this run took in a car that is the other plan's: see the rule above */
+  const otherPlansCar = (q: WorkQueue, g: string, vin: string): boolean => {
+    if (!mixedAt(q.site, g)) return false
+    const want = purposeOf(q, g)
+    const dl = (rows[vin]?.cells['Dealer Location'] ?? '').trim()
+    if (want === null || !dl) return false
+    const has = destPurpose(dl, sites)
+    return has !== want && (holders.get(vin) ?? []).some((h) => h.run !== q.id && h.site === (q.site ?? '') && h.purpose === has)
+  }
   const dirty: string[] = []
   const next = queues.map((q) => {
     // ── "รถคันนี้ออกจากลานนี้ไปแล้วหรือยัง" สำหรับคิวส่งรถ ────────────────
@@ -1458,7 +1496,7 @@ export function reconcileGateOuts() {
         const r = rows[i.vin]
         if (!r) return true
         const g = groupOfVin(i.vin)
-        if (g && runGroups.has(g)) return true // still carries one of this run's codes
+        if (g && runGroups.has(g)) return !otherPlansCar(q, g, i.vin) // still carries one of this run's codes
         if (g && (r.updatedAt ?? 0) > (i.addedAt ?? 0)) return false // moved to another run
         return !clearedInHistory(r, i.addedAt ?? 0)
       })
@@ -1488,6 +1526,7 @@ export function reconcileGateOuts() {
         // ส่งข้ามยาร์ดไปแล้ว ซึ่งไม่เหลือสถานะ "Gate-out" ให้ gone จับได้
         if (!g || held.has(vin) || leftYard(vin)) continue
         if (runOfGroup.get(g) !== q.id) continue
+        if (mixedAt(q.site, g)) continue // a code two kinds of run share here: never guess which one
         if (q.site && !rowInSite(rows[vin], q.site, sites)) continue
         if (deriveCarStatus(rows[vin].cells) === 'Pre Gate-in') continue // not here yet — joins once it gates in
         const mate = q.items.find((i) => (i.group || groupOfVin(i.vin)) === g)

@@ -13,6 +13,7 @@ import { markPrinted, printedAt, printedValue, PRINTED_KEYS } from '../lib/print
 import { useStickyBar } from '../lib/stickyBar'
 import { laneKey, laneDuplicates, lastEditedLanes, assignLanes } from '../lib/laneLoad'
 import { seqPlanDay } from '../lib/seqPlan'
+import { groupNo, destPurpose, runGroupPurpose } from '../lib/groupRuns'
 import { recordGroupingUpload, loadGroupingUploads, localGroupingUploads, type GroupingUpload } from '../lib/groupingUploads'
 import type { TrackRow } from '../lib/excelTracking'
 
@@ -94,10 +95,28 @@ export function Grouping() {
         if (!order.includes(r.grouping)) order.push(r.grouping)
         unitCount.set(r.grouping, (unitCount.get(r.grouping) ?? 0) + 1)
       }
+      // what this file does with each of its groups: deliver to a dealer, or move the cars to another of
+      // our yards (lib/groupRuns). A dealer plan and a yard-move plan can carry the SAME number in one yard
+      // (06/11: NYB2's dealer file and its move to 3D RINCHA shared 14 numbers) and they are different
+      // work, so nothing below may take a group of the other kind for this one.
+      const filePurpose = new Map<string, string>()
+      for (const r of res.rows) {
+        const k = groupNo(r.grouping)
+        if (k && !filePurpose.has(k) && r.deliveryLocation.trim()) filePurpose.set(k, destPurpose(r.deliveryLocation, sites))
+      }
+      /** a run item / car of another kind of work than this file gives its number (unknown = same, as before) */
+      const otherKind = (group: string, purpose: string | null) => {
+        const fp = filePurpose.get(groupNo(group))
+        return fp !== undefined && purpose !== null && purpose !== fp
+      }
       // a group whose Lane load was edited by hand keeps the lane from its latest edit (any delivery run of
-      // this yard); the rest are numbered O1, O2 … by their place in the file, skipping lanes already kept
+      // this yard, same kind of work); the rest are numbered O1, O2 … by their place in the file, skipping
+      // lanes already kept
       const runsHere = useOps.getState().queues.filter((q) => isSequenceQueue(q) && (!currentSite || !q.site || q.site === currentSite))
-      const lanes = assignLanes(order, lastEditedLanes(runsHere, order))
+      const sameKindRuns = runsHere.map((q) => ({
+        items: q.items.filter((i) => !otherKind(i.group ?? '', (i.dest ?? '').trim() ? destPurpose(i.dest, sites) : null)),
+      }))
+      const lanes = assignLanes(order, lastEditedLanes(sameKindRuns, order))
       const laneOf = new Map([...lanes].map(([g, m]) => [g, m.lane]))
       const keptLanes = [...lanes.values()].filter((m) => m.by).length
 
@@ -150,16 +169,30 @@ export function Grouping() {
       // while scan-DN — which reads the tracking cell — could not find the car
       // at all: "หน้า grouping มี 3 คัน แต่ scan DN มี 2 คัน".
       // Read the LIVE rows, and never clear a car this very file just placed.
+      //
+      // Only cars of the SAME kind of work, though: the dealer file and the yard-move file can share a
+      // number, and uploading one wiped the other's cars off it (their number and Delivery Location
+      // cleared, so the queue sync then dropped them from their own run). A car's kind is its own
+      // Delivery Location, else what the run holding it says; a car whose kind cannot be told is
+      // cleared as before.
       const placedNow = new Set<string>()
       for (const vins of byGroup.values()) for (const v of vins) placedNow.add(v)
       const liveRowsNow = Object.values(useTracking.getState().rows)
+      const kindOfCar = (r: TrackRow, g: string): string | null => {
+        const dl = (r.cells['Dealer Location'] ?? '').trim()
+        if (dl) return destPurpose(dl, sites)
+        const run = runsHere.find((q) => q.items.some((i) => i.vin === r.vin && groupNo(i.group) === groupNo(g)))
+        return run ? runGroupPurpose(run.items, g, sites) : null
+      }
       const clearVins: string[] = []
       for (const [g, nowIn] of byGroup) {
         const keep = new Set(nowIn)
         for (const r of liveRowsNow) {
           if (r.site !== currentSite) continue
           if ((r.cells['Grouping  Number'] ?? '').trim() !== g) continue
-          if (!keep.has(r.vin) && !placedNow.has(r.vin)) clearVins.push(r.vin)
+          if (keep.has(r.vin) || placedNow.has(r.vin)) continue
+          if (otherKind(g, kindOfCar(r, g))) continue // the other plan's car on the same number
+          clearVins.push(r.vin)
         }
       }
       if (clearVins.length) {

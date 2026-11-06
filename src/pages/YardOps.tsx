@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import { dateKey as dayKeyOf } from '../lib/dayKey'
 import { seqPlanDay } from '../lib/seqPlan'
+import { groupChoices, destPurpose, purposeLabel, type GroupChoice } from '../lib/groupRuns'
 import { useYard, useUnits, useTrips, useBlocks, attachPendingDamages, type PlacementResult } from '../store/useYard'
 import { isAtLanePos, planLaneUpdates, recordableDrafts, laneEntryKind } from '../lib/laneRebuild'
 import { useTracking, useTrackingRows } from '../store/useTracking'
@@ -4371,7 +4372,12 @@ function GateOutView({ day }: { day: string }) {
   const [dn, setDn] = useState<string | null>(null)      // scanned DN / grouping number
   // a scanned car that belongs to a DIFFERENT grouping — the popup that stops a
   // driver from dispatching a car with the wrong group
-  const [wrongGroup, setWrongGroup] = useState<{ vin: string; group: string } | null>(null)
+  const [wrongGroup, setWrongGroup] = useState<{ vin: string; group: string; plan?: string } | null>(null)
+  // one DN number, two kinds of work (lib/groupRuns): the dealer plan and a move to another yard can
+  // carry the same number here. The scan asks which one first (dnPick); the DN then lists and accepts
+  // only that plan's cars (dnScope). null scope = the number names one kind of work, as always
+  const [dnPick, setDnPick] = useState<{ group: string; choices: GroupChoice[] } | null>(null)
+  const [dnScope, setDnScope] = useState<GroupChoice | null>(null)
   const [done, setDone] = useState<{ vin: string; label: string } | { group: number } | null>(null)
   // VINs gated out SINCE this DN was opened — a re-scanned Note whose cars all
   // left earlier gets a grey, dead "already recorded" button, not a second green
@@ -4427,14 +4433,15 @@ function GateOutView({ day }: { day: string }) {
     const m = new Map<string, QueueItem>()
     if (!dn) return m
     for (const q of queues) {
-      if (!isSequenceQueue(q) || seqClosed[q.id]) continue
+      if (!isSequenceQueue(q) || seqClosed[q.id] || (dnScope && !dnScope.runIds.includes(q.id))) continue
       for (const i of q.items) if (normGroup(i.group) === dn && !m.has(i.vin)) m.set(i.vin, i)
     }
     return m
-  }, [dn, queues, seqClosed])
+  }, [dn, queues, seqClosed, dnScope])
+  const scopeVins = useMemo(() => (dnScope ? new Set(dnScope.vins) : null), [dnScope])
   const dnCars = useMemo(() => {
     if (!dn) return []
-    const here = trackingRows.filter(r => rowGroupFast(r, seqGroupIndex) === dn)
+    const here = trackingRows.filter(r => rowGroupFast(r, seqGroupIndex) === dn && (!scopeVins || scopeVins.has(r.vin)))
     const siteVins = new Set(trackingRows.map(r => r.vin))
     // รถในแผนที่แถวไม่ได้เป็นของยาร์ดนี้ — ขึ้นในรายการพร้อมเหตุผล ยิงออกจากที่นี่ไม่ได้จนกว่าจะ Gate-in ที่นี่
     // (แถวของยาร์ดนี้ที่เลข Grouping เป็นของกลุ่มอื่นไม่นับ — ตัวซิงก์คิวย้ายรถตามเลขในชีต และด่านผิด Grouping ยังกันไว้)
@@ -4480,7 +4487,7 @@ function GateOutView({ day }: { day: string }) {
       })
       .concat(away)
       .sort((a, b) => byYardLocation(a.location, b.location))
-  }, [dn, trackingRows, units, seqGroupIndex, runOfGroup, dnPlan, allRows, currentSite, sites])
+  }, [dn, trackingRows, units, seqGroupIndex, runOfGroup, dnPlan, allRows, currentSite, sites, scopeVins])
 
   // dnCars can only .filter() rows that already exist HERE — a car whose queue
   // item carries this DN's group but whose tracking row never synced to this
@@ -4493,7 +4500,7 @@ function GateOutView({ day }: { day: string }) {
     // แถวที่เครื่องนี้มีอยู่แล้ว (ยาร์ดไหนก็ได้) ไม่ต้องดึงซ้ำ — รถในแผนที่แถวเป็นของยาร์ดอื่นขึ้นในรายการจากแถวนั้น
     const known = new Set(Object.keys(useTracking.getState().rows))
     for (const q of queues) {
-      if (!isSequenceQueue(q)) continue
+      if (!isSequenceQueue(q) || (dnScope && !dnScope.runIds.includes(q.id))) continue
       for (const i of q.items) {
         if (i.done || known.has(i.vin) || normGroup(i.group) !== dn) continue
         const last = cloudLookups.get(i.vin) ?? 0
@@ -4504,7 +4511,7 @@ function GateOutView({ day }: { day: string }) {
           .catch(() => {})
       }
     }
-  }, [dn, queues, trackingRows])
+  }, [dn, queues, trackingRows, dnScope])
 
   const dnGone = dnCars.filter(c => c.gone).length
 
@@ -4514,12 +4521,23 @@ function GateOutView({ day }: { day: string }) {
     const n = trackingRows.filter(r => rowGroupFast(r, seqGroupIndex) === g).length
       + queues.reduce((k, q) => k + (isSequenceQueue(q) && !seqClosed[q.id] ? q.items.filter(i => normGroup(i.group) === g).length : 0), 0)
     if (!n) { toast('err', `ไม่พบ DN / เลข Grouping: ${raw}`); return }
-    setVin(null); setDn(g); setSessionOut([])
+    // the same number on a dealer plan AND a move to another yard → ask which one before listing cars
+    const choices = groupChoices(queues.filter(q => isSequenceQueue(q) && !seqClosed[q.id]), g, sites)
+    if (choices.length > 1) { setDnPick({ group: g, choices }); return }
+    openDn(g, null)
   }
+  const openDn = (g: string, scope: GroupChoice | null) => {
+    setDnPick(null); setVin(null); setDn(g); setDnScope(scope); setSessionOut([])
+  }
+  const closeDn = () => { setDn(null); setDnScope(null) }
 
   /** Put a car the open DN plans back on that DN's run (fresh waiting item, the run's lane / dealer). */
   const restoreToRun = (vinToRestore: string): boolean => {
-    const run = dn ? runOfGroup.get(dn) : undefined
+    // a DN opened for one plan puts the car back on THAT plan's run, never on the other kind's
+    const run = !dn ? undefined : dnScope
+      ? (queues.find(q => dnScope.runIds.includes(q.id) && q.items.some(i => i.vin === vinToRestore))
+        ?? queues.find(q => q.id === dnScope.runIds[0]))
+      : runOfGroup.get(dn)
     if (!run) return false
     const mate = run.items.find(i => normGroup(i.group) === dn)
     const ok = useOps.getState().reviveVin(run.id, vinToRestore, { group: mate?.group || dn || undefined, laneLoad: mate?.laneLoad, dest: mate?.dest })
@@ -4558,6 +4576,17 @@ function GateOutView({ day }: { day: string }) {
     if (rowGroup(r, queues) !== dn) {
       setWrongGroup({ vin: r.vin, group: (r.cells[GROUP_KEY] ?? '').trim() || (findSeqItem(r.vin, queues)?.item.group ?? '') })
       return
+    }
+    // same number, other plan: a DN opened as "Grouping for delivery" must not load a car of the move
+    // to another yard that happens to share the number (or the other way round). A car on neither run
+    // still passes when its own Delivery Location is this plan's kind (restoreToRun puts it back)
+    if (dnScope && !dnScope.vins.includes(r.vin)) {
+      const dl = (r.cells['Dealer Location'] ?? '').trim()
+      if (!dl || destPurpose(dl, sites) !== dnScope.purpose) {
+        const other = groupChoices(queues.filter(q => isSequenceQueue(q) && !seqClosed[q.id]), dn, sites).find(c => c.vins.includes(r.vin))
+        setWrongGroup({ vin: r.vin, group: dn, plan: other?.label ?? (dl ? purposeLabel(destPurpose(dl, sites), sites) : undefined) })
+        return
+      }
     }
     const model = r.cells['Model name'] ?? r.cells['Model'] ?? ''
     const status = (r.cells['Car Status'] ?? '').trim()
@@ -4723,12 +4752,51 @@ function GateOutView({ day }: { day: string }) {
             <div className="text-[14px] font-bold mb-1">รถไม่อยู่ใน Grouping นี้</div>
             <div className="vin text-[12.5px] font-bold" style={{ color: 'var(--muted)' }}>{wrongGroup.vin}</div>
             <div className="text-[12px] mt-1 mb-5" style={{ color: 'var(--muted)' }}>
-              คันนี้อยู่ group <b style={{ color: '#b45309' }}>{wrongGroup.group || '— (ไม่มีเลข grouping)'}</b><br />
+              คันนี้อยู่ group <b style={{ color: '#b45309' }}>{wrongGroup.group || '— (ไม่มีเลข grouping)'}</b>
+              {wrongGroup.plan && <> ของ <b style={{ color: '#b45309' }} data-wrong-plan>{wrongGroup.plan}</b></>}<br />
               DN ที่กำลังทำ: <b style={{ color: '#b45309' }}>{dn}</b>
+              {dnScope && <> · <b style={{ color: '#b45309' }}>{dnScope.label}</b></>}
             </div>
             <button onClick={() => setWrongGroup(null)}
               className="w-full py-3 rounded-2xl text-[15px] font-bold text-white active:scale-95 transition-all"
               style={{ background: '#dc2626' }}>ตกลง</button>
+          </div>
+        </div>
+      )}
+
+      {/* one number, two plans — pick which one this DN is before any car is listed */}
+      {dnPick && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6"
+          style={{ background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(3px)' }}
+          onClick={() => setDnPick(null)} data-dn-pick>
+          <div className="panel p-5 w-full max-w-sm fade-up" onClick={e => e.stopPropagation()}>
+            <div className="text-center">
+              <div className="w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3" style={{ background: 'rgba(245,158,11,0.15)' }}>
+                <ClipboardList size={26} style={{ color: '#d97706' }} />
+              </div>
+              <div className="text-[17px] font-extrabold mb-1">เลือกคิวงานก่อน</div>
+              <div className="text-[12.5px]" style={{ color: 'var(--muted)' }}>
+                เลข Grouping <b className="vin" style={{ color: '#b45309' }}>{dnPick.group}</b> มีใน {dnPick.choices.length} คิวงาน
+              </div>
+            </div>
+            <div className="mt-4 space-y-2">
+              {dnPick.choices.map(c => (
+                <button key={c.purpose} onClick={() => openDn(dnPick.group, c)} data-dn-choice={c.label}
+                  className="w-full text-left rounded-2xl px-4 py-3 border active:scale-[0.98] transition-all"
+                  style={c.purpose
+                    ? { borderColor: 'rgba(124,58,237,0.35)', background: 'rgba(124,58,237,0.08)' }
+                    : { borderColor: 'rgba(217,119,6,0.35)', background: 'rgba(245,158,11,0.10)' }}>
+                  <div className="text-[15px] font-extrabold" style={{ color: c.purpose ? '#6d28d9' : '#b45309' }}>{c.label}</div>
+                  <div className="text-[12px] mt-0.5 font-semibold" style={{ color: 'var(--muted)' }}>
+                    {c.purpose ? 'ย้ายลาน' : 'ส่งดีลเลอร์'} · {c.vins.length} คัน
+                  </div>
+                  <div className="text-[11px] mt-0.5 clip" style={{ color: 'var(--faint)' }}>{c.runNames.join(' · ')}</div>
+                </button>
+              ))}
+            </div>
+            <button onClick={() => setDnPick(null)}
+              className="w-full mt-3 py-2.5 rounded-2xl text-[14px] font-bold active:scale-95 transition-all"
+              style={{ background: 'rgba(0,0,0,0.06)', color: 'var(--muted)' }}>ยกเลิก</button>
           </div>
         </div>
       )}
@@ -4774,13 +4842,18 @@ function GateOutView({ day }: { day: string }) {
               <div className="min-w-0 flex-1">
                 <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>DN · Grouping</div>
                 <div className="vin text-[14px] font-extrabold clip" style={{ color: '#b45309' }}>{dn}</div>
+                {dnScope && (
+                  <div className="text-[11.5px] font-bold mt-0.5" style={{ color: dnScope.purpose ? '#6d28d9' : '#b45309' }} data-dn-scope>
+                    {dnScope.label} · {dnScope.purpose ? 'ย้ายลาน' : 'ส่งดีลเลอร์'}
+                  </div>
+                )}
                 <div className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
                   ทั้งหมด <b style={{ color: 'var(--text)' }}>{dnCars.length}</b> คัน
                   {' · '}ออกแล้ว <b style={{ color: '#16a34a' }}>{dnGone}</b>
                   {' · '}เหลือ <b style={{ color: '#d97706' }}>{dnCars.length - dnGone}</b>
                 </div>
               </div>
-              <button onClick={() => setDn(null)}
+              <button onClick={closeDn}
                 className="w-8 h-8 rounded-full flex items-center justify-center shrink-0"
                 style={{ background: 'rgba(0,0,0,0.06)', color: 'var(--muted)' }}>
                 <X size={16} />
@@ -4822,7 +4895,7 @@ function GateOutView({ day }: { day: string }) {
               <div className="px-4 py-3 border-t hairline">
                 {sessionOut.length > 0 ? (
                   <button
-                    onClick={() => { setDone({ group: dnCars.length }); setDn(null) }}
+                    onClick={() => { setDone({ group: dnCars.length }); closeDn() }}
                     className="w-full py-3 rounded-2xl text-[15px] font-bold text-white flex items-center justify-center gap-2 transition-all active:scale-95"
                     style={{ background: '#16a34a' }}>
                     <CheckCircle2 size={18} /> ยืนยัน Gate-out ครบกลุ่ม {dnCars.length} คัน
