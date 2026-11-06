@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { backupColumns, backupFileName, tallyYard, yardCsv, yardUnitList } from '../src/lib/unitBackup'
 import { trackRowsCsvText } from '../src/lib/excelTracking'
 import { defaultColumns, LOCATION_KEY } from '../src/lib/trackingColumns'
@@ -61,5 +65,17 @@ describe('ไฟล์ CSV', () => {
     expect(tallyYard(yardUnitList(sites[0], sites, rows, units))).toEqual({ total: 4, inYard: 3, preGateIn: 1, other: 0 })
     expect(backupFileName(sites[1], '2026-11-07')).toBe('SJWD_3D_RINCHA_2026-11-07.csv')
     expect(backupFileName({ id: 'x', name: ' ลาน/ใหม่ #2 ', createdAt: 0 }, '2026-11-07')).toBe('SJWD_ลาน_ใหม่_2_2026-11-07.csv')
+  })
+})
+
+describe('สคริปต์ที่ GitHub รันตอนเที่ยงคืน', () => {
+  it('ไม่ดึงตัวเชื่อมคลาวด์ / store / React ของแอปเข้ามา (Node บน GitHub ไม่มี WebSocket ให้ตัวเชื่อม realtime)', () => {
+    // the same esbuild command the workflow runs (as a separate process: esbuild cannot run inside jsdom)
+    const dir = mkdtempSync(join(tmpdir(), 'unit-backup-'))
+    execFileSync(join('node_modules', '.bin', process.platform === 'win32' ? 'esbuild.cmd' : 'esbuild'), ['scripts/daily-unit-csv.ts', '--bundle', '--platform=node', '--format=esm', '--target=node20',
+      `--outfile=${join(dir, 'run.mjs')}`, `--metafile=${join(dir, 'meta.json')}`, '--log-level=error'])
+    const inputs = Object.keys(JSON.parse(readFileSync(join(dir, 'meta.json'), 'utf8')).inputs)
+    expect(inputs).toContain('src/lib/unitBackup.ts')
+    expect(inputs.filter((f) => /supabase|lib\/db\.ts|src\/store\/|src\/components\/|node_modules\/react/.test(f))).toEqual([])
   })
 })

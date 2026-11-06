@@ -30,7 +30,7 @@ import type { Damage } from '../types'
 import type { TrackRow } from './excelTracking'
 import { deriveCarStatus } from './carStatus'
 import { PDI_KEYS } from './trackingColumns'
-import { isBodyDefect, isOpenDefect, canonRepairStatus } from './damageLabel'
+import { isBodyDefect, isOpenDefect, canonRepairStatus } from './repairStatus'
 
 export const FINAL_STATUS_KEY = 'Final Status'
 export const VIN_OF_STATUS_KEY = 'Vin Of Status'
