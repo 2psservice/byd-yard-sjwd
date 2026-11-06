@@ -432,6 +432,20 @@ export function ImportPage() {
   const coOtherYard = coParsed ? coParsed.rows.length - coAccepted.length : 0
   const coMatched = useMemo(() => coAccepted.filter((r) => existing[r.vin]).length, [coAccepted, existing])
   const coNew = coAccepted.length - coMatched
+  // Defect rows the merge will write: cars this yard holds, or new cars this file adds here — the same
+  // rule confirmCo applies. A file with only a Defect-Yard sheet has no car rows at all, and must still be
+  // confirmable for its defects (it used to be read as a car sheet and promote every car to In Yard).
+  const coDefectsHere = useMemo(() => {
+    if (!coParsed?.defects.length) return { defects: 0, cars: 0, otherCars: 0 }
+    const okVins = new Set(coAccepted.map((r) => r.vin))
+    const here = new Set<string>(), other = new Set<string>()
+    let n = 0
+    for (const d of coParsed.defects) {
+      const r = existing[d.vin]
+      if (r ? rowInSite(r, currentSite, sites) : okVins.has(d.vin)) { n++; here.add(d.vin) } else other.add(d.vin)
+    }
+    return { defects: n, cars: here.size, otherCars: other.size }
+  }, [coParsed, coAccepted, existing, currentSite, sites])
   // cars already in the system whose file row now says gate-out → will flip to Gate-out
   const coGateOut = useMemo(
     () => (coParsed ? (coParsed.gateOutRows ?? []).filter((r) => existing[r.vin]).length : 0),
@@ -456,9 +470,14 @@ export function ImportPage() {
       // existing defects are untouched: importDefects only rewrites VINs it is
       // actually given. A VIN with no row here is left in — we cannot tell.
       let goneSkipped = 0
+      const otherYardVins = new Set<string>()
       const defectsForSite = coParsed.defects.filter((d) => {
         const r = rowsNow[d.vin]
-        if (!(okVins.has(d.vin) || rowInSite(r, currentSite, sites))) return false
+        // a car this yard holds — or one this very file just added here (a new row goes straight to
+        // the cloud, not into rowsNow). A car whose row belongs to another yard, or that this yard has
+        // no row for, is not ours: its defects used to be written here anyway and registered a blank
+        // car record in this yard for it.
+        if (r ? !rowInSite(r, currentSite, sites) : !okVins.has(d.vin)) { otherYardVins.add(d.vin); return false }
         if (r && hasLeftGate(r.cells)) { goneSkipped++; return false }
         return true
       })
@@ -471,6 +490,8 @@ export function ImportPage() {
           (gateOut ? ` · Gate-out ${gateOut.toLocaleString()}` : '') +
           (def.damages ? ` · Defect ${def.damages.toLocaleString()}` : '') +
           (goneSkipped ? ` · ข้ามรถที่ออกไปแล้ว ${goneSkipped.toLocaleString()} รายการ` : '') +
+          (otherYardVins.size ? ` · ข้าม Defect ของรถที่ไม่ได้อยู่ยาร์ดนี้ ${otherYardVins.size.toLocaleString()} คัน` : '') +
+          (def.unreachable ? ` · ดึงข้อมูลรถจากคลาวด์ไม่ได้ ${def.unreachable.toLocaleString()} คัน (ยังไม่ได้ลง Defect — นำเข้าไฟล์นี้ซ้ำอีกครั้ง)` : '') +
           (moved ? ` · ย้ายไปยาร์ดที่ถูกต้อง ${moved.toLocaleString()}` : '') +
           (skipped ? ` · ข้ามยาร์ดอื่น ${skipped.toLocaleString()}` : '') +
           (otherYard ? ` (รถของยาร์ดอื่น ${otherYard.toLocaleString()} คัน ไม่แตะ)` : '') +
@@ -860,12 +881,17 @@ export function ImportPage() {
                     <span className="text-[12px]" style={{ color: coSaving ? '#0891b2' : 'var(--muted)' }}>
                       {coSaving
                         ? <b className="flex items-center gap-1.5"><Loader2 size={13} className="animate-spin" /> กำลังบันทึกขึ้น cloud… อย่าปิด/รีเฟรชหน้านี้</b>
-                        : <><b style={{ color: '#0891b2' }}>{coMatched.toLocaleString()}</b> คันจะถูกเติมข้อมูลตรวจสอบ{coParsed.defects.length ? ` + Defect ${coParsed.defects.length.toLocaleString()} รายการ` : ''}</>}
+                        : coParsed.rows.length === 0 && coParsed.defects.length
+                          // only defect sheets: the cars' own data is not touched at all
+                          ? <span data-co-defect-only><b style={{ color: '#0891b2' }}>{coDefectsHere.defects.toLocaleString()}</b> Defect ของรถ <b>{coDefectsHere.cars.toLocaleString()}</b> คันในยาร์ดนี้ · ไฟล์มีแค่ชีต Defect ไม่แตะสถานะ/ข้อมูลรถ{coDefectsHere.otherCars ? ` · ข้ามรถที่ไม่ได้อยู่ยาร์ดนี้ ${coDefectsHere.otherCars.toLocaleString()} คัน` : ''}</span>
+                          : <><b style={{ color: '#0891b2' }}>{coMatched.toLocaleString()}</b> คันจะถูกเติมข้อมูลตรวจสอบ{coDefectsHere.defects ? ` + Defect ${coDefectsHere.defects.toLocaleString()} รายการ` : ''}{coDefectsHere.otherCars ? ` · ข้าม Defect รถยาร์ดอื่น ${coDefectsHere.otherCars.toLocaleString()} คัน` : ''}</>}
                     </span>
                     <div className="flex items-center gap-2">
                       <button className="btn" onClick={() => { setCoParsed(null); setCoFileName('') }} disabled={coSaving}>ยกเลิก</button>
-                      <button className="btn" style={{ background: coSaving ? '#6b8fd4' : '#0891b2', color: '#fff' }} onClick={confirmCo} disabled={coSaving || coMatched + coNew + coGateOut === 0}>
-                        {coSaving ? <><Loader2 size={15} className="animate-spin" /> กำลังบันทึก…</> : <><CheckCircle2 size={15} /> ยืนยัน Merge ({(coMatched + coNew + coGateOut).toLocaleString()})</>}
+                      <button className="btn" style={{ background: coSaving ? '#6b8fd4' : '#0891b2', color: '#fff' }} onClick={confirmCo} disabled={coSaving || coMatched + coNew + coGateOut + coDefectsHere.defects === 0}>
+                        {coSaving ? <><Loader2 size={15} className="animate-spin" /> กำลังบันทึก…</>
+                          : coParsed.rows.length === 0 ? <><CheckCircle2 size={15} /> ยืนยัน ลง Defect ({coDefectsHere.cars.toLocaleString()} คัน)</>
+                          : <><CheckCircle2 size={15} /> ยืนยัน Merge ({(coMatched + coNew + coGateOut).toLocaleString()})</>}
                       </button>
                     </div>
                   </div>

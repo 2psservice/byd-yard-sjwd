@@ -360,7 +360,7 @@ interface YardState {
   unsubscribeRealtime: () => void
   // --- co-inspection defects ---
   /** @param onProgress 0–100 with a Thai phase label, for the import screen's bar */
-  importDefects: (defects: DefectRow[], trackingRows: Record<string, TrackRow>, onProgress?: (pct: number, label: string) => void) => Promise<{ units: number; damages: number }>
+  importDefects: (defects: DefectRow[], trackingRows: Record<string, TrackRow>, onProgress?: (pct: number, label: string) => void) => Promise<{ units: number; damages: number; unreachable: number }>
 }
 
 /** Next free block id — single letters A–Z, then B1, B2… */
@@ -2376,7 +2376,7 @@ export const useYard = create<YardState>()(
       // so imported defects display in the Unit List / Check views. Deterministic
       // damage ids mean re-importing the same file updates rather than duplicates.
       importDefects: async (defects, trackingRows, onProgress) => {
-        if (!defects.length) return { units: 0, damages: 0 }
+        if (!defects.length) return { units: 0, damages: 0, unreachable: 0 }
         // phase weights across the whole run — the cloud writes dominate the
         // wall clock (10k+ rows), so they own most of the bar
         const phase = (from: number, to: number, label: string) => (done: number, total: number) =>
@@ -2387,6 +2387,24 @@ export const useYard = create<YardState>()(
         const byVin = new Map<string, DefectRow[]>()
         for (const d of defects) { const a = byVin.get(d.vin); if (a) a.push(d); else byVin.set(d.vin, [d]) }
 
+        // A car this device hasn't loaded yet (the yard still loading in the background, or never
+        // opened here) has a record in the cloud all the same. Writing a fresh stub for it replaced
+        // that record's status, lot and Gate-in with blanks (05/11 08:58: 114 cars rewritten as
+        // EXPECTED). Fetch this yard's copy first and merge into it; a car that truly has none is
+        // registered as before. If the cloud can't be read we can't tell the two apart — those cars
+        // are left alone and counted, so the import can be run again.
+        const unreachable = new Set<string>()
+        const missing = [...byVin.keys()].filter((v) => !units[v])
+        if (missing.length && db.isConfigured()) {
+          onProgress?.(2, 'กำลังดึงข้อมูลรถที่ยังไม่ได้โหลด…')
+          try {
+            for (const u of await db.fetchUnitsByVins(missing)) units[u.vin] = u
+          } catch (e) {
+            console.error('[yard] importDefects: fetch missing units', e)
+            for (const v of missing) unreachable.add(v)
+          }
+        }
+
         let newUnits = 0
         let dmgCount = 0
         const now = Date.now()
@@ -2395,6 +2413,7 @@ export const useYard = create<YardState>()(
         const removedIds: string[] = []
         const DEF_SRC = new Set(['yardDefect', 'factoryDefect', 'whaleDefect'])
         for (const [vin, defs] of byVin) {
+          if (unreachable.has(vin)) continue
           let u = units[vin]
           if (!u) {
             const tr = trackingRows[vin]
@@ -2516,7 +2535,7 @@ export const useYard = create<YardState>()(
           await db.upsertDamages(dmgItems, phase(45, 100, 'กำลังบันทึก Defect ขึ้น cloud…'))
         } catch (e) { console.error('[db] importDefects', e) }
         onProgress?.(100, 'เสร็จแล้ว')
-        return { units: newUnits, damages: dmgCount }
+        return { units: newUnits, damages: dmgCount, unreachable: unreachable.size }
       },
     }),
     {

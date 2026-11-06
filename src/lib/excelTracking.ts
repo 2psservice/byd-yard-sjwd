@@ -196,10 +196,15 @@ export async function parseTrackingWorkbook(file: File): Promise<ParseResult> {
     ...collectDefects(whaleWs, 'whale'),
   ]
 
+  // A Defect-* sheet lists a car once per DEFECT and its columns are defect columns — it is never the
+  // car sheet, even though it has a Vin column. A Co file with only a Defect-Yard sheet used to be read
+  // as the car sheet too: each car's row took its last defect's cells and every car below In Yard was
+  // promoted to In Yard (05/11 08:58 at 3D RINCHA — 102 cars still waiting at the factory).
+  const isDefectSheet = (n: string) => norm(n).includes('defect')
   const sheetName =
     wb.SheetNames.find((n) => n.trim() === TARGET_SHEET) ||
     wb.SheetNames.find((n) => norm(n).includes('trackingstatus')) ||
-    wb.SheetNames.find((n) => hasVinHeader(n))
+    wb.SheetNames.find((n) => !isDefectSheet(n) && hasVinHeader(n))
   if (!sheetName) {
     // a Co Inspection file may carry only defect sheets — still valid
     if (defects.length) return { rows: [], headers: [], total: 0, inYard: 0, gatedOut: 0, gateOutRows: [], options: {}, defects, defectSheets }
