@@ -41,13 +41,36 @@ export type DestOf = (vin: string, row: TrackRow) => string
  *  empty Delivery To although the screen showed the dealer. */
 const destination = (r: TrackRow, destOf?: DestOf): string => (destOf?.(r.vin, r) || '').trim() || dealerCell(r)
 
+// ── motor / engine numbers ───────────────────────────────────────────────────
+// The tracking sheet names them "Front Motor no." / "Rear Motor no." / "Engine No.", but a car's
+// row keeps the headers of the file it came in with: the yard-to-yard transfer file has a single
+// "Motor no.", a Vin List can say "Engine No" or "Motor Number". Reading the tracking spelling
+// only, the IR of a car that came in on another file printed no numbers at all.
+const headKey = (k: string) => k.toLowerCase().replace(/[^a-z0-9]/g, '')
+/** "-", "- TZ220XYE …", "N/A" → the number alone, or nothing */
+const cleanNo = (v: string) => { const t = String(v ?? '').trim().replace(/^[-–—\s]+/, '').trim(); return /^(n\/?a|none|null|-)$/i.test(t) ? '' : t }
+const numberCell = (r: TrackRow, names: string[], like: RegExp): string => {
+  for (const k of names) { const v = cleanNo(r.cells[k]); if (v) return v }
+  for (const [k, v] of Object.entries(r.cells)) if (like.test(headKey(k))) { const t = cleanNo(v); if (t) return t }
+  return ''
+}
+/** front (or only) drive motor */
+export const frontMotorNo = (r: TrackRow) => numberCell(r, ['Front Motor no.', 'Motor no.'], /^(front)?(drive)?motor(no|number|num|serial|serialno)?$/)
+export const rearMotorNo = (r: TrackRow) => numberCell(r, ['Rear Motor no.'], /^rear(drive)?motor(no|number|num|serial|serialno)?$/)
+/** combustion engine — a DM-i hybrid has one, an EV has none */
+export const engineNo = (r: TrackRow) => numberCell(r, ['Engine No.'], /^engine(no|number|num|serial|serialno)?$/)
+
 /** The values one IR sheet carries, shared by both print styles. */
 function irData(r: TrackRow, siteName?: string, destOf?: DestOf) {
+  const front = frontMotorNo(r), rear = rearMotorNo(r), engine = engineNo(r)
   return {
     // the full model with its trim from Sub-Model ("BYD DOLPHIN (490KM-EXT)"), same as the Vehicle Label
     model: ((m) => (m === '—' ? '' : m))(labelModel(r.cells)),
     color: cell(r, 'Color'),
-    engMotor: [cell(r, 'Engine No.', 'Model Code'), cell(r, 'Front Motor no.', 'Rear Motor no.')].filter(Boolean).join(' '),
+    // the AMS form has ONE Engine/Motor box: engine (or Model Code) then the motor, as before
+    engMotor: [engine || cell(r, 'Model Code'), front || rear].filter(Boolean).join(' '),
+    // the paper form has a box for each: Front Motor No. · Rear Motor No. · Engine No.
+    front, rear, engine,
     // Delivery From = ยาร์ดที่ส่งรถออก = Site งานที่กำลังพิมพ์ — ช่อง Location yard ของรถมาจากไฟล์นำเข้า
     // เชื่อไม่ได้ (รถขายของ NYB ที่ช่องยังเป็น "Rayone yard" พิมพ์ออกมาว่าส่งจาก Rayong) ใช้ช่องนี้เฉพาะตอนไม่ได้เลือก Site
     yard: (siteName || '').trim() || cell(r, 'Location yard', 'storage Yard'),
@@ -78,16 +101,31 @@ function irSheetHtml(r: TrackRow, siteName?: string, destOf?: DestOf): string {
 // ── IR "paper" overlay — data only, printed onto pre-printed IR forms (Letter) ──
 /** the paper form's Model box ends where Color starts (x 130) — a long Sub-Model is set smaller to stay inside */
 const IRP_MODEL_MAX = 112
+/** The paper form's number boxes on the VIN row, measured off the printed form (pt): Front Motor No.
+ *  290–361 · Rear Motor No. 361–407 · Engine No. 407–497. Each number starts 3pt in and is set
+ *  smaller when it would run into the next box. They used to print as ONE string from the Front
+ *  Motor box, so a DM-i's engine number sat under Front Motor and its motor spilled across Rear
+ *  Motor into Engine — read on the paper as "no engine number". */
+export const IRP_NUMBER_BOXES = [
+  { key: 'front', x: 293, max: 65 },
+  { key: 'rear', x: 364, max: 40 },
+  { key: 'engine', x: 410, max: 84 },
+] as const
+/** 12pt, or the size that fits `max` (never under `min`) */
+const fitSize = (text: string, max: number, measure: MeasureText, min: number) => {
+  const w = text ? measure(text) : 0
+  return w > max ? Math.max(min, Math.floor((12 * max / w) * 2) / 2) : 12
+}
 function irPaperSheetHtml(r: TrackRow, siteName?: string, destOf?: DestOf, measure: MeasureText = roughMeasure): string {
   const d = irData(r, siteName, destOf)
   const P = (x: number, y: number, val: string) => irField('irpf', x, y, 12, val)
-  const w = d.model ? measure(d.model) : 0
-  const modelSize = w > IRP_MODEL_MAX ? Math.max(8, Math.floor((12 * IRP_MODEL_MAX / w) * 2) / 2) : 12
+  const modelSize = fitSize(d.model, IRP_MODEL_MAX, measure, 8)
+  const numbers = IRP_NUMBER_BOXES.map((b) => irField('irpf', b.x, 113, fitSize(d[b.key], b.max, measure, 7), d[b.key])).join('')
   return `<section class="irp-sheet">
     ${irField('irpf', 15, 113, modelSize, d.model)}
     ${P(130, 113, d.color)}
     ${P(198, 113, r.vin)}
-    ${P(293, 113, d.engMotor)}
+    ${numbers}
     ${P(119, 129, d.yard)}
     ${P(289, 129, d.dealer)}
     ${P(385, 531, TRAILER_LICENSE)}
@@ -218,7 +256,7 @@ const dnLine = (x: number, y: number, w: number, h: number) =>
 const dnRowTexts = (r: TrackRow, destOf?: DestOf): Record<number, string> => ({
   2: destination(r, destOf),
   3: cell(r, 'Model Code', 'Model'),
-  4: cell(r, 'Engine No.'),
+  4: engineNo(r),
   5: cell(r, 'Color'),
   6: cell(r, 'Location on the trailer'),
 })
