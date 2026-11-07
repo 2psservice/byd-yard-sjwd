@@ -439,6 +439,11 @@ kbd.k { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10.5p
 .seg > button:active:not(:disabled) { background: #e2e2e6; }
 .seg > button:disabled { opacity: 0.4; cursor: not-allowed; }
 .seg-n { min-width: 20px; padding: 0 5px; border-radius: 6px; background: var(--chip); color: var(--muted); font-size: 11px; font-weight: 700; text-align: center; font-variant-numeric: tabular-nums; }
+/* the two documents the gate and the truck actually take — DN and the pre-printed IR form — stand out in green */
+.seg > button.seg-go { background: #16a34a; color: #fff; }
+.seg > button.seg-go:hover:not(:disabled) { background: #15803d; }
+.seg > button.seg-go:active:not(:disabled) { background: #166534; }
+.seg > button.seg-go .seg-n { background: rgba(255, 255, 255, 0.24); color: #fff; }
 .gtable { width: 100%; border-collapse: collapse; font-size: 12.5px; color: var(--text); }
 /* พื้นเหลืองแบบใบ Grouping เดิม: หัวตาราง แถวรวม และกลุ่มเว้นกลุ่ม */
 .gtable th {

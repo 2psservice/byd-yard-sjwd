@@ -735,7 +735,7 @@ export function Grouping() {
                 <button onClick={() => printFindCar(sheetRows, sheetMeta)} title="พิมพ์ใบหารถ เรียงตามตำแหน่งในลาน">
                   <MapPin size={14} /> ใบหารถ
                 </button>
-                <button onClick={() => printDoc('dn')} disabled={!printTrackRows.length}
+                <button className="seg-go" data-print="dn" onClick={() => printDoc('dn')} disabled={!printTrackRows.length}
                   title="พิมพ์ใบส่งมอบรถ (Delivery Note) — 1 ใบ ต่อ 1 Grouping · พิมพ์เฉพาะคันที่ติ๊ก (ไม่ติ๊ก = ทั้งใบ)">
                   <FileText size={14} /> DN <span className="seg-n">{printCount}</span>
                 </button>
@@ -743,7 +743,7 @@ export function Grouping() {
                   title="พิมพ์ใบตรวจรถ (Inspector Report) เต็มฟอร์ม — 1 หน้า ต่อ 1 คัน ลงกระดาษเปล่า · พิมพ์เฉพาะคันที่ติ๊ก (ไม่ติ๊ก = ทั้งใบ)">
                   <FileText size={14} /> IR <span className="seg-n">{printCount}</span>
                 </button>
-                <button onClick={() => printDoc('irp')} disabled={!printTrackRows.length}
+                <button className="seg-go" data-print="irp" onClick={() => printDoc('irp')} disabled={!printTrackRows.length}
                   title="พิมพ์เฉพาะข้อมูลลงบนกระดาษฟอร์ม IR ที่พิมพ์ไว้ล่วงหน้า (ตรงตำแหน่ง AMS 100%) · พิมพ์เฉพาะคันที่ติ๊ก (ไม่ติ๊ก = ทั้งใบ)">
                   <FileText size={14} /> กระดาษ IR <span className="seg-n">{printCount}</span>
                 </button>
