@@ -46,7 +46,7 @@ describe('รายชื่อ PM: วันที่ + เวลา และ�
     expect(got).toEqual({
       A: ['07/11/2026 09:05', 'P1', 'รัชนีกร'],
       B: ['07/11/2026 10:20', 'P2', 'รัชนีกร'],
-      E: ['07/11/2026', '', 'admin'],
+      E: ['07/11/2026 11:00', 'P2', 'admin'], // ticked done in the queue by admin at 11:00
       F: ['07/11/2026 09:40', 'P1', 'สมชาย'],
     })
   })
@@ -60,7 +60,7 @@ describe('รายชื่อ PM: วันที่ + เวลา และ�
 
   it('เรียงเวลาล่าสุดอยู่บนสุด · คันที่ไม่มีเวลาอยู่ท้าย', () => {
     const list = buildList(ctx(), 'pm')
-    expect(list.map((r) => r.vin)).toEqual(['B', 'F', 'A', 'E'])
+    expect(list.map((r) => r.vin)).toEqual(['E', 'B', 'F', 'A'])
     expect(list.map((r) => r.no)).toEqual([4, 3, 2, 1]) // newest on top carries the total, the bottom row is 1
   })
 
