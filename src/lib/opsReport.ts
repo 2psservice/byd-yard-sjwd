@@ -372,8 +372,13 @@ export function buildList(ctx: ReportCtx, id: string): ListRow[] {
     for (const i of checkedItems(ctx, 'WASH', (n) => /pm/i.test(n)))
       push(i.vin, { date: fmtTime(itemTs(i)) })
   }
+  // the station lists run newest first and count from the oldest up: the top row carries the total
+  if (isStationList(id)) return out.map((r, i) => ({ ...r, no: out.length - i }))
   return out
 }
+
+/** The PDI / PM / Final lists: newest work on top, numbered down to 1 at the bottom. */
+const isStationList = (id: string) => id === 'pdi' || id === 'pm' || id === 'fc'
 
 // ── defect builders — defects the stations recorded on the day, scoped to the
 //    cars that went through that station's queues (FC vs PM) ─────────────────
@@ -502,9 +507,9 @@ export function buildListRange(ctx: ReportCtx, id: string): ListRow[] {
   if (days.length === 1) return buildList({ ...ctx, day: days[0] }, id)
   const out: ListRow[] = []
   // the station lists put the newest work on top, so across days the newest day comes first too
-  const order = id === 'pdi' || id === 'pm' || id === 'fc' ? [...days].reverse() : days
-  for (const day of order) out.push(...buildList({ ...ctx, day }, id))
-  return out.map((r, i) => ({ ...r, no: i + 1 }))
+  const station = isStationList(id)
+  for (const day of station ? [...days].reverse() : days) out.push(...buildList({ ...ctx, day }, id))
+  return out.map((r, i) => ({ ...r, no: station ? out.length - i : i + 1 }))
 }
 
 export function buildDefectsRange(ctx: ReportCtx, id: 'fcdefect' | 'pmdefect' | 'pdidefect'): DefectRowOut[] {

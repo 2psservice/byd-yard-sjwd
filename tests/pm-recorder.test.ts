@@ -53,7 +53,9 @@ describe('รายชื่อ PM: วันที่ + เวลา และ�
   })
 
   it('เรียงเวลาล่าสุดอยู่บนสุด · คันที่ไม่มีเวลาอยู่ท้าย', () => {
-    expect(buildList(ctx(), 'pm').map((r) => r.vin)).toEqual(['B', 'F', 'A', 'D', 'E'])
+    const list = buildList(ctx(), 'pm')
+    expect(list.map((r) => r.vin)).toEqual(['B', 'F', 'A', 'D', 'E'])
+    expect(list.map((r) => r.no)).toEqual([5, 4, 3, 2, 1]) // newest on top carries the total, the bottom row is 1
   })
 
   it('รถที่สแกนวันนี้แต่คิวปิดไปตั้งแต่วันก่อน ยังขึ้นในรายชื่อพร้อมชื่อคิว · วันที่ PM จากไฟล์ที่ไม่มีใครสแกนและไม่มีคิววันนี้ ไม่นับ', () => {
