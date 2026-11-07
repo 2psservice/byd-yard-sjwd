@@ -6,6 +6,7 @@
  * in each car's yard Location + Lane load for the printable grouping / find-car
  * sheets.
  */
+import { titlePlanDay } from './seqPlan'
 
 export interface GroupingParseRow {
   vin: string
@@ -35,6 +36,8 @@ export interface GroupingParseResult {
   /** VIN row counts for every sheet in the workbook — names a sheet holding
    *  data we did not read (a plan split across continuation sheets). */
   sheetVinCounts: { sheet: string; vins: number }[]
+  /** The yard's OTHER sheets in this workbook (not read), with their plan dates (yyyy-mm-dd, '' = none). */
+  siblings: { sheet: string; day: string }[]
 }
 
 /** Per-site config: which workbook sheet to read + the yard-location prefix
@@ -119,14 +122,40 @@ const norm = (s: unknown) => String(s ?? '').trim().toLowerCase().replace(/[\s._
 // real VINs never contain I, O or Q (ISO 3779) — rejects placeholder codes
 const isVin = (s: string) => /^[A-Z0-9]{11,20}$/.test(s) && !/[IOQ]/.test(s)
 
-/** Find the workbook sheet whose (normalised) name matches one of the site keys.
+/** Every workbook sheet whose (normalised) name matches the site, for the first site key that has any.
  *  Skips the raw master "Sheet3"-style dumps by requiring a key hit. */
-function pickSheet(sheetNames: string[], keys: string[]): string | null {
+function siteSheets(sheetNames: string[], keys: string[]): string[] {
   for (const key of keys) {
-    const hit = sheetNames.find((nm) => norm(nm).includes(key))
-    if (hit) return hit
+    const hits = sheetNames.filter((nm) => norm(nm).includes(key))
+    if (hits.length) return hits
   }
-  return null
+  return []
+}
+
+/** "08.11.26" / "8-11-2026" in a sheet name → yyyy-mm-dd · none = '' */
+export function sheetNameDay(name: string): string {
+  const m = /(\d{1,2})[./-](\d{1,2})[./-](\d{2}|\d{4})(?!\d)/.exec(name)
+  if (!m) return ''
+  const [d, mo] = [+m[1], +m[2]]
+  if (d < 1 || d > 31 || mo < 1 || mo > 12) return ''
+  const y = m[3].length === 2 ? 2000 + +m[3] : +m[3]
+  return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+}
+
+/**
+ * Which of the yard's sheets to read. A planner often keeps the yard's earlier sheet in the next file
+ * (08/11 "FIS Ready to Grouping for delivery 8 Nov 2026 Special": "NYB 2 29.10.26" before "NYB2 08.11.26"),
+ * and taking the FIRST sheet named for the yard imported the 26 October plan again. The sheet with the
+ * newest plan date wins: the "Date …" of its title row, else the date in its name. A sheet with no date
+ * ranks last, and ties keep the workbook's order — so a file with one yard sheet reads as it always has.
+ */
+export function pickSiteSheet(candidates: { sheet: string; title: string }[]): { sheet: string; day: string } | null {
+  let best: { sheet: string; day: string } | null = null
+  for (const c of candidates) {
+    const day = titlePlanDay(c.title) || sheetNameDay(c.sheet)
+    if (!best || day > best.day) best = { sheet: c.sheet, day }
+  }
+  return best
 }
 
 /** @param sheetOverride read this sheet instead of the one matched by site —
@@ -137,9 +166,17 @@ export async function parseGroupingWorkbook(file: File, siteName: string, sheetO
   const wb = XLSX.read(buf, { type: 'array' })
 
   const { sheetKeys } = siteGroupingConfig(siteName)
+  const titleOf = (nm: string) => {
+    const a = XLSX.utils.sheet_to_json<any[]>(wb.Sheets[nm], { header: 1, defval: '', raw: false, blankrows: false })
+    return String(a.find((r) => String(r?.[0] ?? '').trim())?.[0] ?? '').trim()
+  }
+  const candidates = siteSheets(wb.SheetNames, sheetKeys).map((nm) => ({ sheet: nm, title: titleOf(nm) }))
   const sheetName = sheetOverride && wb.SheetNames.includes(sheetOverride)
     ? sheetOverride
-    : pickSheet(wb.SheetNames, sheetKeys)
+    : pickSiteSheet(candidates)?.sheet ?? null
+  // the yard's other sheets in this file, so the page can say which one was read and offer the rest
+  const siblings = candidates.filter((c) => c.sheet !== sheetName)
+    .map((c) => ({ sheet: c.sheet, day: titlePlanDay(c.title) || sheetNameDay(c.sheet) }))
   if (!sheetName) {
     throw new Error(`ไม่พบ sheet สำหรับ site "${siteName}" (มองหา: ${sheetKeys.join(', ')}) — sheet ในไฟล์: ${wb.SheetNames.join(', ')}`)
   }
@@ -211,5 +248,5 @@ export async function parseGroupingWorkbook(file: File, siteName: string, sheetO
     for (const rw of a) for (const c of rw as any[]) if (isVin(String(c ?? '').trim().toUpperCase())) { vins++; break }
     return { sheet: nm, vins }
   })
-  return { sheetName, title, headerDate, rows, titleUnits, skipped: { noGrouping: skipNoGrouping }, sheetVinCounts }
+  return { sheetName, title, headerDate, rows, titleUnits, skipped: { noGrouping: skipNoGrouping }, sheetVinCounts, siblings }
 }

@@ -6,13 +6,13 @@ import { rowsForSite } from '../lib/siteScope'
 import { useOps, isSequenceQueue, seqRunsFor, type WorkQueue } from '../store/useOps'
 import { PageHead, Modal } from '../components/ui'
 import { clock } from '../lib/format'
-import { parseGroupingWorkbook, siteGroupingConfig, yardLocCode, LAST_LOCATION_KEY } from '../lib/groupingImport'
+import { parseGroupingWorkbook, siteGroupingConfig, yardLocCode, sheetNameDay, LAST_LOCATION_KEY } from '../lib/groupingImport'
 import { printGrouping, printFindCar, exportGroupingXlsx, exportFindCarXlsx, printRowFor, type GroupPrintRow, type GroupPrintMeta } from '../lib/groupingPrint'
 import { printIr, printDn, printIrPaper } from '../lib/dnir'
 import { markPrinted, printedAt, printedValue, PRINTED_KEYS } from '../lib/printMarks'
 import { useStickyBar } from '../lib/stickyBar'
 import { laneKey, laneDuplicates, lastEditedLanes, assignLanes } from '../lib/laneLoad'
-import { seqPlanDay } from '../lib/seqPlan'
+import { seqPlanDay, titlePlanDay } from '../lib/seqPlan'
 import { groupNo, destPurpose, runGroupPurpose } from '../lib/groupRuns'
 import { recordGroupingUpload, loadGroupingUploads, localGroupingUploads, type GroupingUpload } from '../lib/groupingUploads'
 import type { TrackRow } from '../lib/excelTracking'
@@ -68,6 +68,8 @@ export function Grouping() {
   const [stats, setStats] = useState<{ found: number; notFound: number; placed: number; assigned: number; cleared: number } | null>(null)
   const [shortRead, setShortRead] = useState<
     { got: number; want: number; noGrouping: number; sheet: string; others: { sheet: string; vins: number }[] } | null>(null)
+  // the file carried more than one sheet for this yard: which one was read, and the others to pick instead
+  const [sheetPick, setSheetPick] = useState<{ read: string; day: string; others: { sheet: string; day: string }[] } | null>(null)
   const [busy, setBusy] = useState(false)
   const [lastFile, setLastFile] = useState<File | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -232,6 +234,9 @@ export function Grouping() {
       setShortRead(short
         ? { got: printRows.length, want: res.titleUnits, noGrouping: res.skipped.noGrouping,
             sheet: res.sheetName, others: res.sheetVinCounts.filter((x) => x.sheet !== res.sheetName && x.vins > 0) }
+        : null)
+      setSheetPick(res.siblings.length
+        ? { read: res.sheetName, day: titlePlanDay(res.title) || sheetNameDay(res.sheetName), others: res.siblings }
         : null)
       if (short) toast('err', `อ่านได้ ${printRows.length} คัน แต่หัวไฟล์ระบุ ${res.titleUnits} คัน — ดูรายละเอียดด้านล่าง`)
       else toast('ok', `นำเข้า ${printRows.length} คัน · ${order.length} group · ใส่เลข grouping ${assigned} คัน`
@@ -605,6 +610,29 @@ export function Grouping() {
           </div>
         }
       />
+
+      {/* the file had several sheets for this yard — say which plan was read, offer the others */}
+      {sheetPick && (
+        <div className="panel p-3.5 mb-3 flex items-start gap-2.5" data-sheet-pick={sheetPick.read}
+          style={{ background: 'var(--brand-soft,#eef4ff)', border: '1px solid rgba(37,99,235,0.25)' }}>
+          <FileSpreadsheet size={16} className="shrink-0 mt-0.5" style={{ color: 'var(--brand)' }} />
+          <div className="text-[12.5px] leading-relaxed">
+            <div>
+              ไฟล์นี้มี {sheetPick.others.length + 1} sheet ของยาร์ดนี้ · อ่าน sheet <b>{sheetPick.read}</b>
+              {sheetPick.day && <> (แผนวันที่ <b>{sheetPick.day.split('-').reverse().join('/')}</b>)</>}
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+              <span style={{ color: 'var(--muted)' }}>อ่าน sheet อื่นแทน:</span>
+              {sheetPick.others.map((o) => (
+                <button key={o.sheet} className="btn py-1 text-[12px]" disabled={busy || !lastFile}
+                  onClick={() => lastFile && importFile(lastFile, o.sheet)}>
+                  {o.sheet}{o.day ? ` · ${o.day.split('-').reverse().join('/')}` : ''}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* the read came up short of what the sheet says it holds */}
       {shortRead && (
