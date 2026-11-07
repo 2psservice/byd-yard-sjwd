@@ -138,35 +138,51 @@ HINTS = [
 ]
 
 
-def send() -> None:
+def send(p: int, mech: str) -> None:
     ctx = ssl.create_default_context()
-    if port == 465:
-        server = smtplib.SMTP_SSL(env["MAIL_SERVER"], port, context=ctx, timeout=60)
+    if p == 465:
+        server = smtplib.SMTP_SSL(env["MAIL_SERVER"], p, context=ctx, timeout=60)
     else:
-        server = smtplib.SMTP(env["MAIL_SERVER"], port, timeout=60)
+        server = smtplib.SMTP(env["MAIL_SERVER"], p, timeout=60)
+        server.ehlo()
         server.starttls(context=ctx)
     with server:
-        server.login(env["MAIL_USERNAME"], password)
+        server.ehlo()
+        if mech == "LOGIN":
+            server.user, server.password = env["MAIL_USERNAME"], password
+            server.auth("LOGIN", server.auth_login, initial_response_ok=False)
+        else:
+            server.login(env["MAIL_USERNAME"], password)
         server.send_message(msg)
 
 
-for attempt in (1, 2):
+# Gmail can drop a login without a word. Try the other ways it accepts before giving up, and say how
+# each one ended, so one run shows whether the account or the way of connecting is the problem.
+# Ports are named by kind: the port's own number is a secret value, and the log would mask it.
+ways = [(port, "PLAIN")]
+if env["MAIL_SERVER"].lower() == "smtp.gmail.com":
+    ways += [(587 if port == 465 else 465, "PLAIN"), (port, "LOGIN")]
+kind = lambda p: "SSL" if p == 465 else "STARTTLS"
+outcomes: list[str] = []
+for i, (p, mech) in enumerate(ways):
     try:
-        send()
+        send(p, mech)
+        if i:
+            print(f"ส่งได้ทาง {kind(p)} · AUTH {mech} (ทางแรกไม่ผ่าน: {outcomes[0]})")
         break
     except smtplib.SMTPAuthenticationError as e:
         reply = e.smtp_error.decode(errors="replace") if isinstance(e.smtp_error, bytes) else str(e.smtp_error)
-        print(f"ล็อกอินอีเมลไม่ผ่าน · เซิร์ฟเวอร์ตอบ {e.smtp_code}: {' '.join(reply.split())}")
-        print("\n".join(shape() + HINTS))
-        sys.exit(1)
-    except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError, OSError) as e:
-        # a dropped connection can be a blip: try once more before calling it a settings problem
-        if attempt == 1:
-            print(f"การเชื่อมต่อถูกตัด ({type(e).__name__}) · ลองใหม่ใน 10 วินาที")
-            time.sleep(10)
-            continue
-        print(f"ส่งอีเมลไม่สำเร็จ · การเชื่อมต่อถูกตัด ({type(e).__name__}: {e})")
-        print("Gmail ตัดการเชื่อมต่อตอนล็อกอิน ส่วนใหญ่เป็นเพราะชื่อผู้ใช้หรือรหัสไม่ถูก")
-        print("\n".join(shape() + HINTS))
-        sys.exit(1)
+        outcomes.append(f"ล็อกอินไม่ผ่าน · ตอบ {e.smtp_code}: {' '.join(reply.split())[:200]}")
+    except (smtplib.SMTPException, OSError) as e:
+        outcomes.append(f"การเชื่อมต่อถูกตัด ({type(e).__name__}: {e})")
+    if i < len(ways) - 1:
+        time.sleep(5)
+else:
+    print("ส่งอีเมลไม่สำเร็จ ลองครบทุกทางแล้ว:")
+    for (p, mech), o in zip(ways, outcomes):
+        print(f"  · {kind(p)} · AUTH {mech}: {o}")
+    print("ค่าที่ตั้งไว้:")
+    print("\n".join(shape() + HINTS))
+    print("  4. ดูกล่องจดหมายของบัญชีที่ใช้ส่ง ถ้ามีเมลจาก Google เรื่องการลงชื่อเข้าใช้ที่ถูกบล็อก ให้กดยืนยันว่าเป็นคุณ")
+    sys.exit(1)
 print(f"ส่งอีเมลแล้ว · {len(files)} ไฟล์ · {size_mb:.1f} MB")
