@@ -41,21 +41,27 @@ function ctx(): ReportCtx {
 }
 
 describe('รายชื่อ PM: วันที่ + เวลา และผู้บันทึก', () => {
-  it('สแกนที่สถานี = วันที่และเวลาที่สแกน + ชื่อคนสแกน · ปิดจากไฟล์อย่างเดียว = วันที่ + "จากไฟล์ · ไม่ได้สแกน"', () => {
+  it('สแกนที่สถานี = วันที่และเวลาที่สแกน + ชื่อคนสแกน · ปิดจากไฟล์อย่างเดียว ไม่นับเป็นงาน PM', () => {
     const got = Object.fromEntries(buildList(ctx(), 'pm').map((r) => [r.vin, [r.date, r.period, r.by]]))
     expect(got).toEqual({
       A: ['07/11/2026 09:05', 'P1', 'รัชนีกร'],
       B: ['07/11/2026 10:20', 'P2', 'รัชนีกร'],
-      D: ['07/11/2026', '', FILE_CLOSED_BY],
       E: ['07/11/2026', '', 'admin'],
       F: ['07/11/2026 09:40', 'P1', 'สมชาย'],
     })
   })
 
+  it('PDI ยังแสดงคันที่ปิดจากไฟล์ พร้อมป้าย "จากไฟล์ · ไม่ได้สแกน" (กติกาใหม่ใช้กับ PM เท่านั้น)', () => {
+    const c = ctx()
+    c.queues = [{ ...c.queues[0], name: 'PDI 7 NOV', type: 'PDI' }] as any
+    c.rows = c.rows.map((r: any) => (r.vin === 'D' ? { ...r, cells: { ...r.cells, PDI: '07/11/2026' } } : r)) as any
+    expect(buildList(c, 'pdi').find((r) => r.vin === 'D')?.by).toBe(FILE_CLOSED_BY)
+  })
+
   it('เรียงเวลาล่าสุดอยู่บนสุด · คันที่ไม่มีเวลาอยู่ท้าย', () => {
     const list = buildList(ctx(), 'pm')
-    expect(list.map((r) => r.vin)).toEqual(['B', 'F', 'A', 'D', 'E'])
-    expect(list.map((r) => r.no)).toEqual([5, 4, 3, 2, 1]) // newest on top carries the total, the bottom row is 1
+    expect(list.map((r) => r.vin)).toEqual(['B', 'F', 'A', 'E'])
+    expect(list.map((r) => r.no)).toEqual([4, 3, 2, 1]) // newest on top carries the total, the bottom row is 1
   })
 
   it('รถที่สแกนวันนี้แต่คิวปิดไปตั้งแต่วันก่อน ยังขึ้นในรายชื่อพร้อมชื่อคิว · วันที่ PM จากไฟล์ที่ไม่มีใครสแกนและไม่มีคิววันนี้ ไม่นับ', () => {

@@ -301,6 +301,9 @@ function stationDone(ctx: ReportCtx, type: 'PDI' | 'FINAL' | 'PM'): StationDone[
   // a queue item closed from the sheet date has no checkedAt — the station's own stamp still knows the time
   for (const i of checkedItems(ctx, type)) {
     const s = i.checkedAt ? undefined : scanStamp(rows.get(i.vin), ctx.day, type)
+    // PM counts only what the yard recorded: an item the system closed from an imported file's date,
+    // with no scan behind it, is not the day's PM work (admin 07/11)
+    if (type === 'PM' && !i.checkedAt && !s && i.doneBy === 'ไฟล์ Co-Inspection') continue
     out.set(i.vin, {
       vin: i.vin, clock: i.checkedAt ?? s?.at,
       by: i.checkedAt ? i.checkedBy || i.doneBy || '' : s?.by ?? closedBy(i),
