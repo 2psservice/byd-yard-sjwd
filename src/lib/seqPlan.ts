@@ -47,14 +47,19 @@ export function mergeSeqItems(rows: QueueItem[], oldRuns: QueueItem[][]): QueueI
   return [...merged, ...sent]
 }
 
+/** วันที่ของแผนจาก "Date 02 November 2026" ในหัวไฟล์ / ชื่อคิว (yyyy-mm-dd) · ไม่มี = '' */
+export function titlePlanDay(name: string | undefined): string {
+  const m = /Date\s+(\d{1,2})\s+([A-Za-z]+)\.?\s+(\d{4})/i.exec(name ?? '')
+  if (!m) return ''
+  const mon = m[2].toLowerCase()
+  const mi = MONTHS.findIndex((x) => x === mon || (mon.length >= 3 && x.startsWith(mon)))
+  return mi >= 0 ? `${m[3]}-${String(mi + 1).padStart(2, '0')}-${m[1].padStart(2, '0')}` : ''
+}
+
 /** วันที่ของแผน (yyyy-mm-dd) — "Date 02 November 2026" ในชื่อคิว · ไม่มีในชื่อ = วันที่สร้างคิว */
 export function seqPlanDay(name: string | undefined, createdAt: number): string {
-  const m = /Date\s+(\d{1,2})\s+([A-Za-z]+)\.?\s+(\d{4})/i.exec(name ?? '')
-  if (m) {
-    const mon = m[2].toLowerCase()
-    const mi = MONTHS.findIndex((x) => x === mon || (mon.length >= 3 && x.startsWith(mon)))
-    if (mi >= 0) return `${m[3]}-${String(mi + 1).padStart(2, '0')}-${m[1].padStart(2, '0')}`
-  }
+  const t = titlePlanDay(name)
+  if (t) return t
   const d = new Date(createdAt)
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
