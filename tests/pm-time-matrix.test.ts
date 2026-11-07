@@ -68,8 +68,9 @@ describe('ตาราง PM: รถที่ไม่มี checkedAt ลงเ
 
   it('ขอบของแต่ละช่วงตามตารางเบรก', () => {
     const p = (h: number, m: number) => periodLabel(new Date(2026, 9, 26, h, m).getTime())
-    expect([p(8, 30), p(10, 5), p(10, 6), p(12, 30), p(12, 31), p(15, 5), p(15, 6), p(17, 45), p(17, 46), p(23, 0)])
-      .toEqual(['P1', 'P1', 'P2', 'P2', 'P3', 'P3', 'P4', 'P4', 'P5', 'P5'])
+    // 12:00–12:59 still P2, P3 from 13:00 · after 20:00 still P5
+    expect([p(8, 30), p(10, 5), p(10, 6), p(12, 30), p(12, 59), p(13, 0), p(15, 5), p(15, 6), p(17, 45), p(17, 46), p(20, 30), p(23, 0)])
+      .toEqual(['P1', 'P1', 'P2', 'P2', 'P2', 'P3', 'P3', 'P4', 'P4', 'P5', 'P5', 'P5'])
     expect(periodLabel(undefined)).toBe('')
   })
 })
