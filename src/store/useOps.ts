@@ -1927,10 +1927,16 @@ export function seqCarGone(i: QueueItem, q?: WorkQueue): boolean {
   // (see GATE_OUT_ORIGIN_SITE_KEY). Judged against THIS run's own yard, so a
   // car that once left another yard and is now standing in this one — on this
   // run, waiting to be sent — is not mistaken for a car that has already gone.
-  // No time window: a run is asking "has this car left MY gate yet", and the
-  // answer does not expire. Without this, a run whose item flags were lost
-  // (a corrected sheet re-uploaded over it) could never count those cars again.
-  return !!q?.site && departedFromSite(cells, q.site, useYard.getState().sites, 0)
+  // Only a departure since this run began counts, the same window the reconciler
+  // uses (itemLeftYard): a car that left this yard in September, came back and
+  // was put on a run today read "gate out" here with nobody having scanned it,
+  // while the item itself stayed open. The window starts at the RUN's creation
+  // (or the item's, whichever is earlier), not the item's alone, so a run whose
+  // item flags were lost (a corrected sheet re-uploaded over it) still counts
+  // the cars that really left during it.
+  if (!q?.site) return false
+  const since = Math.min(i.addedAt || Infinity, q.createdAt || Infinity)
+  return departedFromSite(cells, q.site, useYard.getState().sites, Number.isFinite(since) ? since - SEQUENCE_DEPARTURE_SLACK_MS : 0)
 }
 
 /**
