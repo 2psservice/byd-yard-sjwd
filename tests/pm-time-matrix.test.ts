@@ -4,6 +4,7 @@ import { buildList, buildTimeMatrix, periodLabel, periodShades, periodTint, type
 /**
  * ตาราง PM รายเบรก (P1–P5): รถที่สถานีบันทึกแต่รายการคิวถูกปิดจากวันที่ในชีต (ไม่มี checkedAt)
  * ต้องลงเบรกตามเวลาที่สถานีเขียนวันที่ — 26/10 ทำ PM 35 คัน แต่ P4 ขึ้นแค่ 8 (เฉพาะคันที่มีเวลา)
+ * กติกา 07/11: PM นับเฉพาะที่มีคนบันทึก พร้อมเวลาและชื่อ — คันที่ไม่มีเวลาเลย (นำเข้าไฟล์ / แก้ช่องในหน้า Unit) ไม่นับ
  */
 
 const at = (h: number, m = 0, d = 26) => new Date(2026, 9, d, h, m).getTime()
@@ -42,24 +43,24 @@ function ctx(): ReportCtx {
 }
 
 describe('ตาราง PM: รถที่ไม่มี checkedAt ลงเบรกตามเวลาที่สถานีเขียนวันที่ PM', () => {
-  it('P1–P5 นับครบจากเวลาที่สถานีบันทึก · รถที่ไม่มีเวลาเลย (นำเข้าไฟล์ / แก้มือ) อยู่ในยอดรวมแต่ไม่ลงเบรก', () => {
+  it('P1–P5 นับครบจากเวลาที่สถานีบันทึก · รถที่ไม่มีเวลาเลย (นำเข้าไฟล์ / แก้มือ) ไม่นับเป็นงาน PM', () => {
     const m = buildTimeMatrix(ctx(), 'pmtime')
-    expect(m.total).toBe(5)
+    expect(m.total).toBe(3)
     expect(m.ok).toEqual([1, 0, 1, 1, 0]) // B 09:15 → P1 · C 13:02 → P3 · A 15:24 → P4
     const atto = m.models.find((x) => x.name === 'ATTO 2')!
     expect(atto.p).toEqual([1, 0, 1, 1, 0])
-    expect(atto.total).toBe(5)
+    expect(atto.total).toBe(3)
   })
 
-  it('ตาราง PM (รายชื่อ) แสดงเวลาที่สถานีบันทึก · ไม่มีเวลาแสดงแค่วันที่', () => {
+  it('ตาราง PM (รายชื่อ) แสดงเวลาที่สถานีบันทึก · ไม่มีคันไหนขึ้นแค่วันที่', () => {
     const dates = Object.fromEntries(buildList(ctx(), 'pm').map((r) => [r.vin, r.date]))
-    expect(dates).toEqual({ A: '26/10/2026 15:24', B: '26/10/2026 09:15', C: '26/10/2026 13:02', D: '26/10/2026', E: '26/10/2026' })
+    expect(dates).toEqual({ A: '26/10/2026 15:24', B: '26/10/2026 09:15', C: '26/10/2026 13:02' })
   })
 
-  it('คอลัมน์ P1-P5 ในรายชื่อ: ช่วงตามเวลาที่บันทึก ตรงกับตาราง PM · ไม่มีเวลาเว้นว่าง', () => {
+  it('คอลัมน์ P1-P5 ในรายชื่อ: ช่วงตามเวลาที่บันทึก ตรงกับตาราง PM', () => {
     const list = buildList(ctx(), 'pm')
     const periods = Object.fromEntries(list.map((r) => [r.vin, r.period]))
-    expect(periods).toEqual({ A: 'P4', B: 'P1', C: 'P3', D: '', E: '' })
+    expect(periods).toEqual({ A: 'P4', B: 'P1', C: 'P3' })
     // the list's periods add up to exactly what the P1–P5 table counts
     const m = buildTimeMatrix(ctx(), 'pmtime')
     const perP = [1, 2, 3, 4, 5].map((n) => list.filter((r) => r.period === `P${n}`).length)
