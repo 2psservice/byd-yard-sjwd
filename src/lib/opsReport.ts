@@ -303,8 +303,9 @@ function stationDone(ctx: ReportCtx, type: 'PDI' | 'FINAL' | 'PM'): StationDone[
     if (type !== 'PDI' && !s) continue
     out.set(r.vin, { vin: r.vin, clock: s?.at, by: s?.by, lot: lotOf(r.vin) })
   }
-  // in the order the yard did the work; a car with no recorded time (a file date alone) goes last
-  return [...out.values()].sort((a, b) => (a.clock ?? Infinity) - (b.clock ?? Infinity))
+  // newest work on top; a car with no recorded time (a file date alone) goes last
+  const untimed = (d: StationDone) => (d.clock === undefined ? 1 : 0)
+  return [...out.values()].sort((a, b) => untimed(a) - untimed(b) || (b.clock ?? 0) - (a.clock ?? 0))
 }
 
 // ── list builders ───────────────────────────────────────────────────────────
@@ -500,7 +501,9 @@ export function buildListRange(ctx: ReportCtx, id: string): ListRow[] {
   const days = reportDays(ctx)
   if (days.length === 1) return buildList({ ...ctx, day: days[0] }, id)
   const out: ListRow[] = []
-  for (const day of days) out.push(...buildList({ ...ctx, day }, id))
+  // the station lists put the newest work on top, so across days the newest day comes first too
+  const order = id === 'pdi' || id === 'pm' || id === 'fc' ? [...days].reverse() : days
+  for (const day of order) out.push(...buildList({ ...ctx, day }, id))
   return out.map((r, i) => ({ ...r, no: i + 1 }))
 }
 
