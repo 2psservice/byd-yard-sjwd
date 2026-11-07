@@ -114,11 +114,23 @@ export function periodOf(ts: number): number {
   const d = new Date(ts)
   const min = d.getHours() * 60 + d.getMinutes()
   if (min <= 10 * 60 + 5) return 0   // …–10:05 → P1
-  if (min <= 12 * 60 + 30) return 1  // …–12:30 → P2
-  if (min <= 15 * 60 + 5) return 2   // …–15:05 → P3
+  if (min < 13 * 60) return 1        // …–12:59 → P2 (work after 12:00 but before 13:00 still counts in P2)
+  if (min <= 15 * 60 + 5) return 2   // 13:00–15:05 → P3
   if (min <= 17 * 60 + 45) return 3  // …–17:45 → P4
-  return 4
+  return 4                           // 17:46 onward → P5, including anything after 20:00
 }
+
+/** Row tint per period on the station lists: P1 light yellow · P2 light green · P3 orange · P4 purple ·
+ *  P5 light blue. `screen` is a translucent tint that reads in both themes; `excel` a solid fill. */
+export const PERIOD_TINTS: { screen: string; excel: string }[] = [
+  { screen: 'rgba(250, 204, 21, 0.18)', excel: 'FFFEF9C3' },
+  { screen: 'rgba(34, 197, 94, 0.16)', excel: 'FFDCFCE7' },
+  { screen: 'rgba(249, 115, 22, 0.22)', excel: 'FFFED7AA' },
+  { screen: 'rgba(168, 85, 247, 0.18)', excel: 'FFE9D5FF' },
+  { screen: 'rgba(56, 189, 248, 0.20)', excel: 'FFDBEAFE' },
+]
+/** The tint of a list row's 'P1'…'P5' label, undefined without one. */
+export const periodTint = (period: string) => PERIOD_TINTS[Number(period.slice(1)) - 1]
 
 export interface ReportCtx {
   rows: TrackRow[]           // site-scoped tracking rows
@@ -593,7 +605,11 @@ function sheetWriters(wb: any) {
     for (const r of rows) {
       const row = ws.addRow([r.no, r.vin, r.modelName, r.model, r.color, r.date, ...(withP ? [r.period, r.by] : []), r.lot, r.remark])
       row.eachCell({ includeEmpty: true }, (cell: any, col: number) => { if (col <= last) { cell.font = font; cell.border = border } })
-      if (withP) { const pc = row.getCell(7); pc.alignment = { horizontal: 'center' }; pc.font = { ...font, bold: true } }
+      if (withP) {
+        const pc = row.getCell(7); pc.alignment = { horizontal: 'center' }; pc.font = { ...font, bold: true }
+        const tint = periodTint(r.period)
+        if (tint) for (let c = 1; c <= last; c++) row.getCell(c).fill = fill(tint.excel)
+      }
     }
   }
   const addDefectSheet = (name: string, rows: DefectRowOut[]) => {

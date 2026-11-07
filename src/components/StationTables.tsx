@@ -18,7 +18,7 @@ import { useOps } from '../store/useOps'
 import { rowInSite } from '../lib/siteScope'
 import { cx } from './ui'
 import { dayKeyOf } from '../pages/Grouping'
-import { TIME_PERIODS, FILE_CLOSED_BY, buildList, buildDefects, buildTimeMatrix, dayKeyOfTs, type ReportCtx, type TimeMatrix } from '../lib/opsReport'
+import { TIME_PERIODS, FILE_CLOSED_BY, periodTint, buildList, buildDefects, buildTimeMatrix, dayKeyOfTs, type ReportCtx, type TimeMatrix } from '../lib/opsReport'
 import * as db from '../lib/db'
 
 export type StationKind = 'PDI' | 'PM'
@@ -252,7 +252,8 @@ export function StationTables({ ctx, tab, kind }: { ctx: ReportCtx; tab: Station
                   <tr><td colSpan={10} className="text-center py-8" style={{ color: 'var(--faint)' }}>— ยังไม่มีรถที่บันทึก {kind} ในวันนี้ —</td></tr>
                 )}
                 {listRows.map((r) => (
-                  <tr key={`${r.no}-${r.vin}`}>
+                  <tr key={`${r.no}-${r.vin}`} data-row-period={r.period || undefined}
+                    style={periodTint(r.period) ? { background: periodTint(r.period)!.screen } : undefined}>
                     <td className={td}>{r.no}</td>
                     <td className={cx(td, 'vin font-bold')}>{r.vin}</td>
                     <td className={td}>{r.modelName}</td>
