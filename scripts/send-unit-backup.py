@@ -16,9 +16,11 @@ import html
 import io
 import json
 import os
+import re
 import smtplib
 import ssl
 import sys
+import time
 import zipfile
 from email.message import EmailMessage
 from email.utils import formataddr
@@ -99,14 +101,72 @@ msg.set_content(text)
 msg.add_alternative(body_html, subtype="html")
 msg.add_attachment(data, maintype="application", subtype="zip", filename=zip_name)
 
-port = int(env["MAIL_PORT"] or 465)
-ctx = ssl.create_default_context()
-if port == 465:
-    server = smtplib.SMTP_SSL(env["MAIL_SERVER"], port, context=ctx, timeout=60)
-else:
-    server = smtplib.SMTP(env["MAIL_SERVER"], port, timeout=60)
-    server.starttls(context=ctx)
-with server:
-    server.login(env["MAIL_USERNAME"], env["MAIL_PASSWORD"])
-    server.send_message(msg)
+try:
+    port = int(env["MAIL_PORT"] or 465)
+except ValueError:
+    print("MAIL_PORT ต้องเป็นตัวเลข: 465 (Gmail) หรือ 587")
+    sys.exit(2)
+
+# Google shows an App Password as four groups of four ("abcd efgh ijkl mnop"); the spaces are only
+# display, and a password pasted with them is refused, so they are taken out
+password = env["MAIL_PASSWORD"]
+squeezed = re.sub(r"\s+", "", password)
+if re.fullmatch(r"[A-Za-z]{16}", squeezed):
+    password = squeezed
+
+
+def shape() -> list[str]:
+    """What the settings look like, with nothing secret in it (this repository's Actions log is public)."""
+    u = env["MAIL_USERNAME"]
+    server_kind = "เป็นของ Gmail" if env["MAIL_SERVER"].lower() == "smtp.gmail.com" else "ไม่ใช่ smtp.gmail.com"
+    user_kind = "เป็นรูปแบบอีเมล" if re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", u) else "ไม่ใช่รูปแบบอีเมล"
+    if u.lower().endswith(("@gmail.com", "@googlemail.com")):
+        user_kind += " (บัญชี Gmail)"
+    pass_kind = "เป็นรูปแบบ App Password 16 ตัว" if re.fullmatch(r"[a-z]{16}", password.lower()) else "ไม่ใช่รูปแบบ App Password 16 ตัว"
+    return [
+        f"  · MAIL_SERVER {server_kind} · พอร์ต {port}",
+        f"  · MAIL_USERNAME {user_kind}",
+        f"  · MAIL_PASSWORD ยาว {len(password)} ตัว · {pass_kind}",
+    ]
+
+
+HINTS = [
+    "ตรวจ 3 อย่าง:",
+    "  1. MAIL_PASSWORD ต้องเป็น App Password 16 ตัวจาก myaccount.google.com/apppasswords ไม่ใช่รหัสผ่าน Gmail ปกติ",
+    "  2. MAIL_USERNAME ต้องเป็นอีเมลบัญชีเดียวกับที่สร้าง App Password นั้น",
+    "  3. บัญชีนั้นเปิดการยืนยันแบบ 2 ขั้นตอนอยู่",
+]
+
+
+def send() -> None:
+    ctx = ssl.create_default_context()
+    if port == 465:
+        server = smtplib.SMTP_SSL(env["MAIL_SERVER"], port, context=ctx, timeout=60)
+    else:
+        server = smtplib.SMTP(env["MAIL_SERVER"], port, timeout=60)
+        server.starttls(context=ctx)
+    with server:
+        server.login(env["MAIL_USERNAME"], password)
+        server.send_message(msg)
+
+
+for attempt in (1, 2):
+    try:
+        send()
+        break
+    except smtplib.SMTPAuthenticationError as e:
+        reply = e.smtp_error.decode(errors="replace") if isinstance(e.smtp_error, bytes) else str(e.smtp_error)
+        print(f"ล็อกอินอีเมลไม่ผ่าน · เซิร์ฟเวอร์ตอบ {e.smtp_code}: {' '.join(reply.split())}")
+        print("\n".join(shape() + HINTS))
+        sys.exit(1)
+    except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError, OSError) as e:
+        # a dropped connection can be a blip: try once more before calling it a settings problem
+        if attempt == 1:
+            print(f"การเชื่อมต่อถูกตัด ({type(e).__name__}) · ลองใหม่ใน 10 วินาที")
+            time.sleep(10)
+            continue
+        print(f"ส่งอีเมลไม่สำเร็จ · การเชื่อมต่อถูกตัด ({type(e).__name__}: {e})")
+        print("Gmail ตัดการเชื่อมต่อตอนล็อกอิน ส่วนใหญ่เป็นเพราะชื่อผู้ใช้หรือรหัสไม่ถูก")
+        print("\n".join(shape() + HINTS))
+        sys.exit(1)
 print(f"ส่งอีเมลแล้ว · {len(files)} ไฟล์ · {size_mb:.1f} MB")
