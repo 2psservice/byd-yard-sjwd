@@ -121,16 +121,23 @@ export function periodOf(ts: number): number {
 }
 
 /** Row tint per period on the station lists: P1 light yellow · P2 light green · P3 orange · P4 purple ·
- *  P5 light blue. `screen` is a translucent tint that reads in both themes; `excel` a solid fill. */
-export const PERIOD_TINTS: { screen: string; excel: string }[] = [
-  { screen: 'rgba(250, 204, 21, 0.18)', excel: 'FFFEF9C3' },
-  { screen: 'rgba(34, 197, 94, 0.16)', excel: 'FFDCFCE7' },
-  { screen: 'rgba(249, 115, 22, 0.22)', excel: 'FFFED7AA' },
-  { screen: 'rgba(168, 85, 247, 0.18)', excel: 'FFE9D5FF' },
-  { screen: 'rgba(56, 189, 248, 0.20)', excel: 'FFDBEAFE' },
+ *  P5 light blue, each in a light and a deeper shade so neighbouring rows alternate. `screen` is a
+ *  translucent tint that reads in both themes; `excel` a solid fill. */
+export const PERIOD_TINTS: { screen: [string, string]; excel: [string, string] }[] = [
+  { screen: ['rgba(250, 204, 21, 0.14)', 'rgba(250, 204, 21, 0.30)'], excel: ['FFFEF9C3', 'FFFEF08A'] },
+  { screen: ['rgba(34, 197, 94, 0.12)', 'rgba(34, 197, 94, 0.26)'], excel: ['FFDCFCE7', 'FFBBF7D0'] },
+  { screen: ['rgba(249, 115, 22, 0.16)', 'rgba(249, 115, 22, 0.32)'], excel: ['FFFED7AA', 'FFFDBA74'] },
+  { screen: ['rgba(168, 85, 247, 0.13)', 'rgba(168, 85, 247, 0.28)'], excel: ['FFF3E8FF', 'FFE9D5FF'] },
+  { screen: ['rgba(56, 189, 248, 0.14)', 'rgba(56, 189, 248, 0.30)'], excel: ['FFE0F2FE', 'FFBAE6FD'] },
 ]
 /** The tint of a list row's 'P1'…'P5' label, undefined without one. */
 export const periodTint = (period: string) => PERIOD_TINTS[Number(period.slice(1)) - 1]
+/** Light (0) or deeper (1) shade for each row: alternates down the list and starts light again
+ *  wherever the period changes, so every P block reads as its own striped band. */
+export function periodShades(periods: string[]): (0 | 1)[] {
+  let run = 0
+  return periods.map((p, i) => { run = i > 0 && p === periods[i - 1] ? run + 1 : 0; return (run % 2) as 0 | 1 })
+}
 
 export interface ReportCtx {
   rows: TrackRow[]           // site-scoped tracking rows
@@ -602,15 +609,16 @@ function sheetWriters(wb: any) {
     const hr = ws.addRow(['No.', 'Vin', 'Model Name', 'Model', 'Color', 'Date', ...(withP ? ['P1-P5', 'ผู้บันทึก'] : []), lotHeader, 'Remark'])
     hr.eachCell((cell: any) => { cell.font = { ...font, bold: true }; cell.border = border; cell.fill = fill('FFD9D9D9'); cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true } })
     if (withP) hr.getCell(7).font = { ...font, bold: true, color: { argb: 'FF0000FF' } } // blue, as on the P1–P5 sheet
-    for (const r of rows) {
+    const shades = periodShades(rows.map((r) => r.period))
+    rows.forEach((r, ri) => {
       const row = ws.addRow([r.no, r.vin, r.modelName, r.model, r.color, r.date, ...(withP ? [r.period, r.by] : []), r.lot, r.remark])
       row.eachCell({ includeEmpty: true }, (cell: any, col: number) => { if (col <= last) { cell.font = font; cell.border = border } })
       if (withP) {
         const pc = row.getCell(7); pc.alignment = { horizontal: 'center' }; pc.font = { ...font, bold: true }
         const tint = periodTint(r.period)
-        if (tint) for (let c = 1; c <= last; c++) row.getCell(c).fill = fill(tint.excel)
+        if (tint) for (let c = 1; c <= last; c++) row.getCell(c).fill = fill(tint.excel[shades[ri]])
       }
-    }
+    })
   }
   const addDefectSheet = (name: string, rows: DefectRowOut[]) => {
     const ws = wb.addWorksheet(name)

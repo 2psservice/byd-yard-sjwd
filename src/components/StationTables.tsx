@@ -18,7 +18,7 @@ import { useOps } from '../store/useOps'
 import { rowInSite } from '../lib/siteScope'
 import { cx } from './ui'
 import { dayKeyOf } from '../pages/Grouping'
-import { TIME_PERIODS, FILE_CLOSED_BY, periodTint, buildList, buildDefects, buildTimeMatrix, dayKeyOfTs, type ReportCtx, type TimeMatrix } from '../lib/opsReport'
+import { TIME_PERIODS, FILE_CLOSED_BY, periodTint, periodShades, buildList, buildDefects, buildTimeMatrix, dayKeyOfTs, type ReportCtx, type TimeMatrix } from '../lib/opsReport'
 import * as db from '../lib/db'
 
 export type StationKind = 'PDI' | 'PM'
@@ -224,6 +224,7 @@ export function StationTables({ ctx, tab, kind }: { ctx: ReportCtx; tab: Station
   const id = kind === 'PDI' ? 'pdi' : 'pm'
   const currentSite = useYard((s) => s.currentSite)
   const listRows = useMemo(() => (tab === 'list' ? buildList(ctx, id) : []), [ctx, tab, id])
+  const listShades = useMemo(() => periodShades(listRows.map((r) => r.period)), [listRows])
   const defRows = useMemo(() => (tab === 'defect' ? buildDefects(ctx, `${id}defect` as 'pdidefect' | 'pmdefect') : []), [ctx, tab, id])
   const matrix = useMemo(() => (tab === 'time' ? buildTimeMatrix(ctx, `${id}time` as 'pditime' | 'pmtime') : null), [ctx, tab, id])
   const dayLabel = ctx.day.split('-').reverse().join('/')
@@ -251,9 +252,9 @@ export function StationTables({ ctx, tab, kind }: { ctx: ReportCtx; tab: Station
                 {listRows.length === 0 && (
                   <tr><td colSpan={10} className="text-center py-8" style={{ color: 'var(--faint)' }}>— ยังไม่มีรถที่บันทึก {kind} ในวันนี้ —</td></tr>
                 )}
-                {listRows.map((r) => (
-                  <tr key={`${r.no}-${r.vin}`} data-row-period={r.period || undefined}
-                    style={periodTint(r.period) ? { background: periodTint(r.period)!.screen } : undefined}>
+                {listRows.map((r, ri) => (
+                  <tr key={`${r.no}-${r.vin}`} data-row-period={r.period || undefined} data-row-shade={periodTint(r.period) ? listShades[ri] : undefined}
+                    style={periodTint(r.period) ? { background: periodTint(r.period)!.screen[listShades[ri]] } : undefined}>
                     <td className={td}>{r.no}</td>
                     <td className={cx(td, 'vin font-bold')}>{r.vin}</td>
                     <td className={td}>{r.modelName}</td>

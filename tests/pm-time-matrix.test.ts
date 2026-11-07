@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildList, buildTimeMatrix, periodLabel, type ReportCtx } from '../src/lib/opsReport'
+import { buildList, buildTimeMatrix, periodLabel, periodShades, periodTint, type ReportCtx } from '../src/lib/opsReport'
 
 /**
  * ตาราง PM รายเบรก (P1–P5): รถที่สถานีบันทึกแต่รายการคิวถูกปิดจากวันที่ในชีต (ไม่มี checkedAt)
@@ -72,5 +72,14 @@ describe('ตาราง PM: รถที่ไม่มี checkedAt ลงเ
     expect([p(8, 30), p(10, 5), p(10, 6), p(12, 30), p(12, 59), p(13, 0), p(15, 5), p(15, 6), p(17, 45), p(17, 46), p(20, 30), p(23, 0)])
       .toEqual(['P1', 'P1', 'P2', 'P2', 'P2', 'P3', 'P3', 'P4', 'P4', 'P5', 'P5', 'P5'])
     expect(periodLabel(undefined)).toBe('')
+  })
+
+  it('สีแถวเข้มอ่อนสลับกัน · เริ่มอ่อนใหม่ทุกครั้งที่เปลี่ยนช่วง', () => {
+    expect(periodShades(['P3', 'P3', 'P3', 'P2', 'P2', 'P1', '', ''])).toEqual([0, 1, 0, 0, 1, 0, 0, 1])
+    for (const p of ['P1', 'P2', 'P3', 'P4', 'P5']) {
+      const t = periodTint(p)!
+      expect(t.screen[0]).not.toBe(t.screen[1])
+      expect(t.excel[0]).not.toBe(t.excel[1])
+    }
   })
 })
