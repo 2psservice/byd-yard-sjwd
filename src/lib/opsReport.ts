@@ -41,7 +41,12 @@ export interface ListRow {
    *  break schedule the P1–P5 table counts with, so a car's row and the table always agree.
    *  '' when there is no recorded time (a sheet date alone) — the table leaves those out of the periods too. */
   period: string
+  /** ผู้บันทึก — who recorded the car at the station (the station user). A car the system closed from a
+   *  date an imported file put on the sheet, with no station record, reads FILE_CLOSED_BY instead. */
+  by: string
 }
+/** ผู้บันทึก of a car closed from a date in an imported file, never scanned at the station. */
+export const FILE_CLOSED_BY = 'จากไฟล์ · ไม่ได้สแกน'
 export interface DefectRowOut {
   no: number; vin: string; position: string; defect: string; date: string
   status: string; lot: string; remark: string
@@ -159,7 +164,7 @@ function lotMap(ctx: ReportCtx): Map<string, string> {
   return m
 }
 
-function toListRow(no: number, vin: string, ctx: ReportCtx, lots: Map<string, string>, opts?: { date?: string; lot?: string; remark?: string; period?: string }): ListRow {
+function toListRow(no: number, vin: string, ctx: ReportCtx, lots: Map<string, string>, opts?: { date?: string; lot?: string; remark?: string; period?: string; by?: string }): ListRow {
   const c = rowMap(ctx).get(vin)?.cells ?? {}
   return {
     no, vin,
@@ -170,6 +175,7 @@ function toListRow(no: number, vin: string, ctx: ReportCtx, lots: Map<string, st
     lot: opts?.lot ?? (c['LOT'] || lots.get(vin) || ''),
     remark: opts?.remark ?? '',
     period: opts?.period ?? '',
+    by: opts?.by ?? '',
   }
 }
 
@@ -227,7 +233,7 @@ const fmtTime = (ts?: number) => ts ? `${fmtDay(dayKeyOfTs(ts))} ${new Date(ts).
  * local midnight, which printed as a real-looking "00:00" and dropped every
  * such car into P1. A car known only from a sheet date has no time, and says so.
  */
-interface StationDone { vin: string; clock?: number; result?: 'OK' | 'NG'; lot?: string }
+interface StationDone { vin: string; clock?: number; by?: string; result?: 'OK' | 'NG'; lot?: string }
 
 /** The sheet column(s) each station's save stamps its date into (history `field` = the column label). */
 const STAMP_FIELD: Record<'PDI' | 'FINAL' | 'PM', RegExp> = {
@@ -237,7 +243,7 @@ const STAMP_FIELD: Record<'PDI' | 'FINAL' | 'PM', RegExp> = {
 }
 
 /**
- * When the station itself wrote this car's date — the row's own audit line.
+ * When — and by whom — the station itself recorded this car on the day: the row's own audit line.
  *
  * A car scanned at a station with NO queue item behind it on that device does
  * not go through recordCheck, so there is no `checkedAt` to read; the save stamps
@@ -248,34 +254,57 @@ const STAMP_FIELD: Record<'PDI' | 'FINAL' | 'PM', RegExp> = {
  * but in no period (PM 26/10: 35 done, P4 showed 8). The stamp's own audit entry
  * carries the moment it was written, and `src: 'scan'` marks it as a FIELD write —
  * an import writes no history at all and an office cell edit carries no `src`, so
- * neither can be mistaken for the yard recording the work.
+ * neither can be mistaken for the yard recording the work. A scan on a car whose
+ * sheet already held the day's date (an imported file wrote it first) logs a line
+ * too, with no cell change (stampStationDate), so that work keeps its time as well.
+ * The latest such line of the day wins.
  */
-function scanStampAt(r: TrackRow | undefined, day: string, type: 'PDI' | 'FINAL' | 'PM'): number | undefined {
-  let at: number | undefined
+function scanStamp(r: TrackRow | undefined, day: string, type: 'PDI' | 'FINAL' | 'PM'): { at: number; by: string } | undefined {
+  let hit: { at: number; by: string } | undefined
   for (const h of r?.history ?? []) {
     if (h.src !== 'scan' || !STAMP_FIELD[type].test((h.field ?? '').trim())) continue
     if (!cellOnDay(h.to, day)) continue
-    if (at === undefined || h.at > at) at = h.at
+    if (!hit || h.at > hit.at) hit = { at: h.at, by: h.by }
   }
-  return at
+  return hit
 }
+
+/** The sheet date cells each station's save writes on the day (a cheap pre-check before reading history). */
+const STAMP_KEYS: Record<'PDI' | 'FINAL' | 'PM', readonly string[]> = { PDI: PDI_KEYS, PM: PM_KEYS, FINAL: ['Final check date'] }
+
+/** Who closed a queue item that has no station record: the office user who ticked it, or the file whose
+ *  date the reconciler closed it from (it signs those 'ไฟล์ Co-Inspection'). */
+const closedBy = (i: QueueItem) => (i.doneBy === 'ไฟล์ Co-Inspection' ? FILE_CLOSED_BY : i.doneBy ?? '')
 
 function stationDone(ctx: ReportCtx, type: 'PDI' | 'FINAL' | 'PM'): StationDone[] {
   const out = new Map<string, StationDone>()
   const rows = rowMap(ctx)
   // a queue item closed from the sheet date has no checkedAt — the station's own stamp still knows the time
-  for (const i of checkedItems(ctx, type))
-    out.set(i.vin, { vin: i.vin, clock: i.checkedAt ?? scanStampAt(rows.get(i.vin), ctx.day, type), result: i.result, lot: i.queueName })
-  // …plus every car the SHEET says was done today that no queue item covers
-  // (scanned straight at the station, or its queue archived after the work).
-  if (type === 'PDI') {
-    for (const r of ctx.rows) {
-      if (out.has(r.vin)) continue
-      if (PDI_KEYS.some((k) => cellOnDay(r.cells[k], ctx.day)))
-        out.set(r.vin, { vin: r.vin, clock: scanStampAt(r, ctx.day, 'PDI') })
-    }
+  for (const i of checkedItems(ctx, type)) {
+    const s = i.checkedAt ? undefined : scanStamp(rows.get(i.vin), ctx.day, type)
+    out.set(i.vin, {
+      vin: i.vin, clock: i.checkedAt ?? s?.at,
+      by: i.checkedAt ? i.checkedBy || i.doneBy || '' : s?.by ?? closedBy(i),
+      result: i.result, lot: i.queueName,
+    })
   }
-  return [...out.values()]
+  // …plus every car the SHEET says was done today that no queue item covers
+  // (scanned straight at the station, or its queue archived / closed on an earlier day).
+  // PDI lists any PDI date of the day; PM and FINAL only a date the STATION wrote today (a scan line),
+  // so a PM date an imported file carries is never counted as the yard's work.
+  const lotOf = (vin: string) => {
+    let best: { at: number; name: string } | undefined
+    for (const q of typeQueues(ctx, type)) if (q.items.some((i) => i.vin === vin) && (!best || q.createdAt > best.at)) best = { at: q.createdAt, name: (q.name ?? '').trim() }
+    return best?.name
+  }
+  for (const r of ctx.rows) {
+    if (out.has(r.vin) || !STAMP_KEYS[type].some((k) => cellOnDay(r.cells[k], ctx.day))) continue
+    const s = scanStamp(r, ctx.day, type)
+    if (type !== 'PDI' && !s) continue
+    out.set(r.vin, { vin: r.vin, clock: s?.at, by: s?.by, lot: lotOf(r.vin) })
+  }
+  // in the order the yard did the work; a car with no recorded time (a file date alone) goes last
+  return [...out.values()].sort((a, b) => (a.clock ?? Infinity) - (b.clock ?? Infinity))
 }
 
 // ── list builders ───────────────────────────────────────────────────────────
@@ -283,7 +312,7 @@ function stationDone(ctx: ReportCtx, type: 'PDI' | 'FINAL' | 'PM'): StationDone[
 export function buildList(ctx: ReportCtx, id: string): ListRow[] {
   const lots = lotMap(ctx)
   const out: ListRow[] = []
-  const push = (vin: string, opts?: { date?: string; lot?: string; remark?: string; period?: string }) =>
+  const push = (vin: string, opts?: { date?: string; lot?: string; remark?: string; period?: string; by?: string }) =>
     out.push(toListRow(out.length + 1, vin, ctx, lots, opts))
 
   if (id === 'gatein') {
@@ -334,6 +363,7 @@ export function buildList(ctx: ReportCtx, id: string): ListRow[] {
       push(d.vin, {
         date: d.clock ? fmtTime(d.clock) : fmtDay(ctx.day),
         period: periodLabel(d.clock),
+        by: d.by ?? '',
         remark: d.result === 'NG' ? 'NG' : '',
         ...(id === 'pdi' || id === 'pm' ? { lot: d.lot ?? '' } : {}),
       })
@@ -544,16 +574,16 @@ function sheetWriters(wb: any) {
   const addListSheet = (name: string, rows: ListRow[], lotHeader = 'LOT\nM-D-lot', opts?: { period?: boolean }) => {
     const ws = wb.addWorksheet(name)
     const withP = !!opts?.period
-    const last = withP ? 9 : 8
+    const last = withP ? 10 : 8
     ws.columns = [{ width: 6 }, { width: 21 }, { width: 30 }, { width: 13 }, { width: 12 }, { width: 17 },
-      ...(withP ? [{ width: 8 }] : []), { width: 15 }, { width: 16 }]
+      ...(withP ? [{ width: 8 }, { width: 20 }] : []), { width: 15 }, { width: 16 }]
     const r1 = ws.addRow(['Total', rows.length])
     r1.font = { ...font, bold: true }
-    const hr = ws.addRow(['No.', 'Vin', 'Model Name', 'Model', 'Color', 'Date', ...(withP ? ['P1-P5'] : []), lotHeader, 'Remark'])
+    const hr = ws.addRow(['No.', 'Vin', 'Model Name', 'Model', 'Color', 'Date', ...(withP ? ['P1-P5', 'ผู้บันทึก'] : []), lotHeader, 'Remark'])
     hr.eachCell((cell: any) => { cell.font = { ...font, bold: true }; cell.border = border; cell.fill = fill('FFD9D9D9'); cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true } })
     if (withP) hr.getCell(7).font = { ...font, bold: true, color: { argb: 'FF0000FF' } } // blue, as on the P1–P5 sheet
     for (const r of rows) {
-      const row = ws.addRow([r.no, r.vin, r.modelName, r.model, r.color, r.date, ...(withP ? [r.period] : []), r.lot, r.remark])
+      const row = ws.addRow([r.no, r.vin, r.modelName, r.model, r.color, r.date, ...(withP ? [r.period, r.by] : []), r.lot, r.remark])
       row.eachCell({ includeEmpty: true }, (cell: any, col: number) => { if (col <= last) { cell.font = font; cell.border = border } })
       if (withP) { const pc = row.getCell(7); pc.alignment = { horizontal: 'center' }; pc.font = { ...font, bold: true } }
     }

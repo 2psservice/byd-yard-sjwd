@@ -170,6 +170,19 @@ export function stampStationDate(vin: string, type: QueueType, at?: number): boo
   const row = tr.rows[vin]
   if (!row) return false
   const d = dmyCell(at)
+  const day = parseDayCell(d)
+  // the same calendar day in whatever format a file wrote it ("7-Nov-26", "2026-11-07")
+  const sameDay = (val: string) => val === d || (day !== undefined && parseDayCell(val) === day)
+  // The yard did the work NOW even when the sheet already holds the day's date — an imported file wrote
+  // it first (07/11: 3D LCB PM cars closed from a file date showed no time and no one), or this is a
+  // corrected re-save. No slot is burnt, but the scan is logged with its time and who: that line is what
+  // the PDI / PM / FINAL lists read for Date, P1–P5 and ผู้บันทึก (scanStamp in opsReport).
+  const logScan = (key: string) => {
+    if (at !== undefined) return // a back-fill of work already done, not a live scan
+    const value = (row.cells[key] || '').trim()
+    const field = tr.columns.find((c) => c.key === key)?.label ?? key
+    tr.appendHistory(vin, { at: Date.now(), by: useYard.getState().currentUser, field, from: value, to: value, src: 'scan' })
+  }
   // idempotent per date: walk the ladder to the first empty slot, but if the
   // LAST filled slot already carries this same date this is a re-save of the
   // same inspection (double-tap / corrected entry) — don't burn another slot.
@@ -178,8 +191,10 @@ export function stampStationDate(vin: string, type: QueueType, at?: number): boo
     for (let i = 0; i < keys.length; i++) {
       const val = (row.cells[keys[i]] || '').trim()
       if (!val) { slot = keys[i]; break }
-      if (val === d && (i === keys.length - 1 || !(row.cells[keys[i + 1]] || '').trim()))
-        return false // latest stamp is already this date → same inspection re-saved
+      if (sameDay(val) && (i === keys.length - 1 || !(row.cells[keys[i + 1]] || '').trim())) {
+        logScan(keys[i]) // latest stamp is already this day → no new slot, but the scan is recorded
+        return false
+      }
     }
     if (!slot) return false // all slots already used
     // 'scan' — this only ever runs from a station save, and the entry's `at` is
@@ -191,7 +206,8 @@ export function stampStationDate(vin: string, type: QueueType, at?: number): boo
   if (type === 'PM') return ladder(PM_KEYS)
   if (type === 'PDI') return ladder(PDI_KEYS) // 1st PDI → "PDI"; each redo → next RE-PDI slot
   // FINAL — stamp the done-date into "Final check date"
-  tr.updateCell(vin, 'Final check date', d, 'scan')
+  if (sameDay((row.cells['Final check date'] || '').trim())) logScan('Final check date')
+  else tr.updateCell(vin, 'Final check date', d, 'scan')
   return true
 }
 
