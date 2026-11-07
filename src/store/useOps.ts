@@ -1192,6 +1192,35 @@ function gateInDay(cells: Record<string, string>): number | undefined {
   return parseDayCell(cells['Gate In (Rayong yard)'])
 }
 
+/**
+ * PM counts only what the yard itself recorded (admin, 07/11): a PM date an imported file put on the car
+ * is not PM work until someone at the station records it. The record is the row's own audit line on a PM
+ * date cell with `src: 'scan'` — every station save writes one (stampStationDate), an import writes none.
+ * Returns the latest such line whose date is on or after `since`.
+ */
+const PM_FIELD = /^PM\s*#?\d+$/i
+function pmScanSince(r: TrackRow | undefined, since: number): { at: number; by: string } | undefined {
+  let hit: { at: number; by: string } | undefined
+  for (const h of r?.history ?? []) {
+    if (h.src !== 'scan' || !PM_FIELD.test((h.field ?? '').trim())) continue
+    const day = parseDayCell(h.to)
+    if (day === undefined || day < since) continue
+    if (!hit || h.at > hit.at) hit = { at: h.at, by: h.by }
+  }
+  return hit
+}
+
+/** From this day, a PM item the system closed from an imported file's date goes back to waiting
+ *  (the rule above came in on 07/11/2026; earlier closures stay as they were). */
+export const PM_FILE_CLOSE_REOPEN_FROM = new Date(2026, 10, 7).getTime()
+
+/** A PM item closed only from a file's date — no station record, no scan line behind it. */
+function isFileClosedPm(q: WorkQueue, i: QueueItem, r: TrackRow | undefined): boolean {
+  if (queueTypeOf(q) !== 'PM' || !i.done || i.gatedOut || hasStationRecord(i) || i.doneBy !== 'ไฟล์ Co-Inspection') return false
+  if ((i.doneAt ?? 0) < PM_FILE_CLOSE_REOPEN_FROM) return false
+  return !pmScanSince(r, ladderJoinDay(q, i))
+}
+
 /** Did this queue item ever see a real station action? recordCheck stamps
  *  stage/result/checkedBy/checkedAt and returnToSlot stamps returnedAt — a tick
  *  that carries none of those was never produced by the station itself. */
@@ -1453,6 +1482,24 @@ export function reconcileGateOuts() {
       if (isStationQueue && isStaleLadderClosure(q, i)) {
         changed = true
         return { ...i, done: false, doneAt: undefined, doneBy: undefined, stamped: undefined }
+      }
+      // repair: a PM item closed from an imported file's date goes back to waiting, so the yard scans it.
+      // manualUndoneAt: a device still on the old version then leaves it alone instead of closing it again
+      if (isStationQueue && isFileClosedPm(q, i, rows[i.vin])) {
+        changed = true
+        return { ...i, done: false, doneAt: undefined, doneBy: undefined, stamped: undefined, manualUndoneAt: Date.now() }
+      }
+      // PM: only the yard's own record closes it — a station scan line since the car joined (and since any
+      // manual un-tick). A PM date that came from a file is left on the car but closes nothing.
+      if (ladder && !i.done && queueTypeOf(q) === 'PM') {
+        const r = rows[i.vin]
+        const otherYard = !!q.site && !!r?.site && r.site !== q.site
+        const s = r && !otherYard ? pmScanSince(r, ladderJoinDay(q, i)) : undefined
+        if (s && s.at > (i.manualUndoneAt ?? 0)) {
+          changed = true
+          return { ...i, done: true, doneAt: s.at, doneBy: s.by, stamped: true }
+        }
+        return i
       }
       if (ladder && !i.done && !i.manualUndoneAt) {
         const r = rows[i.vin]
