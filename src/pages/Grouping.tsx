@@ -1,4 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+// ตัวอักษรแบบหน้าเว็บ Apple (หน้า Grouping): เครื่อง Apple ใช้ SF ของระบบ · เครื่องอื่นใช้ Inter + Anuphan
+// (ไทยทรงไม่มีหัวกลม โค้งมนแบบ SF Pro TH) โหลดเฉพาะชุดอักษรไทย เมื่อเปิดหน้านี้เท่านั้น
+import '@fontsource/anuphan/thai-400.css'
+import '@fontsource/anuphan/thai-500.css'
+import '@fontsource/anuphan/thai-600.css'
+import '@fontsource/anuphan/thai-700.css'
 import { Layers, Upload, Printer, MapPin, Loader2, FileSpreadsheet, CheckCircle2, AlertTriangle, ListChecks, X, Save, FileText, Pencil, CalendarDays, ChevronLeft, ChevronRight, Check, History } from 'lucide-react'
 import { useYard, useUnits } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
@@ -596,7 +602,7 @@ export function Grouping() {
   useStickyBar(barRef, tableRef, !!sheetMeta && total > 0)
 
   return (
-    <div className="w-full">
+    <div className="w-full apple-type" data-apple-type>
       <PageHead
         title={<span className="flex items-center gap-2"><Layers size={20} style={{ color: 'var(--brand)' }} /> Grouping to Dealer</span>}
         sub={`แผนส่งมอบรถให้ดีลเลอร์ · นำเข้าไฟล์ Excel แล้วระบบใส่เลข Grouping ให้รถ · พิมพ์เอกสารส่งมอบ${siteName ? ` · ${siteName}` : ''}`}
