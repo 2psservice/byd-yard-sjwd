@@ -40,18 +40,30 @@ export interface GroupingParseResult {
   siblings: { sheet: string; day: string }[]
 }
 
-/** Per-site config: which workbook sheet to read + the yard-location prefix
- *  ("N-V41"). Prefix defaults to the site's first letter (NYB→N, Rayong→R). */
+/**
+ * Yard prefix for a location on the printed sheets ("60-D02", "3DL-D02"): the yard's name with spaces and
+ * symbols taken out, first 3 characters, upper case — "3D LCB" → "3DL", "3D RINCHA" → "3DR",
+ * "3D THUNGKRAT" → "3DT", "NYB2 Phase 2" → "NYB", "Rayong" → "RAY". A "<number> Rai" yard goes by its
+ * number ("60 RAI" → "60", "20 Rai" → "20", "38 Rai" → "38"), as the yards are called.
+ * (admin 09/11 — it used to be the first letter, so 3D LCB and 3D RINCHA both printed "3-D02".)
+ */
+export function yardLocPrefix(siteName: string): string {
+  const s = (siteName || '').trim()
+  const rai = s.match(/(\d+)\s*rai/i)
+  if (rai) return rai[1]
+  return s.replace(/[^A-Za-z0-9]/g, '').slice(0, 3).toUpperCase() || s.charAt(0).toUpperCase() || 'X'
+}
+
+/** Per-site config: which workbook sheet to read + the yard-location prefix (yardLocPrefix). */
 export function siteGroupingConfig(siteName: string): { sheetKeys: string[]; prefix: string } {
   const n = (siteName || '').toLowerCase()
-  const firstLetter = (siteName || 'X').trim().charAt(0).toUpperCase() || 'X'
-  if (n.includes('nyb')) return { sheetKeys: ['nyb'], prefix: 'N' }
-  if (n.includes('rayong')) return { sheetKeys: ['ry', 'rayong'], prefix: 'R' }
-  // the Auto Tran yards are told apart by their RAI number — both start with "A",
-  // so a first-letter prefix would render 20 Rai and 38 Rai identically ("A-…")
-  if (n.includes('38')) return { sheetKeys: ['38'], prefix: '38' }
-  if (n.includes('20')) return { sheetKeys: ['20'], prefix: '20' }
-  return { sheetKeys: [n.replace(/[^a-z0-9]/g, '').slice(0, 3)].filter(Boolean), prefix: firstLetter }
+  const prefix = yardLocPrefix(siteName)
+  if (n.includes('nyb')) return { sheetKeys: ['nyb'], prefix }
+  if (n.includes('rayong')) return { sheetKeys: ['ry', 'rayong'], prefix }
+  // the Auto Tran yards are told apart by their RAI number
+  if (n.includes('38')) return { sheetKeys: ['38'], prefix }
+  if (n.includes('20')) return { sheetKeys: ['20'], prefix }
+  return { sheetKeys: [n.replace(/[^a-z0-9]/g, '').slice(0, 3)].filter(Boolean), prefix }
 }
 
 /** Block code inside a yard location: a single or doubled letter collapses to one
