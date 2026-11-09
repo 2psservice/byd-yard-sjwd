@@ -7,6 +7,7 @@ import {
   Settings as SettingsIcon, MapPin, Plus, Trash2, Check, Building2,
   Car, Hash, Search, ChevronLeft, ChevronRight, AlertCircle, Pencil, X,
   ShieldCheck, Wrench, ScanLine, ClipboardCheck,
+  Users, ArrowLeftRight, ListChecks, MapPinOff, CalendarX, Layers, Database,
 } from 'lucide-react'
 import { useYard, useUnits } from '../store/useYard'
 import type { UserRole } from '../types'
@@ -943,11 +944,129 @@ function FormRow({ label, required, children }: { label: string; required?: bool
   )
 }
 
+/** หน้า ตั้งค่า: เมนูด้านซ้ายแบ่งเป็นหมวด เปิดทีละหน้า (มือถือ = แถบเลื่อนด้านบน)
+ *  เดิมทุกส่วนต่อกันยาวหน้าเดียว ผู้ใช้ VIN เครื่องมือซ่อม 7 ตัว แล้ว Site งานไปอยู่ท้ายสุด
+ *  งานประจำ (ผู้ใช้ / Site / VIN) ปนกับเครื่องมือซ่อมข้อมูลที่ใช้ครั้งเดียว */
+type SettingsTab = 'users' | 'sites' | 'vins' | 'fix-auto' | 'fix-60rai' | 'fix-list' | 'fix-orphan' | 'fix-dates' | 'fix-stacked' | 'fix-audit'
+const SETTINGS_TAB_KEY = 'sjwd-settings-tab'
+const SETTINGS_GROUPS: { title: string; hint?: string; items: { id: SettingsTab; label: string; desc: string; icon: React.ReactNode }[] }[] = [
+  { title: 'ทั่วไป', items: [
+    { id: 'users', label: 'ผู้ใช้งาน', desc: 'บัญชี รหัสผ่าน และสิทธิ์การใช้งาน', icon: <Users size={16} /> },
+    { id: 'sites', label: 'Site งาน', desc: 'ยาร์ดที่ใช้งาน เพิ่ม / แก้ชื่อ / ลบ', icon: <Building2 size={16} /> },
+    { id: 'vins', label: 'จัดการ VIN', desc: 'เพิ่ม / ลบ VIN ของยาร์ดที่เลือก', icon: <Hash size={16} /> },
+  ] },
+  { title: 'ซ่อมข้อมูล', hint: 'ใช้เมื่อได้รับแจ้งเท่านั้น', items: [
+    { id: 'fix-auto', label: 'ล้างสถานะที่ระบบเติมเอง', desc: 'Final Status / Vin Of Status จากตัวเติมอัตโนมัติ (#518)', icon: <Wrench size={16} /> },
+    { id: 'fix-60rai', label: 'ย้ายยาร์ดผิด 60 RAI → 3D LCB', desc: 'คืนรอบเดิมให้รถที่ถูกย้ายผิด', icon: <ArrowLeftRight size={16} /> },
+    { id: 'fix-list', label: 'ย้ายยาร์ดผิด (วางรายชื่อ)', desc: 'วาง VIN ที่ถูกย้ายยาร์ดผิดเอง', icon: <ListChecks size={16} /> },
+    { id: 'fix-orphan', label: 'ตำแหน่งที่ไม่มีการสแกน', desc: 'ล้างตำแหน่งที่ไม่มีใครสแกนจริง', icon: <MapPinOff size={16} /> },
+    { id: 'fix-dates', label: 'วันที่ตรวจ PDI/PM/FINAL หาย', desc: 'เติมวันที่ตรวจคืนจากคิวงาน', icon: <CalendarX size={16} /> },
+    { id: 'fix-stacked', label: 'รถซ้อนช่องกัน', desc: 'แยกรถที่ลงช่องจอดเดียวกัน', icon: <Layers size={16} /> },
+    { id: 'fix-audit', label: 'ตรวจตาราง station_checks', desc: 'ตรวจผลตรวจแยกยาร์ด อ่านอย่างเดียว', icon: <Database size={16} /> },
+  ] },
+]
+const SETTINGS_ITEMS = SETTINGS_GROUPS.flatMap((g) => g.items)
+const readSettingsTab = (): SettingsTab => {
+  try { const v = localStorage.getItem(SETTINGS_TAB_KEY) as SettingsTab | null; return v && SETTINGS_ITEMS.some((i) => i.id === v) ? v : 'users' } catch { return 'users' }
+}
+
 export function Settings() {
+  const appUsers = useYard((s) => s.appUsers)
+  const sites = useYard((s) => s.sites)
+  const [tab, setTabState] = useState<SettingsTab>(readSettingsTab)
+  const setTab = (t: SettingsTab) => { setTabState(t); try { localStorage.setItem(SETTINGS_TAB_KEY, t) } catch { /* private mode */ } }
+  const counts: Partial<Record<SettingsTab, number>> = { users: appUsers.length, sites: sites.length }
+  const current = SETTINGS_ITEMS.find((i) => i.id === tab) ?? SETTINGS_ITEMS[0]
+  const isFix = tab.startsWith('fix-')
+
+  return (
+    <div className="w-full">
+      <PageHead
+        title={<span className="flex items-center gap-2"><SettingsIcon size={20} style={{ color: 'var(--brand)' }} /> ตั้งค่า</span>}
+        sub="ผู้ใช้งาน · Site งาน · VIN และเครื่องมือซ่อมข้อมูลสำหรับแอดมิน"
+      />
+
+      {/* มือถือ / จอแคบ: เมนูเป็นแถบเลื่อนแนวนอน */}
+      <nav className="lg:hidden -mx-1 mb-3 overflow-x-auto" aria-label="หมวดการตั้งค่า">
+        <div className="flex gap-1.5 px-1 pb-1 w-max">
+          {SETTINGS_GROUPS.map((g, gi) => (
+            <div key={g.title} className="flex gap-1.5 items-center">
+              {gi > 0 && <span className="text-[10.5px] font-bold uppercase tracking-wider px-1.5 whitespace-nowrap" style={{ color: 'var(--faint)' }}>{g.title}</span>}
+              {g.items.map((it) => {
+                const on = it.id === tab
+                return (
+                  <button key={it.id} data-settings-tab={it.id} onClick={() => setTab(it.id)}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-[12.5px] font-semibold whitespace-nowrap transition"
+                    style={on ? { background: 'var(--brand)', color: '#fff' } : { background: 'var(--panel)', color: 'var(--text)', border: '1px solid var(--line)' }}>
+                    <span style={{ color: on ? '#fff' : 'var(--muted)' }}>{it.icon}</span>{it.label}
+                    {counts[it.id] != null && <span className="tabular text-[11px] opacity-80">{counts[it.id]}</span>}
+                  </button>
+                )
+              })}
+            </div>
+          ))}
+        </div>
+      </nav>
+
+      <div className="flex gap-5 items-start">
+        {/* เดสก์ท็อป: เมนูด้านซ้าย ติดอยู่กับที่ */}
+        <nav className="hidden lg:block w-[264px] shrink-0 sticky top-4" aria-label="หมวดการตั้งค่า">
+          <div className="panel p-2">
+            {SETTINGS_GROUPS.map((g, gi) => (
+              <div key={g.title} className={gi > 0 ? 'mt-2 pt-2 border-t hairline' : ''}>
+                <div className="px-2.5 pt-1.5 pb-1 flex items-baseline gap-2">
+                  <span className="text-[10.5px] font-bold uppercase tracking-wider" style={{ color: 'var(--faint)' }}>{g.title}</span>
+                  {g.hint && <span className="text-[10.5px]" style={{ color: 'var(--faint)' }}>· {g.hint}</span>}
+                </div>
+                {g.items.map((it) => {
+                  const on = it.id === tab
+                  return (
+                    <button key={it.id} data-settings-tab={it.id} onClick={() => setTab(it.id)} aria-current={on ? 'page' : undefined}
+                      className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-left transition"
+                      style={on ? { background: 'var(--brand-soft, #eef4ff)', color: 'var(--brand)' } : { color: 'var(--text)' }}>
+                      <span className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0"
+                        style={on ? { background: 'var(--brand)', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>{it.icon}</span>
+                      <span className="min-w-0 flex-1 text-[13px] font-semibold leading-tight">{it.label}</span>
+                      {counts[it.id] != null && (
+                        <span className="tabular text-[11px] font-bold px-1.5 py-0.5 rounded-md"
+                          style={on ? { background: 'var(--brand)', color: '#fff' } : { background: 'var(--chip)', color: 'var(--muted)' }}>{counts[it.id]}</span>
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
+            ))}
+          </div>
+        </nav>
+
+        <main className="min-w-0 flex-1" data-settings-view={tab}>
+          {isFix && (
+            <div className="mb-3 px-4 py-3 rounded-xl flex items-start gap-2.5 text-[12.5px] leading-relaxed"
+              style={{ background: 'rgba(217,119,6,0.08)', border: '1px solid rgba(217,119,6,0.25)', color: 'var(--text)' }}>
+              <AlertCircle size={16} className="shrink-0 mt-0.5" style={{ color: '#d97706' }} />
+              <div><b>{current.label}</b> · {current.desc}<br />
+                <span style={{ color: 'var(--muted)' }}>เครื่องมือซ่อมข้อมูลเป็นงานครั้งเดียว ใช้เมื่อได้รับแจ้งว่าข้อมูลเพี้ยนเท่านั้น กดซ้ำได้ ไม่กระทบรถที่ถูกต้องอยู่แล้ว</span></div>
+            </div>
+          )}
+          {tab === 'users' && <UserManager />}
+          {tab === 'sites' && <SiteManager />}
+          {tab === 'vins' && <VinManager />}
+          {tab === 'fix-auto' && <DataRepair />}
+          {tab === 'fix-60rai' && <WrongTransferRepair />}
+          {tab === 'fix-list' && <TransferRepairByList />}
+          {tab === 'fix-orphan' && <OrphanPositionRepair />}
+          {tab === 'fix-dates' && <StationDateRepair />}
+          {tab === 'fix-stacked' && <StackedSlotRepair />}
+          {tab === 'fix-audit' && <StationChecksAudit />}
+        </main>
+      </div>
+    </div>
+  )
+}
+
+function SiteManager() {
   const {
     sites, currentSite, addSite, updateSite, removeSite, setCurrentSite, toast,
-    currentUser, setUser, currentDriver, setDriver,
-    lang, setLang, planMode, setPlanMode, groupModelsInRow, setGroupModels,
   } = useYard()
 
   const [name, setName] = useState('')
@@ -980,28 +1099,6 @@ export function Settings() {
   }
 
   return (
-    <div className="w-full">
-      <PageHead
-        title={<span className="flex items-center gap-2"><SettingsIcon size={20} style={{ color: 'var(--brand)' }} /> ตั้งค่า</span>}
-        sub="จัดการ Site งาน และการตั้งค่าระบบ"
-      />
-
-      {/* ── User permissions ── */}
-      <UserManager />
-
-      {/* ── VIN management ── */}
-      <VinManager />
-
-      {/* ── Data repair (one-off admin actions) ── */}
-      <DataRepair />
-      <WrongTransferRepair />
-      <TransferRepairByList />
-      <OrphanPositionRepair />
-      <StationChecksAudit />
-      <StackedSlotRepair />
-      <StationDateRepair />
-
-      {/* ── Site management ── */}
       <section className="panel overflow-hidden mb-4">
         <div className="px-4 py-3 border-b hairline flex items-center gap-2">
           <Building2 size={16} style={{ color: 'var(--brand)' }} />
@@ -1080,8 +1177,6 @@ export function Settings() {
           })}
         </div>
       </section>
-
-    </div>
   )
 }
 
