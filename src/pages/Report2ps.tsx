@@ -2,8 +2,8 @@
  * Report 2PS — Report Inspection Tracking Status (On Yard): every station
  * event (Gate-in / PDI / PM / Final Check / ช่าง) and every Defect event
  * (found / status change) recorded by this app, for cars currently on yard.
- * The Defect tab lists only what the yard's own inspection stations found
- * (Gate-in / Walk Around Check / Update Damage). A date range narrows both
+ * The Defect tab lists every defect the yard's own people recorded, at any
+ * station; only Co-Inspection file imports stay out. A date range narrows both
  * tabs and the Excel export.
  */
 import { useMemo, useState } from 'react'
@@ -20,7 +20,7 @@ import { realDefects } from '../lib/finalCheckList'
 import { downloadBlob } from '../lib/defectReport'
 import { dateKey } from '../lib/dayKey'
 import type { TrackRow } from '../lib/excelTracking'
-import type { Unit } from '../types'
+import type { Damage, Unit } from '../types'
 
 const PAGE_SIZE = 20
 const isPreGateInQueue = (name: string) => name.trim().startsWith('(')
@@ -50,11 +50,15 @@ interface DefectEvent {
 /** Station labels are mostly already English ("PDI", "Gate-in", "Final Check")
  *  except the couple recorded bilingual for Thai readability on screen — strip
  *  those down to English-only for the export. */
-/** Defect tab: only the yard's own inspection stations. PDI / PM / ช่าง / Co-Inspection
- *  imports / manual entries are not used for this report (the office's ask). */
-export const DEFECT_STATIONS = ['Walk Around Check', 'Update Damage', 'Gate-in'] as const
-const DEFECT_STATION_SET = new Set<string>(DEFECT_STATIONS.map((s) => s.toLowerCase()))
-export const isReportDefectStation = (label: string) => DEFECT_STATION_SET.has(label.trim().toLowerCase())
+/** Defect tab: every defect the yard's own people recorded in the app, at any station
+ *  (Gate-in / Walk Around Check / Update Damage / PDI / Final Check / ช่าง / เพิ่มเอง).
+ *  Only the Co-Inspection file imports stay out: they are the other parties' findings
+ *  and buried the yard's own (24/10). Until 09/11 this was an allow-list of three
+ *  stations, so a defect a PDI inspector or the office recorded on a car showed on
+ *  the car's Damages tab but never here. */
+const IMPORTED_DEFECT_SOURCES = new Set(['yardDefect', 'factoryDefect', 'whaleDefect', 'accessoryImport'])
+export const isReportDefect = (d: Pick<Damage, 'station' | 'source'>) =>
+  !IMPORTED_DEFECT_SOURCES.has(d.source ?? '') && !/^co-inspection/i.test((d.station ?? '').trim())
 
 const STATION_EN: Record<string, string> = {
   'ช่าง (Mechanic)': 'Mechanic',
@@ -102,8 +106,8 @@ function buildDefectEvents(units: Unit[]): DefectEvent[] {
   const out: DefectEvent[] = []
   for (const u of units) {
     for (const d of realDefects(u.damages)) {
+      if (!isReportDefect(d)) continue
       const station = stationLabelOf(d)
-      if (!isReportDefectStation(station)) continue
       const area = partLabel(d, 'th') || partLabel(d, 'en')
       const defect = defectLabel(d, 'th') || defectLabel(d, 'en')
       const areaEn = partBilingual(d).en
