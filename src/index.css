@@ -460,7 +460,18 @@ kbd.k { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10.5p
 .gtable tr.alt td.span { border-left-color: #e3df3f; border-right-color: #e3df3f; }
 .gtable th:first-child, .gtable td:first-child { padding-left: 20px; }
 .gtable th:last-child, .gtable tr > td:last-child:not(.span) { padding-right: 20px; }
-.gtable tr.gstart td { border-top: 1px solid #bdbdc2; }
+.gtable tr.gstart td { border-top: 2px solid #3a3a3c; }
+/* หน้า Grouping: ตัวอักษรแบบหน้าเว็บ Apple — SF ของระบบบนเครื่อง Apple, ที่อื่น Inter (ละติน) + Anuphan (ไทย)
+   VIN / ตำแหน่งจอดใช้ตัวเดียวกันแบบตัวเลขกว้างเท่ากัน แทนตัวพิมพ์ดีด · สีตัวอักษร #1d1d1f แบบ Apple */
+.apple-type {
+  --apple-font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro TH', 'Inter', 'Anuphan', 'IBM Plex Sans Thai', system-ui, sans-serif;
+  font-family: var(--apple-font); letter-spacing: -0.01em;
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+}
+.apple-type input, .apple-type button, .apple-type select, .apple-type textarea { font-family: inherit; }
+.apple-type .vin, .apple-type .gloc, .apple-type .mono { font-family: var(--apple-font); font-variant-numeric: tabular-nums; letter-spacing: 0.01em; }
+.apple-type .gtable { color: #1d1d1f; }
+.apple-type .gtable th { font-weight: 600; letter-spacing: -0.005em; }
 /* hover: เงาเทาบาง ๆ ทับ แถวเหลืองยังเป็นเหลือง · ติ๊กเลือก: แถวเป็นสีฟ้าอ่อนชัด ๆ ทั้งแถวขาวและแถวเหลือง */
 .gtable tbody tr:hover td { box-shadow: inset 0 0 0 9999px rgba(0, 0, 0, 0.04); }
 .gtable tr.sel td, .gtable tr.alt.sel td { background: #dcebff; border-bottom-color: #c4dbfb; }
