@@ -1,9 +1,10 @@
 /**
- * Report 2PS — Report Inspection Tracking Status (On Yard): every station
- * event (Gate-in / PDI / PM / Final Check / ช่าง) and every Defect event
- * (found / status change) recorded by this app, for cars currently on yard.
- * The Defect tab lists every defect the yard's own people recorded, at any
- * station; only Co-Inspection file imports stay out. A date range narrows both
+ * Report 2PS — Report Inspection Tracking Status: every station event
+ * (Gate-in / PDI / PM / Final Check / ช่าง) and every Defect event (found /
+ * status change) recorded by this app, for every car that came into this yard:
+ * still here or already gone (a car sent to another yard up to when it left).
+ * The Defect tab lists only what the yard's own inspection stations found
+ * (Gate-in / Walk Around Check / Update Damage). A date range narrows both
  * tabs and the Excel export.
  */
 import { useMemo, useState } from 'react'
@@ -14,13 +15,13 @@ import { useActiveQueues, queueTypeOf, isSequenceQueue, type QueueType, type Wor
 import { PageHead, Segmented } from '../components/ui'
 import { partLabel, defectLabel, partBilingual, defectBilingual } from '../lib/damageLabel'
 import { stationLabelOf } from '../lib/carHistory'
-import { deriveCarStatus, IN_YARD_STATUSES } from '../lib/carStatus'
-import { rowsForSite } from '../lib/siteScope'
+import { deriveCarStatus } from '../lib/carStatus'
+import { rowsForSite, departureFromSite, DEPARTURE_SETTLE_MS } from '../lib/siteScope'
 import { realDefects } from '../lib/finalCheckList'
 import { downloadBlob } from '../lib/defectReport'
 import { dateKey } from '../lib/dayKey'
 import type { TrackRow } from '../lib/excelTracking'
-import type { Damage, Unit } from '../types'
+import type { Unit } from '../types'
 
 const PAGE_SIZE = 20
 const isPreGateInQueue = (name: string) => name.trim().startsWith('(')
@@ -50,15 +51,11 @@ interface DefectEvent {
 /** Station labels are mostly already English ("PDI", "Gate-in", "Final Check")
  *  except the couple recorded bilingual for Thai readability on screen — strip
  *  those down to English-only for the export. */
-/** Defect tab: every defect the yard's own people recorded in the app, at any station
- *  (Gate-in / Walk Around Check / Update Damage / PDI / Final Check / ช่าง / เพิ่มเอง).
- *  Only the Co-Inspection file imports stay out: they are the other parties' findings
- *  and buried the yard's own (24/10). Until 09/11 this was an allow-list of three
- *  stations, so a defect a PDI inspector or the office recorded on a car showed on
- *  the car's Damages tab but never here. */
-const IMPORTED_DEFECT_SOURCES = new Set(['yardDefect', 'factoryDefect', 'whaleDefect', 'accessoryImport'])
-export const isReportDefect = (d: Pick<Damage, 'station' | 'source'>) =>
-  !IMPORTED_DEFECT_SOURCES.has(d.source ?? '') && !/^co-inspection/i.test((d.station ?? '').trim())
+/** Defect tab: only the yard's own inspection stations. PDI / PM / ช่าง / Co-Inspection
+ *  imports / manual entries are not used for this report (the office's ask). */
+export const DEFECT_STATIONS = ['Walk Around Check', 'Update Damage', 'Gate-in'] as const
+const DEFECT_STATION_SET = new Set<string>(DEFECT_STATIONS.map((s) => s.toLowerCase()))
+export const isReportDefectStation = (label: string) => DEFECT_STATION_SET.has(label.trim().toLowerCase())
 
 const STATION_EN: Record<string, string> = {
   'ช่าง (Mechanic)': 'Mechanic',
@@ -106,8 +103,8 @@ function buildDefectEvents(units: Unit[]): DefectEvent[] {
   const out: DefectEvent[] = []
   for (const u of units) {
     for (const d of realDefects(u.damages)) {
-      if (!isReportDefect(d)) continue
       const station = stationLabelOf(d)
+      if (!isReportDefectStation(station)) continue
       const area = partLabel(d, 'th') || partLabel(d, 'en')
       const defect = defectLabel(d, 'th') || defectLabel(d, 'en')
       const areaEn = partBilingual(d).en
@@ -179,24 +176,42 @@ export function Report2ps() {
   // แถวหลักเป็นตัวตัดสินยาร์ดของรถ · unit ที่ไม่มีแถวหลักเลย (ของเก่า/กำพร้า)
   // ยังใช้กติกาเดิม จะได้ไม่มีข้อมูลหายไปเงียบๆ
   const hasRow = useMemo(() => new Set(allRows.map((r) => r.vin)), [allRows])
+  // รถที่ยาร์ดนี้ส่งออกไปยาร์ดอื่นแล้ว: แถวสดย้ายไปเป็นของปลายทาง (rowsForSite ไม่นับแล้ว)
+  // แต่ประวัติที่ยาร์ดนี้บันทึกไว้ก่อนรถออกยังเป็นของยาร์ดนี้ · vin → เวลาที่รถออก (+ ช่วงเผื่อ)
+  // เหตุการณ์หลังเวลานั้นเป็นงานของปลายทาง ไม่นับ (กติกาเดียวกับหน้า Unit: departedViewFrom)
+  const departedCut = useMemo(() => {
+    const m = new Map<string, number>()
+    if (!currentSite) return m
+    for (const r of allRows) {
+      if (rowByVin.has(r.vin)) continue
+      const d = departureFromSite(r.cells, currentSite, sites)
+      if (d) m.set(r.vin, d.at + DEPARTURE_SETTLE_MS)
+    }
+    return m
+  }, [allRows, rowByVin, currentSite, sites])
   const units = useMemo(() => {
     if (!currentSite) return allUnits
-    return allUnits.filter((u) => (hasRow.has(u.vin) ? rowByVin.has(u.vin) : !u.site || u.site === currentSite))
-  }, [allUnits, currentSite, rowByVin, hasRow])
+    return allUnits.filter((u) => (hasRow.has(u.vin) ? rowByVin.has(u.vin) || departedCut.has(u.vin) : !u.site || u.site === currentSite))
+  }, [allUnits, currentSite, rowByVin, hasRow, departedCut])
   const queues = useMemo(() => (currentSite ? allQueues.filter((q) => !q.site || q.site === currentSite) : allQueues), [allQueues, currentSite])
 
-  // "(On Yard)" — currently in the yard, not departed. Same status set the
-  // Dashboard's "In Yard" count uses, so the two numbers agree.
-  const onYardUnits = useMemo(
+  // รถทุกคันที่เคยเข้ายาร์ดนี้ ทั้งที่ยังอยู่และที่ออกไปแล้ว (09/11: LC0CE4CBXT4335837 สแกน
+  // Gate-out 06/11 แล้วค้นหาประวัติ Defect ไม่เจอ เพราะเดิมนับเฉพาะรถที่ยังอยู่ในลาน)
+  // ไม่นับเฉพาะรถ Pre Gate-in ที่ยังมาไม่ถึง — ยังไม่มีอะไรเกิดที่ยาร์ดนี้
+  const reportUnits = useMemo(
     () => units.filter((u) => {
+      if (departedCut.has(u.vin)) return true
       const row = rowByVin.get(u.vin)
-      return row ? IN_YARD_STATUSES.has(deriveCarStatus(row.cells)) : u.status !== 'DEPARTED' && u.status !== 'EXPECTED'
+      return row ? deriveCarStatus(row.cells) !== 'Pre Gate-in' : u.status !== 'EXPECTED'
     }),
-    [units, rowByVin],
+    [units, rowByVin, departedCut],
   )
+  // a car sent on to another yard: only what happened here, up to the moment it left
+  const beforeLeaving = <T extends { vin: string; at: number }>(evs: T[]) =>
+    departedCut.size ? evs.filter((e) => { const cut = departedCut.get(e.vin); return cut == null || e.at <= cut }) : evs
 
-  const stationEvents = useMemo(() => buildStationEvents(onYardUnits, rowByVin, queues), [onYardUnits, rowByVin, queues])
-  const defectEvents = useMemo(() => buildDefectEvents(onYardUnits), [onYardUnits])
+  const stationEvents = useMemo(() => beforeLeaving(buildStationEvents(reportUnits, rowByVin, queues)), [reportUnits, rowByVin, queues, departedCut]) // eslint-disable-line react-hooks/exhaustive-deps
+  const defectEvents = useMemo(() => beforeLeaving(buildDefectEvents(reportUnits)), [reportUnits, departedCut]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const q = search.trim().toUpperCase()
   const lo = from ? dayStart(from) : -Infinity
@@ -240,7 +255,7 @@ export function Report2ps() {
     <div>
       <PageHead
         title="Report 2PS"
-        sub="Report Inspection Tracking Status (On Yard) — ประวัติการเคลื่อนไหวทุก activity ของรถในลาน"
+        sub="Report Inspection Tracking Status — ประวัติการเคลื่อนไหวทุก activity ของรถที่เข้าลานนี้ รวมรถที่ออกไปแล้ว"
         right={
           <button className="btn btn-primary" onClick={doExport} disabled={exporting || !list.length} data-report-export
             title="ดาวน์โหลดเป็นไฟล์ Excel ตามแท็บ ช่วงวันที่ และคำค้นที่เลือกไว้">
