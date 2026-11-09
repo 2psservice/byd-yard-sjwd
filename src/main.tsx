@@ -20,6 +20,7 @@ import '@fontsource/jetbrains-mono/700.css'
 import App from './App'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { installRipple } from './lib/ripple'
+import { installInvisibleCharGuard } from './lib/invisibleChars'
 import { escapeInAppBrowser } from './lib/inAppBrowser'
 import { reloadForChunkError } from './lib/chunkReload'
 import { markAutoUpdate, readLastAutoUpdate, shouldAutoUpdate, shouldAutoUpdateOnLogin, shouldAutoUpdateOnResume, trackInteraction } from './lib/autoUpdate'
@@ -32,6 +33,8 @@ escapeInAppBrowser()
 // ไม่ preventDefault: ถ้ารีโหลดไม่ได้ (เพิ่งรีโหลดไป) ข้อผิดพลาดไปถึง ErrorBoundary ตามเดิม
 window.addEventListener('vite:preloadError', (e) => { reloadForChunkError(); void e })
 if (isLiteFx) document.documentElement.classList.add('lite-fx')
+// VIN ที่คัดลอกมาจาก Excel / LINE มักมีตัวอักษรล่องหนติดมา ค้นแล้วไม่เจอ → ตัดทิ้งทุกช่องข้อความ (ดู lib/invisibleChars)
+installInvisibleCharGuard()
 
 // PWA update flow: poll for a new deploy every 60s, but NEVER force-reload an
 // open session (the old auto-reload wiped in-progress checklists/forms within
