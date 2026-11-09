@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
  *  - วันที่ PM ที่มาจากไฟล์ ไม่ปิดงานในคิว PM แล้ว (รถยังรอทำ จนกว่าหน้างานจะสแกน)
  *  - หน้างานสแกนที่สถานี (เครื่องที่ไม่มีคิวนั้น) → ปิดงานด้วยเวลาและชื่อคนสแกน
  *  - รายการที่ระบบเคยปิดจากไฟล์ตั้งแต่ 07/11 เปิดกลับเป็นรอทำ · ก่อนหน้านั้นคงเดิม
- *  - PDI / FINAL ยังทำงานแบบเดิม
+ *  - PDI / FINAL ใช้กติกาเดียวกันตั้งแต่ 09/11 (ปิดก่อน 09/11 คงเดิม)
  */
 
 const DAY = new Date(2026, 10, 7).getTime()
@@ -74,11 +74,33 @@ describe('คิว PM ปิดจากการบันทึกของห
     expect(itemOf(ops, 'PM', 'NEW')).toMatchObject({ done: false })
   })
 
-  it('PDI ยังปิดจากวันที่ในชีตได้เหมือนเดิม', async () => {
+  it('PDI / FINAL (09/11): วันที่จากไฟล์ไม่ปิดงาน · สแกนที่สถานีปิดพร้อมเวลาและชื่อ (ช่อง RE PDI ก็นับ)', async () => {
     const { useTracking, ops } = await setup()
-    useTracking.setState({ loaded: true, rows: { V: row('V', { PDI: '07/11/2026' }) } } as any)
-    ops.useOps.setState({ queues: [q('PDI', [item('V')])] } as any)
+    useTracking.setState({ loaded: true, rows: {
+      F1: row('F1', { PDI: '07/11/2026' }),
+      F2: row('F2', { 'Final check date': '07/11/2026' }),
+      S1: row('S1', { PDI: '20/10/2026', 'RE PDI  Date #1': '07/11/2026' }, [{ at: at(9, 40), by: 'สมชาย', field: 'RE PDI  Date #1', from: '', to: '07/11/2026', src: 'scan' }]),
+      S2: row('S2', { 'Final check date': '07/11/2026' }, [{ at: at(11, 5), by: 'รัชนีกร', field: 'Final check date', from: '07/11/2026', to: '07/11/2026', src: 'scan' }]),
+    } } as any)
+    ops.useOps.setState({ queues: [q('PDI', [item('F1'), item('S1')]), q('FINAL', [item('F2'), item('S2')])] } as any)
     ops.reconcileGateOuts()
-    expect(itemOf(ops, 'PDI', 'V')).toMatchObject({ done: true, doneBy: 'ไฟล์ Co-Inspection' })
+    expect(itemOf(ops, 'PDI', 'F1')).toMatchObject({ done: false })
+    expect(itemOf(ops, 'FINAL', 'F2')).toMatchObject({ done: false })
+    expect(itemOf(ops, 'PDI', 'S1')).toMatchObject({ done: true, doneAt: at(9, 40), doneBy: 'สมชาย' })
+    expect(itemOf(ops, 'FINAL', 'S2')).toMatchObject({ done: true, doneAt: at(11, 5), doneBy: 'รัชนีกร' })
+  })
+
+  it('PDI / FINAL ที่ระบบปิดจากไฟล์ตั้งแต่ 09/11 เปิดกลับ · ปิดก่อน 09/11 คงเดิม', async () => {
+    vi.setSystemTime(new Date('2026-11-09T13:00:00+07:00'))
+    const { useTracking, ops } = await setup()
+    useTracking.setState({ loaded: true, rows: { N: row('N', { PDI: '09/11/2026' }), O: row('O', { 'Final check date': '08/11/2026' }) } } as any)
+    const fileDone = (vin: string, d: number) => item(vin, { done: true, doneAt: new Date(2026, 10, d).getTime(), doneBy: 'ไฟล์ Co-Inspection', stamped: true })
+    ops.useOps.setState({ queues: [q('PDI', [fileDone('N', 9)]), q('FINAL', [fileDone('O', 8)])] } as any)
+    ops.reconcileGateOuts()
+    expect(itemOf(ops, 'PDI', 'N')).toMatchObject({ done: false })
+    expect(itemOf(ops, 'PDI', 'N').manualUndoneAt).toBeGreaterThan(0)
+    expect(itemOf(ops, 'FINAL', 'O')).toMatchObject({ done: true, doneBy: 'ไฟล์ Co-Inspection' })
+    ops.reconcileGateOuts()
+    expect(itemOf(ops, 'PDI', 'N')).toMatchObject({ done: false })
   })
 })

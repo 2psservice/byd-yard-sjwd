@@ -1193,16 +1193,22 @@ function gateInDay(cells: Record<string, string>): number | undefined {
 }
 
 /**
- * PM counts only what the yard itself recorded (admin, 07/11): a PM date an imported file put on the car
- * is not PM work until someone at the station records it. The record is the row's own audit line on a PM
- * date cell with `src: 'scan'` — every station save writes one (stampStationDate), an import writes none.
- * Returns the latest such line whose date is on or after `since`.
+ * PDI / PM / FINAL count only what the yard itself recorded (admin: PM 07/11, PDI and Final 09/11): a date an
+ * imported file put on the car is not the station's work until someone at the station records it. The record
+ * is the row's own audit line on the type's date cell with `src: 'scan'` — every station save writes one
+ * (stampStationDate), an import writes none. Returns the latest such line whose date is on or after `since`.
+ * Same field match as the lists (STAMP_FIELD in opsReport), so a queue and its list agree on what counts.
  */
-const PM_FIELD = /^PM\s*#?\d+$/i
-function pmScanSince(r: TrackRow | undefined, since: number): { at: number; by: string } | undefined {
+type LadderType = 'PM' | 'PDI' | 'FINAL'
+const STATION_FIELD: Record<LadderType, RegExp> = {
+  PM: /^PM\s*#?\d+$/i,            // PM1 … PM15
+  PDI: /pdi/i,                     // PDI · RE PDI #1…#8 (a non-date PDI cell never parses as a day below)
+  FINAL: /^final check date$/i,
+}
+function stationScanSince(r: TrackRow | undefined, type: LadderType, since: number): { at: number; by: string } | undefined {
   let hit: { at: number; by: string } | undefined
   for (const h of r?.history ?? []) {
-    if (h.src !== 'scan' || !PM_FIELD.test((h.field ?? '').trim())) continue
+    if (h.src !== 'scan' || !STATION_FIELD[type].test((h.field ?? '').trim())) continue
     const day = parseDayCell(h.to)
     if (day === undefined || day < since) continue
     if (!hit || h.at > hit.at) hit = { at: h.at, by: h.by }
@@ -1210,15 +1216,24 @@ function pmScanSince(r: TrackRow | undefined, since: number): { at: number; by: 
   return hit
 }
 
-/** From this day, a PM item the system closed from an imported file's date goes back to waiting
- *  (the rule above came in on 07/11/2026; earlier closures stay as they were). */
+/** From these days, an item the system closed from an imported file's date goes back to waiting — the day
+ *  the rule came in for that station. Earlier closures stay as they were. */
 export const PM_FILE_CLOSE_REOPEN_FROM = new Date(2026, 10, 7).getTime()
+export const PDI_FINAL_FILE_CLOSE_REOPEN_FROM = new Date(2026, 10, 9).getTime()
+const FILE_CLOSE_REOPEN_FROM: Record<LadderType, number> = {
+  PM: PM_FILE_CLOSE_REOPEN_FROM, PDI: PDI_FINAL_FILE_CLOSE_REOPEN_FROM, FINAL: PDI_FINAL_FILE_CLOSE_REOPEN_FROM,
+}
+const ladderTypeOf = (q: WorkQueue): LadderType | undefined => {
+  const t = queueTypeOf(q)
+  return t === 'PM' || t === 'PDI' || t === 'FINAL' ? t : undefined
+}
 
-/** A PM item closed only from a file's date — no station record, no scan line behind it. */
-function isFileClosedPm(q: WorkQueue, i: QueueItem, r: TrackRow | undefined): boolean {
-  if (queueTypeOf(q) !== 'PM' || !i.done || i.gatedOut || hasStationRecord(i) || i.doneBy !== 'ไฟล์ Co-Inspection') return false
-  if ((i.doneAt ?? 0) < PM_FILE_CLOSE_REOPEN_FROM) return false
-  return !pmScanSince(r, ladderJoinDay(q, i))
+/** A PDI / PM / FINAL item closed only from a file's date — no station record, no scan line behind it. */
+function isFileClosedStation(q: WorkQueue, i: QueueItem, r: TrackRow | undefined): boolean {
+  const t = ladderTypeOf(q)
+  if (!t || !i.done || i.gatedOut || hasStationRecord(i) || i.doneBy !== 'ไฟล์ Co-Inspection') return false
+  if ((i.doneAt ?? 0) < FILE_CLOSE_REOPEN_FROM[t]) return false
+  return !stationScanSince(r, t, ladderJoinDay(q, i))
 }
 
 /** Did this queue item ever see a real station action? recordCheck stamps
@@ -1483,47 +1498,25 @@ export function reconcileGateOuts() {
         changed = true
         return { ...i, done: false, doneAt: undefined, doneBy: undefined, stamped: undefined }
       }
-      // repair: a PM item closed from an imported file's date goes back to waiting, so the yard scans it.
-      // manualUndoneAt: a device still on the old version then leaves it alone instead of closing it again
-      if (isStationQueue && isFileClosedPm(q, i, rows[i.vin])) {
+      // repair: a PDI / PM / FINAL item closed from an imported file's date goes back to waiting, so the yard
+      // scans it. manualUndoneAt: a device still on an old version then leaves it alone instead of closing it again
+      if (isStationQueue && isFileClosedStation(q, i, rows[i.vin])) {
         changed = true
         return { ...i, done: false, doneAt: undefined, doneBy: undefined, stamped: undefined, manualUndoneAt: Date.now() }
       }
-      // PM: only the yard's own record closes it — a station scan line since the car joined (and since any
-      // manual un-tick). A PM date that came from a file is left on the car but closes nothing.
-      if (ladder && !i.done && queueTypeOf(q) === 'PM') {
+      // PDI / PM / FINAL: only the yard's own record closes it — a station scan line since the car joined (and
+      // since any manual un-tick), with that scan's time and the scanner. A date that came from a file is left
+      // on the car but closes nothing. (Until 07/11 for PM and 09/11 for PDI / Final, any date on the sheet's
+      // ladder closed the item, signed 'ไฟล์ Co-Inspection' with no time.)
+      const lt = ladder ? ladderTypeOf(q) : undefined
+      if (lt && !i.done) {
         const r = rows[i.vin]
+        // แยกยาร์ด แยกงาน: งานที่ยาร์ดอื่นบันทึกบนรถคันนี้ ไม่ปิดคิวของยาร์ดนี้
         const otherYard = !!q.site && !!r?.site && r.site !== q.site
-        const s = r && !otherYard ? pmScanSince(r, ladderJoinDay(q, i)) : undefined
+        const s = r && !otherYard ? stationScanSince(r, lt, ladderJoinDay(q, i)) : undefined
         if (s && s.at > (i.manualUndoneAt ?? 0)) {
           changed = true
           return { ...i, done: true, doneAt: s.at, doneBy: s.by, stamped: true }
-        }
-        return i
-      }
-      if (ladder && !i.done && !i.manualUndoneAt) {
-        const r = rows[i.vin]
-        // แยกยาร์ด แยกงาน: ช่อง PDI / PM / FINAL บนชีตเป็นช่องกลางช่องเดียว
-        // ใครลงวันที่ก็เห็นเหมือนกันหมดทุกยาร์ด ถ้ารถย้ายไปอยู่ยาร์ดอื่นแล้ว
-        // งานที่ยาร์ดนั้นทำ ต้องไม่ย้อนกลับมาติ๊กคิวของยาร์ดนี้ว่าเสร็จ
-        const otherYard = !!q.site && !!r?.site && r.site !== q.site
-        if (r && !otherYard) {
-          // a ladder date written on the car's gate-in day, with no station
-          // record behind it, is the gate-in artifact described above — never
-          // let it re-tick this queue
-          const gDay = gateInDay(r.cells)
-          const trustworthy = (v: number) => hasStationRecord(i) || gDay === undefined || v !== gDay
-          const joinDay = ladderJoinDay(q, i)
-          let ts: number | undefined
-          for (const k of ladder) { // latest recorded date on the ladder (hole-safe)
-            const v = parseDayCell(r.cells[k])
-            if (v !== undefined && trustworthy(v) && (ts === undefined || v > ts)) ts = v
-          }
-          if (ts !== undefined && ts >= joinDay) {
-            changed = true
-            // stamped: the date already sits on the sheet — never burn another slot
-            return { ...i, done: true, doneAt: ts, doneBy: i.doneBy ?? 'ไฟล์ Co-Inspection', stamped: true }
-          }
         }
       }
       return i
