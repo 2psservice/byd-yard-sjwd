@@ -303,9 +303,10 @@ function stationDone(ctx: ReportCtx, type: 'PDI' | 'FINAL' | 'PM'): StationDone[
     const s = i.checkedAt ? undefined : scanStamp(rows.get(i.vin), ctx.day, type)
     // a person who ticked it done in the queue (not the file sign-off) is the record: their tick's time
     const ticked = !i.checkedAt && !s && i.doneBy && i.doneBy !== 'ไฟล์ Co-Inspection' ? i.doneAt : undefined
-    // PM counts only what someone recorded, always with a time and a name (admin 07/11): an item closed
-    // from an imported file's date, or with no record of who did it at all, is not the day's PM work
-    if (type === 'PM' && !i.checkedAt && !s && ticked === undefined) continue
+    // PDI / PM / FINAL count only what someone recorded, always with a time and a name (admin: PM 07/11,
+    // PDI and Final 09/11): an item closed from an imported file's date, or with no record of who did it
+    // at all, is not the day's work
+    if (!i.checkedAt && !s && ticked === undefined) continue
     out.set(i.vin, {
       vin: i.vin, clock: i.checkedAt ?? s?.at ?? ticked,
       by: i.checkedAt ? i.checkedBy || i.doneBy || '' : s?.by ?? closedBy(i),
@@ -314,8 +315,8 @@ function stationDone(ctx: ReportCtx, type: 'PDI' | 'FINAL' | 'PM'): StationDone[
   }
   // …plus every car the SHEET says was done today that no queue item covers
   // (scanned straight at the station, or its queue archived / closed on an earlier day).
-  // PDI lists any PDI date of the day; PM and FINAL only a date the STATION wrote today (a scan line),
-  // so a PM date an imported file carries is never counted as the yard's work.
+  // Only a date the STATION wrote today (a scan line) counts, so a date an imported file carries is never
+  // counted as the yard's work.
   const lotOf = (vin: string) => {
     let best: { at: number; name: string } | undefined
     for (const q of typeQueues(ctx, type)) if (q.items.some((i) => i.vin === vin) && (!best || q.createdAt > best.at)) best = { at: q.createdAt, name: (q.name ?? '').trim() }
@@ -324,7 +325,7 @@ function stationDone(ctx: ReportCtx, type: 'PDI' | 'FINAL' | 'PM'): StationDone[
   for (const r of ctx.rows) {
     if (out.has(r.vin) || !STAMP_KEYS[type].some((k) => cellOnDay(r.cells[k], ctx.day))) continue
     const s = scanStamp(r, ctx.day, type)
-    if (type !== 'PDI' && !s) continue
+    if (!s) continue
     out.set(r.vin, { vin: r.vin, clock: s?.at, by: s?.by, lot: lotOf(r.vin) })
   }
   // newest work on top; a car with no recorded time (a file date alone) goes last

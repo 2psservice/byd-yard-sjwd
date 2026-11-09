@@ -51,11 +51,15 @@ describe('รายชื่อ PM: วันที่ + เวลา และ�
     })
   })
 
-  it('PDI ยังแสดงคันที่ปิดจากไฟล์ พร้อมป้าย "จากไฟล์ · ไม่ได้สแกน" (กติกาใหม่ใช้กับ PM เท่านั้น)', () => {
+  it('PDI / Final ก็เช่นกัน (09/11): คันที่ปิดจากไฟล์อย่างเดียวไม่ขึ้นในรายชื่อ · คันที่สแกนขึ้นพร้อมเวลาและชื่อ', () => {
     const c = ctx()
     c.queues = [{ ...c.queues[0], name: 'PDI 7 NOV', type: 'PDI' }] as any
-    c.rows = c.rows.map((r: any) => (r.vin === 'D' ? { ...r, cells: { ...r.cells, PDI: '07/11/2026' } } : r)) as any
-    expect(buildList(c, 'pdi').find((r) => r.vin === 'D')?.by).toBe(FILE_CLOSED_BY)
+    c.rows = c.rows.map((r: any) => (r.vin === 'D' ? { ...r, cells: { ...r.cells, PDI: '07/11/2026' } }
+      : r.vin === 'B' ? { ...r, cells: { ...r.cells, PDI: '07/11/2026' }, history: [scan('PDI', 10, 20, 'รัชนีกร')] } : r)) as any
+    const got = Object.fromEntries(buildList(c, 'pdi').map((r) => [r.vin, [r.date, r.by]]))
+    expect(got.D).toBeUndefined()
+    expect(got.B).toEqual(['07/11/2026 10:20', 'รัชนีกร'])
+    expect(Object.values(got).some(([, by]) => by === FILE_CLOSED_BY)).toBe(false)
   })
 
   it('เรียงเวลาล่าสุดอยู่บนสุด · คันที่ไม่มีเวลาอยู่ท้าย', () => {
