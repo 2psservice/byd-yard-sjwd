@@ -45,10 +45,10 @@ import { yardLocCode, yardLocFull, blockCode, byYardLocation, LAST_LOCATION_KEY,
 import { parseLane } from '../lib/laneImport'
 import { LOCATION_KEY, VIN_PHOTO_CELL } from '../lib/trackingColumns'
 import { blockTag, blockKeyOfTag, resolveBlockByName } from '../lib/format'
-import { fetchUnitsByVins, fetchUnitsInLane, fetchTrackingRowsByVin, isConfigured } from '../lib/db'
+import { fetchUnitsByVins, fetchUnitsInLane, fetchTrackingRowsByVin, isConfigured, logScanSession } from '../lib/db'
 import { refreshUnitFocus } from '../lib/unitFocus'
 import { laneFromCloudStrict } from '../lib/laneCloud'
-import { createScanDecoder, decodeImageFile, type ScanDecoder, IS_IOS } from '../lib/scanDecoder'
+import { createScanDecoder, decodeImageFile, type ScanDecoder, IS_IOS, sampleFrame, BLANK_RANGE, nextScanStep, grabLuma, type FramePath, type ScanFault } from '../lib/scanDecoder'
 import { primeScanBeep, scanBeep } from '../lib/scanBeep'
 import { IN_APP_BROWSER, IS_LINE_BROWSER, IS_ANDROID, openExternal, openChromeIntent, copyLink } from '../lib/inAppBrowser'
 import { useRecentOps } from '../store/useRecentOps'
@@ -708,9 +708,19 @@ const rememberScanZoom = (v: number) => { try { localStorage.setItem(SCAN_ZOOM_K
 // BarcodeDetector ของ Chrome ที่ส่งทุกเฟรมข้าม process ไป Google Play Services อีก
 // สร้างครั้งเดียวต่อเซสชันแล้วใช้ซ้ำทุกครั้งที่เปิดกล้อง (โหลด wasm ครั้งเดียว)
 let scanDecoderPromise: Promise<ScanDecoder> | null = null
+/** ชนิดตัวถอดรหัสที่พิสูจน์แล้วว่าพังบนเครื่องนี้ (โยน error ติดกัน) — ไม่สร้างซ้ำทั้งเซสชัน */
+const failedDecoderKinds: ScanDecoder['kind'][] = []
 function sharedScanDecoder(): Promise<ScanDecoder> {
-  if (!scanDecoderPromise) scanDecoderPromise = createScanDecoder().catch((e) => { scanDecoderPromise = null; throw e })
+  if (!scanDecoderPromise) scanDecoderPromise = createScanDecoder(failedDecoderKinds).catch((e) => { scanDecoderPromise = null; throw e })
   return scanDecoderPromise
+}
+/** ตัวถอดรหัสชนิดนี้ใช้ไม่ได้ → ทิ้งแล้วสร้างตัวถัดไป (worker → wasm → js) · คืน null เมื่อเป็นตัวสุดท้ายแล้ว */
+function degradeScanDecoder(broken: ScanDecoder): Promise<ScanDecoder> | null {
+  if (broken.kind === 'js') return null
+  failedDecoderKinds.push(broken.kind)
+  try { broken.dispose() } catch { /* ปิดแล้ว */ }
+  scanDecoderPromise = null
+  return sharedScanDecoder()
 }
 
 /** เครื่อง RAM น้อย (≤ 3 GB — Helio G35 ฯลฯ): ไม่สั่งซูมเลนส์อัตโนมัติตอนเปิดกล้อง
@@ -742,6 +752,8 @@ async function describeCamError(e: unknown): Promise<string> {
 
 /** ไม่มีภาพจากกล้องภายในเวลานี้ = สายภาพค้าง → เปิดใหม่เองหนึ่งครั้ง แทนจอดำนิ่ง ๆ */
 const CAMERA_FIRST_FRAME_MS = 4000
+/** เปิดกล้องเล็งนานเท่านี้แล้วยังไม่ติด → โชว์ปุ่มถ่ายรูปบาร์โค้ด (ยังสแกนสดต่อ) */
+const SCAN_SLOW_HINT_MS = 20_000
 /** ข้อความระหว่างภาพกล้องขึ้นแล้วแต่ตัวถอดรหัส (wasm/worker) ยังโหลดไม่เสร็จ */
 const DECODER_NOTE = 'กำลังเตรียมตัวอ่านโค้ด…'
 /** ช่วงห่างระหว่างการดึงภาพไปถอดรหัส (ms) — rAF เดินทุกเฟรม แต่ถอดรหัสห่างกันเท่านี้
@@ -752,7 +764,7 @@ const DECODE_MAX_MS = 250
  *  (พิกเซลน้อยลง 2.5 เท่า อ่าน VIN ระยะจ่อปกติยังได้) */
 const DECODE_MAX_W = LOW_END_DEVICE ? 640 : 1024
 /** ตัวนับสำหรับซิม (dev เท่านั้น) — window.__scanStats */
-type ScanStats = { decodes: number; inflight: number; inflightMax: number; lastMs: number; kind: string; frames: number; periodMs: number; gaps: number[]; path: 'videoframe' | 'bitmap' | 'canvas' }
+type ScanStats = { decodes: number; inflight: number; inflightMax: number; lastMs: number; kind: string; frames: number; periodMs: number; gaps: number[]; path: FramePath }
 
 /** หยิบหลายช่องจาก store ด้วยการเทียบตื้น — หน้าสถานีที่เคย `useYard()` ทั้งก้อน
  *  วาดใหม่ทุกครั้งที่อะไรก็ตามใน store เปลี่ยน (realtime ส่งรถมาคันเดียวก็กรองรถ
@@ -794,6 +806,9 @@ function VinInputInner({
   const [val, setVal] = useState('')
   const [camOpen, setCamOpen] = useState(false)
   const [camErr, setCamErr] = useState('')
+  // คำแนะนำระหว่างกล้องเปิด (เล็งนานแล้วไม่ติด / ตัวอ่านใช้ภาพกล้องเครื่องนี้ไม่ได้) + ปุ่มถ่ายรูป — ไม่ใช่ error
+  // และไม่ค้างไปหน้าหลังปิดกล้อง (camErr ค้างแสดงใต้ช่อง VIN)
+  const [scanHint, setScanHint] = useState('')
   // ข้อความสถานะชั่วคราวบนหน้ากล้อง (เช่น "กำลังเปิดกล้องใหม่…") — หายเมื่อภาพแรกมา
   const [camInfo, setCamInfo] = useState('')
   // ตัวเฝ้ากล้อง: ขยับเลขนี้ = เริ่มสายภาพใหม่ (ปล่อยกล้องจริงก่อน) · ทำได้ครั้งเดียว
@@ -993,8 +1008,8 @@ function VinInputInner({
   )
 
   // the tap that opens the camera unlocks sound — iOS plays the scan beep only once a tap has
-  const openCamera = () => { primeScanBeep(); setCamErr(''); setCamInfo(''); restartedRef.current = false; setCamOpen(true) }
-  const closeCamera = (warm = false) => { stopScan(warm); setCamOpen(false) }
+  const openCamera = () => { primeScanBeep(); setCamErr(''); setCamInfo(''); setScanHint(''); restartedRef.current = false; setCamOpen(true) }
+  const closeCamera = (warm = false) => { stopScan(warm); setScanHint(''); setCamOpen(false) }
 
   // จอดับ / สลับแอป / ย่อเบราว์เซอร์ขณะกล้องเปิด → ปล่อยกล้องจริงทันที (บางเครื่อง
   // สายภาพที่ค้างอยู่ตอนจอดับจะกลับมาเป็นภาพดำ และกล้องที่เปิดทิ้งไว้กินแบตเตอรี่/ร้อน)
@@ -1150,22 +1165,14 @@ function VinInputInner({
       if (cancelled) return
       setCamInfo((m) => (m === DECODER_NOTE ? '' : m))
 
-      // ทางดึงภาพ (วัดบนซีพียูช้า 6 เท่า เธรดหลักต่อเฟรม): 'videoframe' = new VideoFrame(video)
-      // แค่ตัวชี้ไปที่เฟรม โอนให้ worker ครอป/ย่อ/อ่านพิกเซลเอง ~16 ms · 'bitmap' =
-      // createImageBitmap(video, ครอป, ย่อ) แล้วโอน ~86 ms · 'canvas' = drawImage+getImageData
-      // บนเธรดหลัก ~213 ms (ทางเดิม — กิน 60% ของเธรดหลักตลอดที่กล้องเปิด คือต้นเหตุพรีวิว
-      // ค้าง/จอดำบนเครื่องสเปกต่ำ) ใช้ทางที่เบาที่สุดที่เครื่องนั้นมี ถ้าทางใดโยน error ถอยลง
-      // ทางถัดไปทั้งรอบนี้ (ไม่ลองซ้ำทุกเฟรม)
-      // iPhone (WebKit ทุกเบราว์เซอร์บน iOS): ใช้ canvas ตรง ๆ — ทางใหม่สองทางให้ "ภาพว่าง" บน iOS
-      // ทุกเฟรม (สแกนไม่ติดเลย ทั้งที่ภาพกล้องขึ้นปกติ — รายงาน 7 ต.ค. หลัง #566)
-      // ปิดทาง videoframe/bitmap ทุกเครื่อง (7 ต.ค.): Android จริงจอดำหลัง #566 — VideoFrame "ยืม"
-      // บัฟเฟอร์ภาพของกล้องไว้ระหว่าง worker ครอป/ย่อ กล้องมือถือมีบัฟเฟอร์แค่ 3-4 ช่อง ยืมค้าง =
-      // ไม่มีที่ใส่ภาพใหม่ พรีวิวค้าง/ดำ (กล้องจำลองในเครื่องทดสอบไม่มีข้อจำกัดนี้ จึงไม่เห็น)
-      // กลับไปดึงภาพแบบก่อน #566 (canvas คัดลอกพิกเซลแล้วคืนบัฟเฟอร์ทันที) โดยคงภาพ 640 px +
-      // เว้นช่วง 200 ms บนเครื่อง RAM น้อยไว้ — โค้ดทางใหม่ยังอยู่ เปิดกลับได้ที่นี่ที่เดียว
-      const FAST_FRAME_PATHS = false
-      let useVideoFrame = FAST_FRAME_PATHS && !IS_IOS && !!decoder.decodeVideoFrame && typeof VideoFrame !== 'undefined'
-      let useBitmap = FAST_FRAME_PATHS && !IS_IOS && !!decoder.decodeBitmap && typeof createImageBitmap === 'function'
+      // ทางดึงภาพ: 'canvas' (drawImage + getImageData คัดลอกพิกเซลแล้วคืนบัฟเฟอร์กล้องทันที) เป็นหลัก
+      // ทาง videoframe/bitmap ที่โอนเฟรมให้ worker ถูกปิดไปตั้งแต่ 7 ต.ค. (#566: iPhone ได้ภาพว่าง,
+      // Android ยืมบัฟเฟอร์กล้องค้างจนพรีวิวดำ) — ตัวโค้ดยังอยู่ใน lib/scanDecoder.ts
+      // ทางสำรอง 'luma' (11 พ.ย.): อ่านช่องความสว่างของเฟรมตรง ๆ ด้วย VideoFrame.copyTo ไม่ผ่าน canvas
+      // ใช้เมื่อ canvas ให้ "ภาพว่าง/ภาพค้าง" ติดกัน — เคส Android ที่อัปเดต Chrome 157 ภาพขึ้นจอปกติแต่สแกน
+      // ไม่ติดเลย · ตัวถอดรหัส error ติดกัน → สร้างตัวถัดไป (worker → wasm → js) · หมดทาง → บอกให้ถ่ายรูป
+      let path: FramePath = 'canvas'
+      const lumaOk = typeof VideoFrame !== 'undefined' && !IS_IOS
       const canvas = document.createElement('canvas')
       const ctx = canvas.getContext('2d', { willReadFrequently: true })
       // จังหวะดึงภาพ: requestAnimationFrame — เดินตามรอบวาดจอของเครื่อง (ไม่ชนกับการ
@@ -1179,20 +1186,70 @@ function VinInputInner({
       let lastAt = 0
       let busy = false
       let tick = 0
-      const stats = import.meta.env.DEV ? ((window as unknown as { __scanStats?: ScanStats }).__scanStats
-        = { decodes: 0, inflight: 0, inflightMax: 0, lastMs: 0, kind: decoder.kind, frames: 0, periodMs: period, gaps: [] as number[], path: useVideoFrame ? 'videoframe' : useBitmap ? 'bitmap' : 'canvas' }) : null
+      let streak: { fault: ScanFault | null; n: number } = { fault: null, n: 0 }
+      // ลายเซ็นภาพล่าสุดแยกตามแบบครอป (ครอปกลาง / ทั้งเฟรมทุกรอบที่ 3) — เทียบข้ามแบบไม่ได้
+      const lastSig: Record<'crop' | 'full', number | null> = { crop: null, full: null }
+      let exhausted = false
+      let slowHinted = false
+      // สรุปการเปิดกล้องครั้งนี้ — ส่งขึ้น client_build_log ตอนปิดกล้อง (lib/db logScanSession)
+      const startedAt = Date.now()
+      const diag = {
+        decoder: decoder.kind as string, path: path as string, decodes: 0, blank: 0, frozen: 0, errors: 0,
+        hit: false, switches: [] as string[], video: '', range: -1, ms: 0, err: '',
+      }
+      const stats: ScanStats | null = import.meta.env.DEV ? ((window as unknown as { __scanStats?: ScanStats }).__scanStats
+        = { decodes: 0, inflight: 0, inflightMax: 0, lastMs: 0, kind: decoder.kind, frames: 0, periodMs: period, gaps: [] as number[], path }) : null
+
+      // ภาพที่จะส่งไปถอดรหัส (ครอปกลางเฟรม ย่อแล้ว) ตามทางปัจจุบัน
+      const grab = async (sx: number, sy: number, cw: number, ch: number, outW: number, outH: number): Promise<ImageData | null> => {
+        if (path === 'luma') return grabLuma(video, { sx, sy, cw, ch }, outW, outH)
+        canvas.width = outW; canvas.height = outH
+        ctx!.drawImage(video, sx, sy, cw, ch, 0, 0, outW, outH)
+        return ctx!.getImageData(0, 0, outW, outH)
+      }
+
+      // หลังแต่ละรอบ: ดูว่าพังแบบไหน แล้วถอยทางเมื่อพังติดกันพอ (nextScanStep)
+      const afterRound = (fault: ScanFault | null) => {
+        const step = nextScanStep(streak, fault, { path: path === 'canvas' && lumaOk, decoder: decoder.kind !== 'js' })
+        streak = step.streak
+        if (step.action === 'switch-path') {
+          path = 'luma'
+          diag.switches.push(`path:luma(${fault})`); diag.path = path; if (stats) stats.path = path
+          console.warn('[scan] frames unusable via canvas (' + fault + ') — switching to luma')
+        } else if (step.action === 'switch-decoder') {
+          const next = degradeScanDecoder(decoder)
+          if (next) {
+            busy = true // ไม่ถอดรหัสระหว่างสร้างตัวใหม่
+            next.then((d) => { decoder = d; diag.decoder = d.kind; diag.switches.push(`decoder:${d.kind}`); if (stats) stats.kind = d.kind })
+              .catch((e) => { console.error('[scan] decoder fallback', e) })
+              .finally(() => { busy = false })
+          }
+        } else if (step.action === 'exhausted' && !exhausted) {
+          exhausted = true
+          diag.switches.push('exhausted')
+          // ยังสแกนต่อ (ภาพว่างอาจแค่เล็งผนัง) — แค่โชว์ทางสำรองให้กด
+          setScanHint('ตัวอ่านโค้ดยังอ่านภาพจากกล้องเครื่องนี้ไม่ได้ — กด "ถ่ายรูปบาร์โค้ด" ด้านล่างแทน หรือพิมพ์ VIN เอง')
+        }
+      }
+
       const frame = (now: number) => {
         if (stopped) return
         raf = requestAnimationFrame(frame)
         if (stats) stats.frames++
         // sim hook (dev เท่านั้น): ยัดผลสแกนแทนการถอดรหัสจริง — กล้องปลอมไม่มีบาร์โค้ด
         const forced = import.meta.env.DEV ? (window as unknown as { __nextDetectText?: string | null }).__nextDetectText : null
-        if (forced) { (window as unknown as { __nextDetectText?: string | null }).__nextDetectText = null; hit(forced); return }
+        if (forced) { (window as unknown as { __nextDetectText?: string | null }).__nextDetectText = null; diag.hit = true; hit(forced); return }
         if (busy || now - lastAt < period) return
+        // เล็งนานแล้วยังไม่ติด → โชว์ทางสำรอง "ถ่ายรูปบาร์โค้ด" (รูปจากกล้องระบบคมกว่าภาพสดมาก) แต่ยังสแกนต่อ
+        if (!slowHinted && !exhausted && Date.now() - startedAt > SCAN_SLOW_HINT_MS) {
+          slowHinted = true
+          setScanHint('ยังอ่านไม่ได้? ให้โค้ดอยู่กลางกรอบ ขยับเข้าใกล้ — หรือกด "ถ่ายรูปบาร์โค้ด" ด้านล่าง')
+        }
         if (!ctx || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return
         if (stats && lastAt) { stats.gaps.push(Math.round(now - lastAt)); if (stats.gaps.length > 200) stats.gaps.shift() }
         lastAt = now
         const vw = video.videoWidth, vh = video.videoHeight
+        diag.video = `${vw}x${vh}`
         // crop factor: with lens zoom the frame is already magnified → a mild
         // 1.6× aim-box crop; without it the slider's digital zoom drives it
         const factor = opticalRef.current ? 1.6 : Math.max(1.6, dzRef.current)
@@ -1207,46 +1264,55 @@ function VinInputInner({
         const sx = (vw - cw) >> 1, sy = (vh - ch) >> 1
         const t0 = performance.now()
         busy = true
+        diag.decodes++
         if (stats) { stats.inflight++; stats.inflightMax = Math.max(stats.inflightMax, stats.inflight); stats.decodes++ }
-        const viaCanvas = () => {
-          canvas.width = outW; canvas.height = outH
-          ctx.drawImage(video, sx, sy, cw, ch, 0, 0, outW, outH)
-          return decoder.decode(ctx.getImageData(0, 0, outW, outH))
-        }
-        const viaBitmap = () => createImageBitmap(video, sx, sy, cw, ch, { resizeWidth: outW, resizeHeight: outH, resizeQuality: 'low' })
-          .then((bmp) => decoder.decodeBitmap!(bmp))
-        // ทางใดพัง (โยนตอนสร้าง หรือ worker ตอบ err = เตรียมภาพไม่สำเร็จ/ภาพว่าง) → ถอยทางถัดไป
-        // ทั้งรอบ แล้วถอดรหัสเฟรมนี้ซ้ำด้วยทางใหม่ทันที — ห้ามนับเป็น "ไม่เจอโค้ด" เงียบ ๆ
-        const dropBitmap = (e: unknown) => {
-          console.warn('[scan] bitmap path unusable — canvas', e)
-          useBitmap = false; if (stats) stats.path = 'canvas'
-          return viaCanvas()
-        }
-        const dropVideoFrame = (e: unknown) => {
-          console.warn('[scan] VideoFrame path unusable — bitmap/canvas', e)
-          useVideoFrame = false; if (stats) stats.path = useBitmap ? 'bitmap' : 'canvas'
-          return useBitmap ? viaBitmap().catch(dropBitmap) : viaCanvas()
-        }
-        let job: Promise<string | null>
-        if (useVideoFrame) {
-          try { job = decoder.decodeVideoFrame!(new VideoFrame(video), { sx, sy, cw, ch, outW, outH }).catch(dropVideoFrame) }
-          catch (e) { job = dropVideoFrame(e) }
-        } else if (useBitmap) {
-          job = viaBitmap().catch(dropBitmap)
-        } else job = viaCanvas()
+        // ภาพ → ตรวจสภาพ (ก่อนส่ง — worker รับบัฟเฟอร์ไปแล้วอ่านซ้ำไม่ได้) → ถอดรหัส
+        // ผล: ข้อความ = สแกนติด · null = ไม่เจอโค้ดในภาพที่ดี · ScanFault = ภาพ/ตัวถอดรหัสมีปัญหา
+        const job = (async (): Promise<string | null | ScanFault> => {
+          let img: ImageData | null
+          try { img = await grab(sx, sy, cw, ch, outW, outH) } catch (e) { diag.err = String((e as Error)?.message ?? e).slice(0, 80); return 'blank' }
+          if (!img) return 'blank'
+          const s = sampleFrame(img.data)
+          diag.range = s.range
+          if (s.range < BLANK_RANGE) return 'blank'
+          // ภาพเดิมเป๊ะทุกจุดสุ่ม = เฟรมค้าง (ภาพกล้องจริงมีสัญญาณรบกวนเสมอ) — ไม่ต้องถอดรหัสซ้ำ
+          const kind = full ? 'full' : 'crop'
+          const frozen = s.sig === lastSig[kind]
+          lastSig[kind] = s.sig
+          if (frozen) return 'frozen'
+          try { return await decoder.decode(img) } catch (e) { diag.err = String((e as Error)?.message ?? e).slice(0, 80); return 'error' }
+        })()
         job
-          .then((text) => { if (!stopped && text) hit(text) })
-          .catch(() => { /* decoder hiccup — next frame */ })
+          .then((r) => {
+            if (stopped) return
+            if (r === 'blank' || r === 'frozen' || r === 'error') {
+              diag[r === 'blank' ? 'blank' : r === 'frozen' ? 'frozen' : 'errors']++
+              afterRound(r)
+              return
+            }
+            afterRound(null)
+            if (r) { diag.hit = true; hit(r) }
+          })
+          .catch(() => { /* ไม่ควรเกิด — next frame */ })
           .finally(() => {
             busy = false
             const dt = performance.now() - t0
             // เว้นช่วงถัดไปตามเวลาที่ใช้จริง ×1.2 แต่ไม่ต่ำกว่า 100 / ไม่เกิน 250 ms
             period = Math.min(DECODE_MAX_MS, Math.max(DECODE_MIN_MS, Math.round(dt * 1.2)))
+            diag.ms = Math.round(dt)
             if (stats) { stats.inflight--; stats.lastMs = dt; stats.periodMs = period }
           })
       }
       raf = requestAnimationFrame(frame)
-      controlsRef.current = { stop: () => { stopped = true; cancelAnimationFrame(raf) } }
+      controlsRef.current = {
+        stop: () => {
+          if (stopped) return
+          stopped = true; cancelAnimationFrame(raf)
+          // ส่งเฉพาะครั้งที่มีปัญหา (ไม่ติด / ถอยทาง / เจอภาพเสียหรือ error) — สแกนปกติไม่ส่ง ไม่ท่วม log ตัวกันเวอร์ชัน
+          if (!diag.hit || diag.switches.length || diag.blank + diag.frozen + diag.errors > 0)
+            void logScanSession({ ...diag, secs: Math.round((Date.now() - startedAt) / 1000) })
+        },
+      }
     }
 
     ;(async () => {
@@ -1305,7 +1371,13 @@ function VinInputInner({
                 {photoButtons}
               </div>
             )}
-            {!camErr && camInfo && (
+            {!camErr && scanHint && (
+              <div data-testid="cam-hint" className="absolute bottom-4 left-4 right-4 text-center text-[13px] py-3 px-4 rounded-xl space-y-3" style={{ background: 'rgba(0,0,0,0.75)', color: '#fde68a' }}>
+                <div>{scanHint}</div>
+                {photoButtons}
+              </div>
+            )}
+            {!camErr && !scanHint && camInfo && (
               <div data-testid="cam-info" className="absolute bottom-8 left-4 right-4 text-center text-[13px] py-2 px-4 rounded-xl" style={{ background: 'rgba(0,0,0,0.7)', color: '#fde68a' }}>
                 {camInfo}
               </div>

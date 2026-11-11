@@ -4,6 +4,7 @@
  * Call patterns: fire-and-forget for mutations, await for initial data load.
  */
 import { supabase, isConfigured } from './supabase'
+import { deviceId } from './heartbeat'
 import { sendSync } from './syncBus'
 import type { AppUser, Block, Damage, Site, Trailer, Unit } from '../types'
 import type { DbDamage, DbTrailer, DbUnit, DbUnitWithDamages } from './database.types'
@@ -999,6 +1000,23 @@ export async function reportHeartbeat(row: import('./heartbeat').HeartbeatRow): 
   const { error } = await supabase.from('app_heartbeats').upsert({ ...row, last_seen: new Date().toISOString() }, { onConflict: 'device_id' })
   if (error) { if (error.code !== '42P01' && error.code !== 'PGRST205') console.warn('[db] reportHeartbeat', error.message); return false }
   return true
+}
+
+/**
+ * สรุปการเปิดกล้องสแกน 1 ครั้ง (ทางดึงภาพ / ตัวถอดรหัส / ภาพว่าง / error / สแกนติดไหม) ลง client_build_log
+ * (tbl = 'scan') — ใช้ตามเคสกล้อง "ภาพขึ้นแต่สแกนไม่ติด" บนเครื่องจริงที่เรายืมมาลองไม่ได้ · ไม่มีข้อมูลส่วนตัว
+ * รหัสเครื่องกับเวอร์ชันแอปไปกับหัวคำขออยู่แล้ว (supabase.ts) · ไม่ throw
+ */
+export async function logScanSession(summary: Record<string, unknown>): Promise<void> {
+  if (!isConfigured() || import.meta.env.DEV) return
+  const { error } = await supabase.from('client_build_log').insert({
+    tbl: 'scan',
+    op: JSON.stringify(summary).slice(0, 1500),
+    build: String(__BUILD_AT__),
+    ua: typeof navigator !== 'undefined' ? navigator.userAgent.slice(0, 300) : null,
+    device: deviceId(),
+  })
+  if (error) console.warn('[db] logScanSession', error.message)
 }
 
 export async function fetchAppConfig<T = unknown>(id: string): Promise<T | null> {

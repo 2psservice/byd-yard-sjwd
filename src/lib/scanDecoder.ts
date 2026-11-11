@@ -176,7 +176,114 @@ export async function decodeImageFile(file: Blob, decoder: ScanDecoder): Promise
   } finally { bmp.close() }
 }
 
-/** สร้างตัวถอดรหัสที่ดีที่สุดที่เครื่องนี้ทำได้ (worker → wasm → js) */
-export async function createScanDecoder(): Promise<ScanDecoder> {
-  return (await createWorkerDecoder()) ?? (await createWasmDecoder()) ?? (await createJsDecoder())
+/** สร้างตัวถอดรหัสที่ดีที่สุดที่เครื่องนี้ทำได้ (worker → wasm → js)
+ *  `skip`: ชนิดที่ใช้แล้วพัง (ลูปสแกนถอยลงตัวถัดไปเมื่อตัวถอดรหัสโยน error ติดกัน) */
+export async function createScanDecoder(skip: readonly ScanDecoder['kind'][] = []): Promise<ScanDecoder> {
+  return (!skip.includes('worker') ? await createWorkerDecoder() : null)
+    ?? (!skip.includes('wasm') ? await createWasmDecoder() : null)
+    ?? (await createJsDecoder())
+}
+
+// ── ตัวตรวจภาพที่ส่งไปถอดรหัส ────────────────────────────────────────────────
+// 11 พ.ย.: มือถือ Android ที่อัปเดตเป็น Chrome 157 ภาพกล้องขึ้นจอปกติ แต่สแกนไม่ติดเลย ทั้งที่
+// เครื่องอื่นอ่านสติกเกอร์เดียวกันได้ — ลูปเดิมนับ "ภาพว่าง/ภาพค้าง" และ error ของตัวถอดรหัส
+// เป็น "ไม่เจอโค้ด" เงียบ ๆ ไปตลอด ตอนนี้ลูปดูสภาพภาพทุกรอบ แล้วถอยทางเมื่อเห็นว่าพัง
+
+/** ภาพที่ได้มาใช้ได้ไหม: ช่วงความสว่าง (ต่ำ = ภาพว่าง/ดำทั้งภาพ) + ลายเซ็นสั้น ๆ (ซ้ำทุกรอบ = ภาพค้าง) */
+export interface FrameSample { range: number; sig: number }
+
+/** สุ่มอ่าน ~600 จุดของภาพ RGBA (ช่องสีเขียว — ใกล้ความสว่างที่สุด) */
+export function sampleFrame(data: ArrayLike<number>): FrameSample {
+  const px = data.length >> 2
+  if (!px) return { range: 0, sig: 0 }
+  const step = Math.max(1, Math.floor(px / 600))
+  let mn = 255, mx = 0, sig = 0
+  for (let p = 0; p < px; p += step) {
+    const g = data[(p << 2) + 1]
+    if (g < mn) mn = g
+    if (g > mx) mx = g
+    sig = (Math.imul(sig, 31) + g) | 0
+  }
+  return { range: mx - mn, sig }
+}
+
+/** ต่ำกว่านี้ = ภาพค่าเดียวทั้งภาพ (ดึงภาพพัง — ดำ/ขาวสนิท) · ตั้งเข้มไว้: กระจกมืดตอนกลางคืนหลังกล้องลด
+ *  noise ช่วงความสว่างยังได้ 3-5 ซึ่งเป็นภาพจริง ห้ามนับเป็นภาพว่าง (จะพาเครื่องดีไปใช้ทางสำรองโดยไม่จำเป็น) */
+export const BLANK_RANGE = 2
+/** ภาพว่าง / ภาพค้าง / ตัวถอดรหัส error "ติดกัน" กี่รอบถึงถอยทาง (~2-3 วินาที) */
+export const BAD_STREAK = 12
+
+/** ทางดึงภาพจากกล้อง: canvas (drawImage+getImageData) → luma (VideoFrame.copyTo อ่านช่องความสว่างตรง ๆ ไม่ผ่าน GPU canvas) */
+export type FramePath = 'canvas' | 'luma'
+
+export type ScanFault = 'blank' | 'frozen' | 'error'
+
+/**
+ * ตัดสินใจหลังแต่ละรอบ — คืนสิ่งที่ต้องเปลี่ยน (ถ้ามี) และตัวนับใหม่
+ *  - ภาพว่าง/ภาพค้างติดกัน BAD_STREAK รอบ → เปลี่ยนทางดึงภาพ (ถ้ายังมี)
+ *  - error ติดกัน BAD_STREAK รอบ → เปลี่ยนตัวถอดรหัส (ถ้ายังมี)
+ *  - หมดทางแล้ว → 'exhausted' (ผู้เรียกแสดงปุ่มถ่ายรูป แต่ยังสแกนต่อ — ภาพว่างอาจแค่เล็งไปที่ผนังเรียบ ๆ)
+ */
+export function nextScanStep(
+  streak: { fault: ScanFault | null; n: number },
+  fault: ScanFault | null,
+  can: { path: boolean; decoder: boolean },
+): { streak: { fault: ScanFault | null; n: number }; action: 'none' | 'switch-path' | 'switch-decoder' | 'exhausted' } {
+  if (!fault) return { streak: { fault: null, n: 0 }, action: 'none' }
+  // ภาพว่างกับภาพค้างนับรวมกัน (ทั้งคู่แก้ด้วยการเปลี่ยนทางดึงภาพ) · error นับแยก
+  const sameKind = streak.fault != null && (streak.fault === 'error') === (fault === 'error')
+  const n = sameKind ? streak.n + 1 : 1
+  if (n < BAD_STREAK) return { streak: { fault, n }, action: 'none' }
+  const reset = { fault: null, n: 0 }
+  // แก้ให้ตรงอาการ: ภาพเสีย → เปลี่ยนทางดึงภาพ · ตัวถอดรหัสพัง → เปลี่ยนตัวถอดรหัส (สลับกันไม่ช่วย)
+  if (fault === 'error') return { streak: reset, action: can.decoder ? 'switch-decoder' : 'exhausted' }
+  return { streak: reset, action: can.path ? 'switch-path' : 'exhausted' }
+}
+
+/**
+ * ทางดึงภาพสำรอง: อ่าน "ช่องความสว่าง" ของเฟรมกล้องตรง ๆ ด้วย VideoFrame.copyTo แล้วทำเป็นภาพเทา
+ * ไม่ผ่าน canvas/GPU เลย (บาร์โค้ดใช้แค่ความสว่างอยู่แล้ว) · ปิดเฟรมทันทีที่คัดลอกเสร็จ — ไม่ยืม
+ * บัฟเฟอร์กล้องค้างแบบทาง videoframe ที่ปิดไป (#566)
+ * คืน null เมื่อเครื่องไม่รองรับ / รูปแบบพิกเซลไม่รู้จัก
+ */
+export async function grabLuma(
+  video: HTMLVideoElement,
+  crop: { sx: number; sy: number; cw: number; ch: number },
+  outW: number, outH: number,
+): Promise<ImageData | null> {
+  if (typeof VideoFrame === 'undefined') return null
+  const frame = new VideoFrame(video)
+  try {
+    const fmt = frame.format ?? ''
+    const yuv = /^(I4|NV)/.test(fmt)
+    const rgb = /^(RGB|BGR)/.test(fmt)
+    if (!yuv && !rgb) return null
+    // YUV ต้องเริ่มที่พิกัดคู่ (ช่องสีย่อยครึ่งหนึ่ง)
+    const rect = { x: crop.sx & ~1, y: crop.sy & ~1, width: Math.max(2, crop.cw & ~1), height: Math.max(2, crop.ch & ~1) }
+    const buf = new Uint8Array(frame.allocationSize({ rect }))
+    const layout = await frame.copyTo(buf, { rect })
+    frame.close()
+    const { offset, stride } = layout[0]
+    const out = new ImageData(outW, outH)
+    const d = out.data
+    const bgr = fmt.startsWith('BGR')
+    for (let y = 0; y < outH; y++) {
+      const ry = Math.min(rect.height - 1, Math.floor((y * rect.height) / outH))
+      for (let x = 0; x < outW; x++) {
+        const rx = Math.min(rect.width - 1, Math.floor((x * rect.width) / outW))
+        let l: number
+        if (yuv) l = buf[offset + ry * stride + rx]
+        else {
+          const i = offset + ry * stride + rx * 4
+          const r = buf[i + (bgr ? 2 : 0)], g = buf[i + 1], b = buf[i + (bgr ? 0 : 2)]
+          l = (r + 2 * g + b) >> 2
+        }
+        const o = (y * outW + x) << 2
+        d[o] = d[o + 1] = d[o + 2] = l; d[o + 3] = 255
+      }
+    }
+    return out
+  } finally {
+    try { frame.close() } catch { /* ปิดแล้ว */ }
+  }
 }
