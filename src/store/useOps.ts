@@ -1780,9 +1780,26 @@ export function useActiveQueues(): WorkQueue[] {
 }
 
 /** The first not-yet-complete station task for a VIN (queues in creation order). */
-export function activeProcess(vin: string, queues: WorkQueue[]): { queue: WorkQueue; item: QueueItem } | null {
+/**
+ * งานพิเศษ (SPECIAL) นับเฉพาะที่บันทึกจากเมนู "คิวงานพิเศษ" เท่านั้น (admin 11/11)
+ *
+ * คิว "ตรวจสอบรถคลุมผ้า" 2,626 คันขึ้น 4/2626 ทั้งที่หน้างานยังไม่มีใครบันทึก: รายการถูกนับว่าเสร็จจาก
+ * ทางอื่น — คนขับคืนรถเข้าช่อง (returnToSlot ตั้ง done ให้คิวแรกที่รถอยู่ ซึ่งอาจเป็นคิวงานพิเศษ) หรือรถ
+ * Gate-out ออกไปแล้ว (ตัวกระทบยอดตั้ง done + gatedOut) · ตอนนี้ความคืบหน้าของงานพิเศษคือการบันทึก OK/NG
+ * ของเมนูนี้ (recordCheck: checkedAt + result) อย่างเดียว · รถที่ออกจากลานไปโดยยังไม่ได้บันทึก ไม่นับ
+ * ทั้งเสร็จและคงเหลือ (ทำต่อไม่ได้แล้ว)
+ */
+export const isSpecialQueue = (q: WorkQueue): boolean => queueTypeOf(q) === 'SPECIAL'
+/** recorded in the special-work menu (OK / NG with a time and a name) */
+export const specialRecorded = (i: QueueItem): boolean => !!i.checkedAt && !!i.result
+/** still waiting for the special-work menu: not recorded there, and the car has not left the yard */
+export const specialPending = (i: QueueItem): boolean => !specialRecorded(i) && !i.gatedOut
+/** is this item still open work for its queue's own station? (SPECIAL: see above · others: not done) */
+export const itemPendingIn = (q: WorkQueue, i: QueueItem): boolean => (isSpecialQueue(q) ? specialPending(i) : !i.done)
+
+export function activeProcess(vin: string, queues: WorkQueue[], pending: (q: WorkQueue, i: QueueItem) => boolean = (_q, i) => !i.done): { queue: WorkQueue; item: QueueItem } | null {
   for (const q of queues) {
-    const item = q.items.find((i) => i.vin === vin && !i.done)
+    const item = q.items.find((i) => i.vin === vin && pending(q, i))
     if (item) return { queue: q, item }
   }
   return null
@@ -1918,6 +1935,7 @@ export function queueProgress(q: WorkQueue) {
     const done = q.items.reduce((n, i) => n + (gateInArrived(i, q) ? 1 : 0), 0)
     return { total, done, remaining: total - done, pct: total ? Math.round((done / total) * 100) : 0 }
   }
+  if (isSpecialQueue(q)) return specialProgress(q)
   // count the way the STATION counts (stationProgress): a car is progress the
   // moment its OK/NG is recorded ('checked'), not only after a driver returns
   // it to a slot — the admin board read 0/67 while the field read 3/67.
@@ -1941,7 +1959,15 @@ export function drivingNow(i: QueueItem): string | undefined {
  * the driver has taken the car back to a parking slot — a separate job — so the
  * station's own counter sat at 0/20 with cars already inspected.
  */
+/** SPECIAL: recorded in its own menu / every car not gone (a car that left unrecorded drops out of both) */
+function specialProgress(q: WorkQueue) {
+  const total = q.items.filter((i) => specialRecorded(i) || !i.gatedOut).length
+  const done = q.items.filter(specialRecorded).length
+  return { total, done, remaining: total - done, pct: total ? Math.round((done / total) * 100) : 0 }
+}
+
 export function stationProgress(q: WorkQueue) {
+  if (isSpecialQueue(q)) return specialProgress(q)
   const total = q.items.length
   const done = q.items.reduce((n, i) => n + (i.done || stageOf(i) === 'checked' ? 1 : 0), 0)
   return { total, done, remaining: total - done }
@@ -1999,6 +2025,8 @@ export function isQueueComplete(q: WorkQueue): boolean {
   if (isPreGateInQueue(q)) { const { total, done } = queueProgress(q); return done >= total }
   // …and a delivery run when its cars have all LEFT, by the same reasoning
   if (isSequenceQueue(q)) return q.items.every((i) => seqCarGone(i, q))
+  // …and special work when every car is recorded in its own menu or has left
+  if (isSpecialQueue(q)) return q.items.every((i) => !specialPending(i))
   return q.items.every((i) => i.done)
 }
 
@@ -2007,6 +2035,7 @@ export function isQueueComplete(q: WorkQueue): boolean {
  *  counter but never satisfied isQueueComplete while cars sat checked-but-not-
  *  returned — so it lingered on the station and driver lists forever. */
 export function isStationWorkComplete(q: WorkQueue): boolean {
+  if (isSpecialQueue(q)) return q.items.length > 0 && q.items.every((i) => !specialPending(i))
   return q.items.length > 0 && q.items.every((i) => i.done || stageOf(i) === 'checked')
 }
 

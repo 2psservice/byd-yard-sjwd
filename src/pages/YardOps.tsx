@@ -21,7 +21,7 @@ import { isAtLanePos, planLaneUpdates, recordableDrafts, laneEntryKind } from '.
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { overlayInspection } from '../lib/inspectionStatus'
 import { isDamaged, deriveCarStatus, hasLeftGate, IN_YARD_STATUSES, CAR_STATUS_META, GATE_OUT_ORIGIN_SITE_KEY, GATE_OUT_ORIGIN_AT_KEY, returningGateOut, fmtGateOutStamp, gateScannedThisRound } from '../lib/carStatus'
-import { useOps, useActiveQueues, useSiteQueues, activeProcess, stageOf, isSequenceQueue, isPreGateInQueue, seqStageOf, isQueueComplete, isEmptyQueue, isStationWorkComplete, queueTypeOf, stampStationDate, stationProgress, drivingNow, gateInArrived, gateInPendingItems, isIncomingLotItem } from '../store/useOps'
+import { useOps, useActiveQueues, useSiteQueues, activeProcess, itemPendingIn, stageOf, isSequenceQueue, isPreGateInQueue, seqStageOf, isQueueComplete, isEmptyQueue, isStationWorkComplete, queueTypeOf, stampStationDate, stationProgress, drivingNow, gateInArrived, gateInPendingItems, isIncomingLotItem } from '../store/useOps'
 import type { WorkQueue, QueueItem, QueueType, QueueStage } from '../store/useOps'
 import { CarTopView } from '../components/CarTopView'
 import { LogoMark } from '../components/Logo'
@@ -2939,7 +2939,7 @@ function AllQueuesBrowser({ queues, units, trackingRows, onPick, onExport }: {
       {queues.map(q => {
         const { done, total } = stationProgress(q)
         const isOpen = q.id === openId
-        const cars = q.items.filter(i => !i.done).map(i => {
+        const cars = q.items.filter(i => itemPendingIn(q, i)).map(i => {
           const u = units.find(x => x.vin === i.vin)
           const row = trackingRows.find(r => r.vin === i.vin)
           return {
@@ -4209,14 +4209,15 @@ function MechanicView({ types, accent, stationLabel, emptyLabel, okNgMode = fals
   // only when the scan misses here
   const repairQueueVins = useMemo(() => {
     const s = new Set<string>()
-    for (const q of repairQueues) for (const it of q.items) if (!it.done) s.add(it.vin)
+    for (const q of repairQueues) for (const it of q.items) if (itemPendingIn(q, it)) s.add(it.vin)
     return s
   }, [repairQueues])
   const repairQueueUnits = useMemo(() => units.filter(u => repairQueueVins.has(u.vin)), [units, repairQueueVins])
   const repairQueueRows = useMemo(() => trackingRows.filter(r => repairQueueVins.has(r.vin)), [trackingRows, repairQueueVins])
   // งานพิเศษ only: which queue item (of this tile's own type) this car is
   // waiting on — recordCheck needs the queue id, not just the VIN
-  const activeProc = useMemo(() => (okNgMode && unit ? activeProcess(unit.vin, repairQueues) : null), [okNgMode, unit, repairQueues])
+  // งานพิเศษ: รถที่คนขับคืนช่องแล้ว (done) แต่ยังไม่ได้บันทึกที่เมนูนี้ ยังบันทึกได้ (itemPendingIn)
+  const activeProc = useMemo(() => (okNgMode && unit ? activeProcess(unit.vin, repairQueues, itemPendingIn) : null), [okNgMode, unit, repairQueues])
   const [justChecked, setJustChecked] = useState<'OK' | 'NG' | null>(null)
 
   const onExportQueue = (q: WorkQueue) => {
