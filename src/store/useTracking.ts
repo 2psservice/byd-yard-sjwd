@@ -40,6 +40,7 @@ import * as db from '../lib/db'
 import { createKeyedQueue } from '../lib/keyedQueue'
 import { supabase } from '../lib/supabase'
 import { loadMark } from '../lib/loadMarks'
+import { chooseSyncMode, isLowMemDevice } from '../lib/deviceInfo'
 import { onSync, sendSync, type RowMsg, type RowsPayload } from '../lib/syncBus'
 import { useYard, WCL_STAGING_BLOCK } from './useYard'
 import { siteForRow, siteIdForLocation, coInspectionAccepts, departedFromSite, siteWorksWith, rowYardName, rowInSite, CANDIDATE_SITES_KEY } from '../lib/siteScope'
@@ -831,7 +832,9 @@ export const useTracking = create<TrackingState>()(
         if (get().loaded) return
         let rows: Record<string, TrackRow> = {}
         try {
+          loadMark('idb-start')
           const all = await idbGetAllRows()
+          loadMark(`idb-done ${all.length}`)
           // backfill rows imported before "Last update" existed → use the import time
           const fallback = get().lastImport?.at ?? Date.now()
           const fixed: TrackRow[] = []
@@ -883,11 +886,14 @@ export const useTracking = create<TrackingState>()(
         const hasLocal = Object.keys(local).length > 0
         // full pull the first time, or as a safety resync if the last one is stale (>6h);
         // otherwise fetch only what changed since last sync (minus a 2-min skew margin)
-        const stale = startedAt - lastSync > 6 * 3600_000
-        // the retired system-history sweep needs to SEE every row once, and an
-        // incremental sync only returns rows changed since last time
-        const needPurge = get().sysHistoryPurged !== SYS_HISTORY_PURGE_V
-        let incremental = lastSync > 0 && hasLocal && !stale && !needPurge
+        // full pull the first time; a stale (>6h) copy or the retired system-history
+        // sweep also force one — EXCEPT on a low-RAM device (handhelds froze every
+        // morning on this ~114 MB pull; see chooseSyncMode)
+        let incremental = chooseSyncMode({
+          lastSync, hasLocal, now: startedAt,
+          purged: get().sysHistoryPurged === SYS_HISTORY_PURGE_V,
+          lowMem: isLowMemDevice(),
+        }) === 'incremental'
         // ── self-heal for a silently-truncated copy ──
         // A pull that failed mid-way used to pass for complete, so lastSync got
         // stamped over a fraction of the sheet — and from then on the minute-

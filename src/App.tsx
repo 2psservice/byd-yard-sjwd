@@ -22,7 +22,9 @@ import { yardLocCode, LAST_LOCATION_KEY } from './lib/groupingImport'
 import { matchModel } from './lib/sampleData'
 import { isPhone } from './lib/device'
 import { buildHeartbeat, deviceId, shouldSendHeartbeat } from './lib/heartbeat'
-import { reportHeartbeat } from './lib/db'
+import { reportHeartbeat, logDeviceReport } from './lib/db'
+import { readDeviceInfo, dailyReportDue, markDailyReport, compactMarks, getLongTasks, startWedgeWatch } from './lib/deviceInfo'
+import { getBootMarks } from './lib/loadMarks'
 import { useMasterDefect } from './store/useMasterDefect'
 import type { View } from './types'
 
@@ -377,7 +379,9 @@ export default function App() {
       // yard plan). Re-derive the class from the row's model text and fix any
       // mismatch (importUnits re-runs matchModel + pushes to cloud). Unknown
       // text (OTHER) never overwrites a unit's existing class.
-      {
+      // ทุก 60 วิเคยวน matchModel ทุกคันแม้ไม่มีอะไรเปลี่ยน (handheld ค้าง) — ข้ามเมื่อ units/rows ยังเป็นชุดเดิมกับรอบก่อน
+      if (useYard.getState().units !== healSeen.units || rows !== healSeen.rows) {
+        healSeen = { units: useYard.getState().units, rows }
         const allU = useYard.getState().units
         const fixes: { vin: string; model: string; color: string }[] = []
         for (const vin in allU) {
@@ -398,11 +402,41 @@ export default function App() {
         if (fixes.length) useYard.getState().importUnits(fixes)
       }
     }
+    let healSeen: { units: unknown; rows: unknown } = { units: null, rows: null }
     const t = setTimeout(sweep, 9000) // let the boot loads settle first
     const iv = setInterval(sweep, 60_000)
     // dev-only: let automated tests trigger this sweep on demand instead of
     // waiting on real timers (same pattern as the __yard/__ops/__tracking hooks)
     if (import.meta.env.DEV) (window as unknown as { __sweepNow?: () => void }).__sweepNow = sweep
+    return () => { clearTimeout(t); clearInterval(iv) }
+  }, [loggedInUserId])
+
+  // ── รายงานเครื่อง (รุ่น/RAM/เวลาโหลด/งานที่ทำให้จอค้าง) — แยก handheld ออกจากมือถือ (ดู lib/deviceInfo)
+  // 'boot' 15 วิหลังล็อกอิน (ไม่รอซิงก์ — เครื่องที่ค้างแล้วถูกปิดก่อนซิงก์เสร็จก็ยังส่งได้) · 'synced' หลังซิงก์แถวรอบแรกเสร็จ
+  // อย่างละครั้งต่อวัน จดว่าส่งแล้วเฉพาะเมื่อส่งสำเร็จ
+  useEffect(() => {
+    if (!loggedInUserId || !isConfigured()) return
+    startWedgeWatch()
+    const sent = new Set<string>()
+    const report = (kind: 'boot' | 'synced') => {
+      const today = new Date().toLocaleDateString('en-CA')
+      if (sent.has(kind) || !dailyReportDue(kind, today)) return
+      sent.add(kind)
+      const tr = useTracking.getState()
+      readDeviceInfo().then((info) => logDeviceReport({
+        kind, ...info,
+        site: useYard.getState().currentSite,
+        rows: Object.keys(tr.rows).length,
+        units: Object.keys(useYard.getState().units).length,
+        lastSyncAgeH: tr.lastSync ? Math.round((Date.now() - tr.lastSync) / 360_000) / 10 : null,
+        purged: tr.sysHistoryPurged ?? null,
+        synced: cloudSyncedThisSession(),
+        long: getLongTasks(),
+        marks: compactMarks(getBootMarks()),
+      })).then((ok) => { if (ok) markDailyReport(kind, today); else sent.delete(kind) }).catch(() => sent.delete(kind))
+    }
+    const t = setTimeout(() => report('boot'), 15_000)
+    const iv = setInterval(() => { if (cloudSyncedThisSession()) { report('synced'); clearInterval(iv) } }, 10_000)
     return () => { clearTimeout(t); clearInterval(iv) }
   }, [loggedInUserId])
 

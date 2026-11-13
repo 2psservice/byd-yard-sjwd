@@ -10,6 +10,8 @@ export interface LoadMark { name: string; ms: number }
 
 const marks: LoadMark[] = []
 let t0 = 0
+/** ไทม์ไลน์ตั้งแต่เปิดหน้า (ms จาก navigation start) — ไม่ถูกล้างตอนเปลี่ยนยาร์ด · ใช้ในรายงานเครื่อง (deviceInfo) */
+const bootMarks: LoadMark[] = []
 
 const flagOn = (() => {
   try {
@@ -33,6 +35,7 @@ function paint(): void {
 
 export function loadMark(name: string): void {
   const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
+  if (bootMarks.length < 40) bootMarks.push({ name, ms: Math.round(now) })
   if (name === 'site-load-start') { t0 = now; marks.length = 0 }
   marks.push({ name, ms: Math.round(now - t0) })
   if (marks.length > 40) marks.shift()
@@ -41,3 +44,4 @@ export function loadMark(name: string): void {
 
 /** สำหรับเทสต์/ดีบัก */
 export const getLoadMarks = (): LoadMark[] => marks.slice()
+export const getBootMarks = (): LoadMark[] => bootMarks.slice()
