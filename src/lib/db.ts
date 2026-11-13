@@ -1007,6 +1007,20 @@ export async function reportHeartbeat(row: import('./heartbeat').HeartbeatRow): 
  * (tbl = 'scan') — ใช้ตามเคสกล้อง "ภาพขึ้นแต่สแกนไม่ติด" บนเครื่องจริงที่เรายืมมาลองไม่ได้ · ไม่มีข้อมูลส่วนตัว
  * รหัสเครื่องกับเวอร์ชันแอปไปกับหัวคำขออยู่แล้ว (supabase.ts) · ไม่ throw
  */
+/** รายงานเครื่องวันละครั้ง (รุ่น/RAM/เวลาโหลด) — client_build_log tbl='device' · ดู lib/deviceInfo */
+export async function logDeviceReport(summary: Record<string, unknown>): Promise<boolean> {
+  if (!isConfigured() || import.meta.env.DEV) return false
+  const { error } = await supabase.from('client_build_log').insert({
+    tbl: 'device',
+    op: JSON.stringify(summary).slice(0, 1500),
+    build: String(__BUILD_AT__),
+    ua: typeof navigator !== 'undefined' ? navigator.userAgent.slice(0, 300) : null,
+    device: deviceId(),
+  })
+  if (error) console.warn('[db] logDeviceReport', error.message)
+  return !error
+}
+
 export async function logScanSession(summary: Record<string, unknown>): Promise<void> {
   if (!isConfigured() || import.meta.env.DEV) return
   const { error } = await supabase.from('client_build_log').insert({

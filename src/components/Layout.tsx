@@ -6,6 +6,7 @@ import { BuildStamp } from './BuildStamp'
 import { createPortal } from 'react-dom'
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { useYard } from '../store/useYard'
+import { useShallow } from 'zustand/react/shallow'
 import { useTrackingRows, useTracking } from '../store/useTracking'
 import { deriveCarStatus, IN_YARD_STATUSES } from '../lib/carStatus'
 import { rowInSite, rowsForSite, whereElse } from '../lib/siteScope'
@@ -122,7 +123,11 @@ function UserMenu({ onGoSettings }: { onGoSettings: () => void }) {
 /** pageView = หน้าที่กำลังแสดงจริง (App เลื่อนการสลับไว้ตอนหน้าเดิมจางออก) — ระยะขอบของเนื้อหาตามหน้านั้น
  *  ไม่ใช่ตามเมนูที่เพิ่งกด ไม่งั้นหน้าเดิมขยับระหว่างจางออก */
 export function Layout({ children, pageView }: { children: ReactNode; pageView?: View }) {
-  const { lang, view, setView, planMode, setPlanMode, setLang, currentUser, sites, currentSite, openSiteModal, unitsRealtimeConnected } = useYard()
+  // เลือกเฉพาะที่ใช้ — เดิม useYard() ทั้งก้อน ทำให้แถบเมนูวาดใหม่ (และนับรถทั้งบริษัท) ทุกครั้งที่ units/ตำแหน่งเปลี่ยน
+  const { lang, view, setView, planMode, setPlanMode, setLang, currentUser, sites, currentSite, openSiteModal, unitsRealtimeConnected } = useYard(useShallow((s) => ({
+    lang: s.lang, view: s.view, setView: s.setView, planMode: s.planMode, setPlanMode: s.setPlanMode, setLang: s.setLang,
+    currentUser: s.currentUser, sites: s.sites, currentSite: s.currentSite, openSiteModal: s.openSiteModal, unitsRealtimeConnected: s.unitsRealtimeConnected,
+  })))
   const siteName = sites.find((s) => s.id === currentSite)?.name ?? null
   const trackingRows = useTrackingRows()
   const trackingRealtimeConnected = useTracking((s) => s.realtimeConnected)
@@ -141,7 +146,11 @@ export function Layout({ children, pageView }: { children: ReactNode; pageView?:
   // in the app — Dashboard's KPI computes it this exact same way. This used
   // to read the `units` store instead (a different, slower-syncing dataset),
   // which disagreed with Dashboard's number and confused staff.
-  const inYard = trackingRows.filter((r) => rowInSite(r, currentSite, sites) && IN_YARD_STATUSES.has(deriveCarStatus(r.cells))).length
+  // นับครั้งเดียวต่อชุดข้อมูล — เดิมนับใหม่ทุกครั้งที่วาด (ทุกการเปลี่ยนหน้า × ~66k แถว)
+  const inYard = useMemo(
+    () => trackingRows.filter((r) => rowInSite(r, currentSite, sites) && IN_YARD_STATUSES.has(deriveCarStatus(r.cells))).length,
+    [trackingRows, currentSite, sites],
+  )
   const today = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
 
   useEffect(() => {
