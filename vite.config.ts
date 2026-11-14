@@ -63,15 +63,11 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,png,svg,woff2,ttf,wasm}'],
         // skip the Excel engines (admin-only, fetched on demand) and font
         // subsets no screen renders (Thai + Latin are the only scripts used)
-        globIgnores: ['**/exceljs*', '**/xlsx-*', '**/*cyrillic*', '**/*greek*', '**/*vietnamese*',
-          // the Mechanic station's repair app (2.4 MB, its own cloud app) — only the mechanics open it;
-          // it loads fresh from the network instead of riding every field phone's precache
-          'repair/**'],
+        globIgnores: ['**/exceljs*', '**/xlsx-*', '**/*cyrillic*', '**/*greek*', '**/*vietnamese*'],
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
         navigateFallback: '/index.html',
         // never cache the Supabase API/realtime — data must stay live
-        // …and /repair/ is its own page: the SPA shell must never answer for it
-        navigateFallbackDenylist: [/^\/rest\//, /^\/realtime\//, /^\/repair\//],
+        navigateFallbackDenylist: [/^\/rest\//, /^\/realtime\//],
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/fonts\.(googleapis|gstatic)\.com\/.*/i,
