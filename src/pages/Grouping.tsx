@@ -8,7 +8,8 @@ import '@fontsource/anuphan/thai-700.css'
 import { Layers, Upload, Printer, MapPin, Loader2, FileSpreadsheet, CheckCircle2, AlertTriangle, ListChecks, X, Save, FileText, Pencil, CalendarDays, ChevronLeft, ChevronRight, Check, History } from 'lucide-react'
 import { useYard, useUnits } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
-import { rowsForSite } from '../lib/siteScope'
+import { rowsForSite, rowYardName } from '../lib/siteScope'
+import { fetchTrackingRowsByVins, isConfigured } from '../lib/db'
 import { useOps, isSequenceQueue, seqRunsFor, type WorkQueue } from '../store/useOps'
 import { PageHead, Modal } from '../components/ui'
 import { clock } from '../lib/format'
@@ -71,7 +72,7 @@ export function Grouping() {
   const [rows, setRows] = useState<GroupPrintRow[] | null>(null)
   const [meta, setMeta] = useState<GroupPrintMeta | null>(null)
   const [seqName, setSeqName] = useState('') // queue name = the uploaded sheet title
-  const [stats, setStats] = useState<{ found: number; notFound: number; placed: number; assigned: number; cleared: number } | null>(null)
+  const [stats, setStats] = useState<{ found: number; notFound: number; placed: number; assigned: number; cleared: number; unstamped: { vin: string; yard: string }[] } | null>(null)
   const [shortRead, setShortRead] = useState<
     { got: number; want: number; noGrouping: number; sheet: string; others: { sheet: string; vins: number }[] } | null>(null)
   // the file carried more than one sheet for this yard: which one was read, and the others to pick instead
@@ -95,6 +96,27 @@ export function Grouping() {
     setLastFile(file)
     try {
       const res = await parseGroupingWorkbook(file, siteName, sheet)
+
+      // The cars this yard holds, read LIVE (not this render's snapshot), after fetching the file's cars this
+      // device has no row for. The number is stamped only on cars found here, and a device still loading its
+      // rows (or one that syncs only changes) left part of a plan without a number: 14/11 60 RAI → NYB2,
+      // 203 cars in the run while the Unit page showed some with a blank Grouping (LC0CE4CB8T4379304).
+      const siteRowsNow = () => rowsForSite(Object.values(useTracking.getState().rows), currentSite, sites)
+      let siteMap = new Map(siteRowsNow().map((r) => [r.vin, r]))
+      const missing = [...new Set(res.rows.map((r) => r.vin))].filter((v) => !siteMap.has(v))
+      if (missing.length && isConfigured()) {
+        try {
+          // at most 10 s — a dead network must not hold the upload; the badge below names what was left out
+          const got = await Promise.race([fetchTrackingRowsByVins(missing), new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 10_000))])
+          if (got.length) { useTracking.getState().adoptCloudRows(got); siteMap = new Map(siteRowsNow().map((r) => [r.vin, r])) }
+        } catch { /* offline: stamp what this device has, and say which cars were left out (unstamped below) */ }
+      }
+      const trackVins = new Set(siteMap.keys())
+      const rowByVin = siteMap
+      const anyRows = useTracking.getState().rows
+      // cars in the file this yard holds no row for: they join the run but carry no number until it is fixed
+      const unstamped = [...new Set(res.rows.map((r) => r.vin))].filter((v) => !trackVins.has(v))
+        .map((vin) => ({ vin, yard: anyRows[vin] ? rowYardName(anyRows[vin], sites) || 'ยาร์ดอื่น' : 'ไม่พบข้อมูลรถ' }))
 
       // group order (first-seen) → Lane load O1, O2, …
       const order: string[] = []
@@ -138,7 +160,7 @@ export function Grouping() {
         // still shows a location instead of "ไม่พบ"
         const loc = yardLocCode(u) || String(rowByVin.get(r.vin)?.cells[LAST_LOCATION_KEY] ?? '')
         if (loc) placed++
-        const known = rowByVin.get(r.vin)?.cells ?? anyRowByVin.get(r.vin)?.cells
+        const known = rowByVin.get(r.vin)?.cells ?? anyRows[r.vin]?.cells ?? anyRowByVin.get(r.vin)?.cells
         return {
           no: i + 1, vin: r.vin, modelName: r.modelName,
           // the file's own Model / Color first; a blank one falls back to what the yard knows of the car
@@ -233,7 +255,7 @@ export function Grouping() {
       setSeqName(res.title.trim() || `${m.siteLabel} - Grouping to Dealer ( ${m.totalUnits} Units / ${m.groupCount} Group) Date ${m.date}`)
       setViewQueueId(null) // a fresh import shows the imported sheet, not a run picked earlier
       setRows(printRows)
-      setStats({ found, notFound, placed, assigned, cleared: clearVins.length })
+      setStats({ found, notFound, placed, assigned, cleared: clearVins.length, unstamped })
       // the sheet's own title states how many units it carries — if fewer rows
       // were read, say so loudly instead of quietly building a short queue
       const short = res.titleUnits > 0 && printRows.length < res.titleUnits
@@ -674,6 +696,12 @@ export function Grouping() {
           <span className="badge" style={{ background: 'rgba(22,163,74,0.1)', color: '#16a34a' }}><CheckCircle2 size={12} /> ใส่เลข grouping {stats.assigned} คัน</span>
           <span className="badge" style={{ background: 'rgba(37,99,235,0.08)', color: 'var(--brand)' }}><MapPin size={12} /> มีตำแหน่งในลาน {stats.placed} คัน</span>
           {stats.notFound > 0 && <span className="badge" style={{ background: 'rgba(217,119,6,0.1)', color: '#d97706' }}><AlertTriangle size={12} /> ไม่พบในระบบ {stats.notFound} คัน</span>}
+          {stats.unstamped.length > 0 && (
+            <span className="badge" data-grouping-unstamped={stats.unstamped.length} style={{ background: 'rgba(220,38,38,0.08)', color: '#dc2626' }}
+              title={'ใส่เลข Grouping ไม่ได้ — ข้อมูลรถไม่ได้อยู่ยาร์ดนี้:\n' + stats.unstamped.map((u) => `${u.vin} · ${u.yard}`).join('\n')}>
+              <AlertTriangle size={12} /> ใส่เลขไม่ได้ {stats.unstamped.length} คัน (ไม่ใช่รถของยาร์ดนี้ · ชี้ดูรายชื่อ)
+            </span>
+          )}
           {stats.cleared > 0 && (
             <span className="badge" style={{ background: 'rgba(220,38,38,0.08)', color: '#dc2626' }}
               title="คันที่เคยอยู่ในกลุ่มเหล่านี้ แต่ไฟล์ล่าสุดไม่มีชื่อแล้ว — ล้างเลข grouping + dealer location ให้อัตโนมัติ">

@@ -4,6 +4,7 @@
  */
 import { useEffect, useRef, useState, useMemo, useCallback, memo } from 'react'
 import { BuildStamp } from '../components/BuildStamp'
+import { RepairAppFrame } from '../components/RepairAppFrame'
 import { useShallow } from 'zustand/react/shallow'
 import { createPortal } from 'react-dom'
 import {
@@ -24,7 +25,6 @@ import { isDamaged, deriveCarStatus, hasLeftGate, IN_YARD_STATUSES, CAR_STATUS_M
 import { useOps, useActiveQueues, useSiteQueues, activeProcess, itemPendingIn, stageOf, isSequenceQueue, isPreGateInQueue, seqStageOf, isQueueComplete, isEmptyQueue, isStationWorkComplete, queueTypeOf, stampStationDate, stationProgress, drivingNow, gateInArrived, gateInPendingItems, isIncomingLotItem } from '../store/useOps'
 import type { WorkQueue, QueueItem, QueueType, QueueStage } from '../store/useOps'
 import { CarTopView } from '../components/CarTopView'
-import { LogoMark } from '../components/Logo'
 import { DrivingScreen } from '../components/DrivingScreen'
 import { LiveTrackingMap } from '../components/LiveTrackingMap'
 import { ALL_ZONES, zoneLabel } from '../components/CarDiagramMultiView'
@@ -6394,23 +6394,33 @@ export function YardOps() {
   }, [queues, trackingRows, dismissedPreGateIn, closedQueues, evOpen])
 
   const activeRole = ROLES.find(r => r.key === role)
+  const homeSiteName = useYard((s) => s.sites.find((x) => x.id === s.currentSite)?.name ?? '')
   // Gate-out station: which day's delivery runs it lists (today unless the gate looks back)
   const [gateOutDay, setGateOutDay] = useState(() => dayKeyOf(new Date()))
 
   return (
-    <div className="max-w-md mx-auto pb-10">
+    // ios-home: the iOS 27 home screen — its wallpaper paints the whole page behind it (see index.css)
+    <div className={role ? 'max-w-md mx-auto pb-10' : 'max-w-md mx-auto pb-10 ios-home'}>
+
+      {/* home: iOS large title — today's date above, the account's initial in a glass circle on the right */}
+      {!role && (
+        <div className="ios-home-head">
+          <div className="ios-home-date">{new Date().toLocaleDateString('th-TH', { weekday: 'long', day: 'numeric', month: 'long' })}</div>
+          <div className="flex items-end justify-between gap-3">
+            <h1 className="ios-large-title">Yard Ops</h1>
+            <span className="ios-avatar ios-glass" aria-hidden="true">{(currentUser || '?').slice(0, 1).toUpperCase()}</span>
+          </div>
+          <div className="ios-home-sub">Mobile Station · {currentUser}</div>
+        </div>
+      )}
 
       {/* header */}
-      <div className="flex items-center gap-3 mb-5">
-        {role ? (
-          <button onClick={() => setRole(null)}
-            className="w-9 h-9 rounded-xl flex items-center justify-center transition-all hover:bg-[var(--chip)]"
-            style={{ border: '1px solid var(--line)' }}>
-            <ChevronLeft size={18} />
-          </button>
-        ) : (
-          <LogoMark size={36} />
-        )}
+      {role && <div className="flex items-center gap-3 mb-5">
+        <button onClick={() => setRole(null)}
+          className="w-9 h-9 rounded-xl flex items-center justify-center transition-all hover:bg-[var(--chip)]"
+          style={{ border: '1px solid var(--line)' }}>
+          <ChevronLeft size={18} />
+        </button>
         <div>
           <div className="display text-[19px] font-bold leading-tight">
             {activeRole ? activeRole.th : 'Yard Ops'}
@@ -6434,50 +6444,34 @@ export function YardOps() {
             {activeRole.icon && <span style={{ transform: 'scale(0.7)' }}>{activeRole.icon}</span>}
           </div>
         )}
-      </div>
+      </div>}
 
-      {/* role picker */}
+      {/* role picker — iPhone home screen: an app icon per station, label under it, red badge = work waiting */}
       {!role && (
-        <div className="space-y-3 page-in">
-          <div className="text-[11px] font-bold uppercase tracking-wider mb-3" style={{ color: 'var(--muted)' }}>
-            เลือกตำแหน่งงาน
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            {ROLES.map(r => (
-              <button
-                key={r.key}
-                onClick={() => setRole(r.key)}
-                className="panel p-5 text-left flex flex-col gap-3 transition-all hover:shadow-md active:scale-95 relative"
-                style={{ touchAction: 'manipulation' }}
-              >
-                {/* pending-work badge — iOS-style red count, top-right of the tile */}
-                {(menuBadges[r.key] ?? 0) > 0 && (
-                  <span className="absolute flex items-center justify-center font-bold text-white tabular"
-                    style={{ top: 10, right: 10, minWidth: 24, height: 24, borderRadius: 12, padding: '0 7px',
-                      fontSize: 12.5, background: '#ef4444', boxShadow: '0 2px 8px -2px rgba(239,68,68,0.6)' }}>
-                    {menuBadges[r.key]! > 999 ? '999+' : menuBadges[r.key]}
+        <div className="page-in">
+          <div className="ios-home-grid" aria-label="เลือกตำแหน่งงาน">
+            {ROLES.map((r, i) => {
+              const n = menuBadges[r.key] ?? 0
+              return (
+                <button key={r.key} onClick={() => setRole(r.key)} className="ios-app"
+                  title={`${r.th} · ${r.desc}`} aria-label={`${r.th} · ${r.desc}${n > 0 ? ` · ค้าง ${n}` : ''}`}
+                  style={{ '--app-c': r.color, '--i': i } as React.CSSProperties}>
+                  <span className="ios-app-icon">
+                    {r.icon}
+                    {n > 0 && <span className="ios-badge tabular">{n > 999 ? '999+' : n}</span>}
                   </span>
-                )}
-                <div className="w-14 h-14 rounded-2xl flex items-center justify-center"
-                  style={{ background: r.color + '18', color: r.color }}>
-                  {r.icon}
-                </div>
-                <div>
-                  <div className="font-bold text-[15px] leading-tight">{r.th}</div>
-                  <div className="text-[11.5px] mt-1" style={{ color: 'var(--muted)' }}>{r.desc}</div>
-                </div>
-              </button>
-            ))}
+                  <span className="ios-app-label">{r.th}</span>
+                </button>
+              )
+            })}
           </div>
 
-          {/* status strip */}
-          <div className="panel p-4 mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
-            <div className="flex items-center gap-1.5 text-[12px] font-medium"
-              style={{ color: 'var(--st-yard)' }}>
-              <span className="live">●</span> Live
-            </div>
-            <div className="text-[12px]" style={{ color: 'var(--muted)' }}>SJWD Yard Control · {currentUser}</div>
-            <BuildStamp className="w-full" />
+          {/* status — a glass widget: this yard, live, who's signed in, which build */}
+          <div className="ios-widget ios-glass">
+            <div className="ios-widget-live"><span className="live">●</span> Live</div>
+            <div className="ios-widget-title">{homeSiteName || 'SJWD Yard Control'}</div>
+            <div className="ios-widget-sub">SJWD Yard Control · {currentUser}</div>
+            <BuildStamp className="w-full mt-1" />
           </div>
         </div>
       )}
@@ -6494,7 +6488,8 @@ export function YardOps() {
       {role === 'pm'         && <PdiView types={['PM']} accent="#2563eb" title="PM" />}
       {role === 'fc'         && <PdiView types={['FINAL']} accent="#059669" title="FINAL CHECK" />}
       {role === 'check'      && <CheckView />}
-      {role === 'mechanic'   && <MechanicView types={['REPAIR']} accent="#c2680b" stationLabel="ช่าง (Mechanic)" emptyLabel="ยังไม่มีคิวงานซ่อม" />}
+      {/* ช่าง: the yard's repair app (งานซ่อม + รูป) — its own file, framed, see RepairAppFrame */}
+      {role === 'mechanic'   && <RepairAppFrame />}
       {role === 'special'    && <MechanicView types={['SPECIAL']} accent="#9333ea" stationLabel="งานพิเศษ" emptyLabel="ยังไม่มีคิวงานพิเศษ" okNgMode />}
       {role === 'ev'         && <EvView />}
       </div>}
