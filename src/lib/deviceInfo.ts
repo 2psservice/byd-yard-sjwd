@@ -79,15 +79,20 @@ export function compactMarks(marks: { name: string; ms: number }[], max = 20): s
   return marks.slice(0, max).map((m) => `${m.name.slice(0, 24)}@${m.ms}`)
 }
 
+/** เครื่องปกติ: ดึงทั้งบริษัทเป็นการตรวจซ้ำเมื่อไม่ได้ซิงก์เกินนี้ (เดิม 6 ชม. = ทุกเช้า) */
+export const FULL_RESYNC_AFTER_MS = 7 * 24 * 3600_000
+
 /**
  * ซิงก์แถวรถรอบนี้ต้องดึงทั้งบริษัท (full ~66k แถว/~114 MB) หรือดึงเฉพาะที่เปลี่ยน
- * เครื่อง RAM น้อย: ไม่ดึงทั้งบริษัทเพียงเพราะ "ห่างรอบก่อนเกิน 6 ชม." หรือรอบล้างประวัติระบบ — ตัวนี้แหละที่ทำ handheld ค้างทุกเช้า
+ * 14 พ.ย. รายงานเครื่อง: มือถือ 8 GB ที่ไม่ได้เปิดข้ามคืนดึงทั้งบริษัทใหม่ทุกเช้า ค้าง 1–14 นาที (A55 875 วิ) — ส่วนเครื่องที่ดึงเฉพาะที่เปลี่ยน
+ * เปิดเสร็จใน 2–15 วิ และแถวครบ 66,663 ตรงคลาวด์ทุกเครื่อง จึงเลิก "ทุก 6 ชม." บนทุกเครื่อง เหลือตรวจซ้ำเมื่อห่างเกิน 7 วัน
+ * เครื่อง RAM น้อย: ไม่ดึงทั้งบริษัทเพราะเวลา/รอบล้างประวัติระบบเลย
  * (การดึงเฉพาะที่เปลี่ยนตั้งแต่ lastSync ครอบทุกการแก้อยู่แล้ว · ตัวตรวจ "แถวในเครื่องขาด > 20" ใน syncCloud ยังบังคับ full ได้เหมือนเดิม)
  */
 export function chooseSyncMode(i: { lastSync: number; hasLocal: boolean; now: number; purged: boolean; lowMem: boolean }): 'full' | 'incremental' {
   if (!(i.lastSync > 0) || !i.hasLocal) return 'full'
   if (i.lowMem) return 'incremental'
-  const stale = i.now - i.lastSync > 6 * 3600_000
+  const stale = i.now - i.lastSync > FULL_RESYNC_AFTER_MS
   return stale || !i.purged ? 'full' : 'incremental'
 }
 

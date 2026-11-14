@@ -884,11 +884,10 @@ export const useTracking = create<TrackingState>()(
         const lastSync = get().lastSync ?? 0
         const local = get().rows
         const hasLocal = Object.keys(local).length > 0
-        // full pull the first time, or as a safety resync if the last one is stale (>6h);
-        // otherwise fetch only what changed since last sync (minus a 2-min skew margin)
-        // full pull the first time; a stale (>6h) copy or the retired system-history
-        // sweep also force one — EXCEPT on a low-RAM device (handhelds froze every
-        // morning on this ~114 MB pull; see chooseSyncMode)
+        // full pull the first time; a copy not synced for over 7 days or the retired
+        // system-history sweep also force one (never on a low-RAM device). Otherwise
+        // fetch only what changed since last sync (minus a 2-min skew margin) —
+        // the old 6-hour rule re-pulled ~114 MB every morning and froze phones for minutes
         let incremental = chooseSyncMode({
           lastSync, hasLocal, now: startedAt,
           purged: get().sysHistoryPurged === SYS_HISTORY_PURGE_V,
