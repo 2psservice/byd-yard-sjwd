@@ -10,8 +10,15 @@ const now = Date.UTC(2026, 10, 13, 1, 0)
 const base = { hasLocal: true, now, purged: true, lowMem: false }
 
 describe('chooseSyncMode', () => {
-  it('เครื่องปกติ ห่างรอบก่อนเกิน 6 ชม. → ดึงทั้งหมด (เหมือนเดิม)', () => {
-    expect(chooseSyncMode({ ...base, lastSync: now - 7 * H })).toBe('full')
+  it('เครื่องปกติ ไม่ได้เปิดข้ามคืน (16–20 ชม.) → ดึงเฉพาะที่เปลี่ยน (เดิมดึงทั้งบริษัททุกเช้า ค้างหลายนาที)', () => {
+    expect(chooseSyncMode({ ...base, lastSync: now - 7 * H })).toBe('incremental')
+    expect(chooseSyncMode({ ...base, lastSync: now - 20 * H })).toBe('incremental')
+  })
+  it('เครื่องปกติ ไม่ได้ซิงก์เกิน 7 วัน → ดึงทั้งหมด (ตรวจซ้ำ)', () => {
+    expect(chooseSyncMode({ ...base, lastSync: now - 8 * 24 * H })).toBe('full')
+  })
+  it('เครื่อง RAM น้อย ไม่ได้ซิงก์เกิน 7 วัน → ไม่ดึงทั้งหมดเพราะเวลา', () => {
+    expect(chooseSyncMode({ ...base, lastSync: now - 17 * 24 * H, lowMem: true })).toBe('incremental')
   })
   it('เครื่องปกติ รอบล้างประวัติระบบยังไม่ทำ → ดึงทั้งหมด (เหมือนเดิม)', () => {
     expect(chooseSyncMode({ ...base, lastSync: now - H, purged: false })).toBe('full')
