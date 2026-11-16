@@ -14,8 +14,9 @@ import { hasLeftGate, deriveCarStatus, isGateOutStamp, gateOutScanMs, GATE_OUT_O
 import { departedFromSite, departureFromSite, rowInSite, siteWorksWith } from '../lib/siteScope'
 import { PM_KEYS } from '../lib/trackingColumns'
 import type { TrackRow } from '../lib/excelTracking'
+import type { Site } from '../types'
 import { quotaSafeStorage } from '../lib/persistStorage'
-import { seqPlanKey, mergeSeqItems } from '../lib/seqPlan'
+import { seqPlanKey, mergeSeqItems, withPlanDay, withPlanCounts } from '../lib/seqPlan'
 import { groupNo, destPurpose, runGroupPurpose } from '../lib/groupRuns'
 
 /** Process stage of one vehicle within a station queue (PDI / PM / Wash …).
@@ -370,7 +371,9 @@ interface OpsState {
   recordCheck: (id: string, vin: string, result: 'OK' | 'NG', by?: string) => void
   returnToSlot: (id: string, vin: string, by?: string) => void
   // ── delivery sequence (Grouping to Dealer) ──
-  createSequence: (name: string, by: string, items: { vin: string; laneLoad?: string; laneBy?: string; laneAt?: number; dest?: string; group?: string; remark?: string; model?: string; color?: string }[]) => string
+  /** `day` (yyyy-mm-dd) = the plan's day when the file's title carries another (a title copied from an older
+   *  plan): the run is filed — and matched — on it, and its name says it. */
+  createSequence: (name: string, by: string, items: { vin: string; laneLoad?: string; laneBy?: string; laneAt?: number; dest?: string; group?: string; remark?: string; model?: string; color?: string }[], opts?: { day?: string }) => string
   markAtWash: (id: string, vin: string, by?: string) => void        // driver scan #1
   markAtLane: (id: string, vin: string, by?: string) => void        // driver scan #2
   confirmSeqGateOut: (id: string, vin: string, by?: string) => void // gate-out confirmed
@@ -883,8 +886,8 @@ export const useOps = create<OpsState>()(
       },
 
       // ── delivery sequence (Grouping to Dealer) ────────────────────────────
-      createSequence: (name, by, items) => {
-        const n = name.trim()
+      createSequence: (name, by, items, opts) => {
+        const n = opts?.day ? withPlanDay(name.trim(), opts.day) : name.trim()
         if (!n) return ''
         const site = useYard.getState().currentSite ?? undefined
         const now = Date.now()
@@ -900,7 +903,9 @@ export const useOps = create<OpsState>()(
           })
         // the run(s) this upload belongs to: the same name, or the same yard's plan for the same day
         // (a newer file of that plan carries more cars, so its title — the run's name — changes)
-        const matches = seqRunsFor(get().queues, n, site)
+        // …and the same kind of work: a yard-move shuttle never folds into the dealer run of the day, nor back
+        const purpose = runPurpose(rows, useYard.getState().sites)
+        const matches = seqRunsFor(get().queues, n, site, { purpose })
         if (matches.length) {
           // one run per plan: the run with the most cars already sent carries on (its id stays, so the
           // field's stations keep working it); every car keeps its own progress from whichever run had
@@ -914,8 +919,10 @@ export const useOps = create<OpsState>()(
           // arrival lot (same shipment, uploaded once as Pre Gate-in and
           // once as Grouping to Dealer) must not leave this delivery run
           // still reading as a GATEIN lot on the Dashboard (see isPreGateInQueue).
+          // the title counts the cars of THIS file; the run now holds the day's cars from every file
+          const named = withPlanCounts(n, merged.length, new Set(merged.map((i) => groupNo(i.group)).filter(Boolean)).size)
           set((s) => ({ queues: s.queues.map((q) => (q.id === target.id
-            ? { ...q, name: n, site: q.site ?? site, kind: 'sequence', type: undefined, items: merged, createdBy: by, createdAt: now } : q)) }))
+            ? { ...q, name: named, site: q.site ?? site, kind: 'sequence', type: undefined, items: merged, createdBy: by, createdAt: now } : q)) }))
           pushQueue(get, target.id)
           for (const q of matches) if (q.id !== target.id) get().removeQueue(q.id)
           return target.id
@@ -1843,11 +1850,24 @@ const sequenceQueueMemo = new WeakMap<QueueItem[], boolean>()
 /** Delivery runs a Grouping upload named `name` joins: the run with that exact name (any kind, as
  *  before), plus every delivery run of the same yard whose title names the same plan (same yard label,
  *  same plan date — see seqPlanKey). Empty = the upload starts a new run. */
-export function seqRunsFor(queues: WorkQueue[], name: string, site: string | undefined): WorkQueue[] {
+export function seqRunsFor(queues: WorkQueue[], name: string, site: string | undefined, opts?: { purpose?: string | null }): WorkQueue[] {
   const n = name.trim().toLowerCase()
   const key = seqPlanKey(name)
-  return queues.filter((q) => (q.name ?? '').trim().toLowerCase() === n
-    || (!!key && isSequenceQueue(q) && (!site || !q.site || q.site === site) && seqPlanKey(q.name ?? '') === key))
+  const sites = useYard.getState().sites
+  // a run of another kind of work (dealer vs yard move) is never the same plan; a run whose kind cannot be told is
+  const sameKind = (q: WorkQueue) => opts?.purpose == null || (() => { const p = runPurpose(q.items, sites); return p == null || p === opts.purpose })()
+  return queues.filter((q) => ((q.name ?? '').trim().toLowerCase() === n
+    || (!!key && isSequenceQueue(q) && (!site || !q.site || q.site === site) && seqPlanKey(q.name ?? '') === key)) && sameKind(q))
+}
+
+/** The kind of work a run (or a file's cars) does: '' = to dealers · a site id = moving cars to that yard ·
+ *  null = no car carries a Delivery Location. The most common kind among its cars. */
+export function runPurpose(items: { dest?: string }[], sites: Site[]): string | null {
+  const n = new Map<string, number>()
+  for (const i of items) if ((i.dest ?? '').trim()) { const p = destPurpose(i.dest, sites); n.set(p, (n.get(p) ?? 0) + 1) }
+  let best: string | null = null, top = 0
+  for (const [p, c] of n) if (c > top) { best = p; top = c }
+  return best
 }
 
 export const isSequenceQueue = (q: WorkQueue): boolean => {

@@ -7,6 +7,7 @@ import { seqPlanKey } from '../src/lib/seqPlan'
  */
 
 const S1 = { id: 'S1', name: 'NYB2 Phase 2', code: 'NYB2', createdAt: 0 }
+const RINCHA = { id: 'R', name: '3D RINCHA', code: '3D RINCHA', createdAt: 0 }
 const title = (units: number, groups: number, day = '02 November 2026', yard = 'NYB2') =>
   `${yard} - Grouping to Dealer ( ${units} Units / ${groups} Groups) Date ${day}`
 
@@ -24,7 +25,7 @@ async function setup() {
   }))
   const { useYard } = await import('../src/store/useYard')
   const ops = await import('../src/store/useOps')
-  useYard.setState({ sites: [S1], currentSite: 'S1' })
+  useYard.setState({ sites: [S1, RINCHA], currentSite: 'S1' })
   return ops
 }
 
@@ -100,5 +101,46 @@ describe('อัปโหลดไฟล์ใหม่ของแผนเด�
     const b = st().createSequence(title(70, 10, '03 November 2026'), 'admin', fileItems(70))
     expect(b).not.toBe(a)
     expect(st().queues.filter((q) => q.kind === 'sequence')).toHaveLength(2)
+  })
+
+  // 16/11 NYB2: the second file of the day carried only the new groups
+  const batch = (from: number, n: number, dest = 'Dealer') =>
+    Array.from({ length: n }, (_, k) => ({ vin: vin(from + k), group: group(from + k), laneLoad: `O${Math.floor((from + k) / 7) + 1}`, dest }))
+
+  it('a second file of the day with other groups adds to the run: 50 + 20 = 70, title counts the whole run', async () => {
+    const ops = await setup()
+    const st = () => ops.useOps.getState()
+    const a = st().createSequence(title(49, 7), 'admin', batch(0, 49))
+    const b = st().createSequence(title(21, 3), 'admin', batch(49, 21))
+    expect(b).toBe(a)
+    const run = st().queues.find((q) => q.id === a)!
+    expect(run.items).toHaveLength(70)
+    expect(run.items.slice(0, 49).map((i) => i.vin)).toEqual(batch(0, 49).map((i) => i.vin)) // the first file's cars stay first
+    expect(run.name).toBe(title(70, 10))
+  })
+
+  it('a title copied from an older plan (Date 11 November on sheet 16.11) joins the 16th by the sheet day, and says so', async () => {
+    const ops = await setup()
+    const st = () => ops.useOps.getState()
+    const a = st().createSequence(title(28, 4, '16 November 2026'), 'admin', batch(0, 28))
+    const b = st().createSequence(title(25, 4, '11 November 2026'), 'admin', batch(28, 25), { day: '2026-11-16' })
+    expect(b).toBe(a)
+    const run = st().queues.find((q) => q.id === a)!
+    expect(run.items).toHaveLength(53)
+    expect(run.name).toContain('Date 16 November 2026')
+    expect(st().queues.filter((q) => q.kind === 'sequence')).toHaveLength(1)
+  })
+
+  it('a yard-move (shuttle) file of the same day keeps its own run; the dealer run is not touched', async () => {
+    const ops = await setup()
+    const st = () => ops.useOps.getState()
+    const dealer = st().createSequence(title(14, 2), 'admin', batch(0, 14))
+    const move = st().createSequence(title(14, 2), 'admin', batch(100, 14, 'VEHICLE 3D RINCHA'))
+    expect(move).not.toBe(dealer)
+    expect(st().queues.find((q) => q.id === dealer)!.items.map((i) => i.vin)).toEqual(batch(0, 14).map((i) => i.vin))
+    // and the next shuttle file joins the shuttle run, not the dealer one
+    const move2 = st().createSequence(title(7, 1), 'admin', batch(200, 7, 'VEHICLE 3D RINCHA'))
+    expect(move2).toBe(move)
+    expect(st().queues.find((q) => q.id === move)!.items).toHaveLength(21)
   })
 })
