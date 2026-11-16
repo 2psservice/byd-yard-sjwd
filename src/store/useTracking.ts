@@ -41,6 +41,7 @@ import { createKeyedQueue } from '../lib/keyedQueue'
 import { supabase } from '../lib/supabase'
 import { loadMark } from '../lib/loadMarks'
 import { chooseSyncMode, isLowMemDevice } from '../lib/deviceInfo'
+import { mergeWithCloud } from '../lib/rowMerge'
 import { onSync, sendSync, type RowMsg, type RowsPayload } from '../lib/syncBus'
 import { useYard, WCL_STAGING_BLOCK } from './useYard'
 import { siteForRow, siteIdForLocation, coInspectionAccepts, departedFromSite, siteWorksWith, rowYardName, rowInSite, CANDIDATE_SITES_KEY } from '../lib/siteScope'
@@ -128,10 +129,43 @@ const pushQueue = createKeyedQueue()
 /** Fire-and-forget row push that REMEMBERS failures for syncCloud to retry. */
 function pushRows(rows: TrackRow[]): void {
   if (!rows.length) return
-  pushQueue(rows.map((r) => r.vin), () => db.upsertTrackingRows(rows))
+  pushQueue(rows.map((r) => r.vin), async () => db.upsertTrackingRows(await mergeBeforePush(rows)))
     .then(() => { for (const r of rows) failedPush.delete(r.vin) })
     .catch(() => { for (const r of rows) failedPush.add(r.vin) })
   pushSharedCells(rows)
+}
+
+/**
+ * ก่อนส่ง: ดึงฉบับคลาวด์แล้วรวม (lib/rowMerge) — การส่งเขียนทั้งแถว เครื่องที่ถือแถวเก่า
+ * (เพิ่งเปิดแอป ยังซิงก์ไม่เสร็จ) จะลบเลข Grouping / DN Printed / ประวัติที่คนอื่นเขียน (14 + 16 พ.ย.)
+ * แถวที่รวมแล้วเข้าเครื่องด้วย (ถ้าระหว่างนั้นยังไม่มีการแก้ใหม่) · ดึงคลาวด์ไม่ได้ = ส่งแบบเดิม ไม่ขวางงาน
+ */
+async function mergeBeforePush(rows: TrackRow[]): Promise<TrackRow[]> {
+  let cloud: TrackRow[]
+  try { cloud = await db.fetchTrackingRowsByVins(rows.map((r) => r.vin)) } catch { return rows }
+  const byVin = new Map(cloud.map((r) => [r.vin, r] as const))
+  const labelToKey = new Map(useTracking.getState().columns.map((c) => [c.label, c.key] as const))
+  const keyOf = (field: string) => labelToKey.get(field) ?? field
+  const changed: TrackRow[] = []
+  const out = rows.map((r) => {
+    const m = mergeWithCloud(r, byVin.get(r.vin), keyOf, MAX_ROW_HISTORY)
+    if (m !== r) changed.push(m)
+    return m
+  })
+  if (changed.length) {
+    const landed: TrackRow[] = []
+    useTracking.setState((s) => {
+      const next = { ...s.rows }
+      for (const m of changed) {
+        const cur = next[m.vin]
+        const sent = rows.find((r) => r.vin === m.vin)
+        if (cur && cur === sent) { next[m.vin] = m; landed.push(m) } // แก้ใหม่ระหว่างนี้ = รอบส่งถัดไปรวมเอง
+      }
+      return landed.length ? { rows: next } : {}
+    })
+    if (landed.length) { seedShared(landed); idbBulkPut(landed).catch(() => {}) }
+  }
+  return out
 }
 
 // แถวจากการนำเข้าไฟล์ที่ยังรอ "เพิ่มเฉพาะถ้าคลาวด์ยังไม่มี" สำเร็จ — syncCloud ต้องไม่ส่งแถวเหล่านี้ด้วย upsert ปกติ
