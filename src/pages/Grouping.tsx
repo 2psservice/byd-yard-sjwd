@@ -10,7 +10,7 @@ import { useYard, useUnits } from '../store/useYard'
 import { useTracking, useTrackingRows } from '../store/useTracking'
 import { rowsForSite, rowYardName } from '../lib/siteScope'
 import { fetchTrackingRowsByVins, isConfigured } from '../lib/db'
-import { useOps, isSequenceQueue, seqRunsFor, type WorkQueue } from '../store/useOps'
+import { useOps, isSequenceQueue, seqRunsFor, runPurpose, type WorkQueue } from '../store/useOps'
 import { PageHead, Modal } from '../components/ui'
 import { clock } from '../lib/format'
 import { parseGroupingWorkbook, siteGroupingConfig, yardLocCode, sheetNameDay, LAST_LOCATION_KEY } from '../lib/groupingImport'
@@ -19,8 +19,8 @@ import { printIr, printDn, printIrPaper } from '../lib/dnir'
 import { markPrinted, printedAt, printedValue, PRINTED_KEYS } from '../lib/printMarks'
 import { useStickyBar } from '../lib/stickyBar'
 import { laneKey, laneDuplicates, lastEditedLanes, assignLanes } from '../lib/laneLoad'
-import { seqPlanDay, titlePlanDay } from '../lib/seqPlan'
-import { groupNo, destPurpose, runGroupPurpose } from '../lib/groupRuns'
+import { seqPlanDay, titlePlanDay, withPlanDay } from '../lib/seqPlan'
+import { groupNo, destPurpose, runGroupPurpose, purposeLabel } from '../lib/groupRuns'
 import { recordGroupingUpload, loadGroupingUploads, localGroupingUploads, type GroupingUpload } from '../lib/groupingUploads'
 import type { TrackRow } from '../lib/excelTracking'
 
@@ -72,6 +72,9 @@ export function Grouping() {
   const [rows, setRows] = useState<GroupPrintRow[] | null>(null)
   const [meta, setMeta] = useState<GroupPrintMeta | null>(null)
   const [seqName, setSeqName] = useState('') // queue name = the uploaded sheet title
+  // the plan's day from the SHEET's name ("NYB 16.11.26") — a title copied from an older plan ("Date 11 November")
+  // must not file the run on another day (16/11: the second NYB2 file read as 11/11 and never joined the 16th's run)
+  const [planDay, setPlanDay] = useState('')
   const [stats, setStats] = useState<{ found: number; notFound: number; placed: number; assigned: number; cleared: number; unstamped: { vin: string; yard: string }[] } | null>(null)
   const [shortRead, setShortRead] = useState<
     { got: number; want: number; noGrouping: number; sheet: string; others: { sheet: string; vins: number }[] } | null>(null)
@@ -146,7 +149,15 @@ export function Grouping() {
       const sameKindRuns = runsHere.map((q) => ({
         items: q.items.filter((i) => !otherKind(i.group ?? '', (i.dest ?? '').trim() ? destPurpose(i.dest, sites) : null)),
       }))
-      const lanes = assignLanes(order, lastEditedLanes(sameKindRuns, order))
+      // the run this file will join (same yard, same plan day, same kind of work): the lanes its other
+      // groups already use stay theirs, so this file's groups continue after them instead of from O1
+      const fileGroupKeys = new Set(order.map(groupNo))
+      const importDay = sheetNameDay(res.sheetName)
+      const importName = res.title.trim()
+      const joinTo = importName ? seqRunsFor(useOps.getState().queues, importDay ? withPlanDay(importName, importDay) : importName, currentSite ?? undefined,
+        { purpose: runPurpose(res.rows.map((r) => ({ dest: r.deliveryLocation })), sites) }) : []
+      const takenLanes = joinTo.flatMap((q) => q.items.filter((i) => !fileGroupKeys.has(groupNo(i.group))).map((i) => i.laneLoad ?? '')).filter(Boolean)
+      const lanes = assignLanes(order, lastEditedLanes(sameKindRuns, order), takenLanes)
       const laneOf = new Map([...lanes].map(([g, m]) => [g, m.lane]))
       const keptLanes = [...lanes.values()].filter((m) => m.by).length
 
@@ -253,6 +264,7 @@ export function Grouping() {
       setMeta(m)
       // queue name = the sheet title, else a constructed one
       setSeqName(res.title.trim() || `${m.siteLabel} - Grouping to Dealer ( ${m.totalUnits} Units / ${m.groupCount} Group) Date ${m.date}`)
+      setPlanDay(sheetNameDay(res.sheetName))
       setViewQueueId(null) // a fresh import shows the imported sheet, not a run picked earlier
       setRows(printRows)
       setStats({ found, notFound, placed, assigned, cleared: clearVins.length, unstamped })
@@ -430,7 +442,9 @@ export function Grouping() {
   // Create Sequence would overwrite, same name. No run yet = the lanes stay on this sheet
   // and travel with Create Sequence.
   // a fresh upload of a plan that already has a run (same yard + plan date) joins that run — see seqRunsFor
-  const joinRuns = useMemo(() => (usingQueue || !seqName.trim() ? [] : seqRunsFor(queues, seqName, currentSite ?? undefined)), [usingQueue, seqName, queues, currentSite])
+  const runName = planDay ? withPlanDay(seqName.trim(), planDay) : seqName.trim()
+  const filePurpose = useMemo(() => (rows ? runPurpose(rows.map((r) => ({ dest: r.deliveryLocation })), sites) : null), [rows, sites])
+  const joinRuns = useMemo(() => (usingQueue || !runName ? [] : seqRunsFor(queues, runName, currentSite ?? undefined, { purpose: filePurpose })), [usingQueue, runName, queues, currentSite, filePurpose])
   const sentOf = (q: WorkQueue) => q.items.filter((i) => i.done || i.gatedOut).length
   const joinRun = [...joinRuns].sort((a, b) => sentOf(b) - sentOf(a) || a.createdAt - b.createdAt)[0]
   const laneRunId = usingQueue ? queueSheet!.id : joinRun?.id
@@ -587,14 +601,24 @@ export function Grouping() {
         return { vin: r.vin, laneLoad: r.laneLoad, laneBy: typed ? currentUser || undefined : r.laneBy, laneAt: typed ? at : r.laneAt,
           dest: r.deliveryLocation, group: r.grouping, remark: r.remark, model: r.model, color: r.color }
       })
-      const joined = seqRunsFor(useOps.getState().queues, name, currentSite ?? undefined).length
-      const id = createSequence(name, currentUser, items)
-      if (!id) { toast('err', 'สร้างลำดับงานไม่สำเร็จ — ชื่อคิวว่าง'); return }
-      const run = useOps.getState().queues.find((q) => q.id === id)
-      const sent = run ? run.items.filter((i) => i.done || i.gatedOut).length : 0
-      toast('ok', joined
-        ? `อัปเดตคิวงานเดิม "${name}" · ${run?.items.length ?? items.length} คัน · ออกไปแล้ว ${sent} คัน${joined > 1 ? ` · รวม ${joined} คิวเป็นคิวเดียว` : ''}`
-        : `สร้างลำดับงาน "${name}" · ${items.length} คัน — ไปที่ Operation / Yard Ops ได้เลย`, 6000)
+      // dealer cars and yard-move (shuttle) cars are different work: each kind goes to its own run of the day
+      const kinds = new Map<string, typeof items>()
+      for (const it of items) { const k = destPurpose(it.dest, sites); const l = kinds.get(k); if (l) l.push(it); else kinds.set(k, [it]) }
+      const day = fromQueue ? '' : planDay
+      const msgs: string[] = []
+      for (const [kind, list] of kinds) {
+        const kindName = kinds.size > 1 && kind ? `${name} · ${purposeLabel(kind, sites)}` : name
+        const runNameNow = day ? withPlanDay(kindName, day) : kindName
+        const joined = seqRunsFor(useOps.getState().queues, runNameNow, currentSite ?? undefined, { purpose: kind }).length
+        const id = createSequence(kindName, currentUser, list, { day })
+        if (!id) { toast('err', 'สร้างลำดับงานไม่สำเร็จ — ชื่อคิวว่าง'); return }
+        const run = useOps.getState().queues.find((q) => q.id === id)
+        const sent = run ? run.items.filter((i) => i.done || i.gatedOut).length : 0
+        msgs.push(joined
+          ? `ต่อเข้าคิวงานเดิม "${run?.name ?? runNameNow}" · รวม ${run?.items.length ?? list.length} คัน · ออกไปแล้ว ${sent} คัน${joined > 1 ? ` · รวม ${joined} คิวเป็นคิวเดียว` : ''}`
+          : `สร้างลำดับงาน "${run?.name ?? runNameNow}" · ${list.length} คัน`)
+      }
+      toast('ok', `${msgs.join(' · ')} — ไปที่ Operation / Yard Ops ได้เลย`, 7000)
       setView('operation')
     } catch (e) {
       // an old queue with broken data used to throw HERE, eating the click with

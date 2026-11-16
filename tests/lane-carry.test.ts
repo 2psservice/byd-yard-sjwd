@@ -61,3 +61,13 @@ describe('ประวัติอัปโหลด', () => {
     expect(list.map((u) => [u.by, u.file, u.at])).toEqual([['จตุพร', 'NYB2 Grouping 02 Nov.xlsx', 2000], ['admin', 'NYB2 Grouping 01 Nov.xlsx', 1000]])
   })
 })
+
+describe('ไฟล์รอบสองของวันต่อเลข lane จากคิวเดิม (16/11 NYB2)', () => {
+  it('กลุ่มใหม่ได้ lane ถัดจากที่คิวเดิมใช้อยู่ ไม่เริ่ม O1 ซ้ำ · กลุ่มที่แก้ lane ไว้คงเดิม', async () => {
+    const { assignLanes } = await import('../src/lib/laneLoad')
+    const taken = Array.from({ length: 15 }, (_, i) => `O${i + 1}`)
+    const got = assignLanes(['G1', 'G2', 'G3'], new Map([['G2', { lane: 'H5', by: 'admin', at: 1 }]]), taken)
+    expect(['G1', 'G2', 'G3'].map((g) => got.get(g)?.lane)).toEqual(['O16', 'H5', 'O17'])
+    expect(assignLanes(['G1', 'G2'], new Map()).get('G1')?.lane).toBe('O1') // nothing to join: as before
+  })
+})

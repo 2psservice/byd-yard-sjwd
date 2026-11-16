@@ -54,10 +54,13 @@ export function lastEditedLanes(
  *   · กลุ่มที่เคยแก้ lane ไว้ → lane ที่แก้ล่าสุด (พร้อมชื่อคนแก้ / เวลา)
  *   · กลุ่มอื่น → O + ลำดับในไฟล์เหมือนเดิม (กลุ่มที่ 3 = O3) ถ้า lane นั้นมีกลุ่มที่แก้ไว้ใช้อยู่แล้ว
  *     ใช้เลข O ที่ว่างตัวแรกแทน ไม่ให้ซ้ำกัน
+ *   · `taken` = lane ที่คิวงานซึ่งไฟล์นี้จะต่อเข้าไป ใช้กับกลุ่มอื่นอยู่แล้ว → ไม่ใช้ซ้ำ (ไฟล์รอบสองต่อเลขจากรอบแรก)
  */
-export function assignLanes(order: string[], kept: Map<string, LaneMemo>): Map<string, LaneMemo> {
+export function assignLanes(order: string[], kept: Map<string, LaneMemo>, taken: Iterable<string> = []): Map<string, LaneMemo> {
   const out = new Map<string, LaneMemo>()
-  const used = new Set<string>()
+  // lanes the run this file joins already gives its OTHER groups (16/11: the day's second NYB2 file numbered
+  // its groups O1, O2 … again, on top of the first file's O1–O15) — the new groups take the next free ones
+  const used = new Set<string>([...taken].map(laneKey).filter(Boolean))
   for (const g of order) { const k = kept.get(groupKey(g)); if (k) { out.set(g, k); used.add(laneKey(k.lane)) } }
   let next = 1
   const free = () => { while (used.has(`O${next}`)) next++; return `O${next}` }
