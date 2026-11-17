@@ -85,6 +85,10 @@ input, textarea, select, [contenteditable='true'] {
   -webkit-user-select: text;
   user-select: text;
 }
+/* pages that are documents to read off and copy from (the Grouping sheet: VIN, dealer, grouping numbers) —
+   text can be highlighted and copied; buttons stay unselectable so a tap never highlights a label */
+.allow-select { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
+.allow-select button, .allow-select [role='button'], .allow-select label { -webkit-user-select: none; user-select: none; }
 
 /* ---------- device fit (iPhone / iPad / Android) ---------- */
 /* Mobile Safari counts the collapsing URL bar in 100vh, so a 100vh shell hides
