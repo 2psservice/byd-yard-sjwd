@@ -648,7 +648,7 @@ export function Grouping() {
   useStickyBar(barRef, tableRef, !!sheetMeta && total > 0)
 
   return (
-    <div className="w-full apple-type" data-apple-type>
+    <div className="w-full apple-type allow-select" data-apple-type>
       <PageHead
         title={<span className="flex items-center gap-2"><Layers size={20} style={{ color: 'var(--brand)' }} /> Grouping to Dealer</span>}
         sub={`แผนส่งมอบรถให้ดีลเลอร์ · นำเข้าไฟล์ Excel แล้วระบบใส่เลข Grouping ให้รถ · พิมพ์เอกสารส่งมอบ${siteName ? ` · ${siteName}` : ''}`}
