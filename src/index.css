@@ -481,42 +481,53 @@ kbd.k { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10.5p
 .gtable tr.sel td, .gtable tr.alt.sel td { background: #dcebff; border-bottom-color: #c4dbfb; }
 .gtable input[type='checkbox'] { width: 15px; height: 15px; accent-color: var(--brand); cursor: pointer; vertical-align: middle; }
 .gtable tfoot td { background: #ffff00; color: #111; border-top: 1px solid #d6d23a; border-bottom: 0; font-weight: 700; padding: 9px 10px; }
-/* ---------- Grouping sheet as macOS glass (preview) ----------
-   A soft wallpaper behind the sheet so the glass has something to show through; the table is one frosted
-   pane (blur + saturate, hairline light rim, soft shadow), the header a brighter frosted strip, rows clear
-   with hairline separators. Group banding keeps the yellow as a light wash; the dark group line stays.
-   Printed papers (DN / IR / ใบ Grouping) are separate documents and do not change. */
+/* ---------- Grouping sheet as Liquid Glass (preview) ----------
+   Clear glass on a slate-blue wallpaper, as in the Liquid Glass UI kit: the table is one clear pane with
+   a bright rim (light on the top-left, fainter bottom-right), almost no tint, a soft drop shadow. Text is
+   white. The page's colour tokens are swapped inside the sheet, so every cell, badge and inline colour
+   follows. Every other group is a slightly brighter pane of glass; the line between groups is a bright rim. Printed
+   papers (DN / IR / ใบ Grouping) are separate documents and do not change. */
 .gglass {
-  padding: 16px;
+  --text: #f4f7fc; --muted: rgba(226, 233, 245, 0.66); --faint: rgba(226, 233, 245, 0.45);
+  --panel: transparent; --chip: rgba(255, 255, 255, 0.12); --line: rgba(255, 255, 255, 0.16); --line-strong: rgba(255, 255, 255, 0.42);
+  --brand: #9ccbff; --brand-glow: rgba(156, 203, 255, 0.35);
+  padding: 18px;
   background:
-    radial-gradient(900px 420px at 8% -20%, rgba(96, 165, 250, 0.38), transparent 62%),
-    radial-gradient(800px 460px at 100% -10%, rgba(251, 191, 120, 0.34), transparent 60%),
-    radial-gradient(900px 520px at 55% 125%, rgba(167, 139, 250, 0.32), transparent 62%),
-    linear-gradient(180deg, #edf1f8 0%, #e8ecf4 100%);
+    radial-gradient(700px 360px at 12% 0%, rgba(176, 196, 230, 0.45), transparent 65%),
+    radial-gradient(800px 420px at 95% 100%, rgba(120, 140, 175, 0.5), transparent 65%),
+    linear-gradient(160deg, #46546e 0%, #5f6e88 45%, #7d8aa3 100%);
 }
 .gglass .gtable {
-  border-collapse: separate; border-spacing: 0; border-radius: 14px; overflow: hidden;
-  background: rgba(255, 255, 255, 0.46);
-  -webkit-backdrop-filter: blur(26px) saturate(180%); backdrop-filter: blur(26px) saturate(180%);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.75), 0 0 0 0.5px rgba(0, 0, 0, 0.1), 0 14px 34px -16px rgba(30, 41, 80, 0.32);
+  color: var(--text);
+  border-collapse: separate; border-spacing: 0; border-radius: 20px; overflow: hidden;
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.05) 45%, rgba(255, 255, 255, 0.09));
+  -webkit-backdrop-filter: blur(16px) saturate(150%); backdrop-filter: blur(16px) saturate(150%);
+  box-shadow:
+    inset 1.5px 1.5px 0 rgba(255, 255, 255, 0.55), inset -1px -1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.18), 0 22px 44px -22px rgba(10, 16, 32, 0.6);
 }
 .gglass .gtable th {
-  background: rgba(255, 255, 255, 0.62); color: #3c3c43; font-weight: 600;
-  border-bottom: 0.5px solid rgba(60, 60, 67, 0.2);
+  background: rgba(255, 255, 255, 0.1); color: rgba(244, 247, 252, 0.88); font-weight: 600;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.22);
 }
-.gglass .gtable td { background: transparent; border-bottom: 0.5px solid rgba(60, 60, 67, 0.12); }
-.gglass .gtable td.span { border-left: 0.5px solid rgba(60, 60, 67, 0.1); border-right: 0.5px solid rgba(60, 60, 67, 0.1); }
-.gglass .gtable tr.alt td { background: rgba(255, 214, 10, 0.17); border-bottom-color: rgba(60, 60, 67, 0.12); }
-.gglass .gtable tr.alt td.span { border-left-color: rgba(60, 60, 67, 0.1); border-right-color: rgba(60, 60, 67, 0.1); }
-.gglass .gtable tr.gstart td { border-top: 1.5px solid rgba(29, 29, 31, 0.6); }
-.gglass .gtable tbody tr:hover td { box-shadow: inset 0 0 0 9999px rgba(255, 255, 255, 0.38); }
-.gglass .gtable tr.sel td, .gglass .gtable tr.alt.sel td { background: rgba(0, 122, 255, 0.14); border-bottom-color: rgba(0, 122, 255, 0.18); }
-.gglass .gtable tfoot td { background: rgba(255, 255, 255, 0.62); color: #1d1d1f; border-top: 0.5px solid rgba(60, 60, 67, 0.22); }
+.gglass .gtable td { background: transparent; border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
+.gglass .gtable td.span { border-left: 1px solid rgba(255, 255, 255, 0.1); border-right: 1px solid rgba(255, 255, 255, 0.1); }
+.gglass .gtable tr.alt td { background: rgba(255, 255, 255, 0.09); border-bottom-color: rgba(255, 255, 255, 0.1); }
+.gglass .gtable tr.alt td.span { border-left-color: rgba(255, 255, 255, 0.1); border-right-color: rgba(255, 255, 255, 0.1); }
+.gglass .gtable tr.gstart td { border-top: 1.5px solid rgba(255, 255, 255, 0.55); }
+.gglass .gtable tbody tr:hover td { box-shadow: inset 0 0 0 9999px rgba(255, 255, 255, 0.07); }
+.gglass .gtable tr.sel td, .gglass .gtable tr.alt.sel td { background: rgba(10, 132, 255, 0.3); border-bottom-color: rgba(120, 180, 255, 0.3); }
+.gglass .gtable tfoot td { background: rgba(255, 255, 255, 0.1); color: var(--text); border-top: 1px solid rgba(255, 255, 255, 0.24); }
+.gglass .gtable input[type='checkbox'] { accent-color: #0a84ff; }
 .gglass .glane {
-  background: rgba(255, 255, 255, 0.72); border: 0.5px solid rgba(60, 60, 67, 0.24); border-radius: 8px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 1px 2px rgba(0, 0, 0, 0.06);
+  color: #fff; background: rgba(255, 255, 255, 0.12); border: 0; border-radius: 10px;
+  box-shadow: inset 1px 1px 0 rgba(255, 255, 255, 0.6), inset -1px -1px 0 rgba(255, 255, 255, 0.22), inset 0 0 0 1px rgba(255, 255, 255, 0.2);
 }
-.gglass .gmiss { background: rgba(255, 149, 0, 0.14); }
+.gglass .glane:focus { box-shadow: inset 1px 1px 0 rgba(255, 255, 255, 0.7), 0 0 0 3px var(--brand-glow); }
+.gglass .glane.warn { color: #fed7aa; background: rgba(249, 115, 22, 0.22); }
+.gglass .glane-note { color: #fdba74; }
+.gglass .gmiss { color: #fdba74; background: rgba(251, 146, 60, 0.18); }
+.gglass .gdone { color: #86efac; background: rgba(34, 197, 94, 0.18); }
 .gloc { font-family: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace; font-weight: 700; font-size: 12px; }
 .gmiss { display: inline-block; padding: 1px 7px; border-radius: 6px; font-size: 11px; font-weight: 700; color: #b45309; background: rgba(255, 149, 0, 0.14); }
 .gdone { display: inline-flex; align-items: center; gap: 2px; padding: 1px 6px; border-radius: 6px; font-size: 10.5px; font-weight: 700; color: #1f8a43; background: rgba(52, 199, 89, 0.13); }

@@ -846,7 +846,7 @@ export function Grouping() {
             </div>
           </div>
 
-          {/* gglass: the sheet as macOS glass (preview) — frosted table over a soft wallpaper; prints unchanged */}
+          {/* gglass: the sheet as Liquid Glass (preview) — a clear glass pane on a slate wallpaper; prints unchanged */}
           <div className="overflow-x-auto gglass">
             <table className="gtable" ref={tableRef}>
               <thead>
