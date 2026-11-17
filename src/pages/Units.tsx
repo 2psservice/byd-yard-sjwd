@@ -1,3 +1,4 @@
+import { cellByHeader } from '../lib/modelName'
 import { Fragment, createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
@@ -1936,6 +1937,9 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
   const editHadPhotos = useRef(false)
   const [tab, setTab] = useState<'overview' | 'work' | 'timeline' | 'location' | 'pdi' | 'final' | 'pm' | 'damages' | 'event'>('overview')
   const [lightbox, setLightbox] = useState<{ photos: string[]; index: number } | null>(null)
+  // close on a click that STARTED on the backdrop — a drag-select inside the popup that ends outside it
+  // also fires a click on the backdrop, and used to close the popup the moment the text was highlighted
+  const downOnBackdrop = useRef(false)
   // แยกยาร์ด แยกงาน: ประวัติของรถบนหน้านี้แสดงเฉพาะงานของ "ยาร์ดที่กำลังยืนอยู่"
   // ของเดิมดึงคิวงานของทุกยาร์ดมาเรียงรวมเป็นไทม์ไลน์เดียว งานของลานต้นทางกับ
   // ลานปลายทางจึงปนกันอยู่ในหน้าเดียวโดยไม่มีอะไรแยกให้ — อ่านแล้วเหมือนยาร์ด
@@ -2018,7 +2022,10 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
   const eventLog = buildEventLog(row, allDamages, queues, vin, zoneLabel)
 
   const heroFields: [string, string, string][] = [
-    ['MODEL', head, '#ffffff'],
+    // MODEL = the short model ("ATTO 2"); the full name with its trim is SUB MODEL below
+    ['MODEL', c['Model'] || head || '—', '#ffffff'],
+    // the car's full model with its trim ("BYD ATTO 2 (PREMIUM)") — the same value the Vehicle Label and IR print
+    ['SUB MODEL', cellByHeader(c, 'Sub-Model') || c['Model name'] || '—', '#ffffff'],
     ['COLOR', c['Color'] || '—', '#ffffff'],
     ['LOCATION', c['Location yard'] || '—', '#fbbf24'],
     // STORAGE = days in the yard counted from Gate In (the workbook's meaning),
@@ -2141,8 +2148,11 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
   }
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: 'rgba(15,23,42,0.5)', backdropFilter: 'blur(3px)' }} onClick={onClose}>
-      <div className="panel-solid glow-ring pop w-full overflow-hidden flex flex-col" style={{ maxWidth: 'min(1360px, 96vw)', maxHeight: '92vh' }} onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: 'rgba(15,23,42,0.5)', backdropFilter: 'blur(3px)' }}
+      onMouseDown={(e) => { downOnBackdrop.current = e.target === e.currentTarget }}
+      onClick={(e) => { if (downOnBackdrop.current && e.target === e.currentTarget) onClose() }}>
+      {/* allow-select: the car's data can be highlighted and copied (VIN, motor no., invoice …) */}
+      <div className="panel-solid glow-ring pop w-full overflow-hidden flex flex-col allow-select" style={{ maxWidth: 'min(1360px, 96vw)', maxHeight: '92vh' }} onClick={(e) => e.stopPropagation()}>
         {/* dark header */}
         <div className="flex items-center gap-3 px-5 py-3.5 shrink-0" style={{ background: 'linear-gradient(120deg,#0c1a2e,#16294a)' }}>
           <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)' }}>
