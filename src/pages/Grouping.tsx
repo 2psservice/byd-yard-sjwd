@@ -747,8 +747,8 @@ export function Grouping() {
       ) : (
         /* the plan as a document: header (what / where / status), one toolbar for every print and
            export, then the sheet. Printed papers keep the yellow Excel look — only the screen changes. */
-        <section className="panel overflow-clip" data-grouping-doc>
-          <div className="px-5 pt-4 pb-3.5 flex items-start gap-4 flex-wrap">
+        <section className="panel overflow-clip gdoc-liquid" data-grouping-doc>
+          <div className="px-5 pt-4 pb-3.5 flex items-start gap-4 flex-wrap gpane">
             <div className="min-w-0 flex-1">
               <div className="gdoc-eyebrow">ใบ Grouping to Dealer</div>
               <h2 className="text-[16px] font-bold leading-snug mt-1" style={{ color: 'var(--text)', textWrap: 'balance' }}>{docTitle}</h2>
@@ -846,7 +846,7 @@ export function Grouping() {
             </div>
           </div>
 
-          {/* gglass: the sheet as Liquid Glass (preview) — a clear glass pane on a slate wallpaper; prints unchanged */}
+          {/* gglass: the sheet as a pane of Liquid Glass (preview) on the document's milky wallpaper; prints unchanged */}
           <div className="overflow-x-auto gglass">
             <table className="gtable" ref={tableRef}>
               <thead>
