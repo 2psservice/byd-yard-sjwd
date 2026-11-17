@@ -4698,17 +4698,16 @@ function GateOutView({ day }: { day: string }) {
   }
   onScanRef.current = onScan
 
-  // Ops-scan gate-out → "Pre Gate-out": the car is staged in preload, NOT gone
-  // yet. deriveCarStatus finalises it to a real Gate-out at the next 09:30 flush
-  // (see pastGateOutFlush) unless it is confirmed Preload first.
+  // Ops-scan gate-out → "Gate-out" right away (admin 17/11). It used to write "Pre Gate-out", which only
+  // became Gate-out at the next 09:30 flush; a car the gate has scanned out has left. A car that is staying
+  // in the preload lane for its truck is confirmed Preload instead (the button under this one), and a
+  // mistaken gate-out is undone from the Unit List (ยกเลิก Gate-out → In Yard). Cars already sitting at
+  // "Pre Gate-out" from before still flush at 09:30 as they always did (deriveCarStatus).
   const stamp = (now: Date) =>
     `${now.getDate().toString().padStart(2, '0')}/${(now.getMonth() + 1).toString().padStart(2, '0')}/${now.getFullYear()} ${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`
 
-  // ปลายทางเป็น yard อื่นของแอปเอง (ไม่ใช่ดีลเลอร์จริง) → ไม่มีเหตุผลต้องรอ
-  // flush 09:30: ไม่มีรถบรรทุกที่ "อาจไม่มา" แบบดีลเลอร์จริง มีแต่รถวิ่งข้าม
-  // yard เอง ให้ออกจริงทันทีที่กดยืนยัน เพื่อให้ปลายทางเห็น Pre Gate-in และ
-  // ยิงรับรถได้เลย — ดีลเลอร์จริงยังคงรอ flush เหมือนเดิม (ให้ Confirm Preload
-  // แก้ตัวได้ทั้งวันก่อนรถจะออกจริง)
+  // ปลายทางเป็น yard อื่นของแอปเอง (ไม่ใช่ดีลเลอร์จริง) → ย้ายรถเข้า Pre Gate-in ที่ปลายทางในคราวเดียว
+  // ให้ปลายทางยิงรับรถได้เลย · ดีลเลอร์จริงก็ Gate-out ทันทีเช่นกัน (17/11)
   const transferDest = row ? deliveryDestinationSite(row.cells['Dealer Location'] || '', sites) : undefined
   const curSiteOfRow = row ? (row.site ?? siteIdForLocation(row.cells, sites)) : undefined
   const isYardTransfer = !!transferDest && transferDest.id !== curSiteOfRow
@@ -4738,9 +4737,9 @@ function GateOutView({ day }: { day: string }) {
       })
     }
     if (!transferred) {
-      updateCell(row.vin, 'Car Status', isYardTransfer ? 'Gate-out' : 'Pre Gate-out')
+      updateCell(row.vin, 'Car Status', 'Gate-out')
       updateCell(row.vin, 'Gate Out time stamp', ts)
-      updateCell(row.vin, 'Gate Out Time', String(now.getTime())) // epoch → 09:30 flush calc
+      updateCell(row.vin, 'Gate Out Time', String(now.getTime())) // epoch of the scan
       if (lastLoc) updateCell(row.vin, LAST_LOCATION_KEY, lastLoc)
     }
     if (!isYardTransfer) {
@@ -4766,11 +4765,10 @@ function GateOutView({ day }: { day: string }) {
       createGateInQueue(`(${transferDest!.name} · shuttle · จาก ${originName})`, [row.vin], currentUser, transferDest!.id)
     }
     setSessionOut(prev => [...prev, row.vin]) // this Note session did real work
-    setDone({ vin: row.vin, label: isYardTransfer ? 'Gate-out' : 'Pre Gate-out' }); setVin(null)
+    setDone({ vin: row.vin, label: 'Gate-out' }); setVin(null)
   }
 
-  // Confirm Preload (before 09:30) → the Pre-Gate-out car has NOT left; it stays
-  // parked in the preload lane waiting for its truck, so it never auto-flushes.
+  // Confirm Preload → the car has NOT left; it stays parked in the preload lane waiting for its truck.
   const doPreload = () => {
     if (!row) return
     updateCell(row.vin, 'Car Status', 'Preload')
@@ -4990,7 +4988,7 @@ function GateOutView({ day }: { day: string }) {
               </div>
             )}
             <div className="px-4 py-2.5 border-t hairline text-[10.5px] text-center leading-snug" style={{ color: 'var(--muted)', borderColor: 'var(--line)' }}>
-              เดินไปสแกน VIN ที่ตัวรถทีละคัน · รถนอก group นี้จะถูกเตือนทันที · รถจะออกจริงตอน 09:30
+              เดินไปสแกน VIN ที่ตัวรถทีละคัน · รถนอก group นี้จะถูกเตือนทันที · ยิงแล้วสถานะเป็น Gate-out ทันที
             </div>
           </div>
         </>
@@ -5073,7 +5071,7 @@ function GateOutView({ day }: { day: string }) {
               <div className="text-[10.5px] text-center leading-snug" style={{ color: 'var(--muted)' }}>
                 {isYardTransfer
                   ? `Gate-out → รถออกทันที เข้า Pre Gate-in ที่ ${transferDest!.name} เลย · Preload → ยังจอดอยู่รอรถมารับ`
-                  : 'Gate-out → รถจะออกจริงตอน 09:30 · Preload → ยังจอดอยู่รอรถมารับ'}
+                  : 'Gate-out → สถานะเป็น Gate-out ทันที · Preload → ยังจอดอยู่รอรถมารับ'}
               </div>
             </div>
           )}
