@@ -526,6 +526,9 @@ kbd.k { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10.5p
 .gdoc-liquid .seg > button { border-left-color: rgba(15, 23, 42, 0.08); }
 .gdoc-liquid .seg > button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.7); }
 .gdoc-liquid .seg > button.seg-go { background: linear-gradient(180deg, #22b45a, #16a34a 55%, #13873e); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), inset 0 -2px 6px rgba(0, 0, 0, 0.12); }
+/* hover / press keep DN and IR green (the glass hover above would turn them white, and their text is white) */
+.gdoc-liquid .seg > button.seg-go:hover:not(:disabled) { background: linear-gradient(180deg, #1fa653, #15803d 55%, #116b33); }
+.gdoc-liquid .seg > button.seg-go:active:not(:disabled) { background: linear-gradient(180deg, #178a45, #166534 60%, #12552b); }
 .gglass { padding: 14px; }
 .gglass .gtable { border-collapse: separate; border-spacing: 0; border-radius: 18px; overflow: hidden; }
 .gglass .gtable th { background: rgba(255, 230, 0, 0.42); color: #1d1d1f; border-bottom: 0.5px solid rgba(120, 100, 0, 0.25); }
