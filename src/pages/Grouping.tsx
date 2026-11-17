@@ -307,7 +307,8 @@ export function Grouping() {
   const [viewQueueId, setViewQueueId] = useState<string | null>(null)
 
   // ── calendar day filter for the delivery-run list (list stays short) ──
-  // days that HAVE runs show red in the picker; default = the latest such day
+  // days that HAVE runs show red in the picker; default = TODAY, like every other page (17/11: it used to
+  // open on the newest plan day, e.g. tomorrow's 18/11 plan, so the button never showed the current date)
   const seqQueuesAll = useMemo(
     () => queues.filter((q) => q.kind === 'sequence' && (!currentSite || !q.site || q.site === currentSite)),
     [queues, currentSite])
@@ -316,9 +317,9 @@ export function Grouping() {
     for (const q of seqQueuesAll) { const d = queueDay(q); m.set(d, (m.get(d) ?? 0) + 1) }
     return m
   }, [seqQueuesAll])
-  const [selDay, setSelDay] = useState<string | 'all' | null>(null) // null = auto (latest day)
-  const latestDay = useMemo(() => [...dayCounts.keys()].sort().pop() ?? null, [dayCounts])
-  const dayFilter: string | 'all' = selDay ?? latestDay ?? 'all'
+  const [selDay, setSelDay] = useState<string | 'all' | null>(null) // null = auto (today)
+  // the day-change auto-logout (App.tsx) remounts this page every new day, so "today" never goes stale
+  const dayFilter: string | 'all' = selDay ?? dayKeyOf(new Date())
   // picking a day on the calendar opens THAT day's grouping sheet right away (the newest run of the day
   // when it has several — the cards below switch between them). Picking "all days" or a day with no run
   // leaves the sheet as it is.
