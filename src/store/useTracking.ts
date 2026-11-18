@@ -45,6 +45,7 @@ import { mergeWithCloud } from '../lib/rowMerge'
 import { onSync, sendSync, type RowMsg, type RowsPayload } from '../lib/syncBus'
 import { useYard, WCL_STAGING_BLOCK } from './useYard'
 import { siteForRow, siteIdForLocation, coInspectionAccepts, departedFromSite, siteWorksWith, rowYardName, rowInSite, CANDIDATE_SITES_KEY } from '../lib/siteScope'
+import { CAR_COVER_KEY } from '../lib/carCover'
 import { TRIPS_CELL, TRIP_SCOPED_KEYS, ROUND_COPIED_KEYS, tripsOf, roundHistory, type TripSnapshot } from '../lib/tripHistory'
 import { sharedCellsOf, sharedDelta, auditStationChecks, type StationChecksAudit } from '../lib/stationChecks'
 import { useVisits } from './useVisits'
@@ -721,6 +722,7 @@ function closeRoundRow(
 /** ช่องที่ "การยิงรับรถ" เขียน — ถ้าปลายทางยิงรับไปแล้วก่อนที่แถวจะย้ายตาม
  *  ช่องพวกนี้เป็นของรอบใหม่ ต้องยกตามไป ไม่ใช่ถูกปิดลงประวัติรอบเก่า */
 const ARRIVAL_KEYS = ['Gate In Time', 'Gate In Inspector', 'Gate In (Rayong yard)', 'Gate In Date',
+  CAR_COVER_KEY, // รถคลุมผ้า ติ๊กพร้อมการยิงรับ — เป็นของรอบใหม่เหมือนกัน
   CAR_STATUS_KEY, CAR_STATUS_SET_AT_KEY, CAR_STATUS_SET_SITE_KEY]
 
 /**
