@@ -44,6 +44,7 @@ const DEFAULT_VISIBLE = new Set([
   'No', 'Lot transfer', 'moving date', 'Vin', 'Car Status', 'Model', 'Color', 'company', 'Status', 'Final Status',
   '__location', 'Location yard', 'storage Yard', 'Grouping  Number', 'Gate In (Rayong yard)',
   'Status Tax', 'PIC (PDI)', 'หมายเหตุ',
+  'Car Cover', // รถคลุมผ้า (ติ๊กตอน Gate-in)
   // ค่าที่วัดตอน PDI / PM (สถานีลงค่าไว้ที่ช่องเหล่านี้อยู่แล้ว — แค่เปิดให้เห็นในตาราง)
   ...MEASUREMENT_KEYS,
   EV_CHARGING_KEY,
@@ -199,6 +200,7 @@ const SELECT_OPTIONS: Record<string, string[]> = {
   Color: ['BLACK', 'GREY', 'WHITE', 'WHITE(CREAM)', 'BLUE', 'GREEN'],
   'Final Status': ['OK-Accept', 'OK-Repaired', 'Waiting', 'Waiting Repair'],
   'Status Tax': ['Already Tax payment', 'Waiting', 'Waiting Tax payment'],
+  'Car Cover': ['คลุม', 'ไม่คลุม'],
   Status: ['Heavy NG', 'NG', 'OK-Accept'],
 }
 // columns that become 'select' with options derived from live distinct values
@@ -247,6 +249,7 @@ const SPECS: Spec[] = [
   { key: EV_CHARGING_KEY, group: 'status', width: 240 }, // "18% → 62% · 3:45 ชม. · 01/10/26"
   { key: 'Vin Of Status', group: 'status', width: 140 },
   { key: 'Gate In (Rayong yard)', label: 'Gate In', group: 'location', width: 110 },
+  { key: 'Car Cover', label: 'รถคลุมผ้า', group: 'location', width: 96 }, // ติ๊กตอน Gate-in (lib/carCover)
   { key: 'Final check date', group: 'status', width: 110 },
   { key: 'Final Status', group: 'status', width: 120 },
   { key: '__location', label: 'Location', group: 'location', width: 110 }, // computed: prefix-block+ช่อง+ลำดับ
