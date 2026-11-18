@@ -17,6 +17,7 @@ import { printVehicleLabels } from '../lib/vehicleLabel'
 import { useYard } from '../store/useYard'
 import type { Unit } from '../types'
 import { useTracking, useTrackingRows, useVisibleColumns } from '../store/useTracking'
+import { CAR_COVER_KEY, carCoverColor } from '../lib/carCover'
 import { CAR_STATUS_VALUES, GROUP_LABEL, SELECT_DATA_KEYS, LOCATION_KEY, MAX_FILTERS, DEFAULT_FILTER_COLS, agingPmDays, cleanStorage, storageDays, isDateColumn, fmtSerialToDate, type ColGroup, type Column } from '../lib/trackingColumns'
 import { yardLocFull, byYardLocation } from '../lib/groupingImport'
 import { CAR_STATUS_META, deriveCarStatus, IN_YARD_STATUSES, PARKED_STATUSES, isWaitingRepair, finalColor, vinOfStatusColor, taxStatusColor, gateOutScanMs } from '../lib/carStatus'
@@ -1631,6 +1632,10 @@ function Cell({ col, value, note, dim }: { col: Column; value: string; note?: st
     content = tc
       ? <span className="gbadge" style={{ color: tc.color, background: tc.bg, opacity: dim ? 0.4 : 1 }}>{value}</span>
       : <span style={{ opacity: dim ? 0.4 : 1 }}>{value}</span>
+  } else if (col.key === CAR_COVER_KEY) {
+    // รถคลุมผ้า: คลุม = เขียว · ไม่คลุม = แดง
+    const cc = carCoverColor(value)
+    content = cc ? <span className="gbadge" style={{ color: cc.color, background: cc.bg }}>{value}</span> : <span>{value}</span>
   } else if (col.key === 'No') content = <span className="tabular whitespace-nowrap text-[11.5px]" style={{ color: '#7c8696' }}>{value}</span>
   else content = <span>{value}</span>
 

@@ -178,3 +178,24 @@ describe('Gate-out ข้ามยาร์ดต้องเป็นการ�
     expect(pushed.slice(0, -1).some((p) => p[0].site === 'S1')).toBe(true)
   })
 })
+
+describe('รถคลุมผ้า: ปลายทางยิงรับไปแล้วก่อนแถวย้ายตาม', () => {
+  beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-11-18T08:00:00Z')) })
+  afterEach(() => { vi.useRealTimers(); vi.resetModules() })
+
+  it('Car Cover ที่ติ๊กตอนยิงรับ ย้ายไปอยู่รอบใหม่พร้อม Gate In — ไม่ตกไปอยู่ในประวัติของยาร์ดเดิม', async () => {
+    const { useTracking, row } = await setup()
+    const out = Date.parse('2026-11-17T08:00:00Z'), inAt = Date.parse('2026-11-18T07:00:00Z')
+    // ยาร์ด 1 ยิงออกแล้ว แต่แถวยังติดป้ายยาร์ด 1 · เครื่องที่ยาร์ด 2 ยิงรับ + ติ๊ก "คลุม" ลงแถวนี้ไปแล้ว
+    useTracking.setState({ loaded: true, rows: { V1: row('V1', 'S1', {
+      'Location yard': S1.name, 'Gate Out Time': String(out), 'Gate Out time stamp': '17NOV26 15.00',
+      'Car Status': 'In Yard', 'Gate In Time': String(inAt), 'Gate In Inspector': 'gate2', 'Car Cover': 'คลุม',
+    }) } })
+    expect(useTracking.getState().transferToYard('V1', 'S2', { queue: false })).toBe(true)
+    const r = useTracking.getState().rows.V1
+    expect(r.site).toBe('S2')
+    expect(r.cells['Gate In Inspector']).toBe('gate2')
+    expect(r.cells['Car Cover']).toBe('คลุม')
+    expect(r.cells.__trips ?? '').not.toContain('คลุม')
+  })
+})

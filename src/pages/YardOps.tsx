@@ -90,6 +90,7 @@ import type { Damage, DamageInput, DamageSource, Unit } from '../types'
 import type { TrackRow } from '../lib/excelTracking'
 import { isScanLocationEntry } from '../lib/excelTracking'
 import { SeqQueuePicker } from '../components/SeqQueueList'
+import { CAR_COVER_KEY, COVERED, UNCOVERED, type CarCover } from '../lib/carCover'
 
 // ── per-yard scoping ──────────────────────────────────────────────────────────
 // Every station reads through these hooks so an operator stamped into site A
@@ -2045,7 +2046,9 @@ function WalkView() {
   // reset every check per scanned car
   // รถที่ Gate-out ไปแล้วถูกยิงเข้าอีกครั้ง: ต้องติ๊กยืนยันว่ารถกลับเข้าลานจริง (ดู returningGateOut)
   const [returnOk, setReturnOk] = useState(false)
-  useEffect(() => { setModelOk(null); setColorOk(null); setReturnOk(false) }, [trackingVin])
+  // รถคลุมผ้า: หน้างานต้องเลือกทุกคัน (คลุม / ไม่คลุม) ก่อน Confirm Gate in — บันทึกลงช่อง Car Cover
+  const [cover, setCover] = useState<CarCover | null>(null)
+  useEffect(() => { setModelOk(null); setColorOk(null); setReturnOk(false); setCover(null) }, [trackingVin])
 
   // safety net: a Pre Gate-in car this station doesn't cover with any queue —
   // same fix as the admin Gate In/Out board's virtual card (PR #263). A device
@@ -2344,6 +2347,7 @@ function WalkView() {
       'Gate In (Rayong yard)': d,
       'Gate In Inspector': currentUser,
       'Gate In Time': String(now.getTime()),
+      ...(cover ? { [CAR_COVER_KEY]: cover } : {}),
     })
     // register as yard unit so Driver can find it for parking assignment. ALWAYS
     // (re)register — a car that had a placeholder unit (e.g. a manual defect added
@@ -2560,7 +2564,7 @@ function WalkView() {
         const verified = modelOk === 'OK' && colorOk === 'OK'
         // ยาร์ดเดิมยิงออกแล้ว ≠ รถเคยออกจากลานนี้แล้วกลับมา — ไม่ต้องถามยืนยันกลับเข้าลาน
         const returning = isPre && !incomingLot ? returningGateOut(trackRow.cells, trackRow.history) : null
-        const canConfirm = verified && (!returning || returnOk)
+        const canConfirm = verified && !!cover && (!returning || returnOk)
         // รถของยาร์ดอื่นที่ออกจากยาร์ดนั้นแล้ว = ย้ายมาที่นี่ ไม่ใช่ "กลับเข้าลาน" (ลานนี้ไม่เคยยิงมันออก)
         const returnLine = returning
           ? [fromYard && `${fromYard} Gate-out แล้ว`, returning.at && `เมื่อ ${fmtGateOutStamp(returning.at)}`, returning.by && `โดย ${returning.by}`].filter(Boolean).join(' ')
@@ -2647,9 +2651,28 @@ function WalkView() {
                   <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>Company</div>
                   <div className="font-semibold truncate">{trackRow.cells['company'] ?? '—'}</div>
                 </div>
-                <div>
-                  <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>Lot</div>
-                  <div className="font-semibold leading-tight truncate">{trackRow.cells['Lot transfer'] ?? '—'}</div>
+                <div className="flex items-end gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>Lot</div>
+                    <div className="font-semibold leading-tight truncate">{trackRow.cells['Lot transfer'] ?? '—'}</div>
+                  </div>
+                  {/* รถคลุมผ้า — บังคับเลือก: คลุม = เขียว · ไม่คลุม = แดง */}
+                  {isPre && (
+                    <div className="shrink-0 text-right" data-car-cover>
+                      <div className="text-[10px] font-bold mb-0.5" style={{ color: cover ? 'var(--muted)' : '#d97706' }}>รถคลุมผ้า</div>
+                      <div className="flex gap-1">
+                        {([COVERED, UNCOVERED] as const).map((v) => (
+                          <button key={v} onClick={() => setCover(v)} data-cover={v}
+                            className="px-2.5 py-1 rounded-lg text-[11.5px] font-bold transition active:scale-95"
+                            style={cover === v
+                              ? { background: v === COVERED ? '#16a34a' : '#dc2626', color: '#fff' }
+                              : { background: 'var(--chip)', color: 'var(--muted)', boxShadow: cover ? undefined : 'inset 0 0 0 1px rgba(217,119,6,0.45)' }}>
+                            {v}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <div>
                   <div className="text-[10.5px]" style={{ color: 'var(--muted)' }}>Remark</div>
@@ -2739,6 +2762,7 @@ function WalkView() {
                     <CheckCircle2 size={20} /> {
                       mismatch.length ? 'Gate-in ไม่ได้ — ข้อมูลไม่ตรง'
                         : !verified ? 'ยืนยันรุ่นและสีก่อน'
+                        : !cover ? 'เลือกรถคลุมผ้า / ไม่คลุมก่อน'
                         : !canConfirm ? (fromYard ? 'ติ๊กยืนยันรับรถก่อน' : 'ติ๊กยืนยันว่ารถกลับเข้าลานก่อน')
                         : 'Confirm Gate in'
                     }

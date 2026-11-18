@@ -50,6 +50,7 @@ export interface TripSnapshot {
 export const TRIP_SCOPED_KEYS: string[] = [
   // this visit's arrival + departure
   'Gate In (Rayong yard)', 'Gate In Date', 'Gate In Time', 'Gate In Inspector',
+  'Car Cover', // รถคลุมผ้า — ติ๊กตอน Gate-in ของรอบนี้
   'Gate Out time stamp', 'Gate Out Date', 'Gate Out Time',
   // this visit's logistics
   'Lot transfer', 'moving date', 'Grouping  Number', 'Allocation Date',
