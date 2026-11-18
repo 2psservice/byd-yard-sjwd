@@ -15,7 +15,7 @@ export function LogoLoader({ width = 200, className = '' }: { width?: number; cl
 }
 
 /**
- * หน้า Loading แบบ macOS: พื้นขาวล้วน โลโก้ 2PS วิ่งเข้ามาทีละตัว วงหมุนใต้โลโก้ ตัวหนังสือเล็กสีเทา
+ * หน้า Loading แบบ macOS: พื้นขาวล้วน วงหมุนเหนือโลโก้ · โลโก้ 2PS วิ่งเข้ามาทีละตัว · ตัวหนังสือเล็กสีเทาใต้โลโก้
  * แอปใช้หน้านี้ "หน้าเดียว" ตั้งแต่เปิดจนพร้อม (App BootGate) — ตัวเดิมค้างอยู่ทุกช่วง แถบจึงเดินต่อเนื่อง
  *   pct  = ความคืบหน้ารวม 0–100 ที่รู้แน่ · ไม่ส่ง = ยังไม่รู้ ตัวเลขค่อย ๆ เดินเองไปไม่เกิน cap
  *   ตัวเลขไม่ถอยหลังเด็ดขาด (ช่วงถัดไปรายงานน้อยกว่าที่เดินมาแล้ว ก็รอจนเลยค่าเดิม)
@@ -32,9 +32,9 @@ export function BootScreen({ pct, cap = 30, label, showPct, leaving, testId }: {
   }, [pct, cap])
   return (
     <div className={leaving ? 'boot-screen boot-leaving' : 'boot-screen'} data-testid={testId} role="status" aria-live="polite" data-boot-progress={Math.round(shown)}>
-      <BootLogo />
-      {/* วงหมุนสีน้ำเงิน หางจางลง (18/11 แทนแถบเส้นตรง) — ความคืบหน้าบอกเป็นตัวเลขใต้วง */}
+      {/* วงหมุนสีน้ำเงิน หางจางลง อยู่เหนือโลโก้ (18/11 แทนแถบเส้นตรง) — ความคืบหน้าบอกเป็นตัวเลขใต้โลโก้ */}
       <div className="boot-ring" aria-hidden="true" />
+      <BootLogo />
       {label && <div className="boot-label">{showPct ? `${label} ${Math.round(shown)}%` : label}</div>}
     </div>
   )
