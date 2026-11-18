@@ -1262,9 +1262,16 @@ const hasStationRecord = (i: QueueItem): boolean =>
  * gated-out closure (those are legitimate housekeeping), and the tick landed on
  * the very day the car gated in.
  */
-function isGateInArtifact(i: QueueItem, cells: Record<string, string> | undefined): boolean {
+function isGateInArtifact(q: WorkQueue, i: QueueItem, r: TrackRow | undefined): boolean {
   if (!i.done || i.gatedOut || hasStationRecord(i)) return false
+  const cells = r?.cells
   if (!cells) return false
+  // สถานีสแกนจริงตั้งแต่รถเข้าคิว = ไม่ใช่ติ๊กจาก Gate-in — ตัดสินแบบเดียวกับ ladder-close ด้านล่าง
+  // (18 พ.ย.: Gate-in 17:01 + สแกน PDI 17:03 วันเดียวกัน → กฎนี้ถอด ladder-close ปิดใหม่ วนทุก ~15 วิบนทุกเครื่อง)
+  const lt = ladderTypeOf(q)
+  const otherYard = !!q.site && !!r?.site && r.site !== q.site
+  const s = lt && !otherYard ? stationScanSince(r, lt, ladderJoinDay(q, i)) : undefined
+  if (s && s.at > (i.manualUndoneAt ?? 0)) return false
   const gDay = gateInDay(cells)
   if (gDay === undefined) return false
   const at = i.doneAt
@@ -1493,7 +1500,7 @@ export function reconcileGateOuts() {
       }
       // repair: drop a tick this station never made (see isGateInArtifact) — the
       // fabricated ladder date is ignored below too, so it stays un-ticked
-      if (isStationQueue && isGateInArtifact(i, rows[i.vin]?.cells)) {
+      if (isStationQueue && isGateInArtifact(q, i, rows[i.vin])) {
         changed = true
         return { ...i, done: false, doneAt: undefined, doneBy: undefined, stamped: undefined, stage: undefined }
       }
