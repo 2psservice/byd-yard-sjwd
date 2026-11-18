@@ -15,11 +15,11 @@ export function LogoLoader({ width = 200, className = '' }: { width?: number; cl
 }
 
 /**
- * หน้า Loading แบบ macOS: พื้นขาวล้วน โลโก้ 2PS วิ่งเข้ามาทีละตัว แถบความคืบหน้าเส้นบางใต้โลโก้ ตัวหนังสือเล็กสีเทา
+ * หน้า Loading แบบ macOS: พื้นขาวล้วน โลโก้ 2PS วิ่งเข้ามาทีละตัว วงหมุนใต้โลโก้ ตัวหนังสือเล็กสีเทา
  * แอปใช้หน้านี้ "หน้าเดียว" ตั้งแต่เปิดจนพร้อม (App BootGate) — ตัวเดิมค้างอยู่ทุกช่วง แถบจึงเดินต่อเนื่อง
- *   pct  = ความคืบหน้ารวม 0–100 ที่รู้แน่ · ไม่ส่ง = ยังไม่รู้ แถบค่อย ๆ เดินเองไปไม่เกิน cap
- *   แถบไม่ถอยหลังเด็ดขาด (ช่วงถัดไปรายงานน้อยกว่าที่เดินมาแล้ว แถบก็รอจนเลยค่าเดิม)
- *   showPct = ต่อท้ายตัวหนังสือด้วยเปอร์เซ็นต์ของแถบ ("Loading 64%")
+ *   pct  = ความคืบหน้ารวม 0–100 ที่รู้แน่ · ไม่ส่ง = ยังไม่รู้ ตัวเลขค่อย ๆ เดินเองไปไม่เกิน cap
+ *   ตัวเลขไม่ถอยหลังเด็ดขาด (ช่วงถัดไปรายงานน้อยกว่าที่เดินมาแล้ว ก็รอจนเลยค่าเดิม)
+ *   showPct = ต่อท้ายตัวหนังสือด้วยเปอร์เซ็นต์ ("Loading 64%")
  */
 export function BootScreen({ pct, cap = 30, label, showPct, leaving, testId }: {
   pct?: number | null; cap?: number; label?: string; showPct?: boolean; leaving?: boolean; testId?: string
@@ -33,9 +33,8 @@ export function BootScreen({ pct, cap = 30, label, showPct, leaving, testId }: {
   return (
     <div className={leaving ? 'boot-screen boot-leaving' : 'boot-screen'} data-testid={testId} role="status" aria-live="polite" data-boot-progress={Math.round(shown)}>
       <BootLogo />
-      <div className="boot-bar" aria-hidden="true">
-        <div className="boot-fill" style={{ width: `${shown}%` }} />
-      </div>
+      {/* วงหมุนสีน้ำเงิน หางจางลง (18/11 แทนแถบเส้นตรง) — ความคืบหน้าบอกเป็นตัวเลขใต้วง */}
+      <div className="boot-ring" aria-hidden="true" />
       {label && <div className="boot-label">{showPct ? `${label} ${Math.round(shown)}%` : label}</div>}
     </div>
   )

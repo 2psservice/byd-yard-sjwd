@@ -356,7 +356,7 @@ input, textarea, select, [contenteditable='true'] {
 }
 
 /* ---------- หน้า Loading แบบ macOS (components/LogoLoader BootScreen) ----------
-   พื้นขาวล้วน · แถบเส้นบาง 5px กว้าง 220px สีน้ำเงิน macOS (#007AFF) บนรางเทาอ่อน · ตัวหนังสือระบบ (SF บน Mac) 12px สีเทา */
+   พื้นขาวล้วน · วงหมุน 44px เส้น 5px สีน้ำเงิน macOS (#007AFF) หางจางลง · ตัวหนังสือระบบ (SF บน Mac) 12px สีเทา */
 .boot-screen {
   position: fixed; inset: 0; z-index: 9998;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -382,16 +382,24 @@ input, textarea, select, [contenteditable='true'] {
 }
 @keyframes blSweep { from { opacity: 0; transform: translateX(-14px) scale(0.96); } to { opacity: 1; transform: none; } }
 @keyframes blRise  { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
-.boot-bar { width: 220px; height: 5px; margin-top: 64px; border-radius: 3px; background: rgba(0, 0, 0, 0.12); overflow: hidden; }
-.boot-fill { height: 100%; border-radius: 3px; background: #007aff; transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1); }
-/* หน้า Loading ปิดตัว: แถบเต็มแล้วจางออก */
+/* วงหมุนใต้โลโก้: หางไล่จากใสเป็นน้ำเงิน macOS (#007AFF) หัวมน หมุนรอบละ 0.9 วิ */
+.boot-ring { position: relative; width: 44px; height: 44px; margin-top: 56px; animation: bootSpin 0.9s linear infinite; }
+.boot-ring::before {
+  content: ''; position: absolute; inset: 0; border-radius: 50%;
+  background: conic-gradient(from 0deg, rgba(0, 122, 255, 0) 0deg, rgba(0, 122, 255, 0.25) 120deg, #007aff 350deg);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4.5px));
+          mask: radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4.5px));
+}
+.boot-ring::after { content: ''; position: absolute; top: 0; left: 50%; width: 5px; height: 5px; margin-left: -2.5px; border-radius: 50%; background: #007aff; }
+@keyframes bootSpin { to { transform: rotate(360deg); } }
+/* หน้า Loading ปิดตัว: จางออก */
 .boot-screen.boot-leaving { opacity: 0; transition: opacity 0.3s ease; pointer-events: none; }
 .boot-label {
   margin-top: 14px; font-size: 12px; font-weight: 400; line-height: 1.4; letter-spacing: 0;
   color: #86868b; font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased;
 }
 @keyframes bootIn { from { opacity: 0; } to { opacity: 1; } }
-@media (prefers-reduced-motion: reduce) { .boot-screen { animation: none; } .boot-logo-intro .bl-piece { animation: none; opacity: 1; } .boot-logo-intro .bl-full { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .boot-screen { animation: none; } .boot-ring { animation-duration: 2.4s; } .boot-logo-intro .bl-piece { animation: none; opacity: 1; } .boot-logo-intro .bl-full { animation: none; } }
 
 /* progress (iOS bar) */
 .track { height: 6px; border-radius: 99px; background: rgba(120, 120, 128, 0.2); overflow: hidden; }
