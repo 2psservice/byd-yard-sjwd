@@ -1003,7 +1003,12 @@ export const useTracking = create<TrackingState>()(
           const cr = cloudByVin.get(lr.vin)
           if (cr?.deletedAt) continue
           if (incremental) {
-            if ((lr.updatedAt ?? 0) > lastSync) push.push(lr)
+            // edited since the last sync — unless the cloud already holds this very version (or a newer
+            // one). A row that arrived by realtime carries the cloud's own stamp and is newer than
+            // lastSync; re-pushing it wrote the same bytes back from EVERY open device each minute, and
+            // every one of those no-op upserts was delivered again to every device (20/11 Realtime quota).
+            // An edit made offline is newer than the cloud copy, so it is still pushed.
+            if ((lr.updatedAt ?? 0) > lastSync && !(cr && (cr.updatedAt ?? 0) >= (lr.updatedAt ?? 0))) push.push(lr)
           } else {
             if (!cr || (lr.updatedAt ?? 0) > (cr.updatedAt ?? 0)) push.push(lr)
           }
@@ -1114,6 +1119,14 @@ export const useTracking = create<TrackingState>()(
                 // the local audit trail — a later updateCell on this device would then
                 // upsert history:null to the cloud, destroying it everywhere.
                 if (!incoming.history?.length && cur?.history?.length) incoming.history = cur.history
+                // this row came FROM the cloud — every other open device gets the same event, so it is
+                // common knowledge, not an edit made here. Mark it shared BEFORE the set(): the announcer
+                // (useTracking.subscribe → 'status') used to relay it back out from every receiver, so
+                // one car edited on one device cost (devices − 1) × devices extra Realtime messages
+                // (20/11: the project ran ~660k messages a day against a 5M-a-month plan)
+                rowShared.set(incoming.vin, incoming.updatedAt ?? 0)
+                broadcastOnly.delete(incoming.vin) // the authoritative copy (with history) is here now
+                seedShared([incoming]) // its station-check cells are already in the cloud too
                 idbPut(incoming).catch(() => {})
                 return { rows: { ...s.rows, [incoming.vin]: incoming } }
               })
