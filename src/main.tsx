@@ -4,11 +4,12 @@ import { registerSW } from 'virtual:pwa-register'
 // self-hosted fonts (bundled + precached by the PWA) — replaces the Google
 // Fonts stylesheet that render-blocked the first paint for 10s+ whenever the
 // yard network was slow or the CDN unreachable
-import '@fontsource/inter/400.css'
-import '@fontsource/inter/500.css'
-import '@fontsource/inter/600.css'
-import '@fontsource/inter/700.css'
-import '@fontsource/inter/800.css'
+// ตัวอักษรอังกฤษ/ตัวเลขทั้งแอป: Montserrat — ทรงเรขาคณิตแบบ Gotham (Gotham ตัวจริงต้องซื้อลิขสิทธิ์) · ภาษาไทยใช้ IBM Plex Sans Thai / ฟอนต์ระบบเหมือนเดิม
+import '@fontsource/montserrat/400.css'
+import '@fontsource/montserrat/500.css'
+import '@fontsource/montserrat/600.css'
+import '@fontsource/montserrat/700.css'
+import '@fontsource/montserrat/800.css'
 import '@fontsource/ibm-plex-sans-thai/300.css'
 import '@fontsource/ibm-plex-sans-thai/400.css'
 import '@fontsource/ibm-plex-sans-thai/500.css'
