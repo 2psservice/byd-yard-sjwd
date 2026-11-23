@@ -92,6 +92,9 @@ import { isScanLocationEntry } from '../lib/excelTracking'
 import { SeqQueuePicker } from '../components/SeqQueueList'
 import { CAR_COVER_KEY, COVERED, UNCOVERED, type CarCover } from '../lib/carCover'
 
+/** camera scan frame + zoom slider colour (LINE-style green, 23/11) */
+const SCAN_GREEN = '#06c755'
+
 // ── per-yard scoping ──────────────────────────────────────────────────────────
 // Every station reads through these hooks so an operator stamped into site A
 // can neither see nor record vehicles that belong to site B — the work site
@@ -1358,12 +1361,16 @@ function VinInputInner({
             {/* scan frame */}
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
               <div className="relative w-60 h-44">
-                {/* corners */}
-                {[['top-0 left-0','border-t-2 border-l-2'],['top-0 right-0','border-t-2 border-r-2'],
-                  ['bottom-0 left-0','border-b-2 border-l-2'],['bottom-0 right-0','border-b-2 border-r-2']].map(([pos, brd], i) => (
-                  <span key={i} className={`absolute w-7 h-7 ${pos} ${brd} rounded-sm`} style={{ borderColor: accent }} />
+                {/* corners — thick rounded green L's just outside the frame, LINE-scanner style (23/11, option A) */}
+                {([
+                  { top: -12, left: -12, borderTopWidth: 6, borderLeftWidth: 6, borderTopLeftRadius: 16 },
+                  { top: -12, right: -12, borderTopWidth: 6, borderRightWidth: 6, borderTopRightRadius: 16 },
+                  { bottom: -12, left: -12, borderBottomWidth: 6, borderLeftWidth: 6, borderBottomLeftRadius: 16 },
+                  { bottom: -12, right: -12, borderBottomWidth: 6, borderRightWidth: 6, borderBottomRightRadius: 16 },
+                ] as const).map((c, i) => (
+                  <span key={i} data-scan-corner className="absolute"
+                    style={{ width: 34, height: 34, borderStyle: 'solid', borderWidth: 0, borderColor: SCAN_GREEN, ...c }} />
                 ))}
-                <div className="absolute inset-0 border border-white/10 rounded" />
               </div>
             </div>
             {camErr && (
@@ -1392,7 +1399,7 @@ function VinInputInner({
                 <>
                   <span className="text-white/70 text-[12px] shrink-0">ซูม</span>
                   <input
-                    type="range" className="flex-1" style={{ accentColor: accent }}
+                    type="range" className="flex-1" style={{ accentColor: SCAN_GREEN }}
                     min={zoomCap.min} max={zoomCap.max} step={zoomCap.step}
                     value={zoom} onChange={e => applyZoom(Number(e.target.value))}
                   />
@@ -1402,7 +1409,7 @@ function VinInputInner({
                 <>
                   <span className="text-white/70 text-[12px] shrink-0">ซูม</span>
                   <input
-                    type="range" className="flex-1" style={{ accentColor: accent }}
+                    type="range" className="flex-1" style={{ accentColor: SCAN_GREEN }}
                     min={1} max={3} step={0.1}
                     value={dz} onChange={e => { const v = Number(e.target.value); setDz(v); dzRef.current = v; rememberScanZoom(v) }}
                   />
