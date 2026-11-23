@@ -321,15 +321,16 @@ export function Grouping() {
   // the day-change auto-logout (App.tsx) remounts this page every new day, so "today" never goes stale
   const dayFilter: string | 'all' = selDay ?? dayKeyOf(new Date())
   // picking a day on the calendar opens THAT day's grouping sheet right away (the newest run of the day
-  // when it has several — the cards below switch between them). Picking "all days" or a day with no run
-  // leaves the sheet as it is.
+  // when it has several — the cards below switch between them). Picking "all days" leaves the sheet as it
+  // is; a day with no run clears it.
   const pickDay = (d: string | 'all') => {
     setSelDay(d)
     if (d === 'all') return
     const run = seqQueuesAll
       .filter((q) => q.items.length > 0 && queueDay(q) === d)
       .sort((a, b) => b.createdAt - a.createdAt)[0]
-    if (run) setViewQueueId(run.id)
+    // a day with no run shows no sheet (23/11) — drop a run clicked on another day too
+    setViewQueueId(run ? run.id : null)
   }
 
   // Rebuild the sheet from a delivery run (clicked, or the newest when nothing
@@ -341,10 +342,11 @@ export function Grouping() {
       x.kind === 'sequence' && x.items.length > 0 && (!currentSite || !x.site || x.site === currentSite))
     const picked = viewQueueId ? list.find((x) => x.id === viewQueueId) : null
     if (!picked && rows) return null
-    // no queue clicked → the sheet follows the day the calendar shows (newest run of that day);
-    // a day with no run keeps the old fallback (newest run overall)
+    // no queue clicked → the sheet follows the day the calendar shows (newest run of that day).
+    // A day with no run shows NO sheet (23/11: today empty used to fall back to the newest run of
+    // another day, e.g. the 21/11 plan under a 23/11 calendar). "All days" still opens the newest run.
     const dayList = dayFilter === 'all' ? list : list.filter((x) => queueDay(x) === dayFilter)
-    const q = picked ?? [...(dayList.length ? dayList : list)].sort((a, b) => b.createdAt - a.createdAt)[0]
+    const q = picked ?? [...dayList].sort((a, b) => b.createdAt - a.createdAt)[0]
     if (!q) return null
     const count = new Map<string, number>()
     for (const i of q.items) count.set(i.group ?? '', (count.get(i.group ?? '') ?? 0) + 1)
