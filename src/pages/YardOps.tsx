@@ -6477,8 +6477,7 @@ export function YardOps() {
                 key={r.key}
                 onClick={() => setRole(r.key)}
                 className="panel p-5 text-left flex flex-col gap-3 transition-all active:scale-95 relative"
-                // thin border in the station's own colour (23/11, option B)
-                style={{ touchAction: 'manipulation', border: `1.5px solid ${r.color}` }}
+                style={{ touchAction: 'manipulation' }}
               >
                 {/* pending-work badge — iOS-style red count, top-right of the tile */}
                 {(menuBadges[r.key] ?? 0) > 0 && (
