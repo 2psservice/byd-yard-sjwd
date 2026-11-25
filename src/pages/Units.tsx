@@ -37,7 +37,7 @@ import { useSiteQueues, queueTypeOf } from '../store/useOps'
 import { useUnitsView } from '../store/useUnitsView'
 import { useVisits } from '../store/useVisits'
 import { visitToTrackRow, type Visit } from '../lib/visits'
-import { buildWorkRows, buildEventLog, readingsHist as libReadingsHist, histOf, fmtHistAt, filledDates, PDI_DATE_KEYS, PM_DATE_KEYS } from '../lib/carHistory'
+import { buildWorkRows, buildEventLog, readingsHist as libReadingsHist, histOf, fmtHistAt, filledDates, PDI_DATE_KEYS, PM_DATE_KEYS, stationReadingsHist } from '../lib/carHistory'
 import { roundHistory } from '../lib/tripHistory'
 import { fetchDamagePhotos } from '../lib/db'
 
@@ -2058,12 +2058,14 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
 
   /** One station tab (PDI / Final Check / PM): dates stamped, measurements with
    *  full per-save history, queue verdicts, and the NGs the station recorded. */
-  const StationTab = ({ title, dates, types, match }: { title: string; dates: { k: string; v: string }[]; types: string[]; match: string }) => {
+  const StationTab = ({ title, dates, types, match, dateKeys }: { title: string; dates: { k: string; v: string }[]; types: string[]; match: string; dateKeys: readonly string[] }) => {
     const dmgs = stationDmgs(match)
     const checks = stationChecks(types)
+    // only the readings THIS station took (saved with one of its date stamps) — not the car's whole history
+    const own = (key: string) => stationReadingsHist(row, columns, key, dateKeys)
     const meas: [string, { value: string; at?: number; by?: string }[]][] = [
-      ['% SOC', socHist], ['Mileage (Km)', readingsHist('Mileage')],
-      ['Voltage of 12V', readingsHist('Voltage of 12V')], ['Tire Pressure (FL/FR/RL/RR)', tireHist],
+      ['% SOC', own('% SOC')], ['Mileage (Km)', own('Mileage')],
+      ['Voltage of 12V', own('Voltage of 12V')], ['Tire Pressure (FL/FR/RL/RR)', own('Tire Pressure')],
     ]
     return (
       <div className="space-y-4">
@@ -2095,7 +2097,7 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
         </section>
 
         <section className="panel-solid p-4">
-          <div className="text-[11px] font-bold uppercase mb-2" style={{ color: 'var(--faint)' }}>ค่าที่วัดได้ · ประวัติทุกครั้งที่บันทึก</div>
+          <div className="text-[11px] font-bold uppercase mb-2" style={{ color: 'var(--faint)' }}>ค่าที่วัดได้ตอนบันทึก {title} · ทุกครั้งที่บันทึก</div>
           <div className="grid sm:grid-cols-2 gap-x-7 gap-y-3">
             {meas.map(([label, list]) => (
               <div key={label}>
@@ -2352,9 +2354,9 @@ function RowDetail({ vin, onClose }: { vin: string; onClose: () => void }) {
             </div>
           )}
 
-          {tab === 'pdi' && <StationTab title="PDI" dates={pdiDates} types={['PDI']} match="PDI" />}
-          {tab === 'final' && <StationTab title="Final Check" dates={fcDate ? [{ k: 'Final check date', v: fcDate }] : []} types={['FINAL']} match="FINAL" />}
-          {tab === 'pm' && <StationTab title="PM" dates={pmDates} types={['PM']} match="PM" />}
+          {tab === 'pdi' && <StationTab title="PDI" dates={pdiDates} types={['PDI']} match="PDI" dateKeys={PDI_DATE_KEYS} />}
+          {tab === 'final' && <StationTab title="Final Check" dates={fcDate ? [{ k: 'Final check date', v: fcDate }] : []} types={['FINAL']} match="FINAL" dateKeys={['Final check date']} />}
+          {tab === 'pm' && <StationTab title="PM" dates={pmDates} types={['PM']} match="PM" dateKeys={PM_DATE_KEYS} />}
 
           {tab === 'damages' && (() => {
               // normalise imported spellings ("OK-Repaired", "waiting repair") onto the

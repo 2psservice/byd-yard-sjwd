@@ -38,6 +38,20 @@ export function readingsHist(row: TrackRow, columns: Column[], key: string): { v
   return out
 }
 
+/**
+ * The readings ONE station took: a station saves its inspection date and its readings in the same save,
+ * so a reading logged within a few minutes of one of that station's date stamps belongs to it.
+ * 25/11 LC0CE4CB9T4403786: the PDI tab listed the PM save's SOC / mileage (26/10 17:08) under a PDI dated
+ * 31-Aug-26 — the readings list was the car's whole history, which read as if PM had re-dated the PDI.
+ * A value with no log line (imported from a file) cannot be placed, so it stays, labelled as imported.
+ */
+export const STATION_SAVE_WINDOW_MS = 5 * 60_000
+export function stationReadingsHist(row: TrackRow, columns: Column[], key: string, dateKeys: readonly string[]): { value: string; at?: number; by?: string }[] {
+  const saves = histOf(row, columns, ...dateKeys).map((h) => h.at).filter((t): t is number => typeof t === 'number')
+  return readingsHist(row, columns, key).filter((v) =>
+    v.at === undefined || saves.some((t) => Math.abs(t - (v.at as number)) <= STATION_SAVE_WINDOW_MS))
+}
+
 // station date ladders (stamped by stampStationDate on every sheet save)
 export const PDI_DATE_KEYS = ['PDI', ...Array.from({ length: 8 }, (_, i) => `RE PDI  Date #${i + 1}`)]
 export const PM_DATE_KEYS = Array.from({ length: 15 }, (_, i) => `PM${i + 1}`)
