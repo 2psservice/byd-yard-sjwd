@@ -120,7 +120,17 @@ function irPaperSheetHtml(r: TrackRow, siteName?: string, destOf?: DestOf, measu
   const d = irData(r, siteName, destOf)
   const P = (x: number, y: number, val: string) => irField('irpf', x, y, 12, val)
   const modelSize = fitSize(d.model, IRP_MODEL_MAX, measure, 8)
-  const numbers = IRP_NUMBER_BOXES.map((b) => irField('irpf', b.x, 113, fitSize(d[b.key], b.max, measure, 7), d[b.key])).join('')
+  // A number may run on into the boxes AFTER it while they are empty (28/11, option A): an EV's
+  // "TZ200XSQ 2G6013488" printed ~7pt to stay inside Front Motor although Rear Motor and Engine were
+  // blank. It only shrinks once it would reach a box that carries a number of its own.
+  const numbers = IRP_NUMBER_BOXES.map((b, i) => {
+    let max = b.max
+    for (let j = i + 1; j < IRP_NUMBER_BOXES.length && !d[IRP_NUMBER_BOXES[j].key]; j++) {
+      const n = IRP_NUMBER_BOXES[j]
+      max = n.x + n.max - b.x
+    }
+    return irField('irpf', b.x, 113, fitSize(d[b.key], max, measure, 7), d[b.key])
+  }).join('')
   return `<section class="irp-sheet">
     ${irField('irpf', 15, 113, modelSize, d.model)}
     ${P(130, 113, d.color)}

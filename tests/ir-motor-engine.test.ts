@@ -62,6 +62,17 @@ describe('กระดาษ IR · เลขมอเตอร์ / เลขเ
     expect(at(html, ENGINE.x)!.size).toBe(12) // fits as is
   })
 
+  it('EV มอเตอร์เดียว: ช่อง Rear Motor / Engine ว่าง → เลข Front Motor ขนาดปกติ 12pt ยาวต่อไปช่องที่ว่างได้ (28/11)', () => {
+    const measure: MeasureText = (s) => s.length * 4.6
+    const ev = buildIrPaperHtml([row({ 'Front Motor no.': 'TZ200XSQ 2G6013488' })], '', undefined, measure)
+    expect(at(ev, FRONT.x)).toEqual({ size: 12, text: 'TZ200XSQ 2G6013488' })
+    // a DM-i still keeps the motor inside Front + the empty Rear box, clear of the engine number
+    const dmi = buildIrPaperHtml([row({ 'Front Motor no.': 'TZ200XSQ 2G6013488 EXTRA LONG', 'Engine No.': 'BYD472QA 425006618' })], '', undefined, measure)
+    const f = at(dmi, FRONT.x)!
+    expect((f.text.length * 4.6 * f.size) / 12 <= REAR.x + REAR.max - FRONT.x || f.size === 7).toBe(true)
+    expect(f.size).toBeLessThan(12)
+  })
+
   it('IR ฟอร์ม AMS (ช่องเดียว) ยังพิมพ์เครื่องยนต์ + มอเตอร์ เหมือนเดิม และอ่านหัวคอลัมน์แบบอื่นได้', () => {
     expect(buildIrHtml([row({ 'Engine No.': 'BYD472QA 425006618', 'Front Motor no.': 'TZ220XYE 3G4157160' })])).toContain('>BYD472QA 425006618 TZ220XYE 3G4157160<')
     expect(buildIrHtml([row({ 'Motor no.': 'TZ220XYE 3G4150001' })])).toContain('>TZ220XYE 3G4150001<')
